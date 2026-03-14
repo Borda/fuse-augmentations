@@ -29,18 +29,17 @@ jobs:
         run: |
           pip install check-manifest
           check-manifest
-          python setup.py check --metadata --strict
 
       - name: Create package
         run: |
-          pip install --upgrade setuptools wheel
-          python setup.py sdist bdist_wheel
+          pip install --upgrade setuptools wheel build
+          python -m build
 
       - name: Verify package
         run: |
-          pip install -q -r tests/requirements.txt
+          pip install --upgrade pip
+          pip install --group dev
           twine check dist/*
-          python setup.py clean
 
   pkg-install:
     permissions:
@@ -59,8 +58,8 @@ jobs:
 
       - name: Create package
         run: |
-          pip install setuptools wheel
-          python setup.py sdist bdist_wheel
+          pip install setuptools wheel build
+          python -m build
 
       - name: Try installing
         working-directory: dist

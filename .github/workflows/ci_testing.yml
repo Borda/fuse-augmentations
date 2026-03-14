@@ -39,14 +39,13 @@ jobs:
       - name: Set min. dependencies
         if: matrix.requires == 'oldest'
         run: |
-          for fpath in ('requirements.txt', 'tests/requirements.txt'):
-              req = open(fpath).read().replace('>=', '==')
-              open(fpath, 'w').write(req)
-        shell: python
+          pip install tomlkit
+          python scripts/min_deps.py
 
       - name: Install dependencies
         run: |
-          pip install -e . -U -r tests/requirements.txt
+          pip install --upgrade pip
+          pip install -e . -U --group dev
           pip list
 
       - name: Tests

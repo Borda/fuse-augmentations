@@ -10,9 +10,6 @@ recursive-include fuse_augmentations *.md
 # Include the license file
 include LICENSE
 
-# Include the Requirements
-include requirements.txt
-
 # Exclude build configs
 exclude *.yml
 exclude *.yaml
