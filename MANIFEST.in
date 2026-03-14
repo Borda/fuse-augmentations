@@ -10,6 +10,9 @@ recursive-include fuse_augmentations *.md
 # Include the license file
 include LICENSE
 
+# Include scripts
+recursive-include scripts *.py
+
 # Exclude build configs
 exclude *.yml
 exclude *.yaml
