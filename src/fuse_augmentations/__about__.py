@@ -1,8 +1,8 @@
 __version__ = "0.0.0dev"
 __docs__ = "Fuse augmentation transforms into a single interpolation pass."
 __author__ = "Jiri Borovec"
-__author_email__ = "jirka@pytorchlightning.ai"
-__copyright__ = f"Copyright (c) 2024-2025, {__author__}."
+__author_email__ = "6035284+Borda@users.noreply.github.com"
+__copyright__ = f"Copyright (c) 2025-2026, {__author__}."
 __homepage__ = "https://github.com/Borda/fuse-augmentations"
 __license__ = "Apache-2.0"
 
