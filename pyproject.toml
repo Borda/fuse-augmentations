@@ -13,7 +13,7 @@ readme = "README.md"
 authors = [
   {name = "Jiri Borovec", email = "6035284+Borda@users.noreply.github.com"},
 ]
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = []
 classifiers = [
@@ -23,7 +23,6 @@ classifiers = [
   "Intended Audience :: Developers",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Scientific/Engineering :: Image Recognition",
-  "License :: OSI Approved :: Apache Software License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
 ]
