@@ -32,12 +32,26 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Image Recognition",
 ]
 
-dependencies = [  ]
-urls."Source Code" = "https://github.com/Borda/fuse-augmentations"
+dependencies = [
+  "torch>=2",
+]
+
+optional-dependencies.albumentations = [ "albumentations>=1.1" ]
+optional-dependencies.all = [
+  "albumentations>=1.1",
+  "kornia>=0.6.12",
+  "torchvision>=0.15",
+]
+optional-dependencies.kornia = [ "kornia>=0.6.12" ]
+#optional-dependencies.urls."Source Code" = "https://github.com/Borda/fuse-augmentations"
+optional-dependencies.torchvision = [ "torchvision>=0.15" ]
 
 [dependency-groups]
 dev = [
+  "hypothesis>=6.100",
+  "kornia>=0.6.12",
   "pytest>=8.3,<8.5",
+  "pytest-benchmark>=4",
   "pytest-cov>=6.2,<7.1",
   "tomlkit>=0.13",
   "twine>=6.1,<6.3",
@@ -115,7 +129,6 @@ addopts = [
   "--strict-markers",
   "--doctest-modules",
   "--color=yes",
-  "--disable-pytest-warnings",
 ]
 filterwarnings = [
   "error::FutureWarning",
