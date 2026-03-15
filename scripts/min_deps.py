@@ -14,7 +14,7 @@ Usage::
 import tomlkit
 
 
-def _replace_min_versions(proj_file: str = "pyproject.toml") -> list:
+def _replace_min_versions(proj_file: str = "pyproject.toml") -> list[str]:
     """Replace all '>=' with '==' in dependency sections of pyproject.toml.
 
     Handles both [project.dependencies] and all [dependency-groups] groups.
@@ -29,7 +29,7 @@ def _replace_min_versions(proj_file: str = "pyproject.toml") -> list:
     with open(proj_file, encoding="utf-8") as f:
         content = f.read()
     doc = tomlkit.parse(content)
-    changed = []
+    changed: list[str] = []
 
     # Pin [project.dependencies]
     deps = doc.get("project", {}).get("dependencies")
