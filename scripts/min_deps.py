@@ -5,8 +5,8 @@ sections of pyproject.toml, preserving formatting and comments via tomlkit.
 
 Usage::
 
-    >>> changed = _replace_min_versions("pyproject.toml")  # doctest: +SKIP
-    >>> print(changed)  # doctest: +SKIP
+    >>> changed = _replace_min_versions("pyproject.toml")
+    >>> print(changed)
     ['numpy==1.26', 'pytest==8.0']
 
 """
