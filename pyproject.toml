@@ -84,12 +84,7 @@ lint.extend-select = [
 ]
 lint.ignore = [
   "ANN101", # Missing type annotation for `self` in method
-  "D100",   # todo: Missing docstring in public module
-  "D104",   # todo: Missing docstring in public package
-  "D107",   # Missing docstring in `__init__`
   "E731",   # Do not assign a lambda expression, use a def
-  "EXE002", # The file is executable but no shebang is present
-  "ISC001", # potential conflict, flagged by Ruff itself
 ]
 lint.per-file-ignores."tests/**/*.py" = [
   "S101", # Use of `assert` detected
