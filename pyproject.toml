@@ -1,45 +1,49 @@
 [build-system]
+build-backend = "setuptools.build_meta"
 requires = [
   "setuptools>=61",
   "wheel",
 ]
-build-backend = "setuptools.build_meta"
 
 [project]
 name = "fuse-augmentations"
 version = "0.0.0dev"
 description = "Fuse augmentation transforms into a single interpolation pass."
 readme = "README.md"
-authors = [
-  {name = "Jiri Borovec", email = "6035284+Borda@users.noreply.github.com"},
-]
 license = "Apache-2.0"
+authors = [
+  { name = "Jiri Borovec", email = "6035284+Borda@users.noreply.github.com" },
+]
 requires-python = ">=3.10"
-dependencies = []
 classifiers = [
-  "Environment :: Console",
-  "Natural Language :: English",
   "Development Status :: 3 - Alpha",
+  "Environment :: Console",
   "Intended Audience :: Developers",
+  "Natural Language :: English",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Scientific/Engineering :: Image Recognition",
-  "Operating System :: OS Independent",
-  "Programming Language :: Python :: 3",
 ]
 
-[project.urls]
-"Source Code" = "https://github.com/Borda/fuse-augmentations"
+dependencies = [  ]
+urls."Source Code" = "https://github.com/Borda/fuse-augmentations"
 
 [dependency-groups]
 dev = [
-  "pytest >=8.3.0, <8.5.0",
-  "pytest-cov >=6.2.0, <7.1.0",
-  "tomlkit >=0.13.0",
-  "twine >=6.1.0, <6.3.0",
+  "pytest>=8.3,<8.5",
+  "pytest-cov>=6.2,<7.1",
+  "tomlkit>=0.13",
+  "twine>=6.1,<6.3",
 ]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = [ "src" ]
 
 [tool.ruff]
 target-version = "py310"
@@ -86,6 +90,9 @@ lint.ignore = [
   "E731",   # Do not assign a lambda expression, use a def
   "EXE002", # The file is executable but no shebang is present
   "ISC001", # potential conflict, flagged by Ruff itself
+]
+lint.per-file-ignores."tests/**/*.py" = [
+  "S101", # Use of `assert` detected
 ]
 lint.unfixable = [
   "F401",
