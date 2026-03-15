@@ -11,7 +11,7 @@ version = "0.0.0dev"
 description = "Fuse augmentation transforms into a single interpolation pass."
 readme = "README.md"
 license = "Apache-2.0"
-license-files = ["LICENSE"]
+license-files = [ "LICENSE" ]
 authors = [
   { name = "Jiri Borovec", email = "6035284+Borda@users.noreply.github.com" },
 ]
