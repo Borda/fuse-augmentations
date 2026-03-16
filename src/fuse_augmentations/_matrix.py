@@ -280,8 +280,13 @@ def inv3x3(M: torch.Tensor) -> torch.Tensor:  # noqa: N803
 
     eps = torch.finfo(M.dtype).eps * 1e3
 
-    # Eager-mode check: raise for user-facing errors before compiled scope
-    if not torch.compiler.is_compiling() and (det.abs() < eps * 1e-3).any():
+    # Eager-mode check: raise for user-facing errors before compiled scope.
+    # The raise threshold (eps * 1e-3) is lower than the clamp threshold (eps)
+    # so that borderline cases like scale=0.01 are silently clamped rather than
+    # raising, while truly degenerate matrices (det ≈ 0) still produce an error.
+    # torch.compiler was added in 2.1; fall back to torch._dynamo for 2.0.x.
+    _compiling = torch.compiler.is_compiling() if hasattr(torch, "compiler") else torch._dynamo.is_compiling()
+    if not _compiling and (det.abs() < eps * 1e-3).any():
         msg = (
             f"Near-singular matrix detected (min |det|={det.abs().min().item():.2e}). "
             "Check for extreme scale values or degenerate transforms."

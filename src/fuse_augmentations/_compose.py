@@ -52,7 +52,7 @@ class Compose(nn.Module):
     def __init__(
         self,
         transforms: list[object],
-        reorder: ReorderPolicy = ReorderPolicy.POINTWISE,
+        reorder: ReorderPolicy = ReorderPolicy.NONE,
         interpolation: str | None = None,
         padding_mode: str | None = None,
         data_keys: list[str] | None = None,
@@ -107,17 +107,27 @@ class Compose(nn.Module):
                 self._last_transform_matrix = seg.last_matrix
             else:
                 # Passthrough: apply via adapter's call_nonfused
-                assert self._adapter is not None  # noqa: S101
+                if self._adapter is None:
+                    msg = "Passthrough transform encountered but adapter is None; this is a bug in build_segments"
+                    raise RuntimeError(msg)
                 image = self._adapter.call_nonfused(seg, image)
         return image
 
     @property
     def transform_matrix(self) -> torch.Tensor | None:
-        """Return the ``(B, 3, 3)`` composed forward matrix from the last forward pass.
+        """Return the ``(B, 3, 3)`` composed matrix for the last fused affine segment.
+
+        This is the composed forward transform matrix produced by the last
+        :class:`~fuse_augmentations._segment.FusedAffineSegment` executed in the
+        most recent :meth:`forward` call. Passthrough (non-fused) transforms do
+        not affect this value, and multiple fused segments are *not* composed into
+        a single whole-pipeline matrix.
 
         Returns:
-            The composed transform matrix, or ``None`` before the first
-            call to :meth:`forward`.
+            The composed matrix for the last fused affine segment, or ``None`` if
+            no such segment has been executed yet (including before the first
+            call to :meth:`forward` or if the last forward contained only
+            passthrough transforms).
         """
         return self._last_transform_matrix
 

@@ -7,7 +7,7 @@ requires = [
 
 [project]
 name = "fuse-augmentations"
-version = "0.0.0dev"
+version = "0.1.0dev"
 description = "Fuse augmentation transforms into a single interpolation pass."
 readme = "README.md"
 license = "Apache-2.0"
@@ -36,15 +36,18 @@ dependencies = [
   "torch>=2",
 ]
 
-optional-dependencies.albumentations = [ "albumentations>=1.1" ]
-optional-dependencies.all = [
+[project.urls]
+"Source Code" = "https://github.com/Borda/fuse-augmentations"
+
+[project.optional-dependencies]
+albumentations = [ "albumentations>=1.1" ]
+all = [
   "albumentations>=1.1",
   "kornia>=0.6.12",
   "torchvision>=0.15",
 ]
-optional-dependencies.kornia = [ "kornia>=0.6.12" ]
-#optional-dependencies.urls."Source Code" = "https://github.com/Borda/fuse-augmentations"
-optional-dependencies.torchvision = [ "torchvision>=0.15" ]
+kornia = [ "kornia>=0.6.12" ]
+torchvision = [ "torchvision>=0.15" ]
 
 [dependency-groups]
 dev = [
@@ -99,7 +102,6 @@ lint.extend-select = [
   "YTT",  # see: https://pypi.org/project/flake8-2020
 ]
 lint.ignore = [
-  "ANN101", # Missing type annotation for `self` in method
   "E731",   # Do not assign a lambda expression, use a def
 ]
 lint.per-file-ignores."tests/**/*.py" = [
@@ -110,8 +112,8 @@ lint.per-file-ignores."tests/**/*.py" = [
   "PT006", # parametrize argument style is relaxed
   "S101",  # Use of `assert` detected
 ]
-lint.unfixable = [
-  "F401",
+lint.per-file-ignores."src/fuse_aug/__init__.py" = [
+  "F401",  # Star-import re-exports are intentional
 ]
 # Unlike Flake8, default to a complexity level of 10.
 lint.mccabe.max-complexity = 10
@@ -137,6 +139,7 @@ addopts = [
   "--strict-markers",
   "--doctest-modules",
   "--color=yes",
+  "--capture=sys",
 ]
 markers = [
   "slow: marks tests as slow (deselect with '-m not slow')",
