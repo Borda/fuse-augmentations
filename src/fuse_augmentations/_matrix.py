@@ -310,18 +310,20 @@ def inv3x3(M: torch.Tensor) -> torch.Tensor:  # noqa: N803
     return adj * inv_det[:, None, None]
 
 
-def normalize_matrix(M_inv: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: N803
-    """Apply normalization sandwich ``N @ M_inv @ N_inv`` for affine_grid input.
+def normalize_matrix(M: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: N803
+    """Apply normalization sandwich ``N @ M @ N_inv`` for affine_grid input.
 
-    Converts a pixel-space inverse matrix to normalized ``[-1, 1]`` space
-    with ``align_corners=True``.
+    Converts a pixel-space matrix to normalized ``[-1, 1]`` space
+    with ``align_corners=True``. The matrix ``M`` is the composed forward
+    transform (src->dst). ``affine_grid`` interprets the normalized theta
+    as the mapping that generates sampling coordinates for ``grid_sample``.
 
     The normalization matrix is::
 
         N = [[2/(W-1), 0, -1], [0, 2/(H-1), -1], [0, 0, 1]]
 
     Args:
-        M_inv: ``(B, 3, 3)`` pixel-space inverse matrix.
+        M: ``(B, 3, 3)`` pixel-space forward matrix.
         H: Image height in pixels. Must be >= 2.
         W: Image width in pixels. Must be >= 2.
 
@@ -344,9 +346,9 @@ def normalize_matrix(M_inv: torch.Tensor, H: int, W: int) -> torch.Tensor:  # no
         msg = "H must be >= 2 for normalization (H=1 causes division by zero)"
         raise ValueError(msg)
 
-    B = M_inv.shape[0]  # noqa: N806
-    device = M_inv.device
-    dtype = M_inv.dtype
+    B = M.shape[0]  # noqa: N806
+    device = M.device
+    dtype = M.dtype
 
     # N: pixel -> normalized [-1, 1]
     N = torch.zeros(B, 3, 3, device=device, dtype=dtype)  # noqa: N806
@@ -364,5 +366,5 @@ def normalize_matrix(M_inv: torch.Tensor, H: int, W: int) -> torch.Tensor:  # no
     N_inv[:, 1, 2] = (H - 1) / 2.0
     N_inv[:, 2, 2] = 1.0
 
-    # Sandwich: N @ M_inv @ N_inv
-    return matmul3x3(matmul3x3(N, M_inv), N_inv)
+    # Sandwich: N @ M @ N_inv
+    return matmul3x3(matmul3x3(N, M), N_inv)
