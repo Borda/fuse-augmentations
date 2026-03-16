@@ -33,26 +33,25 @@ classifiers = [
 ]
 
 dependencies = [
+  "numpy",
   "torch>=2",
 ]
 
-[project.urls]
-"Source Code" = "https://github.com/Borda/fuse-augmentations"
-
-[project.optional-dependencies]
-albumentations = [ "albumentations>=1.1" ]
-all = [
+optional-dependencies.albumentations = [ "albumentations>=1.1" ]
+optional-dependencies.all = [
   "albumentations>=1.1",
   "kornia>=0.6.12",
   "torchvision>=0.15",
 ]
-kornia = [ "kornia>=0.6.12" ]
-torchvision = [ "torchvision>=0.15" ]
+optional-dependencies.kornia = [ "kornia>=0.6.12" ]
+optional-dependencies.torchvision = [ "torchvision>=0.15" ]
+urls."Source Code" = "https://github.com/Borda/fuse-augmentations"
 
 [dependency-groups]
 dev = [
   "hypothesis>=6.100",
   "kornia>=0.6.12",
+  "numpy>=1.24",
   "pytest>=8.3,<8.5",
   "pytest-benchmark>=4",
   "pytest-cov>=6.2,<7.1",
@@ -102,7 +101,10 @@ lint.extend-select = [
   "YTT",  # see: https://pypi.org/project/flake8-2020
 ]
 lint.ignore = [
-  "E731",   # Do not assign a lambda expression, use a def
+  "E731", # Do not assign a lambda expression, use a def
+]
+lint.per-file-ignores."src/fuse_aug/__init__.py" = [
+  "F401", # Star-import re-exports are intentional
 ]
 lint.per-file-ignores."tests/**/*.py" = [
   "ANN",   # No type annotations required in tests
@@ -111,9 +113,6 @@ lint.per-file-ignores."tests/**/*.py" = [
   "N",     # Naming conventions relaxed in tests (H, W, M, etc.)
   "PT006", # parametrize argument style is relaxed
   "S101",  # Use of `assert` detected
-]
-lint.per-file-ignores."src/fuse_aug/__init__.py" = [
-  "F401",  # Star-import re-exports are intentional
 ]
 # Unlike Flake8, default to a complexity level of 10.
 lint.mccabe.max-complexity = 10
