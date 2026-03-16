@@ -1,5 +1,7 @@
 """Shared pytest fixtures for fuse-augmentations test suite."""
 
+import os
+
 import pytest
 import torch
 
@@ -8,6 +10,35 @@ import torch
 def reset_random_seeds() -> None:
     """Reset all random seeds before each test for reproducibility."""
     torch.manual_seed(42)
+
+
+@pytest.fixture(autouse=True)
+def disable_interactive_prompts():
+    """Keep test runs non-interactive across dependency versions."""
+    old_breakpoint = os.environ.get("PYTHONBREAKPOINT")
+    os.environ["PYTHONBREAKPOINT"] = "0"
+
+    restore_kornia = None
+    try:
+        from kornia.config import InstallationMode, kornia_config
+
+        restore_kornia = kornia_config.lazyloader.installation_mode
+        kornia_config.lazyloader.installation_mode = InstallationMode.RAISE
+    except ImportError:
+        pass
+
+    try:
+        yield
+    finally:
+        if old_breakpoint is None:
+            os.environ.pop("PYTHONBREAKPOINT", None)
+        else:
+            os.environ["PYTHONBREAKPOINT"] = old_breakpoint
+
+        if restore_kornia is not None:
+            from kornia.config import kornia_config
+
+            kornia_config.lazyloader.installation_mode = restore_kornia
 
 
 @pytest.fixture
