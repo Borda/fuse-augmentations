@@ -112,7 +112,7 @@ class KorniaAdapter:
             _K.RandomVerticalFlip,
         ):
             return {
-                "_batch_size": torch.tensor([B]),
+                "_batch_size": torch.tensor([B], device=device, dtype=torch.int64),
             }
 
         # Generate Kornia-native params

@@ -334,3 +334,49 @@ class TestLastMatrixValue:
         assert torch.allclose(product, I, atol=1e-5), (
             f"Round-trip failed: max diff = {(product - I).abs().max().item():.6f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# GPU device-placement smoke tests
+#
+# Verify that flip matrices created on CPU by the adapter are moved to the
+# correct CUDA device inside FusedAffineSegment.forward().
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gpu
+def test_flip_segment_cuda_device(adapter):
+    """Flip segment runs on CUDA without device-mismatch errors."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    device = torch.device("cuda")
+    B, C, H, W = 2, 3, 32, 32
+    img = torch.rand(B, C, H, W, device=device)
+
+    t = K.RandomHorizontalFlip(p=1.0)
+    seg = FusedAffineSegment([t], adapter)
+    out = seg(img)
+
+    assert out.device.type == "cuda"
+    assert out.shape == (B, C, H, W)
+    assert not torch.isnan(out).any()
+
+
+@pytest.mark.gpu
+def test_vflip_segment_cuda_device(adapter):
+    """Vertical flip segment runs on CUDA without device-mismatch errors."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    device = torch.device("cuda")
+    B, C, H, W = 2, 3, 32, 32
+    img = torch.rand(B, C, H, W, device=device)
+
+    t = K.RandomVerticalFlip(p=1.0)
+    seg = FusedAffineSegment([t], adapter)
+    out = seg(img)
+
+    assert out.device.type == "cuda"
+    assert out.shape == (B, C, H, W)
+    assert not torch.isnan(out).any()

@@ -99,9 +99,12 @@ class FusedAffineSegment(nn.Module):
             if M_i.shape[0] == 1 and B > 1:
                 M_i = M_i.expand(B, -1, -1)  # noqa: N806
 
+            # Ensure adapter output is on the same device and dtype as the image
+            M_i = M_i.to(device=device, dtype=dtype)  # noqa: N806
+
             M_i = torch.where(  # noqa: N806
                 active[:, None, None],
-                M_i.to(dtype=dtype),
+                M_i,
                 eye.unsqueeze(0).expand(B, -1, -1),
             )
             acc = matmul3x3(M_i, acc)

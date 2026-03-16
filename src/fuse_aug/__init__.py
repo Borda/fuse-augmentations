@@ -15,6 +15,6 @@ Example:
 
 from fuse_augmentations import *  # noqa: F403
 from fuse_augmentations import (
-    __all__,  # noqa: F401
-    __version__,  # noqa: F401
+    __all__,
+    __version__,
 )
