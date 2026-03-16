@@ -284,9 +284,7 @@ def inv3x3(M: torch.Tensor) -> torch.Tensor:  # noqa: N803
     # The raise threshold (eps * 1e-3) is lower than the clamp threshold (eps)
     # so that borderline cases like scale=0.01 are silently clamped rather than
     # raising, while truly degenerate matrices (det ≈ 0) still produce an error.
-    # torch.compiler was added in 2.1; fall back to torch._dynamo for 2.0.x.
-    _compiling = torch.compiler.is_compiling() if hasattr(torch, "compiler") else torch._dynamo.is_compiling()
-    if not _compiling and (det.abs() < eps * 1e-3).any():
+    if not _is_compiling() and (det.abs() < eps * 1e-3).any():
         msg = (
             f"Near-singular matrix detected (min |det|={det.abs().min().item():.2e}). "
             "Check for extreme scale values or degenerate transforms."
@@ -313,6 +311,23 @@ def inv3x3(M: torch.Tensor) -> torch.Tensor:  # noqa: N803
     ).reshape(-1, 3, 3)
 
     return adj * inv_det[:, None, None]
+
+
+def _is_compiling() -> bool:
+    """Return whether code is running under Torch compilation across versions."""
+    compiler = getattr(torch, "compiler", None)
+    if compiler is not None:
+        is_compiling = getattr(compiler, "is_compiling", None)
+        if callable(is_compiling):
+            return bool(is_compiling())
+
+    dynamo = getattr(torch, "_dynamo", None)
+    if dynamo is not None:
+        is_compiling = getattr(dynamo, "is_compiling", None)
+        if callable(is_compiling):
+            return bool(is_compiling())
+
+    return False
 
 
 def normalize_matrix(M: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: N803
