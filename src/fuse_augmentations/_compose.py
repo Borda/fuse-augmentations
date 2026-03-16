@@ -1,0 +1,163 @@
+"""Compose -- fused augmentation pipeline replacing the backend's Compose/Sequential.
+
+Wraps a list of augmentation transforms, fuses consecutive geometric ops into a
+single ``grid_sample`` pass, and provides the same forward-call interface as the
+backend.
+
+Example:
+    >>> import torch
+    >>> from fuse_augmentations._compose import Compose
+    >>> pipe = Compose([])
+    >>> x = torch.zeros(1, 3, 8, 8)
+    >>> pipe(x).shape
+    torch.Size([1, 3, 8, 8])
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import torch
+from torch import nn
+
+from fuse_augmentations._backend import detect_backend
+from fuse_augmentations._segment import FusedAffineSegment, build_segments
+from fuse_augmentations._types import ReorderPolicy, TransformAdapter
+
+if TYPE_CHECKING:
+    from torch import Tensor
+
+
+class Compose(nn.Module):
+    """Fused augmentation pipeline that replaces the backend's native Compose.
+
+    Segments the transform list into fused geometric segments and passthrough
+    transforms, then executes them sequentially. Consecutive geometric ops share
+    a single ``grid_sample`` call, eliminating redundant interpolation passes.
+
+    Args:
+        transforms: List of augmentation transform objects.
+        reorder: Reorder policy for transforms before segmentation.
+            ``NONE`` and ``POINTWISE`` are accepted in v0.1 (both map to
+            no-reorder behavior). ``AGGRESSIVE`` raises ``NotImplementedError``.
+        interpolation: Optional interpolation mode override for fused segments
+            (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
+        padding_mode: Optional padding mode override for fused segments
+            (``"zeros"``, ``"border"``, ``"reflection"``).
+        data_keys: Reserved for future multi-key support. Raises
+            ``NotImplementedError`` in v0.1.
+        **backend_kwargs: Reserved for backend-specific options.
+    """
+
+    def __init__(
+        self,
+        transforms: list[object],
+        reorder: ReorderPolicy = ReorderPolicy.POINTWISE,
+        interpolation: str | None = None,
+        padding_mode: str | None = None,
+        data_keys: list[str] | None = None,
+        **backend_kwargs: object,
+    ) -> None:
+        super().__init__()
+
+        self.original_transforms: list[object] = list(transforms)
+        self.reorder: ReorderPolicy = reorder
+        self.interpolation: str | None = interpolation
+        self.padding_mode: str | None = padding_mode
+
+        if data_keys is not None:
+            msg = "data_keys not yet supported in v0.1"
+            raise NotImplementedError(msg)
+
+        if reorder not in (ReorderPolicy.NONE, ReorderPolicy.POINTWISE):
+            msg = f"ReorderPolicy.{reorder.name} not yet supported in v0.1"
+            raise NotImplementedError(msg)
+
+        self._adapter: TransformAdapter | None
+        self._segments: list[object]
+
+        if not transforms:
+            self._adapter = None
+            self._segments = []
+        else:
+            backend = detect_backend(transforms)
+            if backend == "kornia":
+                from fuse_augmentations.adapters._kornia import KorniaAdapter
+
+                self._adapter = KorniaAdapter()
+            else:
+                msg = f"Backend '{backend}' not yet supported in v0.1; only kornia is implemented"
+                raise NotImplementedError(msg)
+            self._segments = build_segments(transforms, self._adapter, interpolation, padding_mode)
+
+        self._last_transform_matrix: Tensor | None = None
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        """Apply the augmentation pipeline to an image batch.
+
+        Args:
+            image: ``(B, C, H, W)`` float input tensor.
+
+        Returns:
+            ``(B, C, H, W)`` augmented output tensor.
+        """
+        for seg in self._segments:
+            if isinstance(seg, FusedAffineSegment):
+                image = seg(image)
+                self._last_transform_matrix = seg.last_matrix
+            else:
+                # Passthrough: apply via adapter's call_nonfused
+                assert self._adapter is not None  # noqa: S101
+                image = self._adapter.call_nonfused(seg, image)
+        return image
+
+    @property
+    def transform_matrix(self) -> torch.Tensor | None:
+        """Return the ``(B, 3, 3)`` composed forward matrix from the last forward pass.
+
+        Returns:
+            The composed transform matrix, or ``None`` before the first
+            call to :meth:`forward`.
+        """
+        return self._last_transform_matrix
+
+    @property
+    def n_warps_saved(self) -> int:
+        """Return the number of interpolation passes eliminated vs sequential execution.
+
+        Each fused segment with *n* transforms saves *n - 1* warp passes.
+        Single-transform segments contribute zero savings.
+
+        Returns:
+            Total number of eliminated warp passes across all fused segments.
+        """
+        total = 0
+        for seg in self._segments:
+            if isinstance(seg, FusedAffineSegment):
+                n = len(seg.transforms)
+                if n > 1:
+                    total += n - 1
+        return total
+
+    @property
+    def fusion_plan(self) -> str:
+        """Return a human-readable summary of what got fused and what didn't.
+
+        Returns:
+            Arrow-separated description of segments, e.g.
+            ``"fused(RandomRotation, RandomHorizontalFlip) -> passthrough(GaussianBlur)"``.
+            Returns ``"empty"`` for an empty pipeline.
+        """
+        parts: list[str] = []
+        for seg in self._segments:
+            if isinstance(seg, FusedAffineSegment):
+                names = [type(t).__name__ for t in seg.transforms]
+                parts.append(f"fused({', '.join(names)})")
+            else:
+                parts.append(f"passthrough({type(seg).__name__})")
+        return " \u2192 ".join(parts) if parts else "empty"
+
+
+# Aliases for backward compatibility and discoverability
+FusedAffineCompose = Compose
+AugmentationSequential = Compose
