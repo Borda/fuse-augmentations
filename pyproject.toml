@@ -34,7 +34,7 @@ classifiers = [
 
 dependencies = [
   "numpy",
-  "torch>=2",
+  "torch>=2.1",
 ]
 
 optional-dependencies.albumentations = [ "albumentations>=1.1" ]
