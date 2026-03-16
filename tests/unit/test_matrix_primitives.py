@@ -248,13 +248,11 @@ class TestCornerMappingNormalized:
 
 class TestNormalizeRoundTrip:
     def test_normalize_inv_normalize_is_identity(self) -> None:
-        """normalize_matrix(inv3x3(M)) -> denormalized back should give M."""
+        """denormalize(normalize(M)) should recover M."""
         H, W = 64, 64
-        # Create a known matrix
         angle = torch.tensor([math.radians(30)], dtype=DTYPE)
         M = rotation_matrix(angle, H=H, W=W)
-        M_inv = inv3x3(M)
-        M_norm = normalize_matrix(M_inv, H=H, W=W)
+        M_norm = normalize_matrix(M, H=H, W=W)
 
         # Build N and N_inv manually to denormalize
         N = torch.zeros(1, 3, 3, dtype=DTYPE)
@@ -271,9 +269,9 @@ class TestNormalizeRoundTrip:
         N_inv[0, 1, 2] = (H - 1) / 2.0
         N_inv[0, 2, 2] = 1.0
 
-        # Denormalize: N_inv @ M_norm @ N should give M_inv
+        # Denormalize: N_inv @ M_norm @ N should give M
         recovered = matmul3x3(matmul3x3(inv3x3(N), M_norm), inv3x3(N_inv))
-        assert torch.allclose(recovered, M_inv, atol=1e-8)
+        assert torch.allclose(recovered, M, atol=1e-8)
 
 
 # --- Test #14: Non-square normalization ---
@@ -311,24 +309,23 @@ class TestDegenerateSize:
 
 
 class TestSandwichCorrectness:
-    def test_sandwich_maps_normalized_output_to_input(self) -> None:
-        """N @ M_inv @ N_inv maps normalized output to normalized input."""
+    def test_sandwich_maps_normalized_coords_correctly(self) -> None:
+        """N @ M @ N_inv maps normalized pixel coords through the transform."""
         H, W = 64, 64
         angle = torch.tensor([math.radians(45)], dtype=DTYPE)
         M = rotation_matrix(angle, H=H, W=W)
-        M_inv = inv3x3(M)
-        M_norm = normalize_matrix(M_inv, H=H, W=W)
+        M_norm = normalize_matrix(M, H=H, W=W)
 
-        # For a known output pixel at (0, 0) -> normalized (-1, -1):
-        # Should map to the normalized input coordinate that M_inv sends (0,0) to.
-        input_px = M_inv[0] @ torch.tensor([0.0, 0.0, 1.0], dtype=DTYPE)
-        input_norm_x = 2.0 * input_px[0].item() / (W - 1) - 1.0
-        input_norm_y = 2.0 * input_px[1].item() / (H - 1) - 1.0
+        # For pixel at (0, 0) -> normalized (-1, -1):
+        # Should map to the normalized coordinate that M sends (0,0) to.
+        output_px = M[0] @ torch.tensor([0.0, 0.0, 1.0], dtype=DTYPE)
+        output_norm_x = 2.0 * output_px[0].item() / (W - 1) - 1.0
+        output_norm_y = 2.0 * output_px[1].item() / (H - 1) - 1.0
 
         # Through the sandwich
         out_norm = M_norm[0] @ torch.tensor([-1.0, -1.0, 1.0], dtype=DTYPE)
-        assert abs(out_norm[0].item() - input_norm_x) < 1e-10
-        assert abs(out_norm[1].item() - input_norm_y) < 1e-10
+        assert abs(out_norm[0].item() - output_norm_x) < 1e-10
+        assert abs(out_norm[1].item() - output_norm_y) < 1e-10
 
 
 # --- Additional matmul3x3 and inv3x3 tests ---

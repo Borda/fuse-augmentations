@@ -76,8 +76,7 @@ class KorniaAdapter:
         if cat is not None:
             return cat
         warnings.warn(
-            f"Unknown Kornia transform {type(transform).__name__!r}; "
-            "treating as SPATIAL_KERNEL barrier.",
+            f"Unknown Kornia transform {type(transform).__name__!r}; treating as SPATIAL_KERNEL barrier.",
             UserWarning,
             stacklevel=2,
         )

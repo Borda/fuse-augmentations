@@ -25,6 +25,7 @@ def adapter():
 
 # --- Test #17: Verify category for each registered transform ---
 
+
 @pytest.mark.parametrize(
     "transform, expected_cat",
     [
@@ -40,9 +41,11 @@ def test_category_registered_transforms(adapter, transform, expected_cat):
 
 # --- Test #18: Unknown transform -> SPATIAL_KERNEL + UserWarning ---
 
+
 def test_category_unknown_transform(adapter):
     class UnknownTransform:
         pass
+
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         cat = adapter.category(UnknownTransform())
@@ -52,6 +55,7 @@ def test_category_unknown_transform(adapter):
 
 
 # --- Shear sign parity test ---
+
 
 def test_shear_sign_parity(adapter):
     """Verify our shear matrix sign convention matches Kornia's native output."""
@@ -96,6 +100,7 @@ def test_shear_sign_parity(adapter):
 
 # --- Translation units test ---
 
+
 def test_translation_units(adapter):
     """Verify translate_x is in pixels, not fractional."""
     B, C, H, W = 4, 3, 64, 128
@@ -121,6 +126,7 @@ def test_translation_units(adapter):
 
 
 # --- Rotation parity test ---
+
 
 def test_rotation_parity(adapter):
     """Verify rotation matrix produces same output as native Kornia."""
@@ -149,6 +155,7 @@ def test_rotation_parity(adapter):
 
 
 # --- HFlip parity test ---
+
 
 def test_hflip_parity(adapter):
     """Verify hflip matrix produces same output as native Kornia."""
