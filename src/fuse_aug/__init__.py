@@ -8,9 +8,13 @@ Example:
     >>> import fuse_aug
     >>> fuse_aug.__name__
     'fuse_aug'
+    >>> from fuse_aug import Compose
+    >>> Compose.__name__
+    'Compose'
 """
 
-from fuse_augmentations import *  # noqa: F401, F403
-from fuse_augmentations import __version__  # noqa: F401
-
-__all__ = ["__version__"]
+from fuse_augmentations import *  # noqa: F403
+from fuse_augmentations import (
+    __all__,  # noqa: F401
+    __version__,  # noqa: F401
+)
