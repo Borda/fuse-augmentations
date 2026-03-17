@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from torch import Tensor
 
 
-class FusedAffineCompose(nn.Module):
+class FusedCompose(nn.Module):
     """Fused augmentation pipeline that replaces the backend's native Compose.
 
     Segments the transform list into fused geometric segments and passthrough
@@ -177,10 +177,16 @@ class FusedAffineCompose(nn.Module):
         total = 0
         for seg in self._segments:
             if isinstance(seg, FusedAffineSegment):
+                # n transforms fused → 1 grid_sample, saving n-1 passes.
+                # A single-transform FusedAffineSegment saves nothing (n-1 = 0).
                 n = len(seg.transforms)
                 if n > 1:
                     total += n - 1
             elif isinstance(seg, ExactSegment):
+                # Each flip in an ExactSegment avoids grid_sample entirely
+                # (uses tensor.flip), so every transform saves exactly 1 warp.
+                # This is why ExactSegment contributes n rather than n-1:
+                # even a single flip is lossless and free of grid_sample cost.
                 total += len(seg.transforms)
         return total
 
@@ -207,6 +213,6 @@ class FusedAffineCompose(nn.Module):
         return " \u2192 ".join(parts) if parts else "empty"
 
 
-# Short alias for convenience; FusedAffineCompose is the canonical name
-Compose = FusedAffineCompose
-AugmentationSequential = FusedAffineCompose
+# Short alias for convenience; FusedCompose is the canonical name
+Compose = FusedCompose
+AugmentationSequential = FusedCompose

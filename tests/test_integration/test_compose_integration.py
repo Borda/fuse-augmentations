@@ -1,4 +1,4 @@
-"""Integration tests for _compose.py -- spec tests #24-25, #48-52, #58-60.
+"""Integration tests for _compose.py: shape, dtype, device, passthrough, and warp-count correctness.
 
 Requires kornia >= 0.6.12.
 
@@ -15,7 +15,7 @@ import torch
 kornia = pytest.importorskip("kornia", reason="kornia >= 0.6.12 required")
 from kornia.augmentation import RandomAffine, RandomGaussianBlur, RandomHorizontalFlip, RandomRotation  # noqa: E402
 
-from fuse_augmentations._compose import FusedAffineCompose as Compose  # noqa: E402
+from fuse_augmentations._compose import FusedCompose as Compose  # noqa: E402
 
 pytestmark = pytest.mark.integration
 

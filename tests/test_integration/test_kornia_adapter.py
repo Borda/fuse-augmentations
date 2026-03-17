@@ -1,4 +1,4 @@
-"""Integration tests for KorniaAdapter -- spec tests #17, #18, shear parity, translation units."""
+"""Integration tests for KorniaAdapter: category classification, parameter units, and shear parity."""
 
 import warnings
 

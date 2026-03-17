@@ -13,11 +13,12 @@ from fuse_augmentations._types import (
 
 
 def _full_adapter_methods():
-    """Return a dict of all four TransformAdapter method implementations."""
+    """Return a dict of all five TransformAdapter method implementations."""
     return {
         "category": lambda self, transform: TransformCategory.SPATIAL_KERNEL,
         "sample_params": lambda self, transform, input_shape, device: {},
         "build_matrix": lambda self, transform, params, H, W: torch.eye(3).unsqueeze(0),
+        "exact_flip_dims": lambda self, transform: [],
         "call_nonfused": lambda self, transform, image, **kwargs: image,
     }
 
@@ -187,14 +188,16 @@ class TestTransformAdapterProtocol:
     """TransformAdapter @runtime_checkable Protocol -- isinstance contract."""
 
     def test_conforming_class_passes_isinstance(self):
-        """A class implementing all four methods satisfies TransformAdapter."""
+        """A class implementing all five methods satisfies TransformAdapter."""
         methods = _full_adapter_methods()
         _DummyAdapter = type("_DummyAdapter", (), methods)
         assert isinstance(_DummyAdapter(), TransformAdapter), (
-            "An object with all four required methods should be an instance of TransformAdapter"
+            "An object with all five required methods should be an instance of TransformAdapter"
         )
 
-    @pytest.mark.parametrize("missing_method", ["category", "sample_params", "build_matrix", "call_nonfused"])
+    @pytest.mark.parametrize(
+        "missing_method", ["category", "sample_params", "build_matrix", "exact_flip_dims", "call_nonfused"]
+    )
     def test_missing_any_one_method_fails_isinstance(self, missing_method):
         """Dropping any single required method makes the object fail the Protocol check."""
         methods = _full_adapter_methods()

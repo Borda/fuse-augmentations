@@ -1,4 +1,4 @@
-"""Unit tests for _segment.py -- spec tests #42-47 + build_segments + ExactSegment tests."""
+"""Unit tests for _segment.py: FusedAffineSegment, ExactSegment, and build_segments."""
 
 from __future__ import annotations
 
@@ -497,6 +497,83 @@ class TestExactSegmentLastMatrix:
         seg = ExactSegment([t], adapter)
         seg(torch.rand(2, 3, 8, 8))
         assert seg.last_matrix is None
+
+
+class TestBuildSegmentsExactOnly:
+    """Verify build_segments routes an EXACT-only run to ExactSegment."""
+
+    def test_exact_only_returns_exact_segment(self):
+        """An EXACT-only run (no INTERP) produces an ExactSegment, not FusedAffineSegment."""
+        adapter = _StubAdapter()
+        t1 = _StubTransform(_hflip_matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_EXACT)
+        t2 = _StubTransform(_vflip_matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_EXACT)
+        result = build_segments([t1, t2], adapter)
+
+        assert len(result) == 1
+        assert isinstance(result[0], ExactSegment)
+        assert len(result[0].transforms) == 2
+
+
+class TestExactSegmentSameOnBatch:
+    """Verify ExactSegment respects same_on_batch=True."""
+
+    def test_same_on_batch_p1_all_flipped(self):
+        """With same_on_batch=True and p=1, every sample in the batch is flipped."""
+
+        class _SameOnBatchHFlip:
+            p = 1.0
+            same_on_batch = True
+            _category = TransformCategory.GEOMETRIC_EXACT
+            _flip_dims = (3,)
+
+        adapter = _FlipAdapter()
+        seg = ExactSegment([_SameOnBatchHFlip()], adapter)
+
+        img = torch.rand(4, 3, 8, 8)
+        out = seg(img)
+
+        assert torch.equal(out, img.flip(dims=[3]))
+
+    def test_same_on_batch_p0_none_flipped(self):
+        """With same_on_batch=True and p=0, no sample in the batch is flipped."""
+
+        class _SameOnBatchHFlip:
+            p = 0.0
+            same_on_batch = True
+            _category = TransformCategory.GEOMETRIC_EXACT
+            _flip_dims = (3,)
+
+        adapter = _FlipAdapter()
+        seg = ExactSegment([_SameOnBatchHFlip()], adapter)
+
+        img = torch.rand(4, 3, 8, 8)
+        out = seg(img)
+
+        assert torch.equal(out, img)
+
+
+class TestBatchSizeOne:
+    """Verify B=1 forward pass works for both segment types."""
+
+    def test_fused_affine_b1_shape(self):
+        """FusedAffineSegment with B=1 produces output of shape (1, C, H, W)."""
+        adapter = _StubAdapter()
+        t = _StubTransform(_identity_matrix_fn, p=1.0)
+        seg = FusedAffineSegment([t], adapter)
+
+        out = seg(torch.rand(1, 3, 8, 8))
+
+        assert out.shape == (1, 3, 8, 8)
+
+    def test_exact_segment_b1_shape(self):
+        """ExactSegment with B=1 produces output of shape (1, C, H, W)."""
+        adapter = _FlipAdapter()
+        t = _HFlipTransform(p=1.0)
+        seg = ExactSegment([t], adapter)
+
+        out = seg(torch.rand(1, 3, 8, 8))
+
+        assert out.shape == (1, 3, 8, 8)
 
 
 class TestPointwiseReorderBuildSegments:

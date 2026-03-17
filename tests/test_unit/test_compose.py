@@ -1,4 +1,4 @@
-"""Unit tests for _compose.py -- spec tests #23, #58-60 (empty pipeline, fusion_plan, n_warps_saved).
+"""Unit tests for _compose.py: empty pipeline, fusion_plan, n_warps_saved.
 
 Pure-unit tests use stub transforms and do NOT require Kornia. Integration tests (marked @pytest.mark.integration)
 require kornia >= 0.6.12.
@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations._compose import AugmentationSequential, Compose, FusedAffineCompose
+from fuse_augmentations._compose import AugmentationSequential, Compose, FusedCompose
 from fuse_augmentations._types import ReorderPolicy
 
 
@@ -83,8 +83,8 @@ class TestAliases:
     """Verify public API aliases point to Compose."""
 
     def test_fused_affine_compose_is_compose(self):
-        """FusedAffineCompose is an alias for Compose."""
-        assert FusedAffineCompose is Compose
+        """FusedCompose is an alias for Compose."""
+        assert FusedCompose is Compose
 
     def test_augmentation_sequential_is_compose(self):
         """AugmentationSequential is an alias for Compose."""
@@ -119,20 +119,20 @@ class TestNNModuleIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Spec tests #58-60: n_warps_saved and fusion_plan with real Kornia transforms
+# n_warps_saved and fusion_plan with real Kornia transforms
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
 class TestNWarpsSavedWithPolicy:
-    """#58-59: n_warps_saved with ReorderPolicy.NONE and barrier prevention."""
+    """n_warps_saved with ReorderPolicy.NONE and barrier prevention."""
 
     @pytest.fixture(autouse=True)
     def _import_kornia(self):
         pytest.importorskip("kornia", reason="kornia >= 0.6.12 required")
 
     def test_fused_three_saves_two(self):
-        """#58: [Rotate, Scale, Flip] with ReorderPolicy.NONE -> n_warps_saved == 2."""
+        """Three consecutive ops fused into one segment save two warp passes (n - 1)."""
         from kornia.augmentation import RandomAffine, RandomHorizontalFlip, RandomRotation
 
         pipe = Compose(
@@ -146,7 +146,7 @@ class TestNWarpsSavedWithPolicy:
         assert pipe.n_warps_saved == 2, f"3 ops fused into 1 segment should save 2 warps, got {pipe.n_warps_saved}"
 
     def test_barrier_prevents_fusion(self):
-        """#59: [Rotate, GaussianBlur, Scale] -> n_warps_saved == 0 (barrier prevents fusion)."""
+        """A SPATIAL_KERNEL barrier between two geometric ops prevents fusion; n_warps_saved is 0."""
         from kornia.augmentation import RandomAffine, RandomGaussianBlur, RandomRotation
 
         pipe = Compose(
@@ -164,7 +164,7 @@ class TestNWarpsSavedWithPolicy:
 
 @pytest.mark.integration
 class TestFusionPlanFormat:
-    """#60: fusion_plan string format with fused, exact, passthrough segments."""
+    """fusion_plan string format with fused, exact, passthrough segments."""
 
     @pytest.fixture(autouse=True)
     def _import_kornia(self):

@@ -1,4 +1,4 @@
-"""Unit tests for reorder_pointwise and build_segments reordering -- spec tests #19-22."""
+"""Unit tests for reorder_pointwise and build_segments reordering."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ def _identity_matrix_fn(B, H, W):
 
 
 class TestPointwiseReorder:
-    """#19: POINTWISE reorder moves pointwise ops after geometric chains."""
+    """POINTWISE reorder moves pointwise ops after geometric chains."""
 
     def test_pointwise_moved_after_geometric(self):
         """[Rotate, Brightness, Scale] reorders to [Rotate, Scale], [Brightness]."""
@@ -108,7 +108,7 @@ class TestPointwiseReorder:
 
 
 class TestBarrierSplits:
-    """#20: Barriers prevent pointwise from crossing; each barrier-bounded stretch reorders independently."""
+    """Barriers prevent pointwise from crossing; each barrier-bounded stretch reorders independently."""
 
     def test_barrier_prevents_crossing(self):
         """[Rotate, GaussianBlur, Brightness, Scale] stays barrier-split.
@@ -161,7 +161,7 @@ class TestBarrierSplits:
 
 
 class TestExactOnlyDetection:
-    """#21: EXACT-only transforms produce ExactSegment (not FusedAffineSegment)."""
+    """EXACT-only transforms produce ExactSegment (not FusedAffineSegment)."""
 
     def test_exact_only_creates_exact_segment(self):
         """[HFlip, VFlip] -> ExactSegment (no FusedAffineSegment)."""
@@ -188,7 +188,7 @@ class TestExactOnlyDetection:
 
 
 class TestExactWithInterp:
-    """#22: EXACT with INTERP present => single FusedAffineSegment (all fused)."""
+    """EXACT with INTERP present fuses everything into a single FusedAffineSegment."""
 
     def test_exact_with_interp_creates_fused_segment(self):
         """[HFlip, Rotate, VFlip] -> single FusedAffineSegment (INTERP present)."""
