@@ -1,4 +1,4 @@
-"""Integration parity tests for FusedAffineSegment -- spec tests #26-30.
+"""Integration parity tests for FusedAffineSegment.
 
 Requires kornia >= 0.6.12.
 

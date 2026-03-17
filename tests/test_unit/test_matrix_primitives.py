@@ -1,4 +1,4 @@
-"""Tests for _matrix.py -- spec tests #1-16."""
+"""Tests for _matrix.py."""
 
 import math
 

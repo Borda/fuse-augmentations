@@ -7,7 +7,7 @@ Example:
     >>> from fuse_augmentations import Compose
     >>> pipe = Compose([])
     >>> pipe.__class__.__name__
-    'FusedAffineCompose'
+    'FusedCompose'
 
 """
 
@@ -19,7 +19,7 @@ from fuse_augmentations.__about__ import *  # noqa: F403
 from fuse_augmentations._compose import (
     AugmentationSequential,
     Compose,
-    FusedAffineCompose,
+    FusedCompose,
 )
 from fuse_augmentations._segment import ExactSegment, FusedAffineSegment, build_segments
 from fuse_augmentations._types import (
@@ -34,8 +34,8 @@ __all__ = [
     "AugmentationSequential",
     "Compose",
     "ExactSegment",
-    "FusedAffineCompose",
     "FusedAffineSegment",
+    "FusedCompose",
     "InterpolationMode",
     "PaddingMode",
     "ReorderPolicy",

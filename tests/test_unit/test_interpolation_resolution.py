@@ -1,4 +1,4 @@
-"""Tests for _interpolation.py — spec tests #53-57."""
+"""Tests for _interpolation.py."""
 
 from fuse_augmentations._interpolation import resolve_interpolation, resolve_padding
 from fuse_augmentations._types import InterpolationMode, PaddingMode

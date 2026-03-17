@@ -128,6 +128,22 @@ class TransformAdapter(Protocol):
         """
         ...
 
+    def exact_flip_dims(self, transform: object) -> list[int]:
+        """Return the tensor dimensions to flip for a GEOMETRIC_EXACT transform.
+
+        Args:
+            transform: The backend transform object (must be GEOMETRIC_EXACT category).
+
+        Returns:
+            List of dimension indices passed to ``tensor.flip(dims=...)``,
+            e.g. ``[3]`` for a horizontal flip, ``[2]`` for a vertical flip.
+
+        Raises:
+            NotImplementedError: If the adapter does not support ExactSegment.
+
+        """
+        raise NotImplementedError("Adapter does not implement exact_flip_dims; required for ExactSegment support")
+
     def call_nonfused(
         self,
         transform: object,

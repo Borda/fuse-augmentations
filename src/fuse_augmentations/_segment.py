@@ -87,7 +87,7 @@ class ExactSegment(nn.Module):
                 # Independent Bernoulli draw per sample.
                 active = torch.rand(bsz, device=device) < prob
 
-            flip_dims = self.adapter.exact_flip_dims(tfm)  # type: ignore[attr-defined]
+            flip_dims = self.adapter.exact_flip_dims(tfm)
             flipped = image.flip(dims=flip_dims)
             image = torch.where(active[:, None, None, None], flipped, image)
 
@@ -161,7 +161,12 @@ class FusedAffineSegment(nn.Module):
 
         for tfm in self.transforms:
             prob = getattr(tfm, "p", 1.0)
-            active = torch.rand(bsz, device=device) < prob
+            same_on_batch = getattr(tfm, "same_on_batch", False)
+            if same_on_batch:
+                active_scalar = torch.rand((), device=device) < prob
+                active = active_scalar.expand(bsz)
+            else:
+                active = torch.rand(bsz, device=device) < prob
 
             params = self.adapter.sample_params(tfm, input_shape, device)
             mtx_i = self.adapter.build_matrix(tfm, params, height, width)
@@ -295,7 +300,7 @@ def build_segments(
       and applies one ``grid_sample`` call.
 
     When ``ReorderPolicy.POINTWISE`` is active in
-    :class:`~fuse_augmentations._compose.FusedAffineCompose`, ``reorder_pointwise``
+    :class:`~fuse_augmentations._compose.FusedCompose`, ``reorder_pointwise``
     is called first to bubble pointwise ops out of geometric chains, and
     ``build_segments`` then classifies the reordered list.
 

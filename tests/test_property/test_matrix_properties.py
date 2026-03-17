@@ -1,4 +1,4 @@
-"""Property-based tests for matrix primitives using Hypothesis (spec tests #61-66).
+"""Property-based tests for matrix primitives using Hypothesis.
 
 This module uses the Hypothesis library to verify algebraic invariants of the matrix primitives
 in ``fuse_augmentations._matrix``. Unlike example-based unit tests that check specific
