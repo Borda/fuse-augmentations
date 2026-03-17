@@ -26,6 +26,51 @@ from fuse_augmentations._matrix import inv3x3, matmul3x3, normalize_matrix
 from fuse_augmentations._types import TransformAdapter, TransformCategory
 
 
+class ExactSegment(nn.Module):
+    """Lossless segment for GEOMETRIC_EXACT-only chains (HFlip, VFlip).
+
+    Applies transforms as tensor index ops (``tensor.flip``) instead of
+    ``grid_sample``, introducing zero interpolation error. Uses ``torch.where``
+    for per-sample probability masking.
+
+    Args:
+        transforms: List of GEOMETRIC_EXACT transform objects (flips).
+        adapter: A ``TransformAdapter`` providing ``exact_flip_dims`` (duck-typed).
+    """
+
+    def __init__(self, transforms: list[object], adapter: TransformAdapter) -> None:
+        super().__init__()
+        self.transforms = transforms
+        self.adapter = adapter
+
+    @property
+    def last_matrix(self) -> Tensor | None:
+        """Return ``None`` always (ExactSegment does not compute a matrix)."""
+        return None
+
+    def forward(self, image: Tensor) -> Tensor:
+        """Apply flip transforms losslessly via tensor.flip with per-sample masking.
+
+        Args:
+            image: ``(B, C, H, W)`` float input tensor.
+
+        Returns:
+            ``(B, C, H, W)`` output tensor with flips applied per-sample.
+        """
+        bsz = image.shape[0]
+        device = image.device
+
+        for tfm in self.transforms:
+            prob = getattr(tfm, "p", 1.0)
+            active = torch.rand(bsz, device=device) < prob
+
+            flip_dims = self.adapter.exact_flip_dims(tfm)  # type: ignore[attr-defined]
+            flipped = image.flip(dims=flip_dims)
+            image = torch.where(active[:, None, None, None], flipped, image)
+
+        return image
+
+
 class FusedAffineSegment(nn.Module):
     """Fused affine segment that composes geometric transforms into one grid_sample call.
 
@@ -122,6 +167,54 @@ class FusedAffineSegment(nn.Module):
             padding_mode=self.padding_mode or "zeros",
             align_corners=True,
         )
+
+
+def reorder_pointwise(
+    transforms: list[object],
+    adapter: TransformAdapter,
+) -> list[object]:
+    """Reorder transforms so POINTWISE ops are pushed after geometric chains.
+
+    Walks the transform list left to right.  Within each stretch between
+    ``SPATIAL_KERNEL`` barriers, geometric ops (``GEOMETRIC_INTERP`` and
+    ``GEOMETRIC_EXACT``) are kept in order, while ``POINTWISE`` ops are
+    deferred and flushed after the geometric group.  ``POINTWISE`` ops
+    never move across a ``SPATIAL_KERNEL`` barrier.
+
+    Args:
+        transforms: List of transform objects.
+        adapter: A ``TransformAdapter`` for category lookup.
+
+    Returns:
+        New list with the same transforms, possibly reordered so that
+        POINTWISE ops sit after geometric runs within each barrier-bounded
+        stretch.
+    """
+    geometric = {TransformCategory.GEOMETRIC_INTERP, TransformCategory.GEOMETRIC_EXACT}
+
+    result: list[object] = []
+    geo_buf: list[object] = []
+    pw_buf: list[object] = []
+
+    def _flush() -> None:
+        result.extend(geo_buf)
+        result.extend(pw_buf)
+        geo_buf.clear()
+        pw_buf.clear()
+
+    for tfm in transforms:
+        cat = adapter.category(tfm)
+        if cat == TransformCategory.POINTWISE:
+            pw_buf.append(tfm)
+        elif cat in geometric:
+            geo_buf.append(tfm)
+        else:
+            # SPATIAL_KERNEL barrier: flush current stretch, then emit the barrier
+            _flush()
+            result.append(tfm)
+
+    _flush()
+    return result
 
 
 def build_segments(

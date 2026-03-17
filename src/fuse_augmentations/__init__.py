@@ -20,7 +20,7 @@ from fuse_augmentations._compose import (
     Compose,
     FusedAffineCompose,
 )
-from fuse_augmentations._segment import FusedAffineSegment, build_segments
+from fuse_augmentations._segment import ExactSegment, FusedAffineSegment, build_segments
 from fuse_augmentations._types import (
     InterpolationMode,
     PaddingMode,
@@ -32,6 +32,7 @@ from fuse_augmentations._types import (
 __all__ = [
     "AugmentationSequential",
     "Compose",
+    "ExactSegment",
     "FusedAffineCompose",
     "FusedAffineSegment",
     "InterpolationMode",
