@@ -263,6 +263,28 @@ class KorniaAdapter:
         return acc
 
     @staticmethod
+    def exact_flip_dims(transform: object) -> list[int]:
+        """Return the spatial dims to flip for GEOMETRIC_EXACT transforms.
+
+        Args:
+            transform: A Kornia flip transform (``RandomHorizontalFlip`` or
+                ``RandomVerticalFlip``).
+
+        Returns:
+            List containing the dimension index to flip: ``[3]`` for HFlip
+            (width axis) or ``[2]`` for VFlip (height axis).
+
+        Raises:
+            TypeError: If the transform is not a recognised flip type.
+        """
+        ttype = type(transform)
+        if TRANSFORM_REGISTRY and ttype is _RandomHorizontalFlip:
+            return [3]
+        if TRANSFORM_REGISTRY and ttype is _RandomVerticalFlip:
+            return [2]
+        raise TypeError(f"Cannot determine flip dims for {ttype.__name__!r}")
+
+    @staticmethod
     def call_nonfused(
         transform: object,
         image: torch.Tensor,
