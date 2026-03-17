@@ -13,7 +13,6 @@ Example:
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING
 
 import torch
 
@@ -28,9 +27,6 @@ from fuse_augmentations._matrix import (
     vflip_matrix,
 )
 from fuse_augmentations._types import TransformCategory
-
-if TYPE_CHECKING:
-    pass
 
 # ---------------------------------------------------------------------------
 # Transform registry — lazy import guards kornia as optional dependency
@@ -116,7 +112,7 @@ class KorniaAdapter:
             }
 
         # Generate Kornia-native params
-        params = transform.generate_parameters(torch.Size(input_shape))  # type: ignore[union-attr]
+        params = transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
 
         if TRANSFORM_REGISTRY and ttype is _K.RandomRotation:
             # Negate: Kornia's positive angle is CW; our rotation_matrix uses CCW convention.
@@ -278,4 +274,4 @@ class KorniaAdapter:
         Returns:
             Transformed image tensor.
         """
-        return transform(image)  # type: ignore[operator]
+        return transform(image)  # type: ignore[operator, no-any-return]

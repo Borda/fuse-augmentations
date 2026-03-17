@@ -31,13 +31,11 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Scientific/Engineering :: Image Recognition",
 ]
-
 dependencies = [
   "numpy",
   "pillow>=10",
   "torch>=2.1",
 ]
-
 optional-dependencies.albumentations = [
   "albumentations>=1.1",
 ]
@@ -58,6 +56,7 @@ urls."Source Code" = "https://github.com/Borda/fuse-augmentations"
 dev = [
   "hypothesis>=6.100",
   "kornia>=0.6.12",
+  "mypy==1.19.1",
   "numpy>=1.24",
   "pytest>=8.3,<8.5",
   "pytest-benchmark>=4",
@@ -66,22 +65,21 @@ dev = [
   "twine>=6.1,<6.3",
 ]
 
-[tool.setuptools.packages.find]
-where = [ "src" ]
-include = [ "fuse_augmentations*", "fuse_aug*" ]
+[tool.setuptools]
+packages.find.where = [ "src" ]
+packages.find.include = [ "fuse_augmentations*", "fuse_aug*" ]
 
 [tool.ruff]
 target-version = "py310"
 line-length = 120
-
-#[tool.ruff.pycodestyle]
-#ignore-overlong-task-comments = true
+# [tool.ruff.pycodestyle]
+# ignore-overlong-task-comments = true
 format.preview = true
 lint.select = [
   "D",  # see: https://pypi.org/project/pydocstyle
   "E",
   "F",  # see: https://pypi.org/project/pyflakes
-  "I",  #see: https://pypi.org/project/isort/
+  "I",  # see: https://pypi.org/project/isort/
   "N",  # see: https://pypi.org/project/pep8-naming
   "S",  # see: https://pypi.org/project/flake8-bandit
   "UP", # see: https://docs.astral.sh/ruff/rules/#pyupgrade-up
@@ -127,11 +125,18 @@ lint.mccabe.max-complexity = 10
 lint.pydocstyle.convention = "google"
 
 [tool.codespell]
-#skip = '*.py'
+# skip = '*.py'
 quiet-level = 3
 
-[tool.pytest.ini_options]
-norecursedirs = [
+[tool.mypy]
+python_version = "3.10"
+files = [ "src/fuse_augmentations" ]
+strict = true
+ignore_missing_imports = true
+warn_unused_configs = true
+
+[tool.pytest]
+ini_options.norecursedirs = [
   ".git",
   ".github",
   ".claude",
@@ -140,27 +145,27 @@ norecursedirs = [
   "docs",
   "scripts",
 ]
-testpaths = [ "tests", "src" ]
-addopts = [
+ini_options.testpaths = [ "tests", "src" ]
+ini_options.addopts = [
   "--strict-markers",
   "--doctest-modules",
   "--color=yes",
   "--capture=sys",
 ]
-markers = [
+ini_options.markers = [
   "slow: marks tests as slow (deselect with '-m not slow')",
   "integration: requires kornia or another external backend",
   "gpu: requires a CUDA-capable GPU",
   "compile: tests torch.compile behaviour",
 ]
-filterwarnings = [
+ini_options.filterwarnings = [
   "error::FutureWarning",
 ]
-xfail_strict = true
-junit_duration_report = "call"
+ini_options.xfail_strict = true
+ini_options.junit_duration_report = "call"
 
-[tool.coverage.report]
-exclude_lines = [
-  "pragma: no cover",
+[tool.coverage]
+report.exclude_lines = [
   "pass",
+  "pragma: no cover",
 ]

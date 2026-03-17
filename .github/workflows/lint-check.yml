@@ -34,3 +34,22 @@ jobs:
         # when configured with a GitHub token, the action will push back fixes to the pull request branch
         #with:
         #  token: ${{ secrets.GITHUB_TOKEN }}
+
+  mypy-check:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[all]" -U --group dev
+
+      - name: mypy
+        run: mypy src/
