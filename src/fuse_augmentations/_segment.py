@@ -79,42 +79,42 @@ class FusedAffineSegment(nn.Module):
         Returns:
             ``(B, C, H, W)`` warped output tensor.
         """
-        B, C, H, W = image.shape  # noqa: N806
+        bsz, n_ch, height, width = image.shape
         device = image.device
         dtype = image.dtype
 
         eye = torch.eye(3, device=device, dtype=dtype)
-        acc = eye.unsqueeze(0).expand(B, -1, -1).clone()
+        acc = eye.unsqueeze(0).expand(bsz, -1, -1).clone()
 
-        input_shape = (B, C, H, W)
+        input_shape = (bsz, n_ch, height, width)
 
-        for t in self.transforms:
-            p = getattr(t, "p", 1.0)
-            active = torch.rand(B, device=device) < p
+        for tfm in self.transforms:
+            prob = getattr(tfm, "p", 1.0)
+            active = torch.rand(bsz, device=device) < prob
 
-            params = self.adapter.sample_params(t, input_shape, device)
-            M_i = self.adapter.build_matrix(t, params, H, W)  # noqa: N806
+            params = self.adapter.sample_params(tfm, input_shape, device)
+            mtx_i = self.adapter.build_matrix(tfm, params, height, width)
 
             # Expand to batch if adapter returned (1, 3, 3)
-            if M_i.shape[0] == 1 and B > 1:
-                M_i = M_i.expand(B, -1, -1)  # noqa: N806
+            if mtx_i.shape[0] == 1 and bsz > 1:
+                mtx_i = mtx_i.expand(bsz, -1, -1)
 
             # Ensure adapter output is on the same device and dtype as the image
-            M_i = M_i.to(device=device, dtype=dtype)  # noqa: N806
+            mtx_i = mtx_i.to(device=device, dtype=dtype)
 
-            M_i = torch.where(  # noqa: N806
+            mtx_i = torch.where(
                 active[:, None, None],
-                M_i,
-                eye.unsqueeze(0).expand(B, -1, -1),
+                mtx_i,
+                eye.unsqueeze(0).expand(bsz, -1, -1),
             )
-            acc = matmul3x3(M_i, acc)
+            acc = matmul3x3(mtx_i, acc)
 
         self._last_matrix = acc.detach().clone()
 
-        M_inv = inv3x3(acc)  # noqa: N806
-        M_norm = normalize_matrix(M_inv, H, W)  # noqa: N806
+        mtx_inv = inv3x3(acc)
+        mtx_norm = normalize_matrix(mtx_inv, height, width)
 
-        grid = F.affine_grid(M_norm[:, :2, :], [B, C, H, W], align_corners=True)
+        grid = F.affine_grid(mtx_norm[:, :2, :], [bsz, n_ch, height, width], align_corners=True)
         return F.grid_sample(
             image,
             grid,
@@ -134,7 +134,7 @@ def build_segments(
 
     Walks the transforms left to right and groups consecutive geometric
     transforms (``GEOMETRIC_INTERP`` or ``GEOMETRIC_EXACT``) into a single
-    :class:`FusedAffineSegment`.  Any ``SPATIAL_KERNEL`` or ``POINTWISE``
+    :class:`fuse_augmentations._segment.FusedAffineSegment`.  Any ``SPATIAL_KERNEL`` or ``POINTWISE``
     transform breaks the current geometric group and is returned as-is.
 
     Args:
@@ -144,7 +144,8 @@ def build_segments(
         padding_mode: Optional padding mode override for fused segments.
 
     Returns:
-        Flat list where each element is either a :class:`FusedAffineSegment`
+        Flat list where each element is either a
+        :class:`fuse_augmentations._segment.FusedAffineSegment`
         (for fused geometric runs) or the original transform object
         (for passthrough).
     """
@@ -165,13 +166,13 @@ def build_segments(
             )
             current_geo.clear()
 
-    for t in transforms:
-        cat = adapter.category(t)
+    for tfm in transforms:
+        cat = adapter.category(tfm)
         if cat in fusible:
-            current_geo.append(t)
+            current_geo.append(tfm)
         else:
             _flush_geo()
-            segments.append(t)
+            segments.append(tfm)
 
     _flush_geo()
     return segments

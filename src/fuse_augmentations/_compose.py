@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import torch
 from torch import nn
 
-from fuse_augmentations._backend import detect_backend
+from fuse_augmentations._backend import Backend, detect_backend
 from fuse_augmentations._segment import FusedAffineSegment, build_segments
 from fuse_augmentations._types import ReorderPolicy, TransformAdapter
 
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from torch import Tensor
 
 
-class Compose(nn.Module):
+class FusedAffineCompose(nn.Module):
     """Fused augmentation pipeline that replaces the backend's native Compose.
 
     Segments the transform list into fused geometric segments and passthrough
@@ -81,12 +81,12 @@ class Compose(nn.Module):
             self._segments = []
         else:
             backend = detect_backend(transforms)
-            if backend == "kornia":
+            if backend == Backend.KORNIA:
                 from fuse_augmentations.adapters._kornia import KorniaAdapter
 
                 self._adapter = KorniaAdapter()
             else:
-                msg = f"Backend '{backend}' not yet supported in v0.1; only kornia is implemented"
+                msg = f"Backend '{backend.value}' not yet supported in v0.1; only kornia is implemented"
                 raise NotImplementedError(msg)
             self._segments = build_segments(transforms, self._adapter, interpolation, padding_mode)
 
@@ -168,6 +168,6 @@ class Compose(nn.Module):
         return " \u2192 ".join(parts) if parts else "empty"
 
 
-# Aliases for backward compatibility and discoverability
-FusedAffineCompose = Compose
-AugmentationSequential = Compose
+# Short alias for convenience; FusedAffineCompose is the canonical name
+Compose = FusedAffineCompose
+AugmentationSequential = FusedAffineCompose

@@ -6,37 +6,48 @@ Inspects transform module paths to determine which backend framework
 Example:
     >>> from fuse_augmentations._backend import detect_backend
     >>> detect_backend([])
-    'unknown'
+    <Backend.UNKNOWN: 'unknown'>
 """
 
 from __future__ import annotations
 
 import warnings
+from enum import Enum
 
-_BACKEND_PREFIXES: dict[str, str] = {
-    "kornia.": "kornia",
-    "albumentations.": "albumentations",
-    "torchvision.": "torchvision",
+
+class Backend(Enum):
+    """Supported augmentation backend frameworks."""
+
+    KORNIA = "kornia"
+    ALBUMENTATIONS = "albumentations"
+    TORCHVISION = "torchvision"
+    UNKNOWN = "unknown"
+
+
+_BACKEND_PREFIXES: dict[str, Backend] = {
+    "kornia.": Backend.KORNIA,
+    "albumentations.": Backend.ALBUMENTATIONS,
+    "torchvision.": Backend.TORCHVISION,
 }
 
 
-def detect_backend(transforms: list[object]) -> str:
+def detect_backend(transforms: list[object]) -> Backend:
     """Detect the backend from a list of transforms by inspecting module paths.
 
     Args:
         transforms: List of transform objects.
 
     Returns:
-        One of ``"kornia"``, ``"albumentations"``, ``"torchvision"``, or ``"unknown"``.
+        A ``Backend`` enum member.
 
     Raises:
         ValueError: If transforms come from more than one backend.
 
     Example:
         >>> detect_backend([])
-        'unknown'
+        <Backend.UNKNOWN: 'unknown'>
     """
-    backends: set[str] = set()
+    backends: set[Backend] = set()
 
     for t in transforms:
         module = type(t).__module__ or ""
@@ -56,19 +67,19 @@ def detect_backend(transforms: list[object]) -> str:
 
     if len(backends) == 1:
         return backends.pop()
-    return "unknown"
+    return Backend.UNKNOWN
 
 
-def _match_backend(module: str) -> str | None:
+def _match_backend(module: str) -> Backend | None:
     """Match a module path to a known backend prefix.
 
     Args:
         module: The ``__module__`` attribute of a transform type.
 
     Returns:
-        Backend name string, or ``None`` if no prefix matches.
+        ``Backend`` enum member, or ``None`` if no prefix matches.
     """
-    for prefix, name in _BACKEND_PREFIXES.items():
+    for prefix, backend in _BACKEND_PREFIXES.items():
         if module.startswith(prefix):
-            return name
+            return backend
     return None
