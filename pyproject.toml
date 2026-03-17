@@ -7,7 +7,6 @@ requires = [
 
 [project]
 name = "fuse-augmentations"
-version = "0.1.0dev"
 description = "Fuse augmentation transforms into a single interpolation pass."
 readme = "README.md"
 license = "Apache-2.0"
@@ -31,6 +30,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Scientific/Engineering :: Image Recognition",
 ]
+dynamic = [ "version" ]
 dependencies = [
   "numpy",
   "pillow>=10",
@@ -66,6 +66,7 @@ dev = [
 ]
 
 [tool.setuptools]
+dynamic.version.attr = "fuse_augmentations.__about__.__version__"
 packages.find.where = [ "src" ]
 packages.find.include = [ "fuse_augmentations*", "fuse_aug*" ]
 
