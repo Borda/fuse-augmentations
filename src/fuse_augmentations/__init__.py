@@ -8,6 +8,7 @@ Example:
     >>> pipe = Compose([])
     >>> pipe.__class__.__name__
     'FusedAffineCompose'
+
 """
 
 from __future__ import annotations

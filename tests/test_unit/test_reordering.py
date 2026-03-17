@@ -113,9 +113,9 @@ class TestBarrierSplits:
     def test_barrier_prevents_crossing(self):
         """[Rotate, GaussianBlur, Brightness, Scale] stays barrier-split.
 
-        Brightness cannot cross GaussianBlur barrier, so after reorder:
-        [Rotate] -> [GaussianBlur] -> [Scale, Brightness]
-        (Brightness deferred within the second stretch only)
+        Brightness cannot cross GaussianBlur barrier, so after reorder: [Rotate] -> [GaussianBlur] -> [Scale,
+        Brightness] (Brightness deferred within the second stretch only)
+
         """
         adapter = _StubAdapter()
         rotate = _StubTransform(_identity_matrix_fn, category=TransformCategory.GEOMETRIC_INTERP)
@@ -144,9 +144,7 @@ class TestBarrierSplits:
         barrier2 = _BarrierTransform()
         geo3 = _StubTransform(_identity_matrix_fn)
 
-        result = reorder_pointwise(
-            [geo1, pw1, barrier1, geo2, pw2, barrier2, geo3], adapter
-        )
+        result = reorder_pointwise([geo1, pw1, barrier1, geo2, pw2, barrier2, geo3], adapter)
 
         # First stretch: [geo1, pw1] -> [geo1, pw1] (geo first, then pw)
         assert result[0] is geo1

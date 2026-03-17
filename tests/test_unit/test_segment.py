@@ -133,8 +133,9 @@ class TestBatchHeterogeneity:
     def test_different_samples_different_active_masks(self):
         """Manually verify that p-masking produces per-sample variation.
 
-        We use p=0.5 and a fixed seed such that some samples are active and
-        some are not, then verify the outputs differ across samples.
+        We use p=0.5 and a fixed seed such that some samples are active and some are not, then verify the outputs differ
+        across samples.
+
         """
         adapter = _StubAdapter()
         t = _StubTransform(_hflip_matrix_fn, p=0.5)
@@ -455,7 +456,7 @@ class TestExactSegmentPerSampleMask:
         orig_rand = torch.rand
 
         def _deterministic_rand(*size, **kwargs):
-            device = kwargs.get("device", None)
+            device = kwargs.get("device")
             dtype = kwargs.get("dtype", torch.float32)
             # Intercept calls that generate a per-sample mask over the batch.
             if len(size) >= 1 and size[0] == bsz:

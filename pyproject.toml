@@ -129,6 +129,13 @@ lint.pydocstyle.convention = "google"
 # skip = '*.py'
 quiet-level = 3
 
+[tool.docformatter]
+recursive = true
+# some docstring start with r"""
+wrap-summaries = 119
+wrap-descriptions = 120
+blank = true
+
 [tool.mypy]
 python_version = "3.10"
 files = [ "src/fuse_augmentations" ]

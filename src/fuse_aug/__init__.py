@@ -11,6 +11,7 @@ Example:
     >>> from fuse_aug import Compose
     >>> Compose.__name__
     'FusedAffineCompose'
+
 """
 
 from fuse_augmentations import *  # noqa: F403

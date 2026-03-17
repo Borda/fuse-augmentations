@@ -14,6 +14,7 @@ Example:
     >>> out = seg(torch.zeros(1, 3, 8, 8))
     >>> out.shape
     torch.Size([1, 3, 8, 8])
+
 """
 
 from __future__ import annotations
@@ -29,13 +30,21 @@ from fuse_augmentations._types import TransformAdapter, TransformCategory
 class ExactSegment(nn.Module):
     """Lossless segment for GEOMETRIC_EXACT-only chains (HFlip, VFlip).
 
-    Applies transforms as tensor index ops (``tensor.flip``) instead of
-    ``grid_sample``, introducing zero interpolation error. Uses ``torch.where``
-    for per-sample probability masking.
+    Used when a run of consecutive geometric transforms consists entirely of
+    ``GEOMETRIC_EXACT`` operations (currently: horizontal and vertical flips).
+    Applies each transform as a tensor index operation (``tensor.flip``) instead
+    of ``grid_sample``, introducing zero interpolation error.
+
+    Per-sample probability masking is implemented with ``torch.where``:
+    for each transform, a boolean mask of shape ``(B,)`` is drawn from the
+    transform's ``p`` attribute, and only samples whose mask is ``True`` receive
+    the flip — the others keep their original values unchanged.
 
     Args:
-        transforms: List of GEOMETRIC_EXACT transform objects (flips).
-        adapter: A ``TransformAdapter`` providing ``exact_flip_dims`` (duck-typed).
+        transforms: List of ``GEOMETRIC_EXACT`` transform objects (flips only in v0.2).
+        adapter: A ``TransformAdapter`` providing an ``exact_flip_dims`` method
+            (duck-typed; required for ``ExactSegment`` use).
+
     """
 
     def __init__(self, transforms: list[object], adapter: TransformAdapter) -> None:
@@ -51,11 +60,18 @@ class ExactSegment(nn.Module):
     def forward(self, image: Tensor) -> Tensor:
         """Apply flip transforms losslessly via tensor.flip with per-sample masking.
 
+        For each transform, draws a per-sample boolean mask from the transform's
+        ``p`` probability, flips the full batch, then selects flipped vs original
+        values per sample using ``torch.where``.
+
         Args:
-            image: ``(B, C, H, W)`` float input tensor.
+            image: Input image batch. Shape: ``(B, C, H, W)``, dtype: float32.
+                Value range and channel convention follow the calling pipeline.
 
         Returns:
-            ``(B, C, H, W)`` output tensor with flips applied per-sample.
+            Output image batch with flips applied per-sample.
+            Shape: ``(B, C, H, W)``, same dtype and device as ``image``.
+
         """
         bsz = image.shape[0]
         device = image.device
@@ -96,6 +112,7 @@ class FusedAffineSegment(nn.Module):
         padding_mode: Optional padding mode override
             (``"zeros"``, ``"border"``, ``"reflection"``).
             Defaults to ``"zeros"`` when ``None``.
+
     """
 
     def __init__(
@@ -119,6 +136,7 @@ class FusedAffineSegment(nn.Module):
         Returns:
             The detached, cloned composed matrix, or ``None`` before the
             first call to :meth:`forward`.
+
         """
         return self._last_matrix
 
@@ -130,6 +148,7 @@ class FusedAffineSegment(nn.Module):
 
         Returns:
             ``(B, C, H, W)`` warped output tensor.
+
         """
         bsz, n_ch, height, width = image.shape
         device = image.device
@@ -189,13 +208,42 @@ def reorder_pointwise(
     never move across a ``SPATIAL_KERNEL`` barrier.
 
     Args:
-        transforms: List of transform objects.
-        adapter: A ``TransformAdapter`` for category lookup.
+        transforms: List of transform objects to reorder.
+        adapter: A ``TransformAdapter`` used for category lookup on each transform.
 
     Returns:
-        New list with the same transforms, possibly reordered so that
-        POINTWISE ops sit after geometric runs within each barrier-bounded
-        stretch.
+        New list containing the same transforms, possibly reordered so that
+        ``POINTWISE`` ops sit after geometric runs within each
+        barrier-bounded stretch.
+
+    Example:
+        Given a pipeline ``[Rotate, Brightness, HFlip]`` where ``Brightness``
+        is ``POINTWISE`` and ``Rotate`` / ``HFlip`` are geometric, the
+        ``Brightness`` is pushed after the geometric group:
+
+        Input order:  ``[Rotate, Brightness, HFlip]``
+        Output order: ``[Rotate, HFlip, Brightness]``
+
+        Using stub objects (the KorniaAdapter registry does not include any
+        POINTWISE transforms in v0.2):
+
+    >>> from fuse_augmentations._segment import reorder_pointwise
+    >>> from fuse_augmentations._types import TransformCategory
+    >>> class _StubAdapter:
+    ...     def category(self, t):
+    ...         return t._cat
+    ...
+    >>> class _T:
+    ...     def __init__(self, cat):
+    ...         self._cat = cat
+    ...
+    >>> adapter = _StubAdapter()
+    >>> geo = _T(TransformCategory.GEOMETRIC_INTERP)
+    >>> pw  = _T(TransformCategory.POINTWISE)
+    >>> result = reorder_pointwise([geo, pw, geo], adapter)
+    >>> [t._cat.name for t in result]
+    ['GEOMETRIC_INTERP', 'GEOMETRIC_INTERP', 'POINTWISE']
+
     """
     geometric = {TransformCategory.GEOMETRIC_INTERP, TransformCategory.GEOMETRIC_EXACT}
 
@@ -230,24 +278,41 @@ def build_segments(
     interpolation: str | None = None,
     padding_mode: str | None = None,
 ) -> list[object]:
-    """Split a transform list into fused affine segments and passthrough transforms.
+    """Split a transform list into fused segments and passthrough transforms.
 
     Walks the transforms left to right and groups consecutive geometric
     transforms (``GEOMETRIC_INTERP`` or ``GEOMETRIC_EXACT``) into a single
-    :class:`fuse_augmentations._segment.FusedAffineSegment`.  Any ``SPATIAL_KERNEL`` or ``POINTWISE``
-    transform breaks the current geometric group and is returned as-is.
+    segment.  Any ``SPATIAL_KERNEL`` or ``POINTWISE`` transform breaks the
+    current geometric group and is returned as-is.
+
+    After grouping, each accumulated geometric run is classified:
+
+    - **EXACT-only** — if the run contains *only* ``GEOMETRIC_EXACT`` ops
+      (e.g. HFlip, VFlip), it becomes an :class:`ExactSegment` that uses
+      ``tensor.flip`` with zero interpolation error.
+    - **Mixed / INTERP** — if any op in the run is ``GEOMETRIC_INTERP``, the
+      whole run becomes a :class:`FusedAffineSegment` that composes matrices
+      and applies one ``grid_sample`` call.
+
+    When ``ReorderPolicy.POINTWISE`` is active in
+    :class:`~fuse_augmentations._compose.FusedAffineCompose`, ``reorder_pointwise``
+    is called first to bubble pointwise ops out of geometric chains, and
+    ``build_segments`` then classifies the reordered list.
 
     Args:
-        transforms: List of transform objects.
+        transforms: List of transform objects (already reordered if a reorder policy applies).
         adapter: A ``TransformAdapter`` for category lookup and matrix building.
-        interpolation: Optional interpolation mode override for fused segments.
-        padding_mode: Optional padding mode override for fused segments.
+        interpolation: Interpolation mode override forwarded to each :class:`FusedAffineSegment`
+            (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
+        padding_mode: Padding mode override forwarded to each :class:`FusedAffineSegment`
+            (``"zeros"``, ``"border"``, ``"reflection"``).
 
     Returns:
-        Flat list where each element is either a
-        :class:`fuse_augmentations._segment.FusedAffineSegment`
-        (for fused geometric runs) or the original transform object
-        (for passthrough).
+        Flat list where each element is a :class:`FusedAffineSegment`
+        (mixed/INTERP geometric run), an :class:`ExactSegment`
+        (EXACT-only geometric run), or the original transform object
+        (passthrough for ``SPATIAL_KERNEL`` and ``POINTWISE`` transforms).
+
     """
     fusible = {TransformCategory.GEOMETRIC_INTERP, TransformCategory.GEOMETRIC_EXACT}
 
@@ -256,10 +321,7 @@ def build_segments(
 
     def _flush_geo() -> None:
         if current_geo:
-            has_interp = any(
-                adapter.category(t) == TransformCategory.GEOMETRIC_INTERP
-                for t in current_geo
-            )
+            has_interp = any(adapter.category(t) == TransformCategory.GEOMETRIC_INTERP for t in current_geo)
             if has_interp:
                 segments.append(
                     FusedAffineSegment(

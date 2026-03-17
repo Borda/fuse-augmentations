@@ -11,6 +11,7 @@ transforms sequentially (one ``grid_sample`` per transform, accumulating
 interpolation error).  Multi-transform tests therefore verify that the
 fused path matches a manually composed matrix + single ``grid_sample``
 reference, which is the mathematically correct comparison.
+
 """
 
 from __future__ import annotations
@@ -99,6 +100,7 @@ def _single_grid_sample_from_params(transforms, adapter, img, forward_params_lis
     This is the reference path: manually compose (B,3,3) matrices using
     the adapter, then invert+normalize+grid_sample in one pass -- identical
     to what FusedAffineSegment.forward() does, but with deterministic params.
+
     """
     bsz, n_ch, height, width = img.shape
     eye = torch.eye(3, device=img.device, dtype=img.dtype)
@@ -190,6 +192,7 @@ class TestTwoTransformParity:
         Uses single-value degree/scale ranges so both paths sample the same
         deterministic parameters: degrees=(45,45) always gives 45°,
         scale=(2.0,2.0) always gives 2.0x.
+
         """
         bsz, n_ch, height, width = 2, 3, 64, 64
         img = torch.rand(bsz, n_ch, height, width)

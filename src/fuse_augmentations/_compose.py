@@ -32,22 +32,47 @@ class FusedAffineCompose(nn.Module):
     """Fused augmentation pipeline that replaces the backend's native Compose.
 
     Segments the transform list into fused geometric segments and passthrough
-    transforms, then executes them sequentially. Consecutive geometric ops share
-    a single ``grid_sample`` call, eliminating redundant interpolation passes.
+    transforms, then executes them sequentially. Consecutive geometric ops are
+    grouped and executed as either:
+
+    - A :class:`~fuse_augmentations._segment.FusedAffineSegment` — when the run
+      contains at least one ``GEOMETRIC_INTERP`` op. Matrices are composed and
+      a single ``grid_sample`` call is used, eliminating redundant interpolation
+      passes.
+    - An :class:`~fuse_augmentations._segment.ExactSegment` — when the run
+      contains *only* ``GEOMETRIC_EXACT`` ops (HFlip, VFlip). Transforms are
+      applied via ``tensor.flip`` with zero interpolation error.
+
+    ``SPATIAL_KERNEL`` and ``POINTWISE`` transforms are passed through to the
+    backend adapter unchanged.
+
+    ``ReorderPolicy.POINTWISE`` is fully implemented: before segmentation,
+    ``POINTWISE`` ops are bubbled past geometric ops within each
+    ``SPATIAL_KERNEL``-bounded stretch, maximising the geometric run length
+    available for fusion.
 
     Args:
         transforms: List of augmentation transform objects.
-        reorder: Reorder policy for transforms before segmentation.
-            ``NONE`` preserves original order. ``POINTWISE`` bubbles pointwise
-            ops out of geometric chains before segmentation.
+        reorder: Reorder policy applied before segmentation.
+            ``NONE`` (default) preserves the original order.
+            ``POINTWISE`` reorders pointwise ops after geometric chains.
             ``AGGRESSIVE`` raises ``NotImplementedError``.
-        interpolation: Optional interpolation mode override for fused segments
+        interpolation: Interpolation mode override for fused segments
             (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
-        padding_mode: Optional padding mode override for fused segments
+            Defaults to ``"bilinear"`` when ``None``.
+        padding_mode: Padding mode override for fused segments
             (``"zeros"``, ``"border"``, ``"reflection"``).
-        data_keys: Reserved for future multi-key support. Raises
-            ``NotImplementedError`` in v0.1.
-        **backend_kwargs: Reserved for backend-specific options.
+            Defaults to ``"zeros"`` when ``None``.
+        data_keys: Reserved for future multi-key support. Raises ``NotImplementedError``
+            in v0.1/v0.2.
+        **backend_kwargs: Reserved for backend-specific options (currently unused).
+
+    Raises:
+        NotImplementedError: If ``data_keys`` is not ``None``, or if ``reorder`` is
+            ``ReorderPolicy.AGGRESSIVE``.
+        NotImplementedError: If the detected backend is not Kornia (only Kornia is supported in
+            v0.1/v0.2).
+
     """
 
     def __init__(
@@ -103,6 +128,7 @@ class FusedAffineCompose(nn.Module):
 
         Returns:
             ``(B, C, H, W)`` augmented output tensor.
+
         """
         for seg in self._segments:
             if isinstance(seg, FusedAffineSegment):
@@ -133,6 +159,7 @@ class FusedAffineCompose(nn.Module):
             no such segment has been executed yet (including before the first
             call to :meth:`forward` or if the last forward contained only
             passthrough transforms).
+
         """
         return self._last_transform_matrix
 
@@ -145,6 +172,7 @@ class FusedAffineCompose(nn.Module):
 
         Returns:
             Total number of eliminated warp passes across all fused segments.
+
         """
         total = 0
         for seg in self._segments:
@@ -164,6 +192,7 @@ class FusedAffineCompose(nn.Module):
             Arrow-separated description of segments, e.g.
             ``"fused(RandomRotation, RandomHorizontalFlip) -> passthrough(GaussianBlur)"``.
             Returns ``"empty"`` for an empty pipeline.
+
         """
         parts: list[str] = []
         for seg in self._segments:

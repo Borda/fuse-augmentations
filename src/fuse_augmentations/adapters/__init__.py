@@ -8,6 +8,7 @@ Example:
     >>> adapter = KorniaAdapter()
     >>> adapter  # doctest: +ELLIPSIS
     <...KorniaAdapter...>
+
 """
 
 from fuse_augmentations.adapters._kornia import KorniaAdapter

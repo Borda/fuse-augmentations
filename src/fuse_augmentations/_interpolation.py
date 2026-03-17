@@ -11,6 +11,7 @@ Example:
     <InterpolationMode.BILINEAR: 1>
     >>> resolve_padding([PaddingMode.ZEROS, PaddingMode.REFLECTION])
     <PaddingMode.REFLECTION: 2>
+
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ def resolve_interpolation(
         >>> from fuse_augmentations._types import InterpolationMode
         >>> resolve_interpolation([InterpolationMode.BILINEAR, InterpolationMode.BICUBIC])
         <InterpolationMode.BICUBIC: 2>
+
     """
     if override is not None:
         return override
@@ -68,6 +70,7 @@ def resolve_padding(
         >>> from fuse_augmentations._types import PaddingMode
         >>> resolve_padding([PaddingMode.ZEROS, PaddingMode.REFLECTION])
         <PaddingMode.REFLECTION: 2>
+
     """
     if override is not None:
         return override

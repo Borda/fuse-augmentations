@@ -212,9 +212,7 @@ class TestSameOnBatch:
         angles = params["angle_rad"]
         assert angles.shape == (4,)
         # All 4 samples should have the same angle
-        assert torch.allclose(angles[0].expand(4), angles), (
-            f"same_on_batch=True but angles differ: {angles}"
-        )
+        assert torch.allclose(angles[0].expand(4), angles), f"same_on_batch=True but angles differ: {angles}"
 
     def test_different_on_batch_produces_varied_params(self, adapter):
         """When same_on_batch=False, a large batch produces varied angles."""
@@ -233,14 +231,10 @@ class TestSameOnBatch:
         params = adapter.sample_params(t, (4, 3, 8, 8), DEVICE)
         if "angle_rad" in params:
             angles = params["angle_rad"]
-            assert torch.allclose(angles[0].expand(4), angles), (
-                f"same_on_batch=True but angles differ: {angles}"
-            )
+            assert torch.allclose(angles[0].expand(4), angles), f"same_on_batch=True but angles differ: {angles}"
         if "translate_x" in params:
             tx = params["translate_x"]
-            assert torch.allclose(tx[0].expand(4), tx), (
-                f"same_on_batch=True but translate_x differs: {tx}"
-            )
+            assert torch.allclose(tx[0].expand(4), tx), f"same_on_batch=True but translate_x differs: {tx}"
 
 
 class TestBuildMatrixFallback:

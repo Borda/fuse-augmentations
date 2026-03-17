@@ -15,6 +15,7 @@ class TransformCategory(Enum):
         GEOMETRIC_EXACT: Fusible only when INTERP is present; lossless alone (flip, 90-deg rot).
         POINTWISE: Reorderable per-pixel op; not fusible (color jitter, normalize).
         SPATIAL_KERNEL: Barrier; not fusible and not reorderable (blur, noise, erase).
+
     """
 
     GEOMETRIC_INTERP = "geometric_interp"
@@ -30,6 +31,7 @@ class ReorderPolicy(Enum):
         NONE: No reordering; fuse only consecutive geometric ops as-is (v0.1 default).
         POINTWISE: Move POINTWISE ops out of geometric chains (v0.2).
         AGGRESSIVE: Reserved; raises NotImplementedError (v0.1-v0.6).
+
     """
 
     NONE = "none"
@@ -43,6 +45,7 @@ class InterpolationMode(IntEnum):
     Example:
         >>> InterpolationMode.BICUBIC > InterpolationMode.BILINEAR
         True
+
     """
 
     NEAREST = 0
@@ -56,6 +59,7 @@ class PaddingMode(IntEnum):
     Example:
         >>> PaddingMode.REFLECTION > PaddingMode.ZEROS
         True
+
     """
 
     ZEROS = 0
@@ -67,8 +71,9 @@ class PaddingMode(IntEnum):
 class TransformAdapter(Protocol):
     """Adapter between a backend transform and the fused affine engine.
 
-    Implementations bridge framework-specific transforms (Kornia, Albumentations,
-    TorchVision) to the canonical parameter representation used by FusedAffineSegment.
+    Implementations bridge framework-specific transforms (Kornia, Albumentations, TorchVision) to the canonical
+    parameter representation used by FusedAffineSegment.
+
     """
 
     def category(self, transform: object) -> TransformCategory:
@@ -79,6 +84,7 @@ class TransformAdapter(Protocol):
 
         Returns:
             The category classification for the transform.
+
         """
         ...
 
@@ -97,6 +103,7 @@ class TransformAdapter(Protocol):
 
         Returns:
             Dict mapping canonical parameter names to (B,) tensors.
+
         """
         ...
 
@@ -117,6 +124,7 @@ class TransformAdapter(Protocol):
 
         Returns:
             Tensor of shape (B, 3, 3).
+
         """
         ...
 
@@ -135,5 +143,6 @@ class TransformAdapter(Protocol):
 
         Returns:
             Transformed image tensor.
+
         """
         ...

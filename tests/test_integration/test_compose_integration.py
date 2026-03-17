@@ -1,6 +1,7 @@
 """Integration tests for _compose.py -- spec tests #24-25, #48-52, #58-60.
 
 Requires kornia >= 0.6.12.
+
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ pytestmark = pytest.mark.integration
 
 
 class TestSingleTransformNoFusion:
+    """Validate behavior for one-transform pipelines."""
+
     def test_n_warps_saved_zero(self):
         """A single GEOMETRIC_INTERP transform saves zero warps (no fusion)."""
         pipe = Compose([RandomRotation(30, p=1.0)])
@@ -40,6 +43,8 @@ class TestSingleTransformNoFusion:
 
 
 class TestMixedBackend:
+    """Validate mixed-backend rejection in Compose construction."""
+
     @pytest.mark.parametrize(
         "second_module",
         [
@@ -57,6 +62,8 @@ class TestMixedBackend:
 
 
 class TestSerialization:
+    """Validate pickle and torch.save serialization round-trips."""
+
     def test_pickle_roundtrip(self):
         """Compose survives pickle dump/load and produces identical output."""
         pipe = Compose([RandomHorizontalFlip(p=1.0)])
@@ -80,6 +87,8 @@ class TestSerialization:
 
 
 class TestNWarpsSaved:
+    """Validate warp-savings accounting for representative pipelines."""
+
     def test_three_fused_saves_two(self):
         """Three consecutive geometric transforms fused -> 2 warps saved."""
         pipe = Compose([
@@ -96,6 +105,8 @@ class TestNWarpsSaved:
 
 
 class TestFusionPlan:
+    """Validate human-readable fusion-plan formatting."""
+
     def test_contains_transform_names(self):
         """fusion_plan names each transform in fused segments."""
         pipe = Compose([RandomRotation(30, p=1.0), RandomHorizontalFlip(p=1.0)])
@@ -113,6 +124,8 @@ class TestFusionPlan:
 
 
 class TestTransformMatrix:
+    """Validate `transform_matrix` lifecycle and shape semantics."""
+
     def test_none_before_forward(self):
         """transform_matrix is None before any forward call."""
         pipe = Compose([RandomRotation(30, p=1.0)])
@@ -139,6 +152,8 @@ class TestTransformMatrix:
 
 
 class TestPassthroughPath:
+    """Validate passthrough behavior for non-fusible transforms."""
+
     def test_spatial_kernel_passthrough_shape(self):
         """Pipeline with a SPATIAL_KERNEL transform (GaussianBlur) executes the passthrough branch."""
         pipe = Compose([
@@ -183,6 +198,8 @@ class TestPassthroughPath:
 
 
 class TestUnknownBackend:
+    """Validate behavior for unsupported augmentation backends."""
+
     def test_raises(self):
         """Transforms from an unknown backend raise NotImplementedError."""
 
@@ -196,6 +213,8 @@ class TestUnknownBackend:
 
 
 class TestForwardMultiTransform:
+    """Validate end-to-end forward pass for multi-transform pipelines."""
+
     def test_three_transform_forward(self):
         """Three-transform pipeline produces valid (B,C,H,W) output."""
         pipe = Compose([

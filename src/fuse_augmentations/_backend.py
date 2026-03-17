@@ -7,6 +7,7 @@ Example:
     >>> from fuse_augmentations._backend import detect_backend
     >>> detect_backend([])
     <Backend.UNKNOWN: 'unknown'>
+
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ def detect_backend(transforms: list[object]) -> Backend:
     Example:
         >>> detect_backend([])
         <Backend.UNKNOWN: 'unknown'>
+
     """
     backends: set[Backend] = set()
 
@@ -78,6 +80,7 @@ def _match_backend(module: str) -> Backend | None:
 
     Returns:
         ``Backend`` enum member, or ``None`` if no prefix matches.
+
     """
     for prefix, backend in _BACKEND_PREFIXES.items():
         if module.startswith(prefix):
