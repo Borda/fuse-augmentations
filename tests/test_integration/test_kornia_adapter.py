@@ -202,6 +202,47 @@ class TestNativeParity:
         )
 
 
+class TestSameOnBatch:
+    """Verify that same_on_batch is respected by adapter.sample_params."""
+
+    def test_same_on_batch_produces_identical_params(self, adapter):
+        """When same_on_batch=True, all samples get the same angle."""
+        t = RandomRotation(degrees=30, same_on_batch=True, p=1.0)
+        params = adapter.sample_params(t, (4, 3, 8, 8), DEVICE)
+        angles = params["angle_rad"]
+        assert angles.shape == (4,)
+        # All 4 samples should have the same angle
+        assert torch.allclose(angles[0].expand(4), angles), (
+            f"same_on_batch=True but angles differ: {angles}"
+        )
+
+    def test_different_on_batch_produces_varied_params(self, adapter):
+        """When same_on_batch=False, a large batch produces varied angles."""
+        t = RandomRotation(degrees=30, same_on_batch=False, p=1.0)
+        params = adapter.sample_params(t, (16, 3, 8, 8), DEVICE)
+        angles = params["angle_rad"]
+        assert angles.shape == (16,)
+        # With 16 samples and 30 degree range, min and max should differ
+        assert not torch.allclose(angles.min().unsqueeze(0), angles.max().unsqueeze(0)), (
+            f"same_on_batch=False but all angles identical: {angles}"
+        )
+
+    def test_same_on_batch_affine(self, adapter):
+        """same_on_batch=True on RandomAffine produces identical params across batch."""
+        t = RandomAffine(degrees=30, translate=(0.3, 0.3), same_on_batch=True, p=1.0)
+        params = adapter.sample_params(t, (4, 3, 8, 8), DEVICE)
+        if "angle_rad" in params:
+            angles = params["angle_rad"]
+            assert torch.allclose(angles[0].expand(4), angles), (
+                f"same_on_batch=True but angles differ: {angles}"
+            )
+        if "translate_x" in params:
+            tx = params["translate_x"]
+            assert torch.allclose(tx[0].expand(4), tx), (
+                f"same_on_batch=True but translate_x differs: {tx}"
+            )
+
+
 class TestBuildMatrixFallback:
     """Verify build_matrix fallback path returns identity for unregistered transforms."""
 
