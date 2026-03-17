@@ -21,9 +21,14 @@ pytestmark = pytest.mark.integration
 
 class TestSingleTransformNoFusion:
     def test_n_warps_saved_zero(self):
-        """A single geometric transform saves zero warps (no fusion)."""
-        pipe = Compose([RandomHorizontalFlip(p=1.0)])
+        """A single GEOMETRIC_INTERP transform saves zero warps (no fusion)."""
+        pipe = Compose([RandomRotation(30, p=1.0)])
         assert pipe.n_warps_saved == 0
+
+    def test_n_warps_saved_exact(self):
+        """A single GEOMETRIC_EXACT transform saves 1 warp (no grid_sample at all)."""
+        pipe = Compose([RandomHorizontalFlip(p=1.0)])
+        assert pipe.n_warps_saved == 1
 
     def test_forward_runs(self):
         """Single transform Compose produces valid output."""
@@ -110,21 +115,27 @@ class TestFusionPlan:
 class TestTransformMatrix:
     def test_none_before_forward(self):
         """transform_matrix is None before any forward call."""
-        pipe = Compose([RandomHorizontalFlip(p=1.0)])
+        pipe = Compose([RandomRotation(30, p=1.0)])
         assert pipe.transform_matrix is None
 
     def test_populated_after_forward(self):
         """transform_matrix is populated with correct shape after forward."""
-        pipe = Compose([RandomHorizontalFlip(p=1.0)])
+        pipe = Compose([RandomRotation(30, p=1.0)])
         pipe(torch.rand(1, 3, 8, 8))
         assert pipe.transform_matrix is not None
         assert pipe.transform_matrix.shape == torch.Size([1, 3, 3])
 
     def test_batch_shape(self):
         """transform_matrix batch dimension matches input batch size."""
-        pipe = Compose([RandomHorizontalFlip(p=1.0)])
+        pipe = Compose([RandomRotation(30, p=1.0)])
         pipe(torch.rand(4, 3, 8, 8))
         assert pipe.transform_matrix.shape == torch.Size([4, 3, 3])
+
+    def test_none_for_exact_only(self):
+        """transform_matrix is None when pipeline has only ExactSegments."""
+        pipe = Compose([RandomHorizontalFlip(p=1.0)])
+        pipe(torch.rand(1, 3, 8, 8))
+        assert pipe.transform_matrix is None
 
 
 class TestPassthroughPath:
@@ -151,14 +162,24 @@ class TestPassthroughPath:
         assert "passthrough" in pipe.fusion_plan
 
     def test_spatial_kernel_warps_saved(self):
-        """Single-transform fused segments on each side of a passthrough save zero warps."""
+        """Single-transform segments on each side of a passthrough save appropriately."""
+        pipe = Compose([
+            RandomRotation(30, p=1.0),
+            RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
+            RandomRotation(30, p=1.0),
+        ])
+        # Each fused segment has only one INTERP transform, so 0 warps saved per segment
+        assert pipe.n_warps_saved == 0
+
+    def test_spatial_kernel_exact_warps_saved(self):
+        """ExactSegment single-transform on each side of a passthrough: 1 warp saved each."""
         pipe = Compose([
             RandomHorizontalFlip(p=1.0),
             RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
             RandomHorizontalFlip(p=1.0),
         ])
-        # Each fused segment has only one transform, so 0 warps saved per segment
-        assert pipe.n_warps_saved == 0
+        # Each ExactSegment with 1 transform saves 1 warp (no grid_sample at all)
+        assert pipe.n_warps_saved == 2
 
 
 class TestUnknownBackend:

@@ -249,14 +249,21 @@ def build_segments(
 
     def _flush_geo() -> None:
         if current_geo:
-            segments.append(
-                FusedAffineSegment(
-                    list(current_geo),
-                    adapter,
-                    interpolation=interpolation,
-                    padding_mode=padding_mode,
-                )
+            has_interp = any(
+                adapter.category(t) == TransformCategory.GEOMETRIC_INTERP
+                for t in current_geo
             )
+            if has_interp:
+                segments.append(
+                    FusedAffineSegment(
+                        list(current_geo),
+                        adapter,
+                        interpolation=interpolation,
+                        padding_mode=padding_mode,
+                    )
+                )
+            else:
+                segments.append(ExactSegment(list(current_geo), adapter))
             current_geo.clear()
 
     for tfm in transforms:
