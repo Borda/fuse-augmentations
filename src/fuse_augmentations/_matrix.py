@@ -310,7 +310,8 @@ def inv3x3(M: torch.Tensor) -> torch.Tensor:  # noqa: N803
         dim=-1,
     ).reshape(-1, 3, 3)
 
-    return adj * inv_det[:, None, None]
+    result: torch.Tensor = adj * inv_det[:, None, None]
+    return result
 
 
 def _is_compiling() -> bool:

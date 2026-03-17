@@ -1,5 +1,6 @@
 """Shared pytest fixtures for fuse-augmentations test suite."""
 
+import contextlib
 import os
 
 import pytest
@@ -19,13 +20,11 @@ def disable_interactive_prompts():
     os.environ["PYTHONBREAKPOINT"] = "0"
 
     restore_kornia = None
-    try:
+    with contextlib.suppress(ImportError):
         from kornia.config import InstallationMode, kornia_config
 
         restore_kornia = kornia_config.lazyloader.installation_mode
         kornia_config.lazyloader.installation_mode = InstallationMode.RAISE
-    except ImportError:
-        pass
 
     try:
         yield
