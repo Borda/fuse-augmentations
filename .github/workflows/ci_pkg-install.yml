@@ -20,22 +20,21 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-
-      - name: Check package
+      - name: 🔍 Check package manifest
         run: |
           pip install check-manifest
           check-manifest
-
-      - name: Create package
+      - name: 🏗️ Build package
         run: |
           pip install --upgrade setuptools wheel build
           python -m build
-
-      - name: Verify package
+      - name: ✅ Verify package
         run: |
           pip install --upgrade pip
           pip install --group dev
@@ -51,17 +50,17 @@ jobs:
         os: ["ubuntu-latest", "macOS-latest", "windows-latest"]
         python-version: ["3.10"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+      - name: 🐍 Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Create package
+      - name: 🏗️ Build package
         run: |
           pip install setuptools wheel build
           python -m build
-
-      - name: Try installing
+      - name: 🚀 Install and smoke-test package
         working-directory: dist
         run: |
           ls -lh
@@ -76,10 +75,10 @@ jobs:
     if: always()
     steps:
       - run: echo "${{ needs.pkg-install.result }}"
-      - name: failing...
+      - name: ❌ Fail on job failure
         if: needs.pkg-install.result == 'failure'
         run: exit 1
-      - name: cancelled or skipped...
+      - name: ⏭️ Fail on cancel or skip
         if: contains(fromJSON('["cancelled", "skipped"]'), needs.pkg-install.result)
         timeout-minutes: 1
         run: sleep 90

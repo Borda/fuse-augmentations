@@ -29,37 +29,35 @@ jobs:
     timeout-minutes: 25
 
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+      - name: 🐍 Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: astral-sh/setup-uv@v5
+      - name: 🐍 Install uv
+        uses: astral-sh/setup-uv@v7.2.0
         with:
-          enable-cache: true
-
-      - name: Set min. dependencies
+          python-version: ${{ matrix.python-version }}
+          activate-environment: true
+      - name: 📌 Pin minimum dependencies
         if: matrix.requires == 'oldest'
         run: |
           uv pip install tomlkit
           python scripts/min_deps.py
-
-      - name: Install dependencies
+      - name: 📦 Install dependencies
         env:
           UV_TORCH_BACKEND: cpu
         run: |
           uv pip install -e . --group dev
           uv pip list
-
-      - name: Tests
+      - name: 🧪 Run tests
         run: pytest . -v --cov=fuse_augmentations
-
-      - name: Statistics
+      - name: 📊 Coverage statistics
         run: |
           coverage report
           coverage xml
-
-      - name: Upload coverage to Codecov
+      - name: ☁️ Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         if: always()
         # see: https://github.com/actions/toolkit/issues/399
@@ -76,10 +74,10 @@ jobs:
     if: always()
     steps:
       - run: echo "${{ needs.pytester.result }}"
-      - name: failing...
+      - name: ❌ Fail on test failure
         if: needs.pytester.result == 'failure'
         run: exit 1
-      - name: cancelled or skipped...
+      - name: ⏭️ Fail on cancel or skip
         if: contains(fromJSON('["cancelled", "skipped"]'), needs.pytester.result)
         timeout-minutes: 1
         run: sleep 90
