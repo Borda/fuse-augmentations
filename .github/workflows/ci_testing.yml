@@ -34,19 +34,22 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: "pip"
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
 
       - name: Set min. dependencies
         if: matrix.requires == 'oldest'
         run: |
-          pip install tomlkit
+          uv pip install tomlkit
           python scripts/min_deps.py
 
       - name: Install dependencies
+        env:
+          UV_TORCH_BACKEND: cpu
         run: |
-          pip install --upgrade pip
-          pip install -e . -U --group dev
-          pip list
+          uv pip install -e . --group dev
+          uv pip list
 
       - name: Tests
         run: pytest . -v --cov=fuse_augmentations

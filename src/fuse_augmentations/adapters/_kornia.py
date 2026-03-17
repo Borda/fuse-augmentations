@@ -33,13 +33,16 @@ from fuse_augmentations._types import TransformCategory
 # ---------------------------------------------------------------------------
 
 try:
-    import kornia.augmentation as _K  # noqa: N812
+    from kornia.augmentation import RandomAffine as _RandomAffine
+    from kornia.augmentation import RandomHorizontalFlip as _RandomHorizontalFlip
+    from kornia.augmentation import RandomRotation as _RandomRotation
+    from kornia.augmentation import RandomVerticalFlip as _RandomVerticalFlip
 
     TRANSFORM_REGISTRY: dict[type, TransformCategory] = {
-        _K.RandomRotation: TransformCategory.GEOMETRIC_INTERP,
-        _K.RandomAffine: TransformCategory.GEOMETRIC_INTERP,
-        _K.RandomHorizontalFlip: TransformCategory.GEOMETRIC_EXACT,
-        _K.RandomVerticalFlip: TransformCategory.GEOMETRIC_EXACT,
+        _RandomRotation: TransformCategory.GEOMETRIC_INTERP,
+        _RandomAffine: TransformCategory.GEOMETRIC_INTERP,
+        _RandomHorizontalFlip: TransformCategory.GEOMETRIC_EXACT,
+        _RandomVerticalFlip: TransformCategory.GEOMETRIC_EXACT,
     }
 except ImportError:
     TRANSFORM_REGISTRY = {}
@@ -58,7 +61,8 @@ class KorniaAdapter:
         True
     """
 
-    def category(self, transform: object) -> TransformCategory:
+    @staticmethod
+    def category(transform: object) -> TransformCategory:
         """Return the TransformCategory of the given Kornia transform.
 
         Args:
@@ -78,8 +82,8 @@ class KorniaAdapter:
         )
         return TransformCategory.SPATIAL_KERNEL
 
+    @staticmethod
     def sample_params(
-        self,
         transform: object,
         input_shape: tuple[int, int, int, int],
         device: torch.device,
@@ -104,8 +108,8 @@ class KorniaAdapter:
         # Flips have no sampled params — p-mask handles them.
         # Store batch metadata so build_matrix can construct the right shape.
         if TRANSFORM_REGISTRY and ttype in (
-            _K.RandomHorizontalFlip,
-            _K.RandomVerticalFlip,
+            _RandomHorizontalFlip,
+            _RandomVerticalFlip,
         ):
             return {
                 "_batch_size": torch.tensor([B], device=device, dtype=torch.int64),
@@ -114,13 +118,13 @@ class KorniaAdapter:
         # Generate Kornia-native params
         params = transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
 
-        if TRANSFORM_REGISTRY and ttype is _K.RandomRotation:
+        if TRANSFORM_REGISTRY and ttype is _RandomRotation:
             # Negate: Kornia's positive angle is CW; our rotation_matrix uses CCW convention.
             return {
                 "angle_rad": -torch.deg2rad(params["degrees"].to(device=device)),
             }
 
-        if TRANSFORM_REGISTRY and ttype is _K.RandomAffine:
+        if TRANSFORM_REGISTRY and ttype is _RandomAffine:
             result: dict[str, torch.Tensor] = {}
 
             # Rotation (degrees -> radians); negate to match Kornia's CW sign convention.
@@ -151,8 +155,8 @@ class KorniaAdapter:
         # Unknown — return empty
         return {}
 
+    @staticmethod
     def build_matrix(
-        self,
         transform: object,
         params: dict[str, torch.Tensor],
         H: int,  # noqa: N803
@@ -171,28 +175,28 @@ class KorniaAdapter:
         """
         ttype = type(transform)
 
-        if TRANSFORM_REGISTRY and ttype is _K.RandomHorizontalFlip:
+        if TRANSFORM_REGISTRY and ttype is _RandomHorizontalFlip:
             B = int(params["_batch_size"].item())  # noqa: N806
             device = params["_batch_size"].device
             return hflip_matrix(W=W, batch_size=B, device=device, dtype=torch.float32)
 
-        if TRANSFORM_REGISTRY and ttype is _K.RandomVerticalFlip:
+        if TRANSFORM_REGISTRY and ttype is _RandomVerticalFlip:
             B = int(params["_batch_size"].item())  # noqa: N806
             device = params["_batch_size"].device
             return vflip_matrix(H=H, batch_size=B, device=device, dtype=torch.float32)
 
-        if TRANSFORM_REGISTRY and ttype is _K.RandomRotation:
+        if TRANSFORM_REGISTRY and ttype is _RandomRotation:
             angle_rad = params["angle_rad"]
             return rotation_matrix(angle_rad, H=H, W=W)
 
-        if TRANSFORM_REGISTRY and ttype is _K.RandomAffine:
-            return self._build_affine_matrix(params, H, W)
+        if TRANSFORM_REGISTRY and ttype is _RandomAffine:
+            return KorniaAdapter._build_affine_matrix(params, H, W)
 
         # Fallback: identity
         return torch.eye(3).unsqueeze(0)
 
+    @staticmethod
     def _build_affine_matrix(
-        self,
         params: dict[str, torch.Tensor],
         H: int,  # noqa: N803
         W: int,  # noqa: N803
@@ -258,8 +262,8 @@ class KorniaAdapter:
 
         return acc
 
+    @staticmethod
     def call_nonfused(
-        self,
         transform: object,
         image: torch.Tensor,
         **kwargs: object,
