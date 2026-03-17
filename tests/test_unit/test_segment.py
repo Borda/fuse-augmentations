@@ -1,11 +1,11 @@
-"""Unit tests for _segment.py -- spec tests #42-47 + build_segments tests."""
+"""Unit tests for _segment.py -- spec tests #42-47 + build_segments + ExactSegment tests."""
 
 from __future__ import annotations
 
 import torch
 
 from fuse_augmentations._matrix import inv3x3, matmul3x3
-from fuse_augmentations._segment import FusedAffineSegment, build_segments
+from fuse_augmentations._segment import ExactSegment, FusedAffineSegment, build_segments, reorder_pointwise
 from fuse_augmentations._types import TransformCategory
 
 
@@ -330,3 +330,169 @@ class TestLastMatrixProperty:
 
         assert seg.last_matrix is not None
         assert seg.last_matrix.shape == (2, 3, 3)
+
+
+# ---------------------------------------------------------------------------
+# ExactSegment tests
+# ---------------------------------------------------------------------------
+
+
+class _HFlipTransform:
+    """Stub HFlip transform for ExactSegment tests."""
+
+    def __init__(self, p=1.0):
+        self.p = p
+        self._category = TransformCategory.GEOMETRIC_EXACT
+        self._flip_dims = [3]  # width axis
+
+
+class _VFlipTransform:
+    """Stub VFlip transform for ExactSegment tests."""
+
+    def __init__(self, p=1.0):
+        self.p = p
+        self._category = TransformCategory.GEOMETRIC_EXACT
+        self._flip_dims = [2]  # height axis
+
+
+class _FlipAdapter:
+    """Adapter stub that supports exact_flip_dims for ExactSegment tests."""
+
+    def category(self, transform):
+        return getattr(transform, "_category", TransformCategory.SPATIAL_KERNEL)
+
+    def exact_flip_dims(self, transform):
+        return getattr(transform, "_flip_dims", [])
+
+    def sample_params(self, transform, input_shape, device):
+        bsz = input_shape[0]
+        return {"_batch_size": torch.tensor([bsz])}
+
+    def build_matrix(self, transform, params, height, width):
+        bsz = int(params["_batch_size"].item())
+        return torch.eye(3).unsqueeze(0).expand(bsz, -1, -1)
+
+    def call_nonfused(self, transform, image, **kwargs):
+        return image
+
+
+class TestExactSegmentLossless:
+    """Verify ExactSegment applies lossless flips via tensor.flip."""
+
+    def test_hflip_p1_matches_tensor_flip(self):
+        """HFlip with p=1.0 produces pixel-exact same result as image.flip(dims=[3])."""
+        adapter = _FlipAdapter()
+        t = _HFlipTransform(p=1.0)
+        seg = ExactSegment([t], adapter)
+
+        img = torch.rand(2, 3, 8, 8)
+        out = seg(img)
+        expected = img.flip(dims=[3])
+
+        assert torch.equal(out, expected), "ExactSegment HFlip should be pixel-exact"
+
+    def test_vflip_p1_matches_tensor_flip(self):
+        """VFlip with p=1.0 produces pixel-exact same result as image.flip(dims=[2])."""
+        adapter = _FlipAdapter()
+        t = _VFlipTransform(p=1.0)
+        seg = ExactSegment([t], adapter)
+
+        img = torch.rand(2, 3, 8, 8)
+        out = seg(img)
+        expected = img.flip(dims=[2])
+
+        assert torch.equal(out, expected), "ExactSegment VFlip should be pixel-exact"
+
+
+class TestExactSegmentP0:
+    """Verify p=0 leaves the image unchanged."""
+
+    def test_p0_output_equals_input(self):
+        """ExactSegment with p=0 returns the input tensor unchanged."""
+        adapter = _FlipAdapter()
+        t = _HFlipTransform(p=0.0)
+        seg = ExactSegment([t], adapter)
+
+        img = torch.rand(2, 3, 8, 8)
+        out = seg(img)
+
+        assert torch.equal(out, img), "p=0 should leave image unchanged"
+
+
+class TestExactSegmentDoubleFlip:
+    """Verify HFlip then VFlip with p=1 composes correctly."""
+
+    def test_hflip_then_vflip(self):
+        """HFlip then VFlip with p=1 is same as image.flip(dims=[2, 3]) sequentially."""
+        adapter = _FlipAdapter()
+        t_h = _HFlipTransform(p=1.0)
+        t_v = _VFlipTransform(p=1.0)
+        seg = ExactSegment([t_h, t_v], adapter)
+
+        img = torch.rand(2, 3, 8, 8)
+        out = seg(img)
+        # Sequential: first flip width, then flip height
+        expected = img.flip(dims=[3]).flip(dims=[2])
+
+        assert torch.equal(out, expected), "HFlip+VFlip should match sequential tensor.flip"
+
+
+class TestExactSegmentPerSampleMask:
+    """Verify per-sample p=0.5 masking in ExactSegment."""
+
+    def test_p05_heterogeneous_batch(self):
+        """With B=8 and p=0.5, at least one sample changed, at least one unchanged."""
+        adapter = _FlipAdapter()
+        t = _HFlipTransform(p=0.5)
+        seg = ExactSegment([t], adapter)
+
+        bsz = 8
+        img = torch.rand(bsz, 1, 8, 8)
+        out = seg(img)
+
+        diffs = (out - img).abs().amax(dim=(1, 2, 3))
+        has_changed = (diffs > 1e-6).any()
+        has_unchanged = (diffs < 1e-6).any()
+
+        assert has_changed, "Expected at least one sample to be flipped"
+        assert has_unchanged, "Expected at least one sample to remain unchanged"
+
+
+class TestExactSegmentLastMatrix:
+    """Verify ExactSegment.last_matrix is always None."""
+
+    def test_last_matrix_none_before_forward(self):
+        """last_matrix is None before any forward pass."""
+        adapter = _FlipAdapter()
+        t = _HFlipTransform(p=1.0)
+        seg = ExactSegment([t], adapter)
+        assert seg.last_matrix is None
+
+    def test_last_matrix_none_after_forward(self):
+        """last_matrix remains None after forward (ExactSegment has no matrix)."""
+        adapter = _FlipAdapter()
+        t = _HFlipTransform(p=1.0)
+        seg = ExactSegment([t], adapter)
+        seg(torch.rand(2, 3, 8, 8))
+        assert seg.last_matrix is None
+
+
+class TestPointwiseReorderBuildSegments:
+    """POINTWISE reorder + build_segments integration: verify correct segmentation."""
+
+    def test_reorder_then_build_fuses_geometric(self):
+        """[Rotate, Brightness, Scale] with POINTWISE reorder -> 1 FusedAffineSegment + 1 passthrough."""
+        adapter = _StubAdapter()
+        rotate = _StubTransform(_identity_matrix_fn, category=TransformCategory.GEOMETRIC_INTERP)
+        brightness = _PointwiseTransform()
+        scale = _StubTransform(_identity_matrix_fn, category=TransformCategory.GEOMETRIC_INTERP)
+
+        reordered = reorder_pointwise([rotate, brightness, scale], adapter)
+        segments = build_segments(reordered, adapter)
+
+        # After reorder: [Rotate, Scale, Brightness]
+        # build_segments: FusedAffineSegment([Rotate, Scale]), passthrough(Brightness)
+        assert len(segments) == 2
+        assert isinstance(segments[0], FusedAffineSegment)
+        assert len(segments[0].transforms) == 2
+        assert segments[1] is brightness
