@@ -10,7 +10,7 @@ Example:
     'fuse_aug'
     >>> from fuse_aug import Compose
     >>> Compose.__name__
-    'Compose'
+    'FusedAffineCompose'
 """
 
 from fuse_augmentations import *  # noqa: F403

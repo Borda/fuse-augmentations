@@ -7,7 +7,7 @@ Example:
     >>> from fuse_augmentations import Compose
     >>> pipe = Compose([])
     >>> pipe.__class__.__name__
-    'Compose'
+    'FusedAffineCompose'
 """
 
 from __future__ import annotations

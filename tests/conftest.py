@@ -2,15 +2,20 @@
 
 import contextlib
 import os
+import random
 
+import numpy as np
 import pytest
 import torch
 
 
 @pytest.fixture(autouse=True)
 def reset_random_seeds() -> None:
-    """Reset all random seeds before each test for reproducibility."""
+    """Reset all random seeds (torch, numpy, stdlib random, CUDA) before each test."""
     torch.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+    np.random.seed(42)
+    random.seed(42)
 
 
 @pytest.fixture(autouse=True)
@@ -49,12 +54,10 @@ def device() -> torch.device:
 @pytest.fixture
 def img_batch() -> torch.Tensor:
     """Return a (4, 3, 64, 64) float32 image batch on CPU."""
-    torch.manual_seed(0)
     return torch.rand(4, 3, 64, 64)
 
 
 @pytest.fixture
 def img_single() -> torch.Tensor:
     """Return a (1, 3, 64, 64) float32 image on CPU."""
-    torch.manual_seed(0)
     return torch.rand(1, 3, 64, 64)

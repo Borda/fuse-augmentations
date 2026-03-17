@@ -6,6 +6,9 @@ on: # Trigger the workflow on push or pull request, but only for the main branch
     branches: [main]
   pull_request: {}
 
+env:
+  PYTHON_VERSION: "3.10"
+
 defaults:
   run:
     shell: bash
@@ -16,20 +19,24 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
         # for private repo - first is the checkout step, which needs to use unlimited fetch depth for pushing
         #with:
         #  fetch-depth: 0
-      - uses: actions/setup-python@v5
-
-      - name: set PY
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: 🔑 Compute pre-commit cache key
         run: echo "PY=$(python -VV | sha256sum | cut -d' ' -f1)" >> $GITHUB_ENV
-      - uses: actions/cache@v4
+      - name: 💾 Cache pre-commit environments
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pre-commit
           key: pre-commit|${{ env.PY }}|${{ hashFiles('.pre-commit-config.yaml') }}
-
-      - uses: pre-commit/action@v3.0.1
+      - name: 🎨 Run pre-commit
+        uses: pre-commit/action@v3.0.1
         # this action also provides an additional behaviour when used in private repositories
         # when configured with a GitHub token, the action will push back fixes to the pull request branch
         #with:
@@ -40,18 +47,20 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
-      - uses: astral-sh/setup-uv@v5
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: 🐍 Install uv
+        uses: astral-sh/setup-uv@v7.2.0
         with:
-          enable-cache: true
-
-      - name: Install dependencies
+          python-version: ${{ env.PYTHON_VERSION }}
+          activate-environment: true
+      - name: 📦 Install dependencies
         env:
           UV_TORCH_BACKEND: cpu
         run: uv pip install -e ".[all]" --group dev
-
-      - name: mypy
+      - name: 🔬 Run mypy
         run: mypy src/

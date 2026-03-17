@@ -11,10 +11,6 @@ from fuse_augmentations._types import (
     TransformCategory,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _full_adapter_methods():
     """Return a dict of all four TransformAdapter method implementations."""
@@ -26,13 +22,8 @@ def _full_adapter_methods():
     }
 
 
-# ---------------------------------------------------------------------------
-# TransformCategory
-# ---------------------------------------------------------------------------
-
-
 class TestTransformCategory:
-    """TransformCategory enum — membership and string values."""
+    """TransformCategory enum -- membership and string values."""
 
     @pytest.mark.parametrize(
         "member, expected_value",
@@ -44,12 +35,15 @@ class TestTransformCategory:
         ],
     )
     def test_value(self, member, expected_value):
+        """Enum member has the expected string value."""
         assert member.value == expected_value, f"{member.name}.value should be {expected_value!r}"
 
     def test_exactly_four_members(self):
+        """TransformCategory has exactly 4 members."""
         assert len(TransformCategory) == 4, f"Expected 4 members, got {len(TransformCategory)}"
 
     def test_member_names(self):
+        """TransformCategory member names match the spec."""
         assert {m.name for m in TransformCategory} == {
             "GEOMETRIC_INTERP",
             "GEOMETRIC_EXACT",
@@ -59,16 +53,12 @@ class TestTransformCategory:
 
     @pytest.mark.parametrize("member", list(TransformCategory))
     def test_value_is_str(self, member):
+        """Each TransformCategory member value is a string."""
         assert isinstance(member.value, str), f"{member.name}.value should be str, got {type(member.value).__name__}"
 
 
-# ---------------------------------------------------------------------------
-# ReorderPolicy
-# ---------------------------------------------------------------------------
-
-
 class TestReorderPolicy:
-    """ReorderPolicy enum — membership and string values."""
+    """ReorderPolicy enum -- membership and string values."""
 
     @pytest.mark.parametrize(
         "member, expected_value",
@@ -79,26 +69,25 @@ class TestReorderPolicy:
         ],
     )
     def test_value(self, member, expected_value):
+        """Enum member has the expected string value."""
         assert member.value == expected_value, f"{member.name}.value should be {expected_value!r}"
 
     def test_exactly_three_members(self):
+        """ReorderPolicy has exactly 3 members."""
         assert len(ReorderPolicy) == 3, f"Expected 3 members, got {len(ReorderPolicy)}"
 
     def test_member_names(self):
+        """ReorderPolicy member names match the spec."""
         assert {m.name for m in ReorderPolicy} == {"NONE", "POINTWISE", "AGGRESSIVE"}
 
     @pytest.mark.parametrize("member", list(ReorderPolicy))
     def test_value_is_str(self, member):
+        """Each ReorderPolicy member value is a string."""
         assert isinstance(member.value, str), f"{member.name}.value should be str, got {type(member.value).__name__}"
 
 
-# ---------------------------------------------------------------------------
-# InterpolationMode
-# ---------------------------------------------------------------------------
-
-
 class TestInterpolationMode:
-    """InterpolationMode IntEnum — values, ordering, and int usability."""
+    """InterpolationMode IntEnum -- values, ordering, and int usability."""
 
     @pytest.mark.parametrize(
         "member, expected_int",
@@ -109,9 +98,11 @@ class TestInterpolationMode:
         ],
     )
     def test_int_value(self, member, expected_int):
+        """Enum member has the expected integer value."""
         assert int(member) == expected_int, f"{member.name} should equal {expected_int}"
 
     def test_ordering_nearest_lt_bilinear_lt_bicubic(self):
+        """NEAREST < BILINEAR < BICUBIC ordering holds."""
         assert InterpolationMode.NEAREST < InterpolationMode.BILINEAR < InterpolationMode.BICUBIC
 
     @pytest.mark.parametrize(
@@ -123,6 +114,7 @@ class TestInterpolationMode:
         ],
     )
     def test_usable_as_int_in_arithmetic(self, member, expected_int):
+        """IntEnum member + 0 equals its integer value."""
         # IntEnum members must be interchangeable with plain ints.
         result = member + 0
         assert result == expected_int, f"{member.name} + 0 should equal {expected_int}"
@@ -136,19 +128,15 @@ class TestInterpolationMode:
         ],
     )
     def test_usable_as_list_index(self, member, expected_int):
+        """IntEnum member can be used as a list index."""
         seq = ["a", "b", "c"]
         assert seq[member] == seq[expected_int], (
             f"Indexing with {member.name} should behave identically to indexing with {expected_int}"
         )
 
 
-# ---------------------------------------------------------------------------
-# PaddingMode
-# ---------------------------------------------------------------------------
-
-
 class TestPaddingMode:
-    """PaddingMode IntEnum — values, ordering, and int usability."""
+    """PaddingMode IntEnum -- values, ordering, and int usability."""
 
     @pytest.mark.parametrize(
         "member, expected_int",
@@ -159,9 +147,11 @@ class TestPaddingMode:
         ],
     )
     def test_int_value(self, member, expected_int):
+        """Enum member has the expected integer value."""
         assert int(member) == expected_int, f"{member.name} should equal {expected_int}"
 
     def test_ordering_zeros_lt_border_lt_reflection(self):
+        """ZEROS < BORDER < REFLECTION ordering holds."""
         assert PaddingMode.ZEROS < PaddingMode.BORDER < PaddingMode.REFLECTION
 
     @pytest.mark.parametrize(
@@ -173,6 +163,7 @@ class TestPaddingMode:
         ],
     )
     def test_usable_as_int_in_arithmetic(self, member, expected_int):
+        """IntEnum member + 0 equals its integer value."""
         result = member + 0
         assert result == expected_int, f"{member.name} + 0 should equal {expected_int}"
 
@@ -185,19 +176,15 @@ class TestPaddingMode:
         ],
     )
     def test_usable_as_list_index(self, member, expected_int):
+        """IntEnum member can be used as a list index."""
         seq = ["a", "b", "c"]
         assert seq[member] == seq[expected_int], (
             f"Indexing with {member.name} should behave identically to indexing with {expected_int}"
         )
 
 
-# ---------------------------------------------------------------------------
-# TransformAdapter Protocol
-# ---------------------------------------------------------------------------
-
-
 class TestTransformAdapterProtocol:
-    """TransformAdapter @runtime_checkable Protocol — isinstance contract."""
+    """TransformAdapter @runtime_checkable Protocol -- isinstance contract."""
 
     def test_conforming_class_passes_isinstance(self):
         """A class implementing all four methods satisfies TransformAdapter."""
@@ -219,6 +206,7 @@ class TestTransformAdapterProtocol:
 
     @pytest.mark.parametrize("non_adapter", [42, "hello", None, [], {}])
     def test_non_adapter_objects_fail_isinstance(self, non_adapter):
+        """Non-adapter objects (int, str, None, list, dict) fail isinstance."""
         assert not isinstance(non_adapter, TransformAdapter), (
             f"{non_adapter!r} should not satisfy the TransformAdapter protocol"
         )
