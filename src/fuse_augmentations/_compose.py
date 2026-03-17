@@ -21,7 +21,7 @@ import torch
 from torch import nn
 
 from fuse_augmentations._backend import Backend, detect_backend
-from fuse_augmentations._segment import FusedAffineSegment, build_segments, reorder_pointwise
+from fuse_augmentations._segment import ExactSegment, FusedAffineSegment, build_segments, reorder_pointwise
 from fuse_augmentations._types import ReorderPolicy, TransformAdapter
 
 if TYPE_CHECKING:
@@ -108,6 +108,8 @@ class FusedAffineCompose(nn.Module):
             if isinstance(seg, FusedAffineSegment):
                 image = seg(image)
                 self._last_transform_matrix = seg.last_matrix
+            elif isinstance(seg, ExactSegment):
+                image = seg(image)
             else:
                 # Passthrough: apply via adapter's call_nonfused
                 if self._adapter is None:
@@ -150,6 +152,8 @@ class FusedAffineCompose(nn.Module):
                 n = len(seg.transforms)
                 if n > 1:
                     total += n - 1
+            elif isinstance(seg, ExactSegment):
+                total += len(seg.transforms)
         return total
 
     @property
@@ -166,6 +170,9 @@ class FusedAffineCompose(nn.Module):
             if isinstance(seg, FusedAffineSegment):
                 names = [type(t).__name__ for t in seg.transforms]
                 parts.append(f"fused({', '.join(names)})")
+            elif isinstance(seg, ExactSegment):
+                names = [type(t).__name__ for t in seg.transforms]
+                parts.append(f"exact({', '.join(names)})")
             else:
                 parts.append(f"passthrough({type(seg).__name__})")
         return " \u2192 ".join(parts) if parts else "empty"
