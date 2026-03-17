@@ -62,7 +62,14 @@ class ExactSegment(nn.Module):
 
         for tfm in self.transforms:
             prob = getattr(tfm, "p", 1.0)
-            active = torch.rand(bsz, device=device) < prob
+            same_on_batch = getattr(tfm, "same_on_batch", False)
+            if same_on_batch:
+                # Single Bernoulli draw shared across the entire batch.
+                active_scalar = torch.rand((), device=device) < prob
+                active = active_scalar.expand(bsz)
+            else:
+                # Independent Bernoulli draw per sample.
+                active = torch.rand(bsz, device=device) < prob
 
             flip_dims = self.adapter.exact_flip_dims(tfm)  # type: ignore[attr-defined]
             flipped = image.flip(dims=flip_dims)

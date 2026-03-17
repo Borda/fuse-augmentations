@@ -121,8 +121,6 @@ class TestNNModuleIntegration:
 # Spec tests #58-60: n_warps_saved and fusion_plan with real Kornia transforms
 # ---------------------------------------------------------------------------
 
-_kornia_available = pytest.importorskip.__module__ is not None  # always True; guard below
-
 
 @pytest.mark.integration
 class TestNWarpsSavedWithPolicy:
