@@ -8,6 +8,7 @@ Example:
     >>> adapter = KorniaAdapter()
     >>> adapter  # doctest: +ELLIPSIS
     <...KorniaAdapter...>
+
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ class KorniaAdapter:
         >>> adapter = KorniaAdapter()
         >>> isinstance(adapter, KorniaAdapter)
         True
+
     """
 
     @staticmethod
@@ -71,6 +73,7 @@ class KorniaAdapter:
         Returns:
             The category for the transform. Unknown transforms default to
             ``SPATIAL_KERNEL`` with a ``UserWarning``.
+
         """
         cat = TRANSFORM_REGISTRY.get(type(transform))
         if cat is not None:
@@ -100,6 +103,7 @@ class KorniaAdapter:
 
         Returns:
             Dict of canonical parameter tensors. Empty for flip transforms.
+
         """
         ttype = type(transform)
 
@@ -172,6 +176,7 @@ class KorniaAdapter:
 
         Returns:
             ``(B, 3, 3)`` forward affine matrix in pixel coordinates.
+
         """
         ttype = type(transform)
 
@@ -276,6 +281,7 @@ class KorniaAdapter:
 
         Raises:
             TypeError: If the transform is not a recognised flip type.
+
         """
         ttype = type(transform)
         if TRANSFORM_REGISTRY and ttype is _RandomHorizontalFlip:
@@ -299,5 +305,6 @@ class KorniaAdapter:
 
         Returns:
             Transformed image tensor.
+
         """
         return transform(image)  # type: ignore[operator, no-any-return]

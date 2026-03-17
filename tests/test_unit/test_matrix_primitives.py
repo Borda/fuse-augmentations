@@ -67,13 +67,13 @@ class TestInvolution:
     """Verify that flip matrices are self-inverse (involutions)."""
 
     def test_hflip_involution(self) -> None:
-        """hflip @ hflip == identity."""
+        """Hflip @ Hflip == identity."""
         mtx = hflip_matrix(W=64, batch_size=1, device=DEVICE, dtype=DTYPE)
         product = matmul3x3(mtx, mtx)
         assert torch.allclose(product, _eye(1), atol=1e-10)
 
     def test_vflip_involution(self) -> None:
-        """vflip @ vflip == identity."""
+        """Vflip @ Vflip == identity."""
         mtx = vflip_matrix(H=64, batch_size=1, device=DEVICE, dtype=DTYPE)
         product = matmul3x3(mtx, mtx)
         assert torch.allclose(product, _eye(1), atol=1e-10)
@@ -139,7 +139,7 @@ class TestCornerMappingHFlip:
     """Verify hflip maps pixel corners correctly for W=4."""
 
     def test_hflip_corners_W4(self) -> None:
-        """hflip maps (0,0)->(3,0), (3,0)->(0,0), (1,1)->(2,1) for W=4."""
+        """Hflip maps (0,0)->(3,0), (3,0)->(0,0), (1,1)->(2,1) for W=4."""
         mtx = hflip_matrix(W=4, batch_size=1, device=DEVICE, dtype=DTYPE)
         # (0,0) -> (3,0)
         x, y = _apply_point(mtx, 0.0, 0.0)
@@ -162,6 +162,7 @@ class TestRotation90CCW:
         """90-degree CCW rotation around center of a 4x4 image.
 
         With cx=cy=1.5: (0,0) -> (3,0), (3,0) -> (3,3), (3,3) -> (0,3), (0,3) -> (0,0).
+
         """
         height = width = 4
         angle = torch.tensor([math.pi / 2], dtype=DTYPE)  # 90 deg CCW
@@ -251,7 +252,7 @@ class TestNormalizeRoundTrip:
     """Verify denormalize(normalize(M)) recovers M."""
 
     def test_normalize_inv_normalize_is_identity(self) -> None:
-        """denormalize(normalize(M)) should recover M."""
+        """Denormalize(normalize(M)) should recover M."""
         height, width = 64, 64
         angle = torch.tensor([math.radians(30)], dtype=DTYPE)
         mtx = rotation_matrix(angle, H=height, W=width)
@@ -348,7 +349,7 @@ class TestInv3x3:
     """Verify batched 3x3 matrix inversion."""
 
     def test_inverse_round_trip(self) -> None:
-        """inv(M) @ M == I for random well-conditioned matrices."""
+        """Inv(M) @ M == I for random well-conditioned matrices."""
         mtx = torch.randn(4, 3, 3, dtype=DTYPE)
         # Make them well-conditioned by adding scaled identity
         mtx = mtx + 5.0 * torch.eye(3, dtype=DTYPE).unsqueeze(0).expand(4, -1, -1)
@@ -366,10 +367,10 @@ class TestInv3x3:
     def test_near_singular_boundary_no_raise(self) -> None:
         """A scale=0.01 matrix (det≈1e-4) clamps rather than raising.
 
-        The eager-mode raise threshold is eps*1e-3 ≈ 2e-19 for float64,
-        while the clamp threshold is eps*1e3 ≈ 2e-13.  A scale-0.01 matrix
-        has |det|=1e-4, well above both thresholds, so inv3x3 must succeed
-        without raising and return a finite result.
+        The eager-mode raise threshold is eps*1e-3 ≈ 2e-19 for float64, while the clamp threshold is eps*1e3 ≈ 2e-13.  A
+        scale-0.01 matrix has |det|=1e-4, well above both thresholds, so inv3x3 must succeed without raising and return
+        a finite result.
+
         """
         # scale_matrix with sx=sy=0.01 produces det ≈ (0.01)^2 = 1e-4
         mtx = scale_matrix(

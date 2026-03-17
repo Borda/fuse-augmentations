@@ -10,6 +10,7 @@ Example:
     >>> M = rotation_matrix(torch.zeros(2), H=64, W=64)
     >>> M.shape
     torch.Size([2, 3, 3])
+
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ def rotation_matrix(angle_rad: torch.Tensor, H: int, W: int) -> torch.Tensor:  #
         >>> M = rotation_matrix(torch.zeros(2), H=64, W=64)
         >>> torch.allclose(M, torch.eye(3).unsqueeze(0).expand(2, -1, -1))
         True
+
     """
     cx = (W - 1) / 2.0
     cy = (H - 1) / 2.0
@@ -64,6 +66,7 @@ def scale_matrix(sx: torch.Tensor, sy: torch.Tensor, H: int, W: int) -> torch.Te
         >>> M = scale_matrix(torch.ones(1), torch.ones(1), H=64, W=64)
         >>> torch.allclose(M, torch.eye(3).unsqueeze(0))
         True
+
     """
     cx = (W - 1) / 2.0
     cy = (H - 1) / 2.0
@@ -95,6 +98,7 @@ def shear_x_matrix(shear_x_tan: torch.Tensor, H: int, W: int) -> torch.Tensor:  
         >>> M = shear_x_matrix(torch.zeros(1), H=64, W=64)
         >>> torch.allclose(M, torch.eye(3).unsqueeze(0))
         True
+
     """
     cy = (H - 1) / 2.0
     B = shear_x_tan.shape[0]  # noqa: N806
@@ -125,6 +129,7 @@ def shear_y_matrix(shear_y_tan: torch.Tensor, H: int, W: int) -> torch.Tensor:  
         >>> M = shear_y_matrix(torch.zeros(1), H=64, W=64)
         >>> torch.allclose(M, torch.eye(3).unsqueeze(0))
         True
+
     """
     cx = (W - 1) / 2.0
     B = shear_y_tan.shape[0]  # noqa: N806
@@ -151,6 +156,7 @@ def translate_matrix(tx: torch.Tensor, ty: torch.Tensor) -> torch.Tensor:
         >>> M = translate_matrix(torch.zeros(1), torch.zeros(1))
         >>> torch.allclose(M, torch.eye(3).unsqueeze(0))
         True
+
     """
     B = tx.shape[0]  # noqa: N806
     zeros = torch.zeros(B, device=tx.device, dtype=tx.dtype)
@@ -180,6 +186,7 @@ def hflip_matrix(W: int, batch_size: int, device: torch.device, dtype: torch.dty
         -1.0
         >>> M[0, 0, 2].item()
         3.0
+
     """
     M = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)  # noqa: N806
     M[:, 0, 0] = -1.0
@@ -208,6 +215,7 @@ def vflip_matrix(H: int, batch_size: int, device: torch.device, dtype: torch.dty
         -1.0
         >>> M[0, 1, 2].item()
         3.0
+
     """
     M = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)  # noqa: N806
     M[:, 0, 0] = 1.0
@@ -236,6 +244,7 @@ def matmul3x3(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:  # noqa: N803
         >>> R = matmul3x3(I, I)
         >>> torch.allclose(R, I)
         True
+
     """
     a = A.unbind(dim=-2)  # tuple of 3 rows, each (B, 3)
     b = B.unbind(dim=-1)  # tuple of 3 cols, each (B, 3)
@@ -271,6 +280,7 @@ def inv3x3(M: torch.Tensor) -> torch.Tensor:  # noqa: N803
         >>> I = torch.eye(3).unsqueeze(0)
         >>> torch.allclose(inv3x3(I), I)
         True
+
     """
     a, b, c = M[:, 0, 0], M[:, 0, 1], M[:, 0, 2]
     d, e, f = M[:, 1, 0], M[:, 1, 1], M[:, 1, 2]
@@ -359,6 +369,7 @@ def normalize_matrix(M: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: 
         >>> M_norm = normalize_matrix(torch.eye(3).unsqueeze(0), H=64, W=64)
         >>> M_norm.shape
         torch.Size([1, 3, 3])
+
     """
     if W == 1:
         msg = "W must be >= 2 for normalization (W=1 causes division by zero)"

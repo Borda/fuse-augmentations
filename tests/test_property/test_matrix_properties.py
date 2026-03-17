@@ -40,6 +40,7 @@ Example: the rotation group test generates random ``(a_deg, b_deg, H, W)`` tuple
 
 If this property fails for any generated input, Hypothesis shrinks the counterexample to the
 smallest ``(a_deg, b_deg, H, W)`` that still triggers the failure, making the root cause obvious.
+
 """
 
 import math
@@ -65,7 +66,7 @@ DEVICE = torch.device("cpu")
 @given(W=integers(min_value=2, max_value=4096))
 @settings(max_examples=50)
 def test_hflip_involution(W: int) -> None:
-    """hflip @ hflip == identity for any width."""
+    """Hflip @ Hflip == identity for any width."""
     M = hflip_matrix(W=W, batch_size=1, device=DEVICE, dtype=DTYPE)
     product = matmul3x3(M, M)
     I = torch.eye(3, dtype=DTYPE).unsqueeze(0)
@@ -75,7 +76,7 @@ def test_hflip_involution(W: int) -> None:
 @given(H=integers(min_value=2, max_value=4096))
 @settings(max_examples=50)
 def test_vflip_involution(H: int) -> None:
-    """vflip @ vflip == identity for any height."""
+    """Vflip @ Vflip == identity for any height."""
     M = vflip_matrix(H=H, batch_size=1, device=DEVICE, dtype=DTYPE)
     product = matmul3x3(M, M)
     I = torch.eye(3, dtype=DTYPE).unsqueeze(0)
@@ -125,7 +126,7 @@ def test_scale_group(a: float, b: float, c: float, d: float, H: int, W: int) -> 
 )
 @settings(max_examples=50)
 def test_normalize_round_trip(H: int, W: int, angle_deg: float) -> None:
-    """denormalize(normalize(M)) recovers M for arbitrary rotations and sizes."""
+    """Denormalize(normalize(M)) recovers M for arbitrary rotations and sizes."""
     angle_rad = torch.tensor([math.radians(angle_deg)], dtype=DTYPE)
     M = rotation_matrix(angle_rad, H=H, W=W)
     M_inv = inv3x3(M)
@@ -150,7 +151,11 @@ def test_normalize_round_trip(H: int, W: int, angle_deg: float) -> None:
 )
 @settings(max_examples=50)
 def test_determinant_product(n: int, seed: int) -> None:
-    """det(A @ B @ ...) == det(A) * det(B) * ... for random well-conditioned matrices."""
+    """Det(A @ B @ ...) == det(A) * det(B) * ...
+
+    for random well-conditioned matrices.
+
+    """
     torch.manual_seed(seed)
     matrices = [torch.randn(1, 3, 3, dtype=DTYPE) + 3.0 * torch.eye(3, dtype=DTYPE).unsqueeze(0) for _ in range(n)]
 
@@ -170,7 +175,7 @@ def test_determinant_product(n: int, seed: int) -> None:
 @given(seed=integers(min_value=0, max_value=10000))
 @settings(max_examples=100)
 def test_inverse_round_trip(seed: int) -> None:
-    """inv(M) @ M == I for random well-conditioned matrices."""
+    """Inv(M) @ M == I for random well-conditioned matrices."""
     torch.manual_seed(seed)
     M = torch.randn(1, 3, 3, dtype=DTYPE) + 5.0 * torch.eye(3, dtype=DTYPE).unsqueeze(0)
     M_inv = inv3x3(M)

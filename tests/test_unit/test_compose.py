@@ -1,7 +1,8 @@
 """Unit tests for _compose.py -- spec tests #23, #58-60 (empty pipeline, fusion_plan, n_warps_saved).
 
-Pure-unit tests use stub transforms and do NOT require Kornia.
-Integration tests (marked @pytest.mark.integration) require kornia >= 0.6.12.
+Pure-unit tests use stub transforms and do NOT require Kornia. Integration tests (marked @pytest.mark.integration)
+require kornia >= 0.6.12.
+
 """
 
 from __future__ import annotations
@@ -142,9 +143,7 @@ class TestNWarpsSavedWithPolicy:
             ],
             reorder=ReorderPolicy.NONE,
         )
-        assert pipe.n_warps_saved == 2, (
-            f"3 ops fused into 1 segment should save 2 warps, got {pipe.n_warps_saved}"
-        )
+        assert pipe.n_warps_saved == 2, f"3 ops fused into 1 segment should save 2 warps, got {pipe.n_warps_saved}"
 
     def test_barrier_prevents_fusion(self):
         """#59: [Rotate, GaussianBlur, Scale] -> n_warps_saved == 0 (barrier prevents fusion)."""
