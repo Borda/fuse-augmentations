@@ -448,7 +448,28 @@ class TestExactSegmentPerSampleMask:
 
         bsz = 8
         img = torch.rand(bsz, 1, 8, 8)
-        out = seg(img)
+
+        # Make the per-sample mask used inside ExactSegment deterministic so that
+        # some samples are flipped and some are not, avoiding flaky behavior.
+        pattern = torch.tensor([0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0])
+        orig_rand = torch.rand
+
+        def _deterministic_rand(*size, **kwargs):
+            device = kwargs.get("device", None)
+            dtype = kwargs.get("dtype", torch.float32)
+            # Intercept calls that generate a per-sample mask over the batch.
+            if len(size) >= 1 and size[0] == bsz:
+                base = torch.zeros(size, device=device, dtype=dtype)
+                mask = pattern.to(device=device, dtype=dtype)
+                view_shape = (bsz,) + (1,) * (base.ndim - 1)
+                return base + mask.view(view_shape)
+            return orig_rand(*size, **kwargs)
+
+        try:
+            torch.rand = _deterministic_rand
+            out = seg(img)
+        finally:
+            torch.rand = orig_rand
 
         diffs = (out - img).abs().amax(dim=(1, 2, 3))
         has_changed = (diffs > 1e-6).any()
