@@ -21,7 +21,7 @@ import torch
 from torch import nn
 
 from fuse_augmentations._backend import Backend, detect_backend
-from fuse_augmentations._segment import FusedAffineSegment, build_segments
+from fuse_augmentations._segment import FusedAffineSegment, build_segments, reorder_pointwise
 from fuse_augmentations._types import ReorderPolicy, TransformAdapter
 
 if TYPE_CHECKING:
@@ -38,8 +38,9 @@ class FusedAffineCompose(nn.Module):
     Args:
         transforms: List of augmentation transform objects.
         reorder: Reorder policy for transforms before segmentation.
-            ``NONE`` and ``POINTWISE`` are accepted in v0.1 (both map to
-            no-reorder behavior). ``AGGRESSIVE`` raises ``NotImplementedError``.
+            ``NONE`` preserves original order. ``POINTWISE`` bubbles pointwise
+            ops out of geometric chains before segmentation.
+            ``AGGRESSIVE`` raises ``NotImplementedError``.
         interpolation: Optional interpolation mode override for fused segments
             (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
         padding_mode: Optional padding mode override for fused segments
@@ -66,11 +67,11 @@ class FusedAffineCompose(nn.Module):
         self.padding_mode: str | None = padding_mode
 
         if data_keys is not None:
-            msg = "data_keys not yet supported in v0.1"
+            msg = "data_keys not yet supported"
             raise NotImplementedError(msg)
 
         if reorder not in (ReorderPolicy.NONE, ReorderPolicy.POINTWISE):
-            msg = f"ReorderPolicy.{reorder.name} not yet supported in v0.1"
+            msg = f"ReorderPolicy.{reorder.name} not yet supported"
             raise NotImplementedError(msg)
 
         self._adapter: TransformAdapter | None
@@ -88,6 +89,8 @@ class FusedAffineCompose(nn.Module):
             else:
                 msg = f"Backend '{backend.value}' not yet supported in v0.1; only kornia is implemented"
                 raise NotImplementedError(msg)
+            if reorder == ReorderPolicy.POINTWISE:
+                transforms = reorder_pointwise(transforms, self._adapter)
             self._segments = build_segments(transforms, self._adapter, interpolation, padding_mode)
 
         self._last_transform_matrix: Tensor | None = None
