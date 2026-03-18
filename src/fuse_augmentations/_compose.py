@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 from torch import nn
@@ -93,8 +93,8 @@ class FusedCompose(nn.Module):
 
     Raises:
         NotImplementedError: If ``reorder`` is ``ReorderPolicy.AGGRESSIVE``.
-        NotImplementedError: If the detected backend is not Kornia (only Kornia is supported in
-            v0.1/v0.2).
+        NotImplementedError: If the detected backend is not Kornia (only Kornia is currently
+            supported).
 
     """
 
@@ -202,6 +202,12 @@ class FusedCompose(nn.Module):
                 the number of ``data_keys`` entries (when ``data_keys`` is set),
                 or if more than one argument is passed when ``data_keys`` is
                 ``None``.
+
+        Note:
+            Passthrough (non-fused) transforms in the pipeline apply to the image
+            only. Auxiliary targets skip passthrough segments and retain their
+            values from the preceding fused segment. This is by design —
+            passthrough backends do not expose a target-routing API.
 
         """
         if self.data_keys is None:
@@ -495,8 +501,8 @@ class _DirectFlipTransform:
 
     """
 
-    def __init__(self, flip_type: str, p: float = 0.5) -> None:
-        self.flip_type = flip_type  # "hflip" or "vflip"
+    def __init__(self, flip_type: Literal["hflip", "vflip"], p: float = 0.5) -> None:
+        self.flip_type: Literal["hflip", "vflip"] = flip_type
         self.p = p
         self.same_on_batch = False
 

@@ -39,8 +39,10 @@ def transform_mask(mask: Tensor, grid: Tensor) -> Tensor:
 
     Args:
         mask: Segmentation mask. Shape ``(B, C, H, W)``, typically ``C=1``.
-            dtype ``float32`` or ``int64``; nearest sampling is dtype-preserving.
-            Value range: integer class indices (e.g. 0, 1, 2, …).
+            dtype: Must be ``float32``. Integer class labels should be cast to
+            ``float32`` before calling this function. ``F.grid_sample`` with
+            ``mode='nearest'`` does not support integer dtypes across all PyTorch
+            versions. Value range: integer class indices (e.g. 0, 1, 2, …).
             Channel convention: channel-first (PyTorch).
         grid: Sampling grid from ``torch.nn.functional.affine_grid``.
             Shape ``(B, H, W, 2)``, dtype ``float32``.
