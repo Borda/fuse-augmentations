@@ -109,11 +109,58 @@ class FusedCompose(nn.Module):
     ) -> None:
         super().__init__()
 
+        if reorder not in (ReorderPolicy.NONE, ReorderPolicy.POINTWISE):
+            msg = f"ReorderPolicy.{reorder.name} not yet supported"
+            raise NotImplementedError(msg)
+
+        adapter: TransformAdapter | None
+        segments: list[object]
+
+        if not transforms:
+            adapter = None
+            segments = []
+        else:
+            backend = detect_backend(transforms)
+            if backend == Backend.KORNIA:
+                from fuse_augmentations.adapters._kornia import KorniaAdapter
+
+                adapter = KorniaAdapter()
+            else:
+                msg = f"Backend '{backend.value}' not yet supported in v0.1; only kornia is implemented"
+                raise NotImplementedError(msg)
+            if reorder == ReorderPolicy.POINTWISE:
+                transforms = reorder_pointwise(transforms, adapter)
+            segments = build_segments(transforms, adapter, interpolation, padding_mode)
+
+        self._setup_instance(
+            transforms=transforms,
+            reorder=reorder,
+            interpolation=interpolation,
+            padding_mode=padding_mode,
+            data_keys=data_keys,
+            adapter=adapter,
+            segments=segments,
+        )
+
+    def _setup_instance(
+        self,
+        transforms: list[object],
+        reorder: ReorderPolicy,
+        interpolation: str | None,
+        padding_mode: str | None,
+        data_keys: list[str] | None,
+        adapter: TransformAdapter | None,
+        segments: list[object],
+    ) -> None:
+        """Assign all instance attributes. Called by both ``__init__`` and ``from_params``."""
         self.original_transforms: list[object] = list(transforms)
         self.reorder: ReorderPolicy = reorder
         self.interpolation: str | None = interpolation
         self.padding_mode: str | None = padding_mode
         self.data_keys: list[str] | None = data_keys
+        self._adapter: TransformAdapter | None = adapter
+        self._segments: list[object] = segments
+        self._last_transform_matrix: Tensor | None = None
 
         if data_keys is not None:
             for key in data_keys:
@@ -122,33 +169,8 @@ class FusedCompose(nn.Module):
                         f"Unknown data_key {key!r}; it will be passed through unchanged. "
                         f"Known keys: {sorted(_KNOWN_DATA_KEYS)}",
                         UserWarning,
-                        stacklevel=2,
+                        stacklevel=3,
                     )
-
-        if reorder not in (ReorderPolicy.NONE, ReorderPolicy.POINTWISE):
-            msg = f"ReorderPolicy.{reorder.name} not yet supported"
-            raise NotImplementedError(msg)
-
-        self._adapter: TransformAdapter | None
-        self._segments: list[object]
-
-        if not transforms:
-            self._adapter = None
-            self._segments = []
-        else:
-            backend = detect_backend(transforms)
-            if backend == Backend.KORNIA:
-                from fuse_augmentations.adapters._kornia import KorniaAdapter
-
-                self._adapter = KorniaAdapter()
-            else:
-                msg = f"Backend '{backend.value}' not yet supported in v0.1; only kornia is implemented"
-                raise NotImplementedError(msg)
-            if reorder == ReorderPolicy.POINTWISE:
-                transforms = reorder_pointwise(transforms, self._adapter)
-            self._segments = build_segments(transforms, self._adapter, interpolation, padding_mode)
-
-        self._last_transform_matrix: Tensor | None = None
 
     def forward(self, *args: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, ...]:
         """Apply the augmentation pipeline to an image batch and optional auxiliary targets.
@@ -228,11 +250,11 @@ class FusedCompose(nn.Module):
         # because data_keys is set and has >1 entry)
         _aux: dict[str, torch.Tensor] = aux_targets or {}
         result_list: list[torch.Tensor] = []
-        for key in self.data_keys:
-            if key == self.data_keys[0]:
+        for i, key in enumerate(self.data_keys):
+            if i == 0:
                 result_list.append(image)
             else:
-                result_list.append(_aux[key])
+                result_list.append(_aux.get(key, args[i]))
         return tuple(result_list)
 
     @property
@@ -410,7 +432,9 @@ class FusedCompose(nn.Module):
         has_affine = bool(param_specs)
         has_flips = hflip_p > 0.0 or vflip_p > 0.0
 
-        # All-None geometric params with no flips → identity pipeline
+        # NOTE: The identity path (all params None) returns a normal __init__ instance
+        # with _adapter=None. The non-identity path uses _DirectParamAdapter.
+        # Both handle empty _segments correctly; do not branch on isinstance(_adapter, ...).
         if not has_affine and not has_flips:
             return cls([], interpolation=interpolation, padding_mode=padding_mode, data_keys=data_keys)
 
@@ -431,25 +455,16 @@ class FusedCompose(nn.Module):
         instance = cls.__new__(cls)
         nn.Module.__init__(instance)
 
-        instance.original_transforms = list(transforms)
-        instance.reorder = reorder
-        instance.interpolation = interpolation
-        instance.padding_mode = padding_mode
-        instance.data_keys = data_keys
-        instance._adapter = adapter
-        instance._last_transform_matrix = None
-
-        if data_keys is not None:
-            for key in data_keys:
-                if key not in _KNOWN_DATA_KEYS:
-                    warnings.warn(
-                        f"Unknown data_key {key!r}; it will be passed through unchanged. "
-                        f"Known keys: {sorted(_KNOWN_DATA_KEYS)}",
-                        UserWarning,
-                        stacklevel=2,
-                    )
-
-        instance._segments = build_segments(transforms, adapter, interpolation, padding_mode)
+        segments = build_segments(transforms, adapter, interpolation, padding_mode)
+        instance._setup_instance(
+            transforms=transforms,
+            reorder=reorder,
+            interpolation=interpolation,
+            padding_mode=padding_mode,
+            data_keys=data_keys,
+            adapter=adapter,
+            segments=segments,
+        )
 
         return instance
 
