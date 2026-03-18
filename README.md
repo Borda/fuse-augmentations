@@ -10,7 +10,7 @@ Drop-in replacement for Kornia's `AugmentationSequential` / `Sequential` — sam
 pip install fuse-augmentations
 ```
 
-Requires: Python 3.10+, PyTorch 2.0+. Kornia is optional (needed only when passing Kornia transform objects).
+Requires: Python 3.10+, PyTorch 2.1+. Kornia is optional (needed only when passing Kornia transform objects).
 
 ## Quick start
 
@@ -111,6 +111,3 @@ M = pipe.transform_matrix   # (B, 3, 3) composed forward matrix
 
 Use `M` to transform stored coordinates (keypoints, boxes) that were not passed as `data_keys`.
 
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md).
