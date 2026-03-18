@@ -163,6 +163,18 @@ class FusedCompose(nn.Module):
         self._last_transform_matrix: Tensor | None = None
 
         if data_keys is not None:
+            # Enforce documented contract: first key must map to the image ("input").
+            if not data_keys:
+                raise ValueError(
+                    "data_keys cannot be an empty list. Omit data_keys entirely for single-tensor "
+                    "mode, or include 'input' as the first entry for multi-target mode."
+                )
+            if data_keys[0] != "input":
+                raise ValueError(
+                    "data_keys[0] must be 'input' (the image tensor), got "
+                    f"{data_keys[0]!r}. This prevents silent misrouting of positional arguments "
+                    "in multi-target mode."
+                )
             for key in data_keys:
                 if key not in _KNOWN_DATA_KEYS:
                     warnings.warn(
@@ -223,8 +235,16 @@ class FusedCompose(nn.Module):
                 raise TypeError(msg)
             # Build aux_targets dict from positional args
             image = args[0]
+            aux_keys = list(self.data_keys[1:])
+            # Forbid duplicate auxiliary keys to avoid silent overwrites in aux_targets
+            if len(aux_keys) != len(set(aux_keys)):
+                msg = (
+                    "Duplicate entries detected in auxiliary data_keys "
+                    f"(data_keys[1:]): {aux_keys}. Auxiliary keys must be unique."
+                )
+                raise ValueError(msg)
             aux_targets = {}
-            for key, val in zip(self.data_keys[1:], args[1:], strict=True):
+            for key, val in zip(aux_keys, args[1:], strict=True):
                 aux_targets[key] = val
 
         for seg in self._segments:
@@ -442,7 +462,13 @@ class FusedCompose(nn.Module):
         # with _adapter=None. The non-identity path uses _DirectParamAdapter.
         # Both handle empty _segments correctly; do not branch on isinstance(_adapter, ...).
         if not has_affine and not has_flips:
-            return cls([], interpolation=interpolation, padding_mode=padding_mode, data_keys=data_keys)
+            return cls(
+                [],
+                interpolation=interpolation,
+                padding_mode=padding_mode,
+                data_keys=data_keys,
+                reorder=reorder,
+            )
 
         # Build internal transforms and adapter
         adapter = _DirectParamAdapter()

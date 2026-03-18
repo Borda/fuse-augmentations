@@ -67,13 +67,15 @@ def transform_mask(mask: Tensor, grid: Tensor) -> Tensor:
         True
 
     """
-    return F.grid_sample(
-        mask,
-        grid,
-        mode="nearest",
-        padding_mode="zeros",
-        align_corners=True,
-    )
+    # No gradient is tracked through this operation, matching the module docstring.
+    with torch.no_grad():
+        return F.grid_sample(
+            mask,
+            grid,
+            mode="nearest",
+            padding_mode="zeros",
+            align_corners=True,
+        )
 
 
 def transform_bbox_xyxy(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N803
