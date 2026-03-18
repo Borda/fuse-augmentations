@@ -15,6 +15,7 @@ Example:
 
 from __future__ import annotations
 
+import math
 import warnings
 from typing import TYPE_CHECKING
 
@@ -22,8 +23,18 @@ import torch
 from torch import nn
 
 from fuse_augmentations._backend import Backend, detect_backend
+from fuse_augmentations._matrix import (
+    hflip_matrix,
+    matmul3x3,
+    rotation_matrix,
+    scale_matrix,
+    shear_x_matrix,
+    shear_y_matrix,
+    translate_matrix,
+    vflip_matrix,
+)
 from fuse_augmentations._segment import ExactSegment, FusedAffineSegment, build_segments, reorder_pointwise
-from fuse_augmentations._types import ReorderPolicy, TransformAdapter
+from fuse_augmentations._types import ReorderPolicy, TransformAdapter, TransformCategory
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -277,6 +288,313 @@ class FusedCompose(nn.Module):
             else:
                 parts.append(f"passthrough({type(seg).__name__})")
         return " \u2192 ".join(parts) if parts else "empty"
+
+    @classmethod
+    def from_params(
+        cls,
+        rotation: tuple[float, float] | None = None,
+        scale: tuple[float, float] | None = None,
+        scale_x: tuple[float, float] | None = None,
+        scale_y: tuple[float, float] | None = None,
+        shear_x: tuple[float, float] | None = None,
+        shear_y: tuple[float, float] | None = None,
+        translate_x: tuple[float, float] | None = None,
+        translate_y: tuple[float, float] | None = None,
+        hflip_p: float = 0.0,
+        vflip_p: float = 0.0,
+        brightness: float | None = None,
+        contrast: float | None = None,
+        interpolation: str = "bilinear",
+        padding_mode: str = "zeros",
+        reorder: ReorderPolicy = ReorderPolicy.POINTWISE,
+        data_keys: list[str] | None = None,
+    ) -> FusedCompose:
+        """Create a ``FusedCompose`` pipeline directly from parameter ranges.
+
+        This factory bypasses backend transform objects entirely and samples
+        parameters directly using ``_matrix.py`` primitives. Useful for
+        backend-agnostic pipelines or when Kornia is not installed.
+
+        Args:
+            rotation: ``(min_deg, max_deg)`` rotation range, or ``None``.
+            scale: ``(min_factor, max_factor)`` uniform scale range, or ``None``.
+            scale_x: ``(min_factor, max_factor)`` x-axis scale range, or ``None``.
+            scale_y: ``(min_factor, max_factor)`` y-axis scale range, or ``None``.
+            shear_x: ``(min_deg, max_deg)`` x-shear range, or ``None``.
+            shear_y: ``(min_deg, max_deg)`` y-shear range, or ``None``.
+            translate_x: ``(min_px, max_px)`` x-translation range, or ``None``.
+            translate_y: ``(min_px, max_px)`` y-translation range, or ``None``.
+            hflip_p: Probability of horizontal flip. Default 0.0.
+            vflip_p: Probability of vertical flip. Default 0.0.
+            brightness: Reserved for v0.4. Raises ``NotImplementedError``.
+            contrast: Reserved for v0.4. Raises ``NotImplementedError``.
+            interpolation: Interpolation mode for grid_sample.
+            padding_mode: Padding mode for grid_sample.
+            reorder: Reorder policy (default ``POINTWISE``).
+            data_keys: Optional data_keys list for auxiliary target routing.
+
+        Returns:
+            A configured ``FusedCompose`` instance.
+
+        Raises:
+            NotImplementedError: If ``brightness`` or ``contrast`` is not ``None``.
+
+        """
+        if brightness is not None:
+            msg = "brightness not yet supported, planned v0.4"
+            raise NotImplementedError(msg)
+        if contrast is not None:
+            msg = "contrast not yet supported, planned v0.4"
+            raise NotImplementedError(msg)
+
+        # Collect geometric param specs
+        param_specs: dict[str, tuple[float, float]] = {}
+        if rotation is not None:
+            param_specs["rotation"] = rotation
+        if scale is not None:
+            param_specs["scale"] = scale
+        if scale_x is not None:
+            param_specs["scale_x"] = scale_x
+        if scale_y is not None:
+            param_specs["scale_y"] = scale_y
+        if shear_x is not None:
+            param_specs["shear_x"] = shear_x
+        if shear_y is not None:
+            param_specs["shear_y"] = shear_y
+        if translate_x is not None:
+            param_specs["translate_x"] = translate_x
+        if translate_y is not None:
+            param_specs["translate_y"] = translate_y
+
+        has_affine = bool(param_specs)
+        has_flips = hflip_p > 0.0 or vflip_p > 0.0
+
+        # All-None geometric params with no flips → identity pipeline
+        if not has_affine and not has_flips:
+            return cls([], interpolation=interpolation, padding_mode=padding_mode, data_keys=data_keys)
+
+        # Build internal transforms and adapter
+        adapter = _DirectParamAdapter()
+        transforms: list[object] = []
+
+        if has_affine:
+            transforms.append(_DirectParamTransform(param_specs, p=1.0))
+
+        if hflip_p > 0.0:
+            transforms.append(_DirectFlipTransform(flip_type="hflip", p=hflip_p))
+
+        if vflip_p > 0.0:
+            transforms.append(_DirectFlipTransform(flip_type="vflip", p=vflip_p))
+
+        # Build instance bypassing detect_backend
+        instance = cls.__new__(cls)
+        nn.Module.__init__(instance)
+
+        instance.original_transforms = list(transforms)
+        instance.reorder = reorder
+        instance.interpolation = interpolation
+        instance.padding_mode = padding_mode
+        instance.data_keys = data_keys
+        instance._adapter = adapter
+        instance._last_transform_matrix = None
+
+        if data_keys is not None:
+            for key in data_keys:
+                if key not in _KNOWN_DATA_KEYS:
+                    warnings.warn(
+                        f"Unknown data_key {key!r}; it will be passed through unchanged. "
+                        f"Known keys: {sorted(_KNOWN_DATA_KEYS)}",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+
+        instance._segments = build_segments(
+            transforms, adapter, interpolation, padding_mode
+        )
+
+        return instance
+
+
+# ---------------------------------------------------------------------------
+# Internal classes for from_params() — NOT exported
+# ---------------------------------------------------------------------------
+
+
+class _DirectParamTransform:
+    """Internal transform that holds parameter ranges for from_params().
+
+    Not exported. Implements the minimal interface expected by
+    _DirectParamAdapter.
+
+    """
+
+    def __init__(self, param_specs: dict[str, tuple[float, float]], p: float = 1.0) -> None:
+        self.param_specs = param_specs
+        self.p = p
+        self.same_on_batch = False
+
+
+class _DirectFlipTransform:
+    """Internal transform representing an hflip or vflip for from_params().
+
+    Not exported.
+
+    """
+
+    def __init__(self, flip_type: str, p: float = 0.5) -> None:
+        self.flip_type = flip_type  # "hflip" or "vflip"
+        self.p = p
+        self.same_on_batch = False
+
+
+class _DirectParamAdapter:
+    """Internal adapter for from_params() that samples directly from param ranges.
+
+    Not exported. Implements the TransformAdapter protocol for
+    _DirectParamTransform and _DirectFlipTransform objects.
+
+    """
+
+    @staticmethod
+    def category(transform: object) -> TransformCategory:
+        """Return the TransformCategory for a direct-param transform."""
+        if isinstance(transform, _DirectParamTransform):
+            return TransformCategory.GEOMETRIC_INTERP
+        if isinstance(transform, _DirectFlipTransform):
+            return TransformCategory.GEOMETRIC_EXACT
+        return TransformCategory.SPATIAL_KERNEL
+
+    @staticmethod
+    def sample_params(
+        transform: object,
+        input_shape: tuple[int, int, int, int],
+        device: torch.device,
+    ) -> dict[str, torch.Tensor]:
+        """Sample random parameters from the stored ranges."""
+        B = input_shape[0]  # noqa: N806
+
+        if isinstance(transform, _DirectFlipTransform):
+            return {"_batch_size": torch.tensor([B], device=device, dtype=torch.int64)}
+
+        if isinstance(transform, _DirectParamTransform):
+            specs = transform.param_specs
+            result: dict[str, torch.Tensor] = {}
+
+            if "rotation" in specs:
+                lo, hi = specs["rotation"]
+                lo_rad, hi_rad = math.radians(lo), math.radians(hi)
+                result["angle_rad"] = torch.empty(B, device=device).uniform_(lo_rad, hi_rad)
+
+            # Scale: if uniform 'scale' is set, use it for both axes
+            # Individual scale_x/scale_y override uniform scale
+            sx_range = specs.get("scale_x") or specs.get("scale")
+            sy_range = specs.get("scale_y") or specs.get("scale")
+            if sx_range is not None and sy_range is not None:
+                result["scale_x"] = torch.empty(B, device=device).uniform_(*sx_range)
+                result["scale_y"] = torch.empty(B, device=device).uniform_(*sy_range)
+            elif sx_range is not None:
+                result["scale_x"] = torch.empty(B, device=device).uniform_(*sx_range)
+                result["scale_y"] = torch.ones(B, device=device)
+            elif sy_range is not None:
+                result["scale_x"] = torch.ones(B, device=device)
+                result["scale_y"] = torch.empty(B, device=device).uniform_(*sy_range)
+
+            if "shear_x" in specs:
+                lo, hi = specs["shear_x"]
+                result["shear_x_rad"] = torch.empty(B, device=device).uniform_(
+                    math.radians(lo), math.radians(hi)
+                )
+
+            if "shear_y" in specs:
+                lo, hi = specs["shear_y"]
+                result["shear_y_rad"] = torch.empty(B, device=device).uniform_(
+                    math.radians(lo), math.radians(hi)
+                )
+
+            if "translate_x" in specs or "translate_y" in specs:
+                if "translate_x" in specs:
+                    result["translate_x"] = torch.empty(B, device=device).uniform_(*specs["translate_x"])
+                else:
+                    result["translate_x"] = torch.zeros(B, device=device)
+                if "translate_y" in specs:
+                    result["translate_y"] = torch.empty(B, device=device).uniform_(*specs["translate_y"])
+                else:
+                    result["translate_y"] = torch.zeros(B, device=device)
+
+            return result
+
+        return {}
+
+    @staticmethod
+    def build_matrix(
+        transform: object,
+        params: dict[str, torch.Tensor],
+        H: int,  # noqa: N803
+        W: int,  # noqa: N803
+    ) -> torch.Tensor:
+        """Build a (B, 3, 3) forward affine matrix from sampled params."""
+        if isinstance(transform, _DirectFlipTransform):
+            B = int(params["_batch_size"].item())  # noqa: N806
+            device = params["_batch_size"].device
+            if transform.flip_type == "hflip":
+                return hflip_matrix(W=W, batch_size=B, device=device, dtype=torch.float32)
+            return vflip_matrix(H=H, batch_size=B, device=device, dtype=torch.float32)
+
+        if isinstance(transform, _DirectParamTransform):
+            # Determine batch size and device from any param
+            B = None  # noqa: N806
+            device = torch.device("cpu")
+            dtype = torch.float32
+            for v in params.values():
+                if isinstance(v, torch.Tensor):
+                    B = v.shape[0]  # noqa: N806
+                    device = v.device
+                    dtype = v.dtype
+                    break
+            if B is None:
+                return torch.eye(3, dtype=dtype, device=device).unsqueeze(0)
+
+            acc = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
+
+            if "angle_rad" in params:
+                acc = matmul3x3(rotation_matrix(params["angle_rad"], H=H, W=W), acc)
+
+            if "scale_x" in params and "scale_y" in params:
+                acc = matmul3x3(scale_matrix(params["scale_x"], params["scale_y"], H=H, W=W), acc)
+
+            if "shear_x_rad" in params:
+                shear_x_tan = torch.tan(params["shear_x_rad"])
+                acc = matmul3x3(shear_x_matrix(shear_x_tan, H=H, W=W), acc)
+
+            if "shear_y_rad" in params:
+                shear_y_tan = torch.tan(params["shear_y_rad"])
+                acc = matmul3x3(shear_y_matrix(shear_y_tan, H=H, W=W), acc)
+
+            if "translate_x" in params and "translate_y" in params:
+                acc = matmul3x3(translate_matrix(params["translate_x"], params["translate_y"]), acc)
+
+            return acc
+
+        return torch.eye(3).unsqueeze(0)
+
+    @staticmethod
+    def exact_flip_dims(transform: object) -> list[int]:
+        """Return the spatial dims to flip for a _DirectFlipTransform."""
+        if isinstance(transform, _DirectFlipTransform):
+            if transform.flip_type == "hflip":
+                return [3]
+            return [2]
+        msg = f"Cannot determine flip dims for {type(transform).__name__!r}"
+        raise TypeError(msg)
+
+    @staticmethod
+    def call_nonfused(
+        transform: object,
+        image: torch.Tensor,
+        **kwargs: object,
+    ) -> torch.Tensor:
+        """Passthrough — direct-param transforms are always fusible."""
+        return image
 
 
 # Short alias for convenience; FusedCompose is the canonical name
