@@ -154,3 +154,35 @@ class TestDataKeysArgCountMismatch:
         pipe = Compose([], data_keys=["input", "mask"])
         with pytest.raises((ValueError, TypeError)):
             pipe()
+
+
+class TestDataKeysEmptyList:
+    """data_keys=[] edge case: zero-length key list."""
+
+    def test_empty_data_keys(self):
+        """forward(img) with data_keys=[] raises TypeError (0 keys but 1 arg)."""
+        pipe = Compose([], data_keys=[])
+        with pytest.raises(TypeError, match="Expected 0 arguments"):
+            pipe(torch.zeros(1, 3, 8, 8))
+
+
+class TestDataKeysDuplicates:
+    """Duplicate entries in data_keys."""
+
+    def test_duplicate_data_keys(self):
+        """data_keys=["input","input"] constructs and returns a 2-tuple.
+
+        Known limitation: the return loop matches both keys against data_keys[0],
+        so both tuple elements are the image — the second positional arg is silently
+        dropped during output assembly. This test documents the current behaviour.
+        """
+        pipe = Compose([], data_keys=["input", "input"])
+        img1 = torch.ones(1, 3, 4, 4)
+        img2 = torch.zeros(1, 3, 4, 4)
+        out = pipe(img1, img2)
+        assert isinstance(out, tuple), f"Expected tuple, got {type(out)}"
+        assert len(out) == 2, f"Expected 2-tuple, got {len(out)}"
+        # Both elements are the image (img1) due to duplicate-key return logic
+        out_a, out_b = out
+        torch.testing.assert_close(out_a, img1)
+        torch.testing.assert_close(out_b, img1)

@@ -147,3 +147,19 @@ class TestFromParamsWithDataKeys:
         out_img, out_mask = pipe(img, mask)
         assert out_img.shape == img.shape
         assert out_mask.shape == mask.shape
+
+
+class TestFromParamsDegenerateScale:
+    """Degenerate scale=(0,0) produces a singular matrix and raises ValueError."""
+
+    def test_from_params_degenerate_scale(self):
+        """from_params(scale=(0,0)) raises ValueError at forward time.
+
+        Zero scale makes the affine matrix singular (det=0). The inv3x3
+        function in _matrix.py detects this and raises ValueError with a
+        descriptive message about near-singular matrices.
+        """
+        pipe = Compose.from_params(scale=(0.0, 0.0))
+        x = torch.rand(2, 3, 16, 16)
+        with pytest.raises(ValueError, match="Near-singular matrix"):
+            pipe(x)
