@@ -172,9 +172,10 @@ class TestDataKeysDuplicates:
     def test_duplicate_data_keys(self):
         """data_keys=["input","input"] constructs and returns a 2-tuple.
 
-        Known limitation: the return loop matches both keys against data_keys[0],
-        so both tuple elements are the image — the second positional arg is silently
-        dropped during output assembly. This test documents the current behaviour.
+        The enumerate-based return loop correctly preserves positional order:
+        out[0] = args[0] (img1), out[1] = args[1] (img2). Duplicate keys are
+        accepted at construction but the second occurrence maps to the second
+        positional arg, not a copy of the first.
         """
         pipe = Compose([], data_keys=["input", "input"])
         img1 = torch.ones(1, 3, 4, 4)
@@ -182,7 +183,7 @@ class TestDataKeysDuplicates:
         out = pipe(img1, img2)
         assert isinstance(out, tuple), f"Expected tuple, got {type(out)}"
         assert len(out) == 2, f"Expected 2-tuple, got {len(out)}"
-        # Both elements are the image (img1) due to duplicate-key return logic
+        # enumerate fix: out[0]=img1, out[1]=img2 (positional, not key-matched)
         out_a, out_b = out
         torch.testing.assert_close(out_a, img1)
-        torch.testing.assert_close(out_b, img1)
+        torch.testing.assert_close(out_b, img2)
