@@ -45,7 +45,13 @@ def transform_mask(mask: Tensor, grid: Tensor) -> Tensor:
             indices (e.g. 0, 1, 2, …). Channel convention: channel-first
             (PyTorch).
         grid: Sampling grid from ``torch.nn.functional.affine_grid``.
-            Shape ``(B, H, W, 2)``, dtype ``float32``.
+            Shape ``(B, H, W, 2)``. Any floating dtype (``float16``,
+            ``float32``, ``float64``) is accepted; integer masks are
+            always cast to ``float64`` internally regardless of the
+            grid dtype to preserve class IDs.  Note: for integer
+            masks with class IDs above ``2**53`` (9007199254740992),
+            exact representation in ``float64`` is not guaranteed
+            (IEEE 754 double-precision limit).
             Coordinates in normalised ``[-1, 1]`` space with ``align_corners=True``.
 
     Returns:

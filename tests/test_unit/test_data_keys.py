@@ -166,6 +166,32 @@ class TestDataKeysEmptyList:
             Compose([], data_keys=[])
 
 
+class TestDataKeysFirstKeyValidation:
+    """data_keys[0] != 'input' raises ValueError at construction time."""
+
+    def test_first_key_not_input_raises(self):
+        """Constructing with data_keys where first entry is not 'input' raises ValueError."""
+        with pytest.raises(ValueError, match="data_keys\\[0\\] must be 'input'"):
+            Compose([], data_keys=["mask", "input"])
+
+    def test_first_key_arbitrary_name_raises(self):
+        """Any non-'input' string as data_keys[0] raises ValueError."""
+        with pytest.raises(ValueError, match="data_keys\\[0\\] must be 'input'"):
+            Compose([], data_keys=["image"])
+
+
+class TestDataKeysDuplicateAuxKeys:
+    """Duplicate auxiliary keys (data_keys[1:]) raise ValueError on forward()."""
+
+    def test_duplicate_auxiliary_keys_raises_on_forward(self):
+        """data_keys=['input','mask','mask'] raises ValueError when forward() is called."""
+        pipe = Compose([], data_keys=["input", "mask", "mask"])
+        img = torch.rand(1, 3, 4, 4)
+        mask = torch.zeros(1, 1, 4, 4)
+        with pytest.raises(ValueError, match="Duplicate entries detected in auxiliary data_keys"):
+            pipe(img, mask, mask)
+
+
 class TestDataKeysDuplicates:
     """Duplicate entries in data_keys."""
 
