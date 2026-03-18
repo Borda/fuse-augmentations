@@ -22,6 +22,12 @@ from fuse_augmentations._compose import (
     FusedCompose,
 )
 from fuse_augmentations._segment import ExactSegment, FusedAffineSegment, build_segments
+from fuse_augmentations._targets import (
+    transform_bbox_xywh,
+    transform_bbox_xyxy,
+    transform_keypoints,
+    transform_mask,
+)
 from fuse_augmentations._types import (
     InterpolationMode,
     PaddingMode,
@@ -42,6 +48,10 @@ __all__ = [
     "TransformAdapter",
     "TransformCategory",
     "build_segments",
+    "transform_bbox_xywh",
+    "transform_bbox_xyxy",
+    "transform_keypoints",
+    "transform_mask",
 ]
 
 _PATH_PACKAGE = os.path.realpath(os.path.dirname(__file__))
