@@ -99,7 +99,7 @@ class TestDataKeysMultipleKeys:
         img = torch.ones(1, 3, 4, 4)
         mask = torch.zeros(1, 1, 4, 4)
         out_img, out_mask = pipe(img, mask)
-        # img was all ones, mask was all zeros — order matters
+        # img was all ones, mask was all zeros - order matters
         assert out_img.mean() > 0.5, "First element should be the image (ones)"
         assert out_mask.mean() < 0.5, "Second element should be the mask (zeros)"
 

@@ -1,4 +1,4 @@
-"""Integration-test fixtures — require kornia or other external backend."""
+"""Integration-test fixtures - require kornia or other external backend."""
 
 import pytest
 

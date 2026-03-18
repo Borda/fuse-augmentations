@@ -47,11 +47,11 @@ def transform_mask(mask: Tensor, grid: Tensor) -> Tensor:
         grid: Sampling grid from ``torch.nn.functional.affine_grid``.
             Shape ``(B, H, W, 2)``. Any floating dtype (``float16``,
             ``float32``, ``float64``) is accepted; integer masks are
-            always cast to ``float64`` internally regardless of the
-            grid dtype to preserve class IDs.  Note: for integer
-            masks with class IDs above ``2**53`` (9007199254740992),
-            exact representation in ``float64`` is not guaranteed
-            (IEEE 754 double-precision limit).
+            cast to ``float32`` internally regardless of the grid
+            dtype to avoid fp16/bf16 rounding while keeping memory
+            usage and bandwidth lower than ``float64``. Note: ``float32``
+            exactly represents integer class IDs up to ``2**24 - 1``
+            (16777215); larger integer IDs may be rounded.
             Coordinates in normalised ``[-1, 1]`` space with ``align_corners=True``.
 
     Returns:
@@ -79,9 +79,11 @@ def transform_mask(mask: Tensor, grid: Tensor) -> Tensor:
 
     if needs_cast_back:
         # Integer masks must not be sampled through fp16/bf16 in mixed precision,
-        # otherwise class IDs can be rounded before being cast back.
-        sample_mask = mask.to(dtype=torch.float64)
-        sample_grid = grid.to(dtype=torch.float64)
+        # otherwise class IDs can be rounded before being cast back. ``float32``
+        # is sufficient to preserve typical class ID ranges while avoiding the
+        # memory and bandwidth overhead of ``float64``.
+        sample_mask = mask.to(dtype=torch.float32)
+        sample_grid = grid.to(dtype=torch.float32)
     # No gradient is tracked through this operation, matching the module docstring.
     with torch.no_grad():
         sampled = F.grid_sample(
@@ -132,7 +134,7 @@ def transform_bbox_xyxy(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N8
     x2 = boxes[..., 2]
     y2 = boxes[..., 3]
 
-    # Build all 4 corners: (B, N, 4, 3) homogeneous [x, y, 1]
+    # Build all 4 corners: (B, N, 3, 4) homogeneous [x, y, 1]
     ones = torch.ones_like(x1)
     corners_x = torch.stack([x1, x2, x2, x1], dim=-1)  # (B, N, 4)
     corners_y = torch.stack([y1, y1, y2, y2], dim=-1)

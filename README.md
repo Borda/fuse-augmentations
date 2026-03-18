@@ -2,7 +2,7 @@
 
 Fuse consecutive geometric augmentation ops (rotation, scale, shear, flip) into a **single `grid_sample` pass**, eliminating redundant interpolation and improving image quality.
 
-Drop-in replacement for Kornia's `AugmentationSequential` / `Sequential` — same call interface, fewer warps.
+Drop-in replacement for Kornia's `AugmentationSequential` / `Sequential` - same call interface, fewer warps.
 
 ## Installation
 
@@ -31,7 +31,7 @@ image = torch.rand(4, 3, 256, 256)  # (B, C, H, W)
 out = pipe(image)  # one grid_sample instead of three
 ```
 
-## Auxiliary targets — masks, boxes, keypoints
+## Auxiliary targets - masks, boxes, keypoints
 
 Pass `data_keys` to route auxiliary tensors through the same fused transform:
 
@@ -64,7 +64,7 @@ Bounding boxes and keypoints use the composed forward matrix; masks share the sa
 
 ## Backend-free pipelines with `from_params`
 
-Construct a fused pipeline from numeric parameter ranges — no Kornia import required:
+Construct a fused pipeline from numeric parameter ranges - no Kornia import required:
 
 ```python
 from fuse_aug import Compose
@@ -79,8 +79,8 @@ out = pipe(image)
 
 Given a pipeline `[Rotate, Scale, HFlip, GaussianBlur, Rotate]`:
 
-1. `[Rotate, Scale, HFlip]` are grouped into a `FusedAffineSegment` — their matrices are composed and one `grid_sample` call is made.
-2. `GaussianBlur` is a spatial-kernel barrier — it passes through unchanged.
+1. `[Rotate, Scale, HFlip]` are grouped into a `FusedAffineSegment` - their matrices are composed and one `grid_sample` call is made.
+2. `GaussianBlur` is a spatial-kernel barrier - it passes through unchanged.
 3. The trailing `Rotate` forms its own `FusedAffineSegment`.
 
 ```python

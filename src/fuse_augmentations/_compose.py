@@ -54,11 +54,11 @@ class FusedCompose(nn.Module):
     transforms, then executes them sequentially. Consecutive geometric ops are
     grouped and executed as either:
 
-    - A :class:`~fuse_augmentations._segment.FusedAffineSegment` — when the run
+    - A :class:`~fuse_augmentations._segment.FusedAffineSegment` - when the run
       contains at least one ``GEOMETRIC_INTERP`` op. Matrices are composed and
       a single ``grid_sample`` call is used, eliminating redundant interpolation
       passes.
-    - An :class:`~fuse_augmentations._segment.ExactSegment` — when the run
+    - An :class:`~fuse_augmentations._segment.ExactSegment` - when the run
       contains *only* ``GEOMETRIC_EXACT`` ops (HFlip, VFlip). Transforms are
       applied via ``tensor.flip`` with zero interpolation error.
 
@@ -126,7 +126,7 @@ class FusedCompose(nn.Module):
 
                 adapter = KorniaAdapter()
             else:
-                msg = f"Backend '{backend.value}' not yet supported in v0.1; only kornia is implemented"
+                msg = f"Backend '{backend.value}' not yet supported; only kornia is implemented"
                 raise NotImplementedError(msg)
             if reorder == ReorderPolicy.POINTWISE:
                 transforms = reorder_pointwise(transforms, adapter)
@@ -222,7 +222,7 @@ class FusedCompose(nn.Module):
         Note:
             Passthrough (non-fused) transforms in the pipeline apply to the image
             only. Auxiliary targets skip passthrough segments and retain their
-            values from the preceding fused segment. This is by design —
+            values from the preceding fused segment. This is by design -
             passthrough backends do not expose a target-routing API.
 
         """
@@ -433,6 +433,11 @@ class FusedCompose(nn.Module):
             torch.Size([2, 3, 64, 64])
 
         """
+        if reorder is ReorderPolicy.AGGRESSIVE:
+            raise NotImplementedError(
+                "ReorderPolicy.AGGRESSIVE is not supported for Compose.from_params(); "
+                "use a supported reorder policy, such as ReorderPolicy.POINTWISE."
+            )
         if brightness is not None:
             msg = "brightness not yet supported, planned v0.4"
             raise NotImplementedError(msg)
@@ -506,7 +511,7 @@ class FusedCompose(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Internal classes for from_params() — NOT exported
+# Internal classes for from_params() - NOT exported
 # ---------------------------------------------------------------------------
 
 
@@ -677,7 +682,7 @@ class _DirectParamAdapter:
         image: torch.Tensor,
         **kwargs: object,
     ) -> torch.Tensor:
-        """Passthrough — direct-param transforms are always fusible."""
+        """Passthrough - direct-param transforms are always fusible."""
         return image
 
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-kornia = pytest.importorskip("kornia", reason="kornia >= 0.6.12 required")
+kornia = pytest.importorskip("kornia", minversion="0.6.12", reason="kornia >= 0.6.12 required")
 from kornia.augmentation import RandomHorizontalFlip, RandomRotation  # noqa: E402
 
 from fuse_augmentations._compose import FusedCompose as Compose  # noqa: E402
@@ -24,7 +24,7 @@ B, C, H, W = 2, 3, 32, 32
 
 
 # ---------------------------------------------------------------------------
-# #32 — Mask NEAREST-only: no fractional class labels after transform
+# #32 - Mask NEAREST-only: no fractional class labels after transform
 # ---------------------------------------------------------------------------
 
 
@@ -65,7 +65,7 @@ class TestMaskNearestOnly:
 
 
 # ---------------------------------------------------------------------------
-# #33 — Mask spatial correspondence
+# #33 - Mask spatial correspondence
 # ---------------------------------------------------------------------------
 
 
@@ -93,7 +93,7 @@ class TestMaskSpatialCorrespondence:
 
 
 # ---------------------------------------------------------------------------
-# #34 — Bbox identity
+# #34 - Bbox identity
 # ---------------------------------------------------------------------------
 
 
@@ -115,7 +115,7 @@ class TestBboxIdentity:
 
 
 # ---------------------------------------------------------------------------
-# #35 — Bbox HFlip
+# #35 - Bbox HFlip
 # ---------------------------------------------------------------------------
 
 
@@ -140,7 +140,7 @@ class TestBboxHFlip:
 
 
 # ---------------------------------------------------------------------------
-# #36 — Bbox rotation (90 deg)
+# #36 - Bbox rotation (90 deg)
 # ---------------------------------------------------------------------------
 
 
@@ -155,7 +155,7 @@ class TestBboxRotation:
             data_keys=["input", "bbox_xyxy"],
         )
         img = torch.rand(1, C, H, W)
-        # A box at (5, 10, 15, 20) — width=10, height=10
+        # A box at (5, 10, 15, 20) - width=10, height=10
         boxes = torch.tensor([[[5.0, 10.0, 15.0, 20.0]]])
         _, out_boxes = pipe(img, boxes)
 
@@ -169,7 +169,7 @@ class TestBboxRotation:
 
 
 # ---------------------------------------------------------------------------
-# #37 — Keypoints known mapping
+# #37 - Keypoints known mapping
 # ---------------------------------------------------------------------------
 
 
@@ -194,7 +194,7 @@ class TestKeypointsKnownMapping:
 
 
 # ---------------------------------------------------------------------------
-# #38 — Batch consistency
+# #38 - Batch consistency
 # ---------------------------------------------------------------------------
 
 

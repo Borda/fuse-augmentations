@@ -38,7 +38,7 @@ class ExactSegment(nn.Module):
     Per-sample probability masking is implemented with ``torch.where``:
     for each transform, a boolean mask of shape ``(B,)`` is drawn from the
     transform's ``p`` attribute, and only samples whose mask is ``True`` receive
-    the flip — the others keep their original values unchanged.
+    the flip - the others keep their original values unchanged.
 
     Args:
         transforms: List of ``GEOMETRIC_EXACT`` transform objects (flips only in v0.2).
@@ -363,10 +363,10 @@ def build_segments(
 
     After grouping, each accumulated geometric run is classified:
 
-    - **EXACT-only** — if the run contains *only* ``GEOMETRIC_EXACT`` ops
+    - **EXACT-only** - if the run contains *only* ``GEOMETRIC_EXACT`` ops
       (e.g. HFlip, VFlip), it becomes an :class:`ExactSegment` that uses
       ``tensor.flip`` with zero interpolation error.
-    - **Mixed / INTERP** — if any op in the run is ``GEOMETRIC_INTERP``, the
+    - **Mixed / INTERP** - if any op in the run is ``GEOMETRIC_INTERP``, the
       whole run becomes a :class:`FusedAffineSegment` that composes matrices
       and applies one ``grid_sample`` call.
 
