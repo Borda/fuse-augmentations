@@ -15,6 +15,7 @@ Example:
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING
 
 import torch
@@ -26,6 +27,8 @@ from fuse_augmentations._types import ReorderPolicy, TransformAdapter
 
 if TYPE_CHECKING:
     from torch import Tensor
+
+_KNOWN_DATA_KEYS = {"input", "mask", "bbox_xyxy", "bbox_xywh", "keypoints"}
 
 
 class FusedCompose(nn.Module):
@@ -63,13 +66,17 @@ class FusedCompose(nn.Module):
         padding_mode: Padding mode override for fused segments
             (``"zeros"``, ``"border"``, ``"reflection"``).
             Defaults to ``"zeros"`` when ``None``.
-        data_keys: Reserved for future multi-key support. Raises ``NotImplementedError``
-            in v0.1/v0.2.
+        data_keys: List of key names describing positional arguments to
+            :meth:`forward`. The first key should be ``"input"`` (the image).
+            Auxiliary keys (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``,
+            ``"keypoints"``) are routed through segments and transformed
+            alongside the image. Unknown keys are passed through unchanged
+            with a ``UserWarning``. ``None`` preserves backward-compatible
+            single-tensor input/output.
         **backend_kwargs: Reserved for backend-specific options (currently unused).
 
     Raises:
-        NotImplementedError: If ``data_keys`` is not ``None``, or if ``reorder`` is
-            ``ReorderPolicy.AGGRESSIVE``.
+        NotImplementedError: If ``reorder`` is ``ReorderPolicy.AGGRESSIVE``.
         NotImplementedError: If the detected backend is not Kornia (only Kornia is supported in
             v0.1/v0.2).
 
@@ -90,10 +97,17 @@ class FusedCompose(nn.Module):
         self.reorder: ReorderPolicy = reorder
         self.interpolation: str | None = interpolation
         self.padding_mode: str | None = padding_mode
+        self.data_keys: list[str] | None = data_keys
 
         if data_keys is not None:
-            msg = "data_keys not yet supported"
-            raise NotImplementedError(msg)
+            for key in data_keys:
+                if key not in _KNOWN_DATA_KEYS:
+                    warnings.warn(
+                        f"Unknown data_key {key!r}; it will be passed through unchanged. "
+                        f"Known keys: {sorted(_KNOWN_DATA_KEYS)}",
+                        UserWarning,
+                        stacklevel=2,
+                    )
 
         if reorder not in (ReorderPolicy.NONE, ReorderPolicy.POINTWISE):
             msg = f"ReorderPolicy.{reorder.name} not yet supported"
@@ -120,29 +134,81 @@ class FusedCompose(nn.Module):
 
         self._last_transform_matrix: Tensor | None = None
 
-    def forward(self, image: torch.Tensor) -> torch.Tensor:
-        """Apply the augmentation pipeline to an image batch.
+    def forward(self, *args: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, ...]:
+        """Apply the augmentation pipeline to an image batch and optional auxiliary targets.
+
+        When ``data_keys`` is ``None`` (default), accepts a single image tensor
+        and returns a single tensor (backward-compatible).
+
+        When ``data_keys`` is provided, accepts positional arguments matching
+        the key list. The ``"input"`` key corresponds to the image; other keys
+        (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``, ``"keypoints"``) are
+        routed through segments as auxiliary targets. Returns a tuple in
+        ``data_keys`` order. If ``data_keys`` has a single entry, the output
+        is unwrapped to a single tensor.
 
         Args:
-            image: ``(B, C, H, W)`` float input tensor.
+            *args: Positional tensors. First tensor is always the image
+                ``(B, C, H, W)``. Additional tensors correspond to
+                ``data_keys[1:]``.
 
         Returns:
-            ``(B, C, H, W)`` augmented output tensor.
+            Single tensor when ``data_keys`` is ``None`` or has one entry;
+            tuple of tensors in ``data_keys`` order otherwise.
 
         """
+        if self.data_keys is None:
+            # Backward-compatible single-tensor path
+            if len(args) != 1:
+                msg = f"Expected 1 argument (data_keys is None), got {len(args)}"
+                raise TypeError(msg)
+            image = args[0]
+            aux_targets: dict[str, torch.Tensor] | None = None
+        else:
+            if len(args) != len(self.data_keys):
+                msg = f"Expected {len(self.data_keys)} arguments for data_keys={self.data_keys}, got {len(args)}"
+                raise TypeError(msg)
+            # Build aux_targets dict from positional args
+            image = args[0]
+            aux_targets = {}
+            for key, val in zip(self.data_keys[1:], args[1:], strict=True):
+                aux_targets[key] = val
+
         for seg in self._segments:
             if isinstance(seg, FusedAffineSegment):
-                image = seg(image)
+                result = seg(image, aux_targets)
+                if aux_targets is not None:
+                    image, aux_targets = result  # type: ignore[misc]
+                else:
+                    image = result  # type: ignore[assignment]
                 self._last_transform_matrix = seg.last_matrix
             elif isinstance(seg, ExactSegment):
-                image = seg(image)
+                result = seg(image, aux_targets)
+                if aux_targets is not None:
+                    image, aux_targets = result  # type: ignore[misc]
+                else:
+                    image = result  # type: ignore[assignment]
             else:
-                # Passthrough: apply via adapter's call_nonfused
+                # Passthrough: apply via adapter's call_nonfused (image only)
                 if self._adapter is None:
                     msg = "Passthrough transform encountered but adapter is None; this is a bug in build_segments"
                     raise RuntimeError(msg)
                 image = self._adapter.call_nonfused(seg, image)
-        return image
+
+        if self.data_keys is None:
+            return image
+        if len(self.data_keys) == 1:
+            return image
+        # Return tuple in data_keys order (aux_targets is guaranteed non-None here
+        # because data_keys is set and has >1 entry)
+        _aux: dict[str, torch.Tensor] = aux_targets or {}
+        result_list: list[torch.Tensor] = []
+        for key in self.data_keys:
+            if key == self.data_keys[0]:
+                result_list.append(image)
+            else:
+                result_list.append(_aux[key])
+        return tuple(result_list)
 
     @property
     def transform_matrix(self) -> torch.Tensor | None:

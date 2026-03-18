@@ -47,17 +47,6 @@ class TestEmptyPipeline:
         assert pipe.transform_matrix is None
 
 
-class TestDataKeysNotImplemented:
-    """Verify data_keys raises NotImplementedError."""
-
-    def test_raises(self):
-        """Passing data_keys raises NotImplementedError with descriptive message."""
-        import pytest
-
-        with pytest.raises(NotImplementedError, match="data_keys"):
-            Compose([], data_keys=["input"])
-
-
 class TestReorderPolicyAggressive:
     """Verify reorder policy acceptance and rejection."""
 

@@ -57,7 +57,11 @@ class ExactSegment(nn.Module):
         """Return ``None`` always (ExactSegment does not compute a matrix)."""
         return None
 
-    def forward(self, image: Tensor) -> Tensor:
+    def forward(
+        self,
+        image: Tensor,
+        aux_targets: dict[str, Tensor] | None = None,
+    ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
         """Apply flip transforms losslessly via tensor.flip with per-sample masking.
 
         For each transform, draws a per-sample boolean mask from the transform's
@@ -67,13 +71,22 @@ class ExactSegment(nn.Module):
         Args:
             image: Input image batch. Shape: ``(B, C, H, W)``, dtype: float32.
                 Value range and channel convention follow the calling pipeline.
+            aux_targets: Optional dict of auxiliary targets to transform alongside
+                the image (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``,
+                ``"keypoints"``). When ``None``, returns a bare tensor for
+                backward compatibility.
 
         Returns:
-            Output image batch with flips applied per-sample.
-            Shape: ``(B, C, H, W)``, same dtype and device as ``image``.
+            Bare ``image`` tensor when ``aux_targets`` is ``None``;
+            ``(image, aux_targets)`` tuple otherwise.
 
         """
+        _has_aux = aux_targets is not None
+        if aux_targets is None:
+            aux_targets = {}
+
         bsz = image.shape[0]
+        _height, width = image.shape[2], image.shape[3]
         device = image.device
 
         for tfm in self.transforms:
@@ -91,7 +104,36 @@ class ExactSegment(nn.Module):
             flipped = image.flip(dims=flip_dims)
             image = torch.where(active[:, None, None, None], flipped, image)
 
-        return image
+            # Transform auxiliary targets with the same per-sample active mask
+            if aux_targets:
+                is_hflip = 3 in flip_dims
+                is_vflip = 2 in flip_dims
+                for key in list(aux_targets.keys()):
+                    val = aux_targets[key]
+                    if key == "mask":
+                        flipped_val = val.flip(dims=flip_dims)
+                        aux_targets[key] = torch.where(
+                            active[:, None, None, None], flipped_val, val
+                        )
+                    elif key == "bbox_xyxy":
+                        aux_targets[key] = _flip_bbox_xyxy(
+                            val, active, is_hflip, is_vflip, _height, width
+                        )
+                    elif key == "bbox_xywh":
+                        # Convert xywh -> xyxy, flip, convert back
+                        xyxy = _xywh_to_xyxy(val)
+                        xyxy = _flip_bbox_xyxy(
+                            xyxy, active, is_hflip, is_vflip, _height, width
+                        )
+                        aux_targets[key] = _xyxy_to_xywh(xyxy)
+                    elif key == "keypoints":
+                        aux_targets[key] = _flip_keypoints(
+                            val, active, is_hflip, is_vflip, _height, width
+                        )
+
+        if not _has_aux:
+            return image
+        return image, aux_targets
 
 
 class FusedAffineSegment(nn.Module):
@@ -140,16 +182,29 @@ class FusedAffineSegment(nn.Module):
         """
         return self._last_matrix
 
-    def forward(self, image: Tensor) -> Tensor:
+    def forward(
+        self,
+        image: Tensor,
+        aux_targets: dict[str, Tensor] | None = None,
+    ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
         """Apply the fused affine transform chain via a single grid_sample call.
 
         Args:
             image: ``(B, C, H, W)`` float input tensor.
+            aux_targets: Optional dict of auxiliary targets to transform alongside
+                the image (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``,
+                ``"keypoints"``). When ``None``, returns a bare tensor for
+                backward compatibility.
 
         Returns:
-            ``(B, C, H, W)`` warped output tensor.
+            Bare ``image`` tensor when ``aux_targets`` is ``None``;
+            ``(image, aux_targets)`` tuple otherwise.
 
         """
+        _has_aux = aux_targets is not None
+        if aux_targets is None:
+            aux_targets = {}
+
         bsz, n_ch, height, width = image.shape
         device = image.device
         dtype = image.dtype
@@ -191,13 +246,37 @@ class FusedAffineSegment(nn.Module):
         mtx_norm = normalize_matrix(mtx_inv, height, width)
 
         grid = F.affine_grid(mtx_norm[:, :2, :], [bsz, n_ch, height, width], align_corners=True)
-        return F.grid_sample(
+        image = F.grid_sample(
             image,
             grid,
             mode=self.interpolation or "bilinear",
             padding_mode=self.padding_mode or "zeros",
             align_corners=True,
         )
+
+        # Transform auxiliary targets using the composed forward matrix
+        if aux_targets:
+            from fuse_augmentations._targets import (
+                transform_bbox_xywh,
+                transform_bbox_xyxy,
+                transform_keypoints,
+                transform_mask,
+            )
+
+            for key in list(aux_targets.keys()):
+                val = aux_targets[key]
+                if key == "mask":
+                    aux_targets[key] = transform_mask(val, grid)
+                elif key == "bbox_xyxy":
+                    aux_targets[key] = transform_bbox_xyxy(val, acc)
+                elif key == "bbox_xywh":
+                    aux_targets[key] = transform_bbox_xywh(val, acc)
+                elif key == "keypoints":
+                    aux_targets[key] = transform_keypoints(val, acc)
+
+        if not _has_aux:
+            return image
+        return image, aux_targets
 
 
 def reorder_pointwise(
@@ -350,3 +429,77 @@ def build_segments(
 
     _flush_geo()
     return segments
+
+
+# ---------------------------------------------------------------------------
+# Private helpers for ExactSegment auxiliary-target flipping
+# ---------------------------------------------------------------------------
+
+
+def _flip_bbox_xyxy(
+    boxes: Tensor,
+    active: Tensor,
+    is_hflip: bool,
+    is_vflip: bool,
+    height: int,
+    width: int,
+) -> Tensor:
+    """Flip bounding boxes (B, N, 4) xyxy format using direct coordinate arithmetic.
+
+    HFlip: ``x' = W - 1 - x``, swap x1/x2.
+    VFlip: ``y' = H - 1 - y``, swap y1/y2.
+
+    """
+    x1, y1, x2, y2 = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
+
+    if is_hflip:
+        new_x1 = (width - 1) - x2
+        new_x2 = (width - 1) - x1
+        x1, x2 = new_x1, new_x2
+
+    if is_vflip:
+        new_y1 = (height - 1) - y2
+        new_y2 = (height - 1) - y1
+        y1, y2 = new_y1, new_y2
+
+    flipped = torch.stack([x1, y1, x2, y2], dim=-1)
+
+    # active shape: (B,) -> (B, 1, 1) for broadcasting with (B, N, 4)
+    mask = active[:, None, None]
+    return torch.where(mask, flipped, boxes)
+
+
+def _flip_keypoints(
+    kps: Tensor,
+    active: Tensor,
+    is_hflip: bool,
+    is_vflip: bool,
+    height: int,
+    width: int,
+) -> Tensor:
+    """Flip keypoints (B, N, 2) using direct coordinate arithmetic.
+
+    HFlip: ``x' = W - 1 - x``.
+    VFlip: ``y' = H - 1 - y``.
+
+    """
+    flipped = kps.clone()
+    if is_hflip:
+        flipped[..., 0] = (width - 1) - kps[..., 0]
+    if is_vflip:
+        flipped[..., 1] = (height - 1) - kps[..., 1]
+
+    mask = active[:, None, None]
+    return torch.where(mask, flipped, kps)
+
+
+def _xywh_to_xyxy(boxes: Tensor) -> Tensor:
+    """Convert (B, N, 4) boxes from xywh to xyxy format."""
+    x, y, w, h = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
+    return torch.stack([x, y, x + w, y + h], dim=-1)
+
+
+def _xyxy_to_xywh(boxes: Tensor) -> Tensor:
+    """Convert (B, N, 4) boxes from xyxy to xywh format."""
+    x1, y1, x2, y2 = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
+    return torch.stack([x1, y1, x2 - x1, y2 - y1], dim=-1)
