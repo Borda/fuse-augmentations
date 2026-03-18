@@ -341,3 +341,52 @@ class TestTransformMaskInt64:
         out = transform_mask(mask_int64, grid)
         assert out.dtype == torch.int64, f"Expected int64 output dtype, got {out.dtype}"
         assert (out == 4097).all(), "Large class IDs must not be rounded in mixed-precision paths"
+
+
+# ---------------------------------------------------------------------------
+# Additional dtype coverage for transform_mask
+# ---------------------------------------------------------------------------
+
+
+class TestTransformMaskDtypes:
+    """transform_mask preserves dtype for int32, bool, and float32 inputs."""
+
+    def _identity_grid(self, b: int, h: int, w: int) -> torch.Tensor:
+        import torch.nn.functional as F
+
+        theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(b, -1, -1)
+        return F.affine_grid(theta, [b, 1, h, w], align_corners=True)
+
+    def test_transform_mask_int32_preserves_dtype_and_labels(self):
+        """Int32 mask is cast internally and cast back; output dtype is int32."""
+        from fuse_augmentations._targets import transform_mask
+
+        mask = torch.randint(0, 3, (B, 1, H, W), dtype=torch.int32)
+        grid = self._identity_grid(B, H, W)
+
+        out = transform_mask(mask, grid)
+        assert out.dtype == torch.int32, f"Expected int32 output dtype, got {out.dtype}"
+        unique_vals = set(torch.unique(out).tolist())
+        assert unique_vals.issubset({0, 1, 2}), f"Unexpected values after transform: {unique_vals}"
+
+    def test_transform_mask_bool_preserves_dtype_and_values(self):
+        """Bool mask is cast internally and cast back; output dtype is bool."""
+        from fuse_augmentations._targets import transform_mask
+
+        mask = torch.randint(0, 2, (B, 1, H, W)).bool()
+        grid = self._identity_grid(B, H, W)
+
+        out = transform_mask(mask, grid)
+        assert out.dtype == torch.bool, f"Expected bool output dtype, got {out.dtype}"
+        unique_vals = set(torch.unique(out).tolist())
+        assert unique_vals.issubset({False, True}), f"Unexpected values after transform: {unique_vals}"
+
+    def test_transform_mask_float32_passthrough_preserves_dtype(self):
+        """Float32 mask takes the needs_cast_back=False path; output dtype is float32."""
+        from fuse_augmentations._targets import transform_mask
+
+        mask = torch.rand(B, 1, H, W, dtype=torch.float32)
+        grid = self._identity_grid(B, H, W)
+
+        out = transform_mask(mask, grid)
+        assert out.dtype == torch.float32, f"Expected float32 output dtype, got {out.dtype}"
