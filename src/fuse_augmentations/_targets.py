@@ -3,6 +3,15 @@
 Pure mathematical functions that transform masks, bounding boxes, and keypoints
 using precomputed affine matrices or grids from the fused pipeline.
 
+These helpers are called internally by :class:`~fuse_augmentations._segment.FusedAffineSegment`
+and :class:`~fuse_augmentations._segment.ExactSegment` when ``data_keys`` includes auxiliary
+targets. They are also exported as public API for callers that want to apply the same
+math outside of the pipeline (e.g. to transform a stored transform matrix after the fact).
+
+All functions are stateless and operate on PyTorch tensors with a leading batch
+dimension ``B``. No gradient is tracked through ``transform_mask`` (nearest-neighbour
+sampling is not differentiable); the other three functions are differentiable.
+
 Example:
     >>> import torch
     >>> from fuse_augmentations._targets import transform_keypoints
@@ -24,18 +33,36 @@ from torch import Tensor
 def transform_mask(mask: Tensor, grid: Tensor) -> Tensor:
     """Apply a precomputed affine grid to a segmentation mask using nearest-neighbour sampling.
 
-    Parameters
-    ----------
-    mask : Tensor
-        Segmentation mask, shape ``(B, C, H, W)`` (typically ``C=1``).
-    grid : Tensor
-        Sampling grid from ``F.affine_grid``, shape ``(B, H, W, 2)``.
+    Uses ``mode='nearest'`` unconditionally so integer class labels are preserved
+    without fractional mixing. Out-of-bounds samples are filled with 0 (class 0)
+    via ``padding_mode='zeros'``.
+
+    Args:
+        mask: Segmentation mask. Shape ``(B, C, H, W)``, typically ``C=1``.
+            dtype ``float32`` or ``int64``; nearest sampling is dtype-preserving.
+            Value range: integer class indices (e.g. 0, 1, 2, …).
+            Channel convention: channel-first (PyTorch).
+        grid: Sampling grid from ``torch.nn.functional.affine_grid``.
+            Shape ``(B, H, W, 2)``, dtype ``float32``.
+            Coordinates in normalised ``[-1, 1]`` space with ``align_corners=True``.
 
     Returns:
-    -------
-    Tensor
-        Warped mask with the same shape as ``mask``, sampled with
-        ``mode='nearest'`` to preserve integer class labels.
+        Warped mask with the same shape and dtype as ``mask``.
+
+    Example:
+        Identity grid leaves the mask unchanged:
+
+        >>> import torch
+        >>> import torch.nn.functional as F
+        >>> mask = torch.zeros(1, 1, 4, 4)
+        >>> mask[0, 0, 1, 1] = 1
+        >>> eye2 = torch.eye(2, 3).unsqueeze(0)  # identity theta (1, 2, 3)
+        >>> grid = F.affine_grid(eye2, [1, 1, 4, 4], align_corners=True)
+        >>> out = transform_mask(mask, grid)
+        >>> out.shape
+        torch.Size([1, 1, 4, 4])
+        >>> bool(out[0, 0, 1, 1] == 1)
+        True
 
     """
     return F.grid_sample(
@@ -48,24 +75,34 @@ def transform_mask(mask: Tensor, grid: Tensor) -> Tensor:
 
 
 def transform_bbox_xyxy(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N803
-    """Transform ``(B, N, 4)`` xyxy boxes by ``(B, 3, 3)`` forward affine matrix.
+    """Transform ``(B, N, 4)`` xyxy boxes by a ``(B, 3, 3)`` forward affine matrix.
 
-    Computes all 4 corners of each box, transforms them through the forward
-    matrix, and returns the axis-aligned bounding box (AABB) of the
-    transformed corners.
+    Computes all four corners of each box, transforms them through the forward
+    matrix using homogeneous multiplication, then returns the axis-aligned
+    bounding box (AABB) that tightly wraps the transformed corners.
 
-    Parameters
-    ----------
-    boxes : Tensor
-        Bounding boxes in xyxy format, shape ``(B, N, 4)`` where columns are
-        ``[x1, y1, x2, y2]``.
-    M_forward : Tensor
-        Forward affine matrix, shape ``(B, 3, 3)``.
+    The AABB wrapping step means output boxes are always axis-aligned and may be
+    larger than the true rotated box. This is the standard trade-off for box
+    transforms that must remain in xyxy format.
+
+    Args:
+        boxes: Bounding boxes in xyxy format. Shape ``(B, N, 4)``,
+            columns ``[x1, y1, x2, y2]`` in pixel coordinates, dtype ``float32``.
+        M_forward: Forward (not inverse) affine matrix in pixel coordinates.
+            Shape ``(B, 3, 3)``, dtype ``float32``.
 
     Returns:
-    -------
-    Tensor
-        Transformed AABB boxes, shape ``(B, N, 4)`` in xyxy format.
+        Transformed AABB boxes. Shape ``(B, N, 4)``, xyxy format.
+
+    Example:
+        Identity matrix leaves boxes unchanged:
+
+        >>> import torch
+        >>> boxes = torch.tensor([[[10.0, 20.0, 50.0, 80.0]]])  # (1, 1, 4)
+        >>> M = torch.eye(3).unsqueeze(0)
+        >>> out = transform_bbox_xyxy(boxes, M)
+        >>> torch.allclose(out, boxes)
+        True
 
     """
     x1 = boxes[..., 0]  # (B, N)
@@ -98,23 +135,34 @@ def transform_bbox_xyxy(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N8
 
 
 def transform_bbox_xywh(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N803
-    """Transform ``(B, N, 4)`` xywh boxes by ``(B, 3, 3)`` forward affine matrix.
+    """Transform ``(B, N, 4)`` xywh boxes by a ``(B, 3, 3)`` forward affine matrix.
 
-    Converts xywh to xyxy, applies :func:`transform_bbox_xyxy`, and converts
-    back to xywh.
+    Converts boxes from ``[x, y, w, h]`` to ``[x1, y1, x2, y2]``, delegates to
+    :func:`transform_bbox_xyxy` (4-corner transform + AABB), then converts back to
+    ``[x, y, w, h]``.
 
-    Parameters
-    ----------
-    boxes : Tensor
-        Bounding boxes in xywh format, shape ``(B, N, 4)`` where columns are
-        ``[x, y, w, h]``.
-    M_forward : Tensor
-        Forward affine matrix, shape ``(B, 3, 3)``.
+    The output ``w`` and ``h`` reflect the AABB after rotation, so they will be
+    larger than the input for non-axis-aligned transforms.
+
+    Args:
+        boxes: Bounding boxes in xywh format. Shape ``(B, N, 4)``,
+            columns ``[x, y, w, h]`` where ``(x, y)`` is the top-left corner,
+            dtype ``float32``.
+        M_forward: Forward (not inverse) affine matrix in pixel coordinates.
+            Shape ``(B, 3, 3)``, dtype ``float32``.
 
     Returns:
-    -------
-    Tensor
-        Transformed boxes in xywh format, shape ``(B, N, 4)``.
+        Transformed boxes in xywh format. Shape ``(B, N, 4)``.
+
+    Example:
+        Identity matrix leaves boxes unchanged:
+
+        >>> import torch
+        >>> boxes = torch.tensor([[[10.0, 20.0, 40.0, 60.0]]])  # x, y, w, h
+        >>> M = torch.eye(3).unsqueeze(0)
+        >>> out = transform_bbox_xywh(boxes, M)
+        >>> torch.allclose(out, boxes)
+        True
 
     """
     x, y, w, h = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
@@ -130,22 +178,34 @@ def transform_bbox_xywh(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N8
 
 
 def transform_keypoints(kps: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N803
-    """Transform ``(B, N, 2)`` keypoints by ``(B, 3, 3)`` forward matrix.
+    """Transform ``(B, N, 2)`` keypoints by a ``(B, 3, 3)`` forward affine matrix.
 
-    Applies affine transformation via homogeneous multiply:
-    ``p'[b,n] = (M_forward[b] @ [x, y, 1]^T)[:2]``.
+    Converts each keypoint to homogeneous coordinates ``[x, y, 1]``, multiplies by
+    the forward matrix, and returns the first two components of the result per point::
 
-    Parameters
-    ----------
-    kps : Tensor
-        Keypoints, shape ``(B, N, 2)`` where columns are ``[x, y]``.
-    M_forward : Tensor
-        Forward affine matrix, shape ``(B, 3, 3)``.
+        p'[b, n] = (M_forward[b] @ [x, y, 1]^T)[:2]
+
+    Unlike bounding boxes, keypoints are transformed exactly (no AABB widening).
+    The operation is differentiable with respect to both ``kps`` and ``M_forward``.
+
+    Args:
+        kps: Keypoints in pixel coordinates. Shape ``(B, N, 2)``,
+            columns ``[x, y]``, dtype ``float32``.
+        M_forward: Forward (not inverse) affine matrix in pixel coordinates.
+            Shape ``(B, 3, 3)``, dtype ``float32``.
 
     Returns:
-    -------
-    Tensor
-        Transformed keypoints, shape ``(B, N, 2)``.
+        Transformed keypoints. Shape ``(B, N, 2)``.
+
+    Example:
+        Identity matrix leaves keypoints unchanged:
+
+        >>> import torch
+        >>> kps = torch.tensor([[[10.0, 20.0], [30.0, 40.0]]])  # (1, 2, 2)
+        >>> M = torch.eye(3).unsqueeze(0)
+        >>> out = transform_keypoints(kps, M)
+        >>> torch.allclose(out, kps)
+        True
 
     """
     B, N, _ = kps.shape  # noqa: N806
