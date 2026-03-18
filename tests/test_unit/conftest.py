@@ -1,4 +1,4 @@
-"""Unit-test fixtures — pure torch, no external backend required."""
+"""Unit-test fixtures - pure torch, no external backend required."""
 
 import pytest
 import torch

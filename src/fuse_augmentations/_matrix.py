@@ -82,7 +82,7 @@ def scale_matrix(sx: torch.Tensor, sy: torch.Tensor, H: int, W: int) -> torch.Te
 def shear_x_matrix(shear_x_tan: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: N803
     """Build (B, 3, 3) pixel-space forward x-shear matrix around image center.
 
-    ``shear_x_tan`` is ``tan(shear_x_rad)`` — already converted from degrees
+    ``shear_x_tan`` is ``tan(shear_x_rad)`` - already converted from degrees
     by the adapter.
 
     Args:
@@ -113,7 +113,7 @@ def shear_x_matrix(shear_x_tan: torch.Tensor, H: int, W: int) -> torch.Tensor:  
 def shear_y_matrix(shear_y_tan: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: N803
     """Build (B, 3, 3) pixel-space forward y-shear matrix around image center.
 
-    ``shear_y_tan`` is ``tan(shear_y_rad)`` — already converted from degrees
+    ``shear_y_tan`` is ``tan(shear_y_rad)`` - already converted from degrees
     by the adapter.
 
     Args:
@@ -226,7 +226,7 @@ def vflip_matrix(H: int, batch_size: int, device: torch.device, dtype: torch.dty
 
 
 def matmul3x3(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:  # noqa: N803
-    """Batch 3x3 matrix multiply via element-wise ops — torch.compile-fusible.
+    """Batch 3x3 matrix multiply via element-wise ops - torch.compile-fusible.
 
     Uses ``unbind`` on rows/cols to avoid ``torch.bmm`` kernel-launch overhead
     on small matrices.
@@ -259,7 +259,7 @@ def matmul3x3(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:  # noqa: N803
 
 
 def inv3x3(M: torch.Tensor) -> torch.Tensor:  # noqa: N803
-    """Batch analytic 3x3 matrix inverse via Cramer's rule — torch.compile-fusible.
+    """Batch analytic 3x3 matrix inverse via Cramer's rule - torch.compile-fusible.
 
     Uses element-wise operations only (no ``torch.linalg.inv``). Includes a
     compile-safe singularity guard via determinant clamping and an eager-mode

@@ -30,7 +30,7 @@ from fuse_augmentations._matrix import (
 from fuse_augmentations._types import TransformCategory
 
 # ---------------------------------------------------------------------------
-# Transform registry — lazy import guards kornia as optional dependency
+# Transform registry - lazy import guards kornia as optional dependency
 # ---------------------------------------------------------------------------
 
 try:
@@ -109,7 +109,7 @@ class KorniaAdapter:
 
         B, _C, _H, _W = input_shape  # noqa: N806
 
-        # Flips have no sampled params — p-mask handles them.
+        # Flips have no sampled params - p-mask handles them.
         # Store batch metadata so build_matrix can construct the right shape.
         if TRANSFORM_REGISTRY and ttype in (
             _RandomHorizontalFlip,
@@ -135,19 +135,19 @@ class KorniaAdapter:
             if "angle" in params:
                 result["angle_rad"] = -torch.deg2rad(params["angle"].to(device=device))
 
-            # Translation — already in pixels (B, 2); do NOT multiply by W/H
+            # Translation - already in pixels (B, 2); do NOT multiply by W/H
             if "translations" in params:
                 trans = params["translations"].to(device=device)
                 result["translate_x"] = trans[:, 0]
                 result["translate_y"] = trans[:, 1]
 
-            # Scale (B, 2) — factors
+            # Scale (B, 2) - factors
             if "scale" in params:
                 sc = params["scale"].to(device=device)
                 result["scale_x"] = sc[:, 0]
                 result["scale_y"] = sc[:, 1]
 
-            # Shear — degrees -> radians; negate to match Kornia's sign convention.
+            # Shear - degrees -> radians; negate to match Kornia's sign convention.
             # Kornia emits separate "shear_x" / "shear_y" keys (shape (B,)).
             if "shear_x" in params:
                 result["shear_x_rad"] = -torch.deg2rad(params["shear_x"].to(device=device))
@@ -156,7 +156,7 @@ class KorniaAdapter:
 
             return result
 
-        # Unknown — return empty
+        # Unknown - return empty
         return {}
 
     @staticmethod
