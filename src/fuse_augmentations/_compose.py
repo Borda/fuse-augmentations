@@ -4,6 +4,11 @@ Wraps a list of augmentation transforms, fuses consecutive geometric ops into a
 single ``grid_sample`` pass, and provides the same forward-call interface as the
 backend.
 
+v0.3 additions: ``data_keys`` parameter routes auxiliary targets (masks,
+bounding boxes, keypoints) alongside the image through every segment.
+``from_params()`` classmethod constructs a fused pipeline directly from
+numeric parameter ranges, without importing any backend (Kornia-free).
+
 Example:
     >>> import torch
     >>> from fuse_augmentations._compose import Compose
@@ -148,24 +153,33 @@ class FusedCompose(nn.Module):
     def forward(self, *args: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, ...]:
         """Apply the augmentation pipeline to an image batch and optional auxiliary targets.
 
-        When ``data_keys`` is ``None`` (default), accepts a single image tensor
-        and returns a single tensor (backward-compatible).
+        **Single-tensor mode** (``data_keys=None``, default): accepts one image
+        tensor and returns one tensor. This is the backward-compatible path.
 
-        When ``data_keys`` is provided, accepts positional arguments matching
-        the key list. The ``"input"`` key corresponds to the image; other keys
-        (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``, ``"keypoints"``) are
-        routed through segments as auxiliary targets. Returns a tuple in
-        ``data_keys`` order. If ``data_keys`` has a single entry, the output
-        is unwrapped to a single tensor.
+        **Multi-target mode** (``data_keys`` is set): accepts positional
+        arguments in the same order as ``data_keys``. The first key must map
+        to the image (``"input"``); subsequent keys are auxiliary targets
+        (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``, ``"keypoints"``).
+        Returns a tuple of tensors in ``data_keys`` order, or a bare tensor
+        when ``data_keys`` contains exactly one entry.
 
         Args:
-            *args: Positional tensors. First tensor is always the image
-                ``(B, C, H, W)``. Additional tensors correspond to
-                ``data_keys[1:]``.
+            *args: Positional tensors matching the ``data_keys`` list.
+                ``args[0]`` is always the image ``(B, C, H, W)`` float32
+                channel-first. Auxiliary args follow in ``data_keys[1:]``
+                order: ``"mask"`` as ``(B, C, H, W)`` float/int;
+                ``"bbox_xyxy"`` / ``"bbox_xywh"`` as ``(B, N, 4)`` float32;
+                ``"keypoints"`` as ``(B, N, 2)`` float32.
 
         Returns:
-            Single tensor when ``data_keys`` is ``None`` or has one entry;
-            tuple of tensors in ``data_keys`` order otherwise.
+            Single ``Tensor`` when ``data_keys`` is ``None`` or has one entry;
+            ``tuple[Tensor, ...]`` in ``data_keys`` order otherwise.
+
+        Raises:
+            TypeError: If the number of positional arguments does not match
+                the number of ``data_keys`` entries (when ``data_keys`` is set),
+                or if more than one argument is passed when ``data_keys`` is
+                ``None``.
 
         """
         if self.data_keys is None:
@@ -189,16 +203,16 @@ class FusedCompose(nn.Module):
             if isinstance(seg, FusedAffineSegment):
                 result = seg(image, aux_targets)
                 if aux_targets is not None:
-                    image, aux_targets = result  # type: ignore[misc]
+                    image, aux_targets = result
                 else:
-                    image = result  # type: ignore[assignment]
+                    image = result
                 self._last_transform_matrix = seg.last_matrix
             elif isinstance(seg, ExactSegment):
                 result = seg(image, aux_targets)
                 if aux_targets is not None:
-                    image, aux_targets = result  # type: ignore[misc]
+                    image, aux_targets = result
                 else:
-                    image = result  # type: ignore[assignment]
+                    image = result
             else:
                 # Passthrough: apply via adapter's call_nonfused (image only)
                 if self._adapter is None:
@@ -315,29 +329,56 @@ class FusedCompose(nn.Module):
         parameters directly using ``_matrix.py`` primitives. Useful for
         backend-agnostic pipelines or when Kornia is not installed.
 
+        All geometric parameters are sampled independently per batch item on
+        every :meth:`forward` call (i.e. ``same_on_batch=False`` semantics).
+        If all geometric params are ``None`` and both flip probabilities are
+        0.0, the returned pipeline is an identity passthrough.
+
         Args:
-            rotation: ``(min_deg, max_deg)`` rotation range, or ``None``.
-            scale: ``(min_factor, max_factor)`` uniform scale range, or ``None``.
-            scale_x: ``(min_factor, max_factor)`` x-axis scale range, or ``None``.
-            scale_y: ``(min_factor, max_factor)`` y-axis scale range, or ``None``.
+            rotation: ``(min_deg, max_deg)`` rotation range, or ``None`` to
+                disable rotation.
+            scale: ``(min_factor, max_factor)`` uniform scale range applied to
+                both axes equally, or ``None``. Overridden per-axis by
+                ``scale_x``/``scale_y`` when those are also set.
+            scale_x: ``(min_factor, max_factor)`` x-axis-only scale range, or
+                ``None``.
+            scale_y: ``(min_factor, max_factor)`` y-axis-only scale range, or
+                ``None``.
             shear_x: ``(min_deg, max_deg)`` x-shear range, or ``None``.
             shear_y: ``(min_deg, max_deg)`` y-shear range, or ``None``.
-            translate_x: ``(min_px, max_px)`` x-translation range, or ``None``.
-            translate_y: ``(min_px, max_px)`` y-translation range, or ``None``.
-            hflip_p: Probability of horizontal flip. Default 0.0.
-            vflip_p: Probability of vertical flip. Default 0.0.
-            brightness: Reserved for v0.4. Raises ``NotImplementedError``.
-            contrast: Reserved for v0.4. Raises ``NotImplementedError``.
-            interpolation: Interpolation mode for grid_sample.
-            padding_mode: Padding mode for grid_sample.
-            reorder: Reorder policy (default ``POINTWISE``).
-            data_keys: Optional data_keys list for auxiliary target routing.
+            translate_x: ``(min_px, max_px)`` x-translation range in pixels,
+                or ``None``.
+            translate_y: ``(min_px, max_px)`` y-translation range in pixels,
+                or ``None``.
+            hflip_p: Probability of horizontal flip per sample. Default 0.0.
+            vflip_p: Probability of vertical flip per sample. Default 0.0.
+            brightness: Reserved for v0.4. Raises ``NotImplementedError`` if
+                not ``None``.
+            contrast: Reserved for v0.4. Raises ``NotImplementedError`` if not
+                ``None``.
+            interpolation: Interpolation mode for the ``grid_sample`` warp.
+                One of ``"bilinear"`` (default), ``"nearest"``, ``"bicubic"``.
+            padding_mode: Padding for out-of-bounds samples.
+                One of ``"zeros"`` (default), ``"border"``, ``"reflection"``.
+            reorder: Reorder policy applied before segmentation.
+                Defaults to ``ReorderPolicy.POINTWISE``.
+            data_keys: Key list for auxiliary target routing, forwarded to
+                :meth:`__init__`. ``None`` preserves single-tensor I/O.
 
         Returns:
-            A configured ``FusedCompose`` instance.
+            A configured ``FusedCompose`` instance ready for inference or training.
 
         Raises:
             NotImplementedError: If ``brightness`` or ``contrast`` is not ``None``.
+
+        Example:
+            >>> import torch
+            >>> from fuse_augmentations._compose import FusedCompose
+            >>> pipe = FusedCompose.from_params(rotation=(-30, 30), hflip_p=0.5)
+            >>> x = torch.zeros(2, 3, 64, 64)
+            >>> out = pipe(x)
+            >>> out.shape
+            torch.Size([2, 3, 64, 64])
 
         """
         if brightness is not None:
@@ -408,9 +449,7 @@ class FusedCompose(nn.Module):
                         stacklevel=2,
                     )
 
-        instance._segments = build_segments(
-            transforms, adapter, interpolation, padding_mode
-        )
+        instance._segments = build_segments(transforms, adapter, interpolation, padding_mode)
 
         return instance
 
@@ -501,15 +540,11 @@ class _DirectParamAdapter:
 
             if "shear_x" in specs:
                 lo, hi = specs["shear_x"]
-                result["shear_x_rad"] = torch.empty(B, device=device).uniform_(
-                    math.radians(lo), math.radians(hi)
-                )
+                result["shear_x_rad"] = torch.empty(B, device=device).uniform_(math.radians(lo), math.radians(hi))
 
             if "shear_y" in specs:
                 lo, hi = specs["shear_y"]
-                result["shear_y_rad"] = torch.empty(B, device=device).uniform_(
-                    math.radians(lo), math.radians(hi)
-                )
+                result["shear_y_rad"] = torch.empty(B, device=device).uniform_(math.radians(lo), math.radians(hi))
 
             if "translate_x" in specs or "translate_y" in specs:
                 if "translate_x" in specs:
@@ -542,7 +577,7 @@ class _DirectParamAdapter:
 
         if isinstance(transform, _DirectParamTransform):
             # Determine batch size and device from any param
-            B = None  # noqa: N806
+            B = None  # type: ignore[assignment]  # noqa: N806
             device = torch.device("cpu")
             dtype = torch.float32
             for v in params.values():

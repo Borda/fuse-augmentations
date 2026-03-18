@@ -112,24 +112,16 @@ class ExactSegment(nn.Module):
                     val = aux_targets[key]
                     if key == "mask":
                         flipped_val = val.flip(dims=flip_dims)
-                        aux_targets[key] = torch.where(
-                            active[:, None, None, None], flipped_val, val
-                        )
+                        aux_targets[key] = torch.where(active[:, None, None, None], flipped_val, val)
                     elif key == "bbox_xyxy":
-                        aux_targets[key] = _flip_bbox_xyxy(
-                            val, active, is_hflip, is_vflip, _height, width
-                        )
+                        aux_targets[key] = _flip_bbox_xyxy(val, active, is_hflip, is_vflip, _height, width)
                     elif key == "bbox_xywh":
                         # Convert xywh -> xyxy, flip, convert back
                         xyxy = _xywh_to_xyxy(val)
-                        xyxy = _flip_bbox_xyxy(
-                            xyxy, active, is_hflip, is_vflip, _height, width
-                        )
+                        xyxy = _flip_bbox_xyxy(xyxy, active, is_hflip, is_vflip, _height, width)
                         aux_targets[key] = _xyxy_to_xywh(xyxy)
                     elif key == "keypoints":
-                        aux_targets[key] = _flip_keypoints(
-                            val, active, is_hflip, is_vflip, _height, width
-                        )
+                        aux_targets[key] = _flip_keypoints(val, active, is_hflip, is_vflip, _height, width)
 
         if not _has_aux:
             return image
