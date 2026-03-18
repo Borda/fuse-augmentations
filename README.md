@@ -19,14 +19,16 @@ import torch
 import kornia.augmentation as K
 from fuse_aug import Compose
 
-pipe = Compose([
-    K.RandomRotation(degrees=30, p=0.8),
-    K.RandomHorizontalFlip(p=0.5),
-    K.RandomAffine(degrees=0, scale=(0.8, 1.2), p=0.7),
-])
+pipe = Compose(
+    [
+        K.RandomRotation(degrees=30, p=0.8),
+        K.RandomHorizontalFlip(p=0.5),
+        K.RandomAffine(degrees=0, scale=(0.8, 1.2), p=0.7),
+    ]
+)
 
-image = torch.rand(4, 3, 256, 256)   # (B, C, H, W)
-out = pipe(image)                     # one grid_sample instead of three
+image = torch.rand(4, 3, 256, 256)  # (B, C, H, W)
+out = pipe(image)  # one grid_sample instead of three
 ```
 
 ## Auxiliary targets — masks, boxes, keypoints
@@ -37,23 +39,26 @@ Pass `data_keys` to route auxiliary tensors through the same fused transform:
 from fuse_aug import Compose
 import kornia.augmentation as K
 
-pipe = Compose([
-    K.RandomRotation(degrees=30, p=0.8),
-    K.RandomHorizontalFlip(p=0.5),
-], data_keys=["input", "mask"])
+pipe = Compose(
+    [
+        K.RandomRotation(degrees=30, p=0.8),
+        K.RandomHorizontalFlip(p=0.5),
+    ],
+    data_keys=["input", "mask"],
+)
 
-img_out, mask_out = pipe(image, mask)   # mask warped with mode='nearest'
+img_out, mask_out = pipe(image, mask)  # mask warped with mode='nearest'
 ```
 
 Supported keys:
 
-| Key | Tensor shape | Notes |
-|---|---|---|
-| `"input"` | `(B, C, H, W)` | Image; always the first argument |
-| `"mask"` | `(B, C, H, W)` | Nearest-neighbour sampling; integer class labels preserved |
-| `"bbox_xyxy"` | `(B, N, 4)` | Pixel-space `[x1, y1, x2, y2]`; AABB wrapping after rotation |
-| `"bbox_xywh"` | `(B, N, 4)` | Pixel-space `[x, y, w, h]`; converted internally to xyxy and back |
-| `"keypoints"` | `(B, N, 2)` | Pixel-space `[x, y]`; exact homogeneous transform, no AABB |
+| Key           | Tensor shape   | Notes                                                             |
+| ------------- | -------------- | ----------------------------------------------------------------- |
+| `"input"`     | `(B, C, H, W)` | Image; always the first argument                                  |
+| `"mask"`      | `(B, C, H, W)` | Nearest-neighbour sampling; integer class labels preserved        |
+| `"bbox_xyxy"` | `(B, N, 4)`    | Pixel-space `[x1, y1, x2, y2]`; AABB wrapping after rotation      |
+| `"bbox_xywh"` | `(B, N, 4)`    | Pixel-space `[x, y, w, h]`; converted internally to xyxy and back |
+| `"keypoints"` | `(B, N, 2)`    | Pixel-space `[x, y]`; exact homogeneous transform, no AABB        |
 
 Bounding boxes and keypoints use the composed forward matrix; masks share the same sampling grid as the image.
 
@@ -92,11 +97,14 @@ print(pipe.n_warps_saved)
 from fuse_aug import Compose, ReorderPolicy
 import kornia.augmentation as K
 
-pipe = Compose([
-    K.RandomRotation(degrees=15, p=0.8),
-    K.ColorJitter(brightness=0.3, p=0.5),   # POINTWISE
-    K.RandomHorizontalFlip(p=0.5),
-], reorder=ReorderPolicy.POINTWISE)
+pipe = Compose(
+    [
+        K.RandomRotation(degrees=15, p=0.8),
+        K.ColorJitter(brightness=0.3, p=0.5),  # POINTWISE
+        K.RandomHorizontalFlip(p=0.5),
+    ],
+    reorder=ReorderPolicy.POINTWISE,
+)
 
 # ColorJitter is moved after HFlip, letting both geometric ops fuse:
 # fused(RandomRotation, RandomHorizontalFlip) -> passthrough(ColorJitter)
@@ -106,8 +114,7 @@ pipe = Compose([
 
 ```python
 out = pipe(image)
-M = pipe.transform_matrix   # (B, 3, 3) composed forward matrix
+M = pipe.transform_matrix  # (B, 3, 3) composed forward matrix
 ```
 
 Use `M` to transform stored coordinates (keypoints, boxes) that were not passed as `data_keys`.
-

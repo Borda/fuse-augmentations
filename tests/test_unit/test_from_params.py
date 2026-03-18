@@ -6,6 +6,7 @@ Tests cover the v0.3 from_params() factory contract:
 - hflip_p=1.0 -> output is horizontally flipped
 - brightness -> raises NotImplementedError
 - from_params(data_keys=["input","mask"]) with rotation -> returns tuple
+
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ class TestFromParamsIdentity:
 
 
 class TestFromParamsRotation:
-    """rotation parameter produces valid output."""
+    """Rotation parameter produces valid output."""
 
     def test_rotation_shape_preserved(self):
         """from_params(rotation=(-30, 30)) preserves (B, C, H, W) shape."""
@@ -65,7 +66,7 @@ class TestFromParamsRotation:
 
 
 class TestFromParamsScale:
-    """scale parameter produces valid output."""
+    """Scale parameter produces valid output."""
 
     def test_scale_shape_preserved(self):
         """from_params(scale=(0.8, 1.2)) preserves (B, C, H, W) shape."""
@@ -102,7 +103,7 @@ class TestFromParamsHFlip:
 
 
 class TestFromParamsBrightnessContrast:
-    """brightness and contrast raise NotImplementedError."""
+    """Brightness and contrast raise NotImplementedError."""
 
     @pytest.mark.parametrize(
         "kwargs,match",
@@ -113,7 +114,7 @@ class TestFromParamsBrightnessContrast:
         ids=["brightness", "contrast"],
     )
     def test_raises_not_implemented(self, kwargs, match):
-        """brightness/contrast params raise NotImplementedError with descriptive message."""
+        """Brightness/contrast params raise NotImplementedError with descriptive message."""
         with pytest.raises(NotImplementedError, match=match):
             Compose.from_params(**kwargs)
 
@@ -155,9 +156,9 @@ class TestFromParamsDegenerateScale:
     def test_from_params_degenerate_scale(self):
         """from_params(scale=(0,0)) raises ValueError at forward time.
 
-        Zero scale makes the affine matrix singular (det=0). The inv3x3
-        function in _matrix.py detects this and raises ValueError with a
-        descriptive message about near-singular matrices.
+        Zero scale makes the affine matrix singular (det=0). The inv3x3 function in _matrix.py detects this and raises
+        ValueError with a descriptive message about near-singular matrices.
+
         """
         pipe = Compose.from_params(scale=(0.0, 0.0))
         x = torch.rand(2, 3, 16, 16)

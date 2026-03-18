@@ -1,6 +1,7 @@
 """Integration tests for auxiliary target support (masks, bboxes, keypoints).
 
 Covers spec tests #32--38. Requires kornia >= 0.6.12.
+
 """
 
 from __future__ import annotations
@@ -79,14 +80,14 @@ class TestMaskSpatialCorrespondence:
         )
         # Build a mask with distinct integer regions: left half = 1, right half = 2
         mask = torch.ones(B, 1, H, W)
-        mask[:, :, :, W // 2:] = 2.0
+        mask[:, :, :, W // 2 :] = 2.0
         img = torch.rand(B, C, H, W)
 
         _, out_mask = pipe(img, mask)
 
         # After HFlip: left half should now be 2, right half should be 1
         left_half = out_mask[:, :, :, : W // 2]
-        right_half = out_mask[:, :, :, W // 2:]
+        right_half = out_mask[:, :, :, W // 2 :]
         assert (left_half == 2.0).all(), "After HFlip, left half of mask should contain class 2"
         assert (right_half == 1.0).all(), "After HFlip, right half of mask should contain class 1"
 
@@ -210,7 +211,7 @@ class TestBatchConsistency:
         img = torch.rand(b, C, H, W)
         # Build a mask that is NOT symmetric, so flip is detectable
         mask = torch.zeros(b, 1, H, W)
-        mask[:, :, :, :W // 4] = 1.0  # left quarter is 1
+        mask[:, :, :, : W // 4] = 1.0  # left quarter is 1
 
         out_img, out_mask = pipe(img, mask)
 
@@ -219,13 +220,19 @@ class TestBatchConsistency:
             # Image should be horizontally flipped
             expected_img_i = img[i].flip(dims=[-1])
             torch.testing.assert_close(
-                out_img[i], expected_img_i, atol=1e-4, rtol=1e-4,
+                out_img[i],
+                expected_img_i,
+                atol=1e-4,
+                rtol=1e-4,
                 msg=f"Sample {i}: image not consistently flipped",
             )
             # Mask should also be horizontally flipped
             expected_mask_i = mask[i].flip(dims=[-1])
             torch.testing.assert_close(
-                out_mask[i], expected_mask_i, atol=1e-4, rtol=1e-4,
+                out_mask[i],
+                expected_mask_i,
+                atol=1e-4,
+                rtol=1e-4,
                 msg=f"Sample {i}: mask not consistently flipped with image",
             )
 
@@ -250,10 +257,16 @@ class TestBatchConsistency:
             torch.testing.assert_close(out_img[i], expected_img_i, atol=1e-4, rtol=1e-4)
             # Box must be mirrored
             torch.testing.assert_close(
-                out_boxes[i, 0, 0].item(), expected_x1, atol=1e-4, rtol=1e-4,
+                out_boxes[i, 0, 0].item(),
+                expected_x1,
+                atol=1e-4,
+                rtol=1e-4,
             )
             torch.testing.assert_close(
-                out_boxes[i, 0, 2].item(), expected_x2, atol=1e-4, rtol=1e-4,
+                out_boxes[i, 0, 2].item(),
+                expected_x2,
+                atol=1e-4,
+                rtol=1e-4,
             )
 
 
@@ -268,10 +281,10 @@ class TestPassthroughWithAuxTargets:
     def test_passthrough_does_not_crash_with_aux_targets(self):
         """Pipeline with passthrough + fused segment routes mask correctly.
 
-        RandomGaussianBlur is SPATIAL_KERNEL (passthrough), RandomRotation is
-        GEOMETRIC_INTERP (fused). The passthrough segment only gets the image;
-        the fused segment transforms both image and mask. The mask shape must
-        be preserved after the full forward pass.
+        RandomGaussianBlur is SPATIAL_KERNEL (passthrough), RandomRotation is GEOMETRIC_INTERP (fused). The passthrough
+        segment only gets the image; the fused segment transforms both image and mask. The mask shape must be preserved
+        after the full forward pass.
+
         """
         from kornia.augmentation import RandomGaussianBlur
 
@@ -288,12 +301,8 @@ class TestPassthroughWithAuxTargets:
 
         assert isinstance(out, tuple), f"Expected tuple, got {type(out)}"
         out_img, out_mask = out
-        assert out_img.shape == img.shape, (
-            f"Image shape mismatch: {out_img.shape} vs {img.shape}"
-        )
-        assert out_mask.shape == mask.shape, (
-            f"Mask shape mismatch: {out_mask.shape} vs {mask.shape}"
-        )
+        assert out_img.shape == img.shape, f"Image shape mismatch: {out_img.shape} vs {img.shape}"
+        assert out_mask.shape == mask.shape, f"Mask shape mismatch: {out_mask.shape} vs {mask.shape}"
 
 
 # ---------------------------------------------------------------------------
@@ -302,15 +311,10 @@ class TestPassthroughWithAuxTargets:
 
 
 class TestTransformMaskInt64:
-    """transform_mask with int64 input raises NotImplementedError from grid_sampler."""
+    """transform_mask with int64 input is supported via internal cast-and-restore."""
 
     def test_transform_mask_int64_input(self):
-        """transform_mask with int64 dtype raises NotImplementedError.
-
-        PyTorch's grid_sampler kernel does not support Long tensors. This test
-        documents that callers must convert to float32 before calling
-        transform_mask.
-        """
+        """transform_mask accepts int64 masks and preserves integer labels."""
         import torch.nn.functional as F
 
         from fuse_augmentations._targets import transform_mask
@@ -319,5 +323,21 @@ class TestTransformMaskInt64:
         theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(B, -1, -1)
         grid = F.affine_grid(theta, [B, 1, H, W], align_corners=True)
 
-        with pytest.raises(NotImplementedError, match="not implemented for"):
-            transform_mask(mask_int64, grid)
+        out = transform_mask(mask_int64, grid)
+        assert out.dtype == torch.int64, f"Expected int64 output dtype, got {out.dtype}"
+        unique_vals = set(torch.unique(out).tolist())
+        assert unique_vals.issubset({0, 1, 2}), f"Unexpected label values after transform: {unique_vals}"
+
+    def test_transform_mask_int64_preserves_large_labels_with_fp16_grid(self):
+        """Large integer labels are preserved even when the input grid is float16."""
+        import torch.nn.functional as F
+
+        from fuse_augmentations._targets import transform_mask
+
+        mask_int64 = torch.full((B, 1, H, W), 4097, dtype=torch.int64)
+        theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(B, -1, -1)
+        grid = F.affine_grid(theta, [B, 1, H, W], align_corners=True).to(torch.float16)
+
+        out = transform_mask(mask_int64, grid)
+        assert out.dtype == torch.int64, f"Expected int64 output dtype, got {out.dtype}"
+        assert (out == 4097).all(), "Large class IDs must not be rounded in mixed-precision paths"
