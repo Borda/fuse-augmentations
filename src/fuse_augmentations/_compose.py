@@ -259,18 +259,21 @@ class FusedCompose(nn.Module):
                 else:
                     image = result
                 self._last_transform_matrix = seg.last_matrix
-            elif isinstance(seg, ExactSegment):
+                continue
+
+            if isinstance(seg, ExactSegment):
                 result = seg(image, aux_targets)
                 if aux_targets is not None:
                     image, aux_targets = result
                 else:
                     image = result
-            else:
-                # Passthrough: apply via adapter's call_nonfused (image only)
-                if self._adapter is None:
-                    msg = "Passthrough transform encountered but adapter is None; this is a bug in build_segments"
-                    raise RuntimeError(msg)
-                image = self._adapter.call_nonfused(seg, image)
+                continue
+
+            # Passthrough: apply via adapter's call_nonfused (image only)
+            if self._adapter is None:
+                msg = "Passthrough transform encountered but adapter is None; this is a bug in build_segments"
+                raise RuntimeError(msg)
+            image = self._adapter.call_nonfused(seg, image)
 
         if self.data_keys is None:
             return image
@@ -325,7 +328,9 @@ class FusedCompose(nn.Module):
                 n = len(seg.transforms)
                 if n > 1:
                     total += n - 1
-            elif isinstance(seg, ExactSegment):
+                continue
+
+            if isinstance(seg, ExactSegment):
                 # Each flip in an ExactSegment avoids grid_sample entirely
                 # (uses tensor.flip), so every transform saves exactly 1 warp.
                 # This is why ExactSegment contributes n rather than n-1:
@@ -348,11 +353,14 @@ class FusedCompose(nn.Module):
             if isinstance(seg, FusedAffineSegment):
                 names = [type(t).__name__ for t in seg.transforms]
                 parts.append(f"fused({', '.join(names)})")
-            elif isinstance(seg, ExactSegment):
+                continue
+
+            if isinstance(seg, ExactSegment):
                 names = [type(t).__name__ for t in seg.transforms]
                 parts.append(f"exact({', '.join(names)})")
-            else:
-                parts.append(f"passthrough({type(seg).__name__})")
+                continue
+
+            parts.append(f"passthrough({type(seg).__name__})")
         return " \u2192 ".join(parts) if parts else "empty"
 
     @classmethod
@@ -585,10 +593,10 @@ class _DirectParamAdapter:
             if sx_range is not None and sy_range is not None:
                 result["scale_x"] = torch.empty(B, device=device).uniform_(*sx_range)
                 result["scale_y"] = torch.empty(B, device=device).uniform_(*sy_range)
-            elif sx_range is not None:
+            if sx_range is not None and sy_range is None:
                 result["scale_x"] = torch.empty(B, device=device).uniform_(*sx_range)
                 result["scale_y"] = torch.ones(B, device=device)
-            elif sy_range is not None:
+            if sy_range is not None and sx_range is None:
                 result["scale_x"] = torch.ones(B, device=device)
                 result["scale_y"] = torch.empty(B, device=device).uniform_(*sy_range)
 

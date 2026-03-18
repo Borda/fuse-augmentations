@@ -92,13 +92,13 @@ class ExactSegment(nn.Module):
         for tfm in self.transforms:
             prob = getattr(tfm, "p", 1.0)
             same_on_batch = getattr(tfm, "same_on_batch", False)
-            if same_on_batch:
+            if not same_on_batch:
+                # Independent Bernoulli draw per sample.
+                active = torch.rand(bsz, device=device) < prob
+            else:
                 # Single Bernoulli draw shared across the entire batch.
                 active_scalar = torch.rand((), device=device) < prob
                 active = active_scalar.expand(bsz)
-            else:
-                # Independent Bernoulli draw per sample.
-                active = torch.rand(bsz, device=device) < prob
 
             flip_dims = self.adapter.exact_flip_dims(tfm)
             flipped = image.flip(dims=flip_dims)
@@ -113,14 +113,17 @@ class ExactSegment(nn.Module):
                     if key == "mask":
                         flipped_val = val.flip(dims=flip_dims)
                         aux_targets[key] = torch.where(active[:, None, None, None], flipped_val, val)
-                    elif key == "bbox_xyxy":
+                        continue
+                    if key == "bbox_xyxy":
                         aux_targets[key] = _flip_bbox_xyxy(val, active, is_hflip, is_vflip, _height, width)
-                    elif key == "bbox_xywh":
+                        continue
+                    if key == "bbox_xywh":
                         # Convert xywh -> xyxy, flip, convert back
                         xyxy = _xywh_to_xyxy(val)
                         xyxy = _flip_bbox_xyxy(xyxy, active, is_hflip, is_vflip, _height, width)
                         aux_targets[key] = _xyxy_to_xywh(xyxy)
-                    elif key == "keypoints":
+                        continue
+                    if key == "keypoints":
                         aux_targets[key] = _flip_keypoints(val, active, is_hflip, is_vflip, _height, width)
 
         if not _has_aux:
@@ -259,11 +262,14 @@ class FusedAffineSegment(nn.Module):
                 val = aux_targets[key]
                 if key == "mask":
                     aux_targets[key] = transform_mask(val, grid)
-                elif key == "bbox_xyxy":
+                    continue
+                if key == "bbox_xyxy":
                     aux_targets[key] = transform_bbox_xyxy(val, acc)
-                elif key == "bbox_xywh":
+                    continue
+                if key == "bbox_xywh":
                     aux_targets[key] = transform_bbox_xywh(val, acc)
-                elif key == "keypoints":
+                    continue
+                if key == "keypoints":
                     aux_targets[key] = transform_keypoints(val, acc)
 
         if not _has_aux:
@@ -337,12 +343,14 @@ def reorder_pointwise(
         cat = adapter.category(tfm)
         if cat == TransformCategory.POINTWISE:
             pw_buf.append(tfm)
-        elif cat in geometric:
+            continue
+        if cat in geometric:
             geo_buf.append(tfm)
-        else:
-            # SPATIAL_KERNEL barrier: flush current stretch, then emit the barrier
-            _flush()
-            result.append(tfm)
+            continue
+
+        # SPATIAL_KERNEL barrier: flush current stretch, then emit the barrier
+        _flush()
+        result.append(tfm)
 
     _flush()
     return result
@@ -396,28 +404,32 @@ def build_segments(
     current_geo: list[object] = []
 
     def _flush_geo() -> None:
-        if current_geo:
-            has_interp = any(adapter.category(t) == TransformCategory.GEOMETRIC_INTERP for t in current_geo)
-            if has_interp:
-                segments.append(
-                    FusedAffineSegment(
-                        list(current_geo),
-                        adapter,
-                        interpolation=interpolation,
-                        padding_mode=padding_mode,
-                    )
+        if not current_geo:
+            return
+
+        has_interp = any(adapter.category(t) == TransformCategory.GEOMETRIC_INTERP for t in current_geo)
+        if has_interp:
+            segments.append(
+                FusedAffineSegment(
+                    list(current_geo),
+                    adapter,
+                    interpolation=interpolation,
+                    padding_mode=padding_mode,
                 )
-            else:
-                segments.append(ExactSegment(list(current_geo), adapter))
+            )
             current_geo.clear()
+            return
+
+        segments.append(ExactSegment(list(current_geo), adapter))
+        current_geo.clear()
 
     for tfm in transforms:
         cat = adapter.category(tfm)
         if cat in fusible:
             current_geo.append(tfm)
-        else:
-            _flush_geo()
-            segments.append(tfm)
+            continue
+        _flush_geo()
+        segments.append(tfm)
 
     _flush_geo()
     return segments
