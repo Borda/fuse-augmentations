@@ -152,7 +152,11 @@ class FusedCompose(nn.Module):
         adapter: TransformAdapter | None,
         segments: list[object],
     ) -> None:
-        """Assign all instance attributes. Called by both ``__init__`` and ``from_params``."""
+        """Assign all instance attributes.
+
+        Called by both ``__init__`` and ``from_params``.
+
+        """
         self.original_transforms: list[object] = list(transforms)
         self.reorder: ReorderPolicy = reorder
         self.interpolation: str | None = interpolation
@@ -509,8 +513,7 @@ class FusedCompose(nn.Module):
 class _DirectParamTransform:
     """Internal transform that holds parameter ranges for from_params().
 
-    Not exported. Implements the minimal interface expected by
-    _DirectParamAdapter.
+    Not exported. Implements the minimal interface expected by _DirectParamAdapter.
 
     """
 
@@ -536,8 +539,7 @@ class _DirectFlipTransform:
 class _DirectParamAdapter:
     """Internal adapter for from_params() that samples directly from param ranges.
 
-    Not exported. Implements the TransformAdapter protocol for
-    _DirectParamTransform and _DirectFlipTransform objects.
+    Not exported. Implements the TransformAdapter protocol for _DirectParamTransform and _DirectFlipTransform objects.
 
     """
 

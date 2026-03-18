@@ -39,11 +39,11 @@ def transform_mask(mask: Tensor, grid: Tensor) -> Tensor:
 
     Args:
         mask: Segmentation mask. Shape ``(B, C, H, W)``, typically ``C=1``.
-            dtype: Must be ``float32``. Integer class labels should be cast to
-            ``float32`` before calling this function. ``F.grid_sample`` with
-            ``mode='nearest'`` does not support integer dtypes across all PyTorch
-            versions. Value range: integer class indices (e.g. 0, 1, 2, …).
-            Channel convention: channel-first (PyTorch).
+            dtype: Any floating or integer dtype. Integer masks are
+            automatically cast to a floating dtype for ``grid_sample`` and cast
+            back to the original dtype afterward. Value range: integer class
+            indices (e.g. 0, 1, 2, …). Channel convention: channel-first
+            (PyTorch).
         grid: Sampling grid from ``torch.nn.functional.affine_grid``.
             Shape ``(B, H, W, 2)``, dtype ``float32``.
             Coordinates in normalised ``[-1, 1]`` space with ``align_corners=True``.
@@ -67,15 +67,27 @@ def transform_mask(mask: Tensor, grid: Tensor) -> Tensor:
         True
 
     """
+    needs_cast_back = not mask.is_floating_point()
+    sample_mask = mask
+    sample_grid = grid
+
+    if needs_cast_back:
+        # Integer masks must not be sampled through fp16/bf16 in mixed precision,
+        # otherwise class IDs can be rounded before being cast back.
+        sample_mask = mask.to(dtype=torch.float64)
+        sample_grid = grid.to(dtype=torch.float64)
     # No gradient is tracked through this operation, matching the module docstring.
     with torch.no_grad():
-        return F.grid_sample(
-            mask,
-            grid,
+        sampled = F.grid_sample(
+            sample_mask,
+            sample_grid,
             mode="nearest",
             padding_mode="zeros",
             align_corners=True,
         )
+    if needs_cast_back:
+        return sampled.to(dtype=mask.dtype)
+    return sampled
 
 
 def transform_bbox_xyxy(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N803

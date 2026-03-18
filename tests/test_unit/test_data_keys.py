@@ -6,6 +6,7 @@ Tests cover the v0.3 data_keys contract:
 - data_keys=["input", "mask"] -> forward(img, mask) returns (img_out, mask_out) tuple
 - Unknown key in data_keys emits UserWarning and passes value through
 - Wrong number of args vs data_keys raises ValueError or TypeError
+
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ class TestDataKeysNone:
     """data_keys=None preserves backward compatibility (v0.1/v0.2 behavior)."""
 
     def test_returns_single_tensor(self):
-        """forward(img) with data_keys=None returns a single Tensor, not a tuple."""
+        """Forward(img) with data_keys=None returns a single Tensor, not a tuple."""
         pipe = Compose([], data_keys=None)
         x = torch.rand(2, 3, 8, 8)
         out = pipe(x)
@@ -66,7 +67,7 @@ class TestDataKeysMultipleKeys:
     """data_keys=["input", "mask"] returns tuple in data_keys order."""
 
     def test_two_keys_returns_tuple(self):
-        """forward(img, mask) with two data_keys returns a 2-tuple."""
+        """Forward(img, mask) with two data_keys returns a 2-tuple."""
         pipe = Compose([], data_keys=["input", "mask"])
         img = torch.rand(2, 3, 8, 8)
         mask = torch.randint(0, 3, (2, 1, 8, 8)).float()
@@ -127,7 +128,7 @@ class TestDataKeysUnknownKey:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             pipe = Compose([], data_keys=["input", "custom_field"])
-            out_img, out_custom = pipe(img, custom)
+            _out_img, out_custom = pipe(img, custom)
         torch.testing.assert_close(out_custom, custom)
 
 
@@ -160,10 +161,9 @@ class TestDataKeysEmptyList:
     """data_keys=[] edge case: zero-length key list."""
 
     def test_empty_data_keys(self):
-        """forward(img) with data_keys=[] raises TypeError (0 keys but 1 arg)."""
-        pipe = Compose([], data_keys=[])
-        with pytest.raises(TypeError, match="Expected 0 arguments"):
-            pipe(torch.zeros(1, 3, 8, 8))
+        """Constructing with data_keys=[] raises ValueError with guidance."""
+        with pytest.raises(ValueError, match="data_keys cannot be an empty list"):
+            Compose([], data_keys=[])
 
 
 class TestDataKeysDuplicates:
@@ -176,6 +176,7 @@ class TestDataKeysDuplicates:
         out[0] = args[0] (img1), out[1] = args[1] (img2). Duplicate keys are
         accepted at construction but the second occurrence maps to the second
         positional arg, not a copy of the first.
+
         """
         pipe = Compose([], data_keys=["input", "input"])
         img1 = torch.ones(1, 3, 4, 4)
