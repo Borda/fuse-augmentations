@@ -255,3 +255,69 @@ class TestBatchConsistency:
             torch.testing.assert_close(
                 out_boxes[i, 0, 2].item(), expected_x2, atol=1e-4, rtol=1e-4,
             )
+
+
+# ---------------------------------------------------------------------------
+# Edge case: Passthrough segment with active aux_targets
+# ---------------------------------------------------------------------------
+
+
+class TestPassthroughWithAuxTargets:
+    """Passthrough segment (e.g. GaussianBlur) does not crash with aux_targets."""
+
+    def test_passthrough_does_not_crash_with_aux_targets(self):
+        """Pipeline with passthrough + fused segment routes mask correctly.
+
+        RandomGaussianBlur is SPATIAL_KERNEL (passthrough), RandomRotation is
+        GEOMETRIC_INTERP (fused). The passthrough segment only gets the image;
+        the fused segment transforms both image and mask. The mask shape must
+        be preserved after the full forward pass.
+        """
+        from kornia.augmentation import RandomGaussianBlur
+
+        pipe = Compose(
+            [
+                RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
+                RandomRotation(degrees=15, p=1.0),
+            ],
+            data_keys=["input", "mask"],
+        )
+        img = torch.rand(B, C, H, W)
+        mask = torch.randint(0, 3, (B, 1, H, W)).float()
+        out = pipe(img, mask)
+
+        assert isinstance(out, tuple), f"Expected tuple, got {type(out)}"
+        out_img, out_mask = out
+        assert out_img.shape == img.shape, (
+            f"Image shape mismatch: {out_img.shape} vs {img.shape}"
+        )
+        assert out_mask.shape == mask.shape, (
+            f"Mask shape mismatch: {out_mask.shape} vs {mask.shape}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Edge case: transform_mask with int64 input
+# ---------------------------------------------------------------------------
+
+
+class TestTransformMaskInt64:
+    """transform_mask with int64 input raises NotImplementedError from grid_sampler."""
+
+    def test_transform_mask_int64_input(self):
+        """transform_mask with int64 dtype raises NotImplementedError.
+
+        PyTorch's grid_sampler kernel does not support Long tensors. This test
+        documents that callers must convert to float32 before calling
+        transform_mask.
+        """
+        import torch.nn.functional as F
+
+        from fuse_augmentations._targets import transform_mask
+
+        mask_int64 = torch.randint(0, 3, (B, 1, H, W), dtype=torch.int64)
+        theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(B, -1, -1)
+        grid = F.affine_grid(theta, [B, 1, H, W], align_corners=True)
+
+        with pytest.raises(NotImplementedError, match="not implemented for"):
+            transform_mask(mask_int64, grid)
