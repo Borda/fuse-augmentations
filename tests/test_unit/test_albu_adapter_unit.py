@@ -50,6 +50,9 @@ class _StubInterpTransform:
     def get_params(self) -> dict:
         return {}
 
+    def update_transform_params(self, params: dict, data: dict) -> dict:
+        return params
+
     def get_params_dependent_on_data(self, params: dict, data: dict) -> dict:
         return {"matrix": self._matrix.copy()}
 

@@ -157,22 +157,20 @@ class NumpyFusedAffineSegment(nn.Module):
                 output_np.append(img_np)
                 continue
 
-            # Invert for cv2 (dst→src), extract 2x3
-            try:
-                M_inv = np.linalg.inv(acc)  # noqa: N806
-            except np.linalg.LinAlgError:
-                M_inv = np.eye(3, dtype=np.float64)  # noqa: N806
-
-            M_inv_2x3 = M_inv[:2, :].astype(np.float32)  # noqa: N806
+            # cv2.warpAffine without WARP_INVERSE_MAP treats M as forward (src→dst)
+            # and internally inverts it to produce dst[p'] = src[M^{-1}*p'].
+            # Albumentations stores forward pixel-space matrices, so we pass acc
+            # directly — no explicit inversion needed.
+            M_fwd_2x3 = acc[:2, :].astype(np.float32)  # noqa: N806
 
             img_np = image[i].permute(1, 2, 0).cpu().numpy()
 
             if n_ch == 1:
                 img_np = img_np[:, :, 0]
-                warped = _warp(img_np, M_inv_2x3, width, height, interp_flag, border_flag)
+                warped = _warp(img_np, M_fwd_2x3, width, height, interp_flag, border_flag)
                 warped = warped[:, :, np.newaxis]
             else:
-                warped = _warp(img_np, M_inv_2x3, width, height, interp_flag, border_flag)
+                warped = _warp(img_np, M_fwd_2x3, width, height, interp_flag, border_flag)
 
             output_np.append(warped)
 
@@ -191,18 +189,22 @@ class NumpyFusedAffineSegment(nn.Module):
 
 def _warp(
     img: np.ndarray,
-    M_inv_2x3: np.ndarray,  # noqa: N803
+    M_fwd_2x3: np.ndarray,  # noqa: N803
     width: int,
     height: int,
     interp_flag: int,
     border_flag: int,
 ) -> np.ndarray:
-    """Apply cv2.warpAffine with the inverse 2x3 pixel-space matrix."""
+    """Apply cv2.warpAffine with the forward 2x3 pixel-space matrix.
+
+    cv2.warpAffine without WARP_INVERSE_MAP treats M as forward (src→dst)
+    and inverts it internally, so dst[p'] = src[M^{-1}*p'].
+    """
     import cv2
 
     return cv2.warpAffine(
         img,
-        M_inv_2x3,
+        M_fwd_2x3,
         (width, height),
         flags=interp_flag,
         borderMode=border_flag,
