@@ -1,7 +1,7 @@
 """Unit tests for TorchVisionAdapter -- no torchvision installation required.
 
-Stub transforms are used to test protocol compliance, matrix shape, flip dims,
-and parameter sampling without importing the torchvision package.
+Stub transforms are used to test protocol compliance, matrix shape, flip dims, and parameter sampling without importing
+the torchvision package.
 
 """
 
@@ -65,12 +65,16 @@ def _register_stubs(monkeypatch):
     """Register stub transforms in TorchVisionAdapter's type sets via monkeypatch."""
     from fuse_augmentations.adapters import _torchvision as _mod
 
-    monkeypatch.setattr(_mod, "TRANSFORM_REGISTRY", {
-        _StubRotation: TransformCategory.GEOMETRIC_INTERP,
-        _StubAffine: TransformCategory.GEOMETRIC_INTERP,
-        _StubHFlip: TransformCategory.GEOMETRIC_EXACT,
-        _StubVFlip: TransformCategory.GEOMETRIC_EXACT,
-    })
+    monkeypatch.setattr(
+        _mod,
+        "TRANSFORM_REGISTRY",
+        {
+            _StubRotation: TransformCategory.GEOMETRIC_INTERP,
+            _StubAffine: TransformCategory.GEOMETRIC_INTERP,
+            _StubHFlip: TransformCategory.GEOMETRIC_EXACT,
+            _StubVFlip: TransformCategory.GEOMETRIC_EXACT,
+        },
+    )
     monkeypatch.setattr(_mod, "_HFLIP_TYPES_FS", frozenset({_StubHFlip}))
     monkeypatch.setattr(_mod, "_VFLIP_TYPES_FS", frozenset({_StubVFlip}))
     monkeypatch.setattr(_mod, "_ROTATION_TYPES_FS", frozenset({_StubRotation}))
@@ -207,7 +211,7 @@ class TestBuildMatrixIdentity:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_identity_affine_params(self, adapter):
-        """angle=0, scale=1, shear=0, translate=0 -> identity."""
+        """Angle=0, scale=1, shear=0, translate=0 -> identity."""
         B, H, W = 2, 64, 64
         params = {
             "angle_rad": torch.zeros(B),
@@ -229,7 +233,7 @@ class TestBuildMatrixHFlip:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_hflip_first_row(self, adapter):
-        """hflip matrix first row is [-1, 0, W-1]."""
+        """Hflip matrix first row is [-1, 0, W-1]."""
         B, H, W = 2, 32, 64
         params = {"_batch_size": torch.tensor([B], dtype=torch.int64)}
         mtx = adapter.build_matrix(_StubHFlip(), params, H, W)
@@ -244,7 +248,7 @@ class TestBuildMatrixVFlip:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_vflip_second_row(self, adapter):
-        """vflip matrix second row is [0, -1, H-1]."""
+        """Vflip matrix second row is [0, -1, H-1]."""
         B, H, W = 2, 64, 32
         params = {"_batch_size": torch.tensor([B], dtype=torch.int64)}
         mtx = adapter.build_matrix(_StubVFlip(), params, H, W)
@@ -282,7 +286,7 @@ class TestExactFlipDims:
 
 
 class TestExpandGuard:
-    """expand=True raises ValueError in sample_params and category."""
+    """Expand=True raises ValueError in sample_params and category."""
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_expand_true_in_category(self, adapter):

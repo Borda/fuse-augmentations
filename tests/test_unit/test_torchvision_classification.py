@@ -3,6 +3,7 @@
 Backend-detection tests use module-path mock objects that mimic the class hierarchy without importing the real
 torchvision package. Transform-category tests use real TorchVision transforms and are skipped via pytest.importorskip
 when torchvision is not installed.
+
 """
 
 from __future__ import annotations
@@ -77,7 +78,7 @@ class TestTorchVisionAdapterCategory:
         ids=["RandomRotation", "RandomAffine", "RandomHorizontalFlip", "RandomVerticalFlip"],
     )
     def test_category_real_v1(self, adapter, transform_factory, expected_cat):
-        """v1 transforms map to expected categories (requires torchvision)."""
+        """V1 transforms map to expected categories (requires torchvision)."""
         pytest.importorskip("torchvision", reason="torchvision required")
         import torchvision.transforms as T
 
@@ -106,7 +107,7 @@ class TestTorchVisionAdapterCategory:
         ids=["v2.RandomRotation", "v2.RandomAffine", "v2.RandomHorizontalFlip", "v2.RandomVerticalFlip"],
     )
     def test_category_real_v2(self, adapter, transform_factory, expected_cat):
-        """v2 transforms map to expected categories (requires torchvision)."""
+        """V2 transforms map to expected categories (requires torchvision)."""
         pytest.importorskip("torchvision", reason="torchvision required")
         import torchvision.transforms.v2 as T
 
@@ -120,7 +121,7 @@ class TestTorchVisionAdapterCategory:
         assert cat == TransformCategory.SPATIAL_KERNEL
 
     def test_expand_true_raises_value_error(self, adapter):
-        """expand=True on a transform raises ValueError."""
+        """Expand=True on a transform raises ValueError."""
         pytest.importorskip("torchvision", reason="torchvision required")
         import torchvision.transforms as T
 
@@ -217,5 +218,9 @@ class TestBuildMixedSegmentsGuard:
         unknown = _make_mock("fake.lib")
         with pytest.raises(ValueError, match="_build_mixed_segments called with no recognised"):
             _build_mixed_segments(
-                [unknown], [None], ReorderPolicy.NONE, None, None,
+                [unknown],
+                [None],
+                ReorderPolicy.NONE,
+                None,
+                None,
             )

@@ -13,17 +13,16 @@ Parity contracts:
 
 from __future__ import annotations
 
+import pytest
 import torch
 import torch.nn.functional as F
 
-import pytest
-
 pytest.importorskip("torchvision", reason="torchvision required")
-import torchvision.transforms as T  # noqa: E402
+import torchvision.transforms as T
 
-from fuse_augmentations import Compose  # noqa: E402
-from fuse_augmentations.adapters._torchvision import TorchVisionAdapter  # noqa: E402
-from fuse_augmentations.affine._matrix import inv3x3, normalize_matrix  # noqa: E402
+from fuse_augmentations import Compose
+from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
+from fuse_augmentations.affine._matrix import inv3x3, normalize_matrix
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -61,6 +60,7 @@ def _manual_grid_sample(
     Mirrors the RNG consumption pattern of FusedAffineSegment.forward():
     1. torch.rand(bsz) for probability mask
     2. adapter.sample_params() which calls get_params()
+
     """
     bsz, n_ch, height, width = img.shape
     # FusedAffineSegment draws torch.rand(bsz) for probability before sampling params
@@ -145,9 +145,7 @@ class TestInterpParity:
         ref = _manual_grid_sample(img, adapter, t)
 
         torch.manual_seed(42)
-        fused_out = Compose([
-            T.RandomAffine(degrees=(20, 20), translate=None, scale=None, shear=None)
-        ])(img)
+        fused_out = Compose([T.RandomAffine(degrees=(20, 20), translate=None, scale=None, shear=None)])(img)
 
         assert torch.allclose(fused_out, ref, atol=ATOL_INTERP), (
             f"Affine rotation-only parity failed: max diff = {(fused_out - ref).abs().max().item():.2e}"
@@ -203,17 +201,15 @@ class TestInterpParity:
 
 class TestAlignCornersOffset:
     def test_align_corners_offset_within_bound(self):
-        """Fused (align_corners=True, center=(W-1)/2) vs native TorchVision
-        (center=W/2) difference is bounded for the documented center offset.
+        """Fused (align_corners=True, center=(W-1)/2) vs native TorchVision (center=W/2) difference is bounded for the
+        documented center offset.
 
-        The fused engine uses align_corners=True with rotation center (W-1)/2,
-        while TorchVision native uses half-pixel center W/2.  Under 30-degree
-        rotation, this 0.5px center offset displaces source coordinates across
-        the image, producing pixel-value differences especially at edges (where
-        zeros-padding creates hard boundaries).  This test validates that the
-        max absolute difference stays <= 1.0 (pixel range is [0, 1]) and that
-        the output shapes match -- confirming the architectural difference is
-        bounded, not divergent.
+        The fused engine uses align_corners=True with rotation center (W-1)/2, while TorchVision native uses half-pixel
+        center W/2.  Under 30-degree rotation, this 0.5px center offset displaces source coordinates across the image,
+        producing pixel-value differences especially at edges (where zeros-padding creates hard boundaries).  This test
+        validates that the max absolute difference stays <= 1.0 (pixel range is [0, 1]) and that the output shapes match
+        -- confirming the architectural difference is bounded, not divergent.
+
         """
         img = _rand_image()
 
@@ -229,13 +225,9 @@ class TestAlignCornersOffset:
         assert fused_out.shape == native_out.shape
         # Max diff bounded by pixel range [0, 1] -- center offset causes real
         # pixel-level differences but cannot exceed the value range.
-        assert max_diff <= 1.0, (
-            f"align_corners max offset {max_diff:.6f} exceeds pixel range 1.0"
-        )
+        assert max_diff <= 1.0, f"align_corners max offset {max_diff:.6f} exceeds pixel range 1.0"
         # Verify that not everything is identical (the center offset IS real)
-        assert max_diff > 0.001, (
-            "Expected nonzero difference from center-of-rotation offset"
-        )
+        assert max_diff > 0.001, "Expected nonzero difference from center-of-rotation offset"
 
 
 # ---------------------------------------------------------------------------

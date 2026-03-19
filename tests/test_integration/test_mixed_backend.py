@@ -1,12 +1,9 @@
 """Integration tests for mixed-backend pipelines.
 
-Requires both torchvision and kornia. Tests are skipped gracefully if either
-is not installed.
+Requires both torchvision and kornia. Tests are skipped gracefully if either is not installed.
 
-Mixed-backend pipelines allow transforms from different frameworks
-(e.g. TorchVision geometric + Kornia color) in a single Compose call.
-Each transform is dispatched to its native adapter for parameter sampling
-and matrix construction.
+Mixed-backend pipelines allow transforms from different frameworks (e.g. TorchVision geometric + Kornia color) in a
+single Compose call. Each transform is dispatched to its native adapter for parameter sampling and matrix construction.
 
 """
 
@@ -105,9 +102,7 @@ class TestMixedFusionPlan:
             T.RandomAffine(degrees=0, scale=(0.9, 1.1)),
             KColorJitter(brightness=0.2, p=1.0),
         ])
-        assert pipe.n_warps_saved >= 1, (
-            f"Expected at least 1 warp saved, got {pipe.n_warps_saved}"
-        )
+        assert pipe.n_warps_saved >= 1, f"Expected at least 1 warp saved, got {pipe.n_warps_saved}"
 
 
 # ---------------------------------------------------------------------------
@@ -119,8 +114,9 @@ class TestMixedGeometricSegments:
     def test_mixed_two_geometric_backends_separate_segments(self):
         """TorchVision rotation + Kornia rotation produce two separate fused segments.
 
-        Different backends cannot share a single fused segment because each
-        uses its own adapter for parameter sampling and matrix construction.
+        Different backends cannot share a single fused segment because each uses its own adapter for parameter sampling
+        and matrix construction.
+
         """
         pipe = Compose([
             T.RandomRotation(degrees=30),
@@ -131,8 +127,7 @@ class TestMixedGeometricSegments:
         # not a single fused segment combining both.
         fused_count = plan.count("fused(")
         assert fused_count == 2, (
-            f"Expected 2 separate fused segments (one per backend), "
-            f"got {fused_count} in plan: {plan}"
+            f"Expected 2 separate fused segments (one per backend), got {fused_count} in plan: {plan}"
         )
 
         # Each single-transform segment saves 0 warps on its own

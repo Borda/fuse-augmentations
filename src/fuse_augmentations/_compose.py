@@ -200,7 +200,10 @@ class FusedCompose(nn.Module):
         self.data_keys: list[str] | None = data_keys
         self._adapter: TransformAdapter | None = adapter
         self._segments: list[object] = _wrap_passthrough_segments(
-            segments, adapter, transform_adapters, original_transforms=transforms,
+            segments,
+            adapter,
+            transform_adapters,
+            original_transforms=transforms,
         )
         self._last_transform_matrix: Tensor | None = None
         self._transform_adapters: dict[int, TransformAdapter] = transform_adapters or {}
@@ -723,6 +726,7 @@ def _wrap_passthrough_segments(
     When ``transform_adapters`` is keyed by positional index (mixed-backend
     path), ``original_transforms`` is used to resolve the index of each raw
     passthrough transform object.
+
     """
     wrapped_segments: list[object] = []
     fused_segment_types = (FusedAffineSegment, AlbuFusedAffineSegment, ExactSegment)
