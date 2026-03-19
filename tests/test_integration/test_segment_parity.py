@@ -30,9 +30,9 @@ from kornia.augmentation import (  # noqa: E402
     RandomVerticalFlip,
 )
 
-from fuse_augmentations._matrix import inv3x3, matmul3x3, normalize_matrix  # noqa: E402
-from fuse_augmentations._segment import FusedAffineSegment  # noqa: E402
 from fuse_augmentations.adapters._kornia import KorniaAdapter  # noqa: E402
+from fuse_augmentations.affine._matrix import inv3x3, matmul3x3, normalize_matrix  # noqa: E402
+from fuse_augmentations.affine._segment import FusedAffineSegment  # noqa: E402
 
 pytestmark = pytest.mark.integration
 

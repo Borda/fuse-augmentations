@@ -1,7 +1,8 @@
 """Unit tests for Albumentations backend detection and transform classification.
 
-No albumentations installation required — uses module-path mock objects
-that mimic the class hierarchy without importing the real package.
+No albumentations installation required — uses module-path mock objects that mimic the class hierarchy without importing
+the real package.
+
 """
 
 from __future__ import annotations

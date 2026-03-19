@@ -33,14 +33,15 @@ classifiers = [
 dynamic = [ "version" ]
 dependencies = [
   "numpy",
-  "pillow>=10",
+  "pillow",
+  "scipy",
   "torch>=2.1",
 ]
 optional-dependencies.albumentations = [
-  "albumentations>=1.1",
+  "albumentations>=2.0.0",
 ]
 optional-dependencies.all = [
-  "albumentations>=1.1",
+  "albumentations>=2.0.0",
   "kornia>=0.6.12",
   "torchvision>=0.15",
 ]
@@ -55,13 +56,11 @@ urls."Source Code" = "https://github.com/Borda/fuse-augmentations"
 [dependency-groups]
 dev = [
   "hypothesis>=6.100",
-  "kornia>=0.6.12",
   "mypy==1.19.1",
-  "numpy>=1.24",
   "pytest>=8.3,<8.5",
   "pytest-benchmark>=4",
   "pytest-cov>=6.2,<7.1",
-  "tomlkit>=0.13",
+  # "tomlkit>=0.13",
   "twine>=6.1,<6.3",
 ]
 
@@ -135,6 +134,10 @@ recursive = true
 wrap-summaries = 119
 wrap-descriptions = 120
 blank = true
+
+[tool.pyproject-fmt]
+# Keep full version numbers (e.g., 1.0.0 instead of 1.0) in dependency specifiers
+keep_full_version = true
 
 [tool.mypy]
 python_version = "3.10"

@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from fuse_augmentations._matrix import (
+from fuse_augmentations.affine._matrix import (
     hflip_matrix,
     inv3x3,
     matmul3x3,

@@ -28,7 +28,8 @@ import torch
 from torch import nn
 
 from fuse_augmentations._backend import Backend, detect_backend
-from fuse_augmentations._matrix import (
+from fuse_augmentations._types import ReorderPolicy, TransformAdapter, TransformCategory
+from fuse_augmentations.affine._matrix import (
     hflip_matrix,
     matmul3x3,
     rotation_matrix,
@@ -38,8 +39,13 @@ from fuse_augmentations._matrix import (
     translate_matrix,
     vflip_matrix,
 )
-from fuse_augmentations._segment import ExactSegment, FusedAffineSegment, build_segments, reorder_pointwise
-from fuse_augmentations._types import ReorderPolicy, TransformAdapter, TransformCategory
+from fuse_augmentations.affine._segment import (
+    AlbuFusedAffineSegment,
+    ExactSegment,
+    FusedAffineSegment,
+    build_segments,
+    reorder_pointwise,
+)
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -271,9 +277,7 @@ class FusedCompose(nn.Module):
                 self._last_transform_matrix = seg.last_matrix
                 continue
 
-            from fuse_augmentations._np_segment import NumpyFusedAffineSegment
-
-            if isinstance(seg, NumpyFusedAffineSegment):
+            if isinstance(seg, AlbuFusedAffineSegment):
                 result = seg(image, aux_targets)
                 if aux_targets is not None:
                     image, aux_targets = result
@@ -341,11 +345,9 @@ class FusedCompose(nn.Module):
             Total number of eliminated warp passes across all fused segments.
 
         """
-        from fuse_augmentations._np_segment import NumpyFusedAffineSegment
-
         total = 0
         for seg in self._segments:
-            if isinstance(seg, (FusedAffineSegment, NumpyFusedAffineSegment)):
+            if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment)):
                 # n transforms fused → 1 warp, saving n-1 passes.
                 n = len(seg.transforms)
                 if n > 1:
@@ -370,11 +372,9 @@ class FusedCompose(nn.Module):
             Returns ``"empty"`` for an empty pipeline.
 
         """
-        from fuse_augmentations._np_segment import NumpyFusedAffineSegment
-
         parts: list[str] = []
         for seg in self._segments:
-            if isinstance(seg, (FusedAffineSegment, NumpyFusedAffineSegment)):
+            if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment)):
                 names = [type(t).__name__ for t in seg.transforms]
                 parts.append(f"fused({', '.join(names)})")
                 continue

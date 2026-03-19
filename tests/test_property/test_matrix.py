@@ -49,7 +49,7 @@ import torch
 from hypothesis import given, settings
 from hypothesis.strategies import floats, integers
 
-from fuse_augmentations._matrix import (
+from fuse_augmentations.affine._matrix import (
     hflip_matrix,
     inv3x3,
     matmul3x3,

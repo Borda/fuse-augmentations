@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import torch
 
-from fuse_augmentations._matrix import inv3x3, matmul3x3
-from fuse_augmentations._segment import ExactSegment, FusedAffineSegment, build_segments, reorder_pointwise
 from fuse_augmentations._types import TransformCategory
+from fuse_augmentations.affine._matrix import inv3x3, matmul3x3
+from fuse_augmentations.affine._segment import ExactSegment, FusedAffineSegment, build_segments, reorder_pointwise
 
 
 class _StubTransform:
@@ -63,21 +63,21 @@ def _identity_matrix_fn(B, H, W):
 
 def _hflip_matrix_fn(B, H, W):
     """Return (B, 3, 3) horizontal flip matrices."""
-    from fuse_augmentations._matrix import hflip_matrix
+    from fuse_augmentations.affine._matrix import hflip_matrix
 
     return hflip_matrix(W=W, batch_size=B, device=torch.device("cpu"), dtype=torch.float32)
 
 
 def _vflip_matrix_fn(B, H, W):
     """Return (B, 3, 3) vertical flip matrices."""
-    from fuse_augmentations._matrix import vflip_matrix
+    from fuse_augmentations.affine._matrix import vflip_matrix
 
     return vflip_matrix(H=H, batch_size=B, device=torch.device("cpu"), dtype=torch.float32)
 
 
 def _small_scale_matrix_fn(B, H, W):
     """Scale 0.01 -- near-degenerate but valid."""
-    from fuse_augmentations._matrix import scale_matrix
+    from fuse_augmentations.affine._matrix import scale_matrix
 
     sx = torch.full((B,), 0.01)
     sy = torch.full((B,), 0.01)

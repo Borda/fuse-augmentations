@@ -1,7 +1,8 @@
 """Unit tests for AlbumentationsAdapter — no albumentations installation required.
 
-Stub transforms are used to test protocol compliance, matrix shape, and flip dims
-without importing the albumentations package.
+Stub transforms are used to test protocol compliance, matrix shape, and flip dims without importing the albumentations
+package.
+
 """
 
 from __future__ import annotations
@@ -11,7 +12,6 @@ import pytest
 import torch
 
 from fuse_augmentations._types import TransformAdapter, TransformCategory
-
 
 # ---------------------------------------------------------------------------
 # TDD entry point — fails until adapters/_albumentations.py is created
@@ -143,13 +143,13 @@ def test_build_matrix_non_identity_matrix_preserved():
     from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
 
     adapter = AlbumentationsAdapter()
-    B, H, W = 1, 64, 64
+    _B, H, W = 1, 64, 64
 
     angle = np.deg2rad(30.0)
     known = np.array([
         [np.cos(angle), -np.sin(angle), 0.0],
-        [np.sin(angle),  np.cos(angle), 0.0],
-        [0.0,            0.0,           1.0],
+        [np.sin(angle), np.cos(angle), 0.0],
+        [0.0, 0.0, 1.0],
     ])
     matrix_tensor = torch.tensor(known, dtype=torch.float32).unsqueeze(0)
     stub = _StubInterpTransform(known)
@@ -172,9 +172,9 @@ def test_exact_flip_dims_hflip():
     class _HFlipStub(_StubFlipTransform):
         pass
 
-    registry = {_HFlipStub: TransformCategory.GEOMETRIC_EXACT}
     # Inject stub type as hflip
     from fuse_augmentations.adapters import _albumentations as _mod
+
     original = _mod._HFLIP_TYPES
     try:
         _mod._HFLIP_TYPES = frozenset({_HFlipStub})
@@ -259,3 +259,138 @@ def test_sample_params_flip_returns_batch_size_key():
         assert int(params["_batch_size"].item()) == 4
     finally:
         _mod._HFLIP_TYPES = original
+
+
+# ---------------------------------------------------------------------------
+# hflip_matrix_np / vflip_matrix_np
+# ---------------------------------------------------------------------------
+
+
+class TestHflipMatrixNp:
+    def test_shape(self):
+        from fuse_augmentations.adapters._albumentations import hflip_matrix_np
+
+        assert hflip_matrix_np(W=64).shape == (3, 3)
+
+    def test_dtype(self):
+        from fuse_augmentations.adapters._albumentations import hflip_matrix_np
+
+        assert hflip_matrix_np(W=64).dtype == np.float64
+
+    def test_maps_x_correctly(self):
+        from fuse_augmentations.adapters._albumentations import hflip_matrix_np
+
+        W = 10
+        M = hflip_matrix_np(W=W)
+        assert M[0, 0] == -1.0
+        assert M[0, 1] == 0.0
+        assert M[0, 2] == float(W - 1)
+
+    def test_maps_y_unchanged(self):
+        from fuse_augmentations.adapters._albumentations import hflip_matrix_np
+
+        M = hflip_matrix_np(W=10)
+        assert M[1, 0] == 0.0
+        assert M[1, 1] == 1.0
+        assert M[1, 2] == 0.0
+
+    def test_homogeneous_row(self):
+        from fuse_augmentations.adapters._albumentations import hflip_matrix_np
+
+        M = hflip_matrix_np(W=10)
+        np.testing.assert_array_equal(M[2], [0.0, 0.0, 1.0])
+
+    @pytest.mark.parametrize("W", [1, 4, 64, 256])
+    def test_involutory(self, W):
+        """Hflip applied twice should be identity."""
+        from fuse_augmentations.adapters._albumentations import hflip_matrix_np
+
+        M = hflip_matrix_np(W=W)
+        assert np.allclose(M @ M, np.eye(3), atol=1e-10)
+
+    @pytest.mark.parametrize("W", [4, 64])
+    def test_pixel_transform(self, W):
+        """Pixel (0, y, 1) maps to (W-1, y, 1)."""
+        from fuse_augmentations.adapters._albumentations import hflip_matrix_np
+
+        M = hflip_matrix_np(W=W)
+        pt = np.array([0.0, 3.0, 1.0])
+        result = M @ pt
+        assert result[0] == pytest.approx(W - 1)
+        assert result[1] == pytest.approx(3.0)
+        assert result[2] == pytest.approx(1.0)
+
+    def test_consistent_with_torch_hflip_matrix(self):
+        """Matches the torch hflip_matrix from affine._matrix."""
+        from fuse_augmentations.adapters._albumentations import hflip_matrix_np
+        from fuse_augmentations.affine._matrix import hflip_matrix
+
+        W = 32
+        torch_M = hflip_matrix(W=W, batch_size=1, device=torch.device("cpu"), dtype=torch.float64)
+        np_M = hflip_matrix_np(W=W)
+        torch.testing.assert_close(torch.from_numpy(np_M), torch_M[0], rtol=1e-4, atol=1e-10)
+
+
+class TestVflipMatrixNp:
+    def test_shape(self):
+        from fuse_augmentations.adapters._albumentations import vflip_matrix_np
+
+        assert vflip_matrix_np(H=64).shape == (3, 3)
+
+    def test_dtype(self):
+        from fuse_augmentations.adapters._albumentations import vflip_matrix_np
+
+        assert vflip_matrix_np(H=64).dtype == np.float64
+
+    def test_maps_y_correctly(self):
+        from fuse_augmentations.adapters._albumentations import vflip_matrix_np
+
+        H = 10
+        M = vflip_matrix_np(H=H)
+        assert M[1, 0] == 0.0
+        assert M[1, 1] == -1.0
+        assert M[1, 2] == float(H - 1)
+
+    def test_maps_x_unchanged(self):
+        from fuse_augmentations.adapters._albumentations import vflip_matrix_np
+
+        M = vflip_matrix_np(H=10)
+        assert M[0, 0] == 1.0
+        assert M[0, 1] == 0.0
+        assert M[0, 2] == 0.0
+
+    def test_homogeneous_row(self):
+        from fuse_augmentations.adapters._albumentations import vflip_matrix_np
+
+        M = vflip_matrix_np(H=10)
+        np.testing.assert_array_equal(M[2], [0.0, 0.0, 1.0])
+
+    @pytest.mark.parametrize("H", [1, 4, 64, 256])
+    def test_involutory(self, H):
+        """Vflip applied twice should be identity."""
+        from fuse_augmentations.adapters._albumentations import vflip_matrix_np
+
+        M = vflip_matrix_np(H=H)
+        assert np.allclose(M @ M, np.eye(3), atol=1e-10)
+
+    @pytest.mark.parametrize("H", [4, 64])
+    def test_pixel_transform(self, H):
+        """Pixel (x, 0, 1) maps to (x, H-1, 1)."""
+        from fuse_augmentations.adapters._albumentations import vflip_matrix_np
+
+        M = vflip_matrix_np(H=H)
+        pt = np.array([5.0, 0.0, 1.0])
+        result = M @ pt
+        assert result[0] == pytest.approx(5.0)
+        assert result[1] == pytest.approx(H - 1)
+        assert result[2] == pytest.approx(1.0)
+
+    def test_consistent_with_torch_vflip_matrix(self):
+        """Matches the torch vflip_matrix from affine._matrix."""
+        from fuse_augmentations.adapters._albumentations import vflip_matrix_np
+        from fuse_augmentations.affine._matrix import vflip_matrix
+
+        H = 32
+        torch_M = vflip_matrix(H=H, batch_size=1, device=torch.device("cpu"), dtype=torch.float64)
+        np_M = vflip_matrix_np(H=H)
+        torch.testing.assert_close(torch.from_numpy(np_M), torch_M[0], rtol=1e-4, atol=1e-10)
