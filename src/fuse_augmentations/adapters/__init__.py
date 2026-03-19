@@ -13,5 +13,6 @@ Example:
 
 from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
 from fuse_augmentations.adapters._kornia import KorniaAdapter
+from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
 
-__all__ = ["AlbumentationsAdapter", "KorniaAdapter"]
+__all__ = ["AlbumentationsAdapter", "KorniaAdapter", "TorchVisionAdapter"]
