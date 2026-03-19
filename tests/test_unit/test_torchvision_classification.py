@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from fuse_augmentations._backend import Backend, detect_backend
+from fuse_augmentations._backend import Backend, detect_backend, detect_backends_per_transform
 from fuse_augmentations._types import TransformCategory
 
 
@@ -127,3 +127,95 @@ class TestTorchVisionAdapterCategory:
         t = T.RandomRotation(degrees=30, expand=True)
         with pytest.raises(ValueError, match="expand=True is not supported"):
             adapter.category(t)
+
+
+# ---------------------------------------------------------------------------
+# Bug #3 regression: Backend.UNKNOWN raises ValueError (not opaque NotImplementedError)
+# ---------------------------------------------------------------------------
+
+
+class TestUnknownBackendError:
+    """Regression for Bug #3: all-unknown pipeline raises actionable ValueError."""
+
+    def test_all_unknown_transforms_raises_value_error(self):
+        """Compose([unknown]) raises ValueError with actionable message."""
+        from fuse_augmentations import Compose
+
+        unknown = _make_mock("completely_unknown.lib")
+        with pytest.raises(ValueError, match="No recognised backend"):
+            Compose([unknown])
+
+    def test_all_unknown_transforms_error_mentions_supported_backends(self):
+        """The error message mentions supported backends by name."""
+        from fuse_augmentations import Compose
+
+        unknown = _make_mock("my_custom.module")
+        with pytest.raises(ValueError, match=r"Kornia.*TorchVision.*Albumentations"):
+            Compose([unknown])
+
+
+# ---------------------------------------------------------------------------
+# Bug #4 regression: detect_backends_per_transform MRO fallback
+# ---------------------------------------------------------------------------
+
+
+class TestDetectBackendMROFallback:
+    """Regression for Bug #4: subclasses defined outside backend package are detected."""
+
+    def test_torchvision_subclass_detected_via_mro(self):
+        """A subclass of T.RandomRotation defined in __main__ detects as TORCHVISION."""
+        pytest.importorskip("torchvision", reason="torchvision required")
+        import torchvision.transforms as T
+
+        class MyRot(T.RandomRotation):
+            pass
+
+        result = detect_backends_per_transform([MyRot(30)])
+        assert result == [Backend.TORCHVISION]
+
+    def test_torchvision_v2_subclass_detected_via_mro(self):
+        """A v2 subclass defined outside torchvision.* is detected as TORCHVISION."""
+        pytest.importorskip("torchvision", reason="torchvision required")
+        import torchvision.transforms.v2 as T
+
+        class MyFlip(T.RandomHorizontalFlip):
+            pass
+
+        result = detect_backends_per_transform([MyFlip(p=0.5)])
+        assert result == [Backend.TORCHVISION]
+
+    def test_plain_unknown_still_returns_none(self):
+        """A transform with no backend ancestor still returns None."""
+        unknown = _make_mock("my_custom.module")
+        result = detect_backends_per_transform([unknown])
+        assert result == [None]
+
+
+# ---------------------------------------------------------------------------
+# Bug #5 regression: _build_mixed_segments all-None fallback is dead code
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMixedSegmentsGuard:
+    """Regression for Bug #5: __init__ guards prevent _build_mixed_segments with all-None backends."""
+
+    def test_all_unknown_never_reaches_build_mixed_segments(self):
+        """All-unknown transforms raise ValueError in __init__ before _build_mixed_segments."""
+        from fuse_augmentations import Compose
+
+        unknown = _make_mock("fake.lib")
+        # This should raise ValueError in the single-backend fast path,
+        # never reaching _build_mixed_segments.
+        with pytest.raises(ValueError, match="No recognised backend"):
+            Compose([unknown])
+
+    def test_build_mixed_segments_raises_on_all_none(self):
+        """Direct call to _build_mixed_segments with all-None backends raises ValueError."""
+        from fuse_augmentations._compose import _build_mixed_segments
+        from fuse_augmentations._types import ReorderPolicy
+
+        unknown = _make_mock("fake.lib")
+        with pytest.raises(ValueError, match="_build_mixed_segments called with no recognised"):
+            _build_mixed_segments(
+                [unknown], [None], ReorderPolicy.NONE, None, None,
+            )

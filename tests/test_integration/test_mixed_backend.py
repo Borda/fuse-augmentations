@@ -158,3 +158,26 @@ class TestMixedBackendSerialization:
 
         assert actual.shape == expected.shape
         torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-6)
+
+    def test_pickle_roundtrip_tv_only_with_spatial_kernel_barrier(self):
+        """Regression: pickle round-trip with a SPATIAL_KERNEL barrier dispatches correctly.
+
+        Bug #2: id()-keyed adapter map broke after pickle because object ids
+        change on deserialization. Index-based keys survive pickle.
+        """
+        pipe = Compose([
+            T.RandomRotation(degrees=30),
+            KColorJitter(brightness=0.2, contrast=0.3, saturation=0.2, hue=0.3, p=1.0),
+            T.RandomHorizontalFlip(p=1.0),
+        ])
+
+        img = _rand_image()
+
+        # Verify original works
+        out_orig = pipe(img)
+        assert out_orig.shape == img.shape
+
+        # Pickle round-trip
+        loaded = pickle.loads(pickle.dumps(pipe))  # noqa: S301
+        out_loaded = loaded(img)
+        assert out_loaded.shape == img.shape

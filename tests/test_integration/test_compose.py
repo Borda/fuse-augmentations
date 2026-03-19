@@ -201,14 +201,14 @@ class TestUnknownBackend:
     """Validate behavior for unsupported augmentation backends."""
 
     def test_raises(self):
-        """Transforms from an unknown backend raise NotImplementedError."""
+        """Transforms from an unknown backend raise ValueError."""
 
         class FakeTransform:
             pass
 
         FakeTransform.__module__ = "unknown_lib.transforms"
 
-        with pytest.raises(NotImplementedError, match="not yet supported"):
+        with pytest.raises(ValueError, match="No recognised backend"):
             Compose([FakeTransform()])
 
 

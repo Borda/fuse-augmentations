@@ -83,6 +83,12 @@ def detect_backends_per_transform(transforms: list[object]) -> list[Backend | No
     if the transform's module could not be matched to any known backend prefix.
     Unrecognised transforms emit a ``UserWarning``.
 
+    When a direct module-prefix match fails, the function falls back to
+    checking the transform's MRO (method resolution order) for any ancestor
+    class whose ``__module__`` matches a known backend prefix. This handles
+    subclasses defined outside the backend package (e.g. a user-defined
+    ``class MyRot(torchvision.transforms.RandomRotation)`` in ``__main__``).
+
     Args:
         transforms: List of transform objects.
 
@@ -98,6 +104,8 @@ def detect_backends_per_transform(transforms: list[object]) -> list[Backend | No
     for t in transforms:
         module = type(t).__module__ or ""
         backend = _match_backend(module)
+        if backend is None:
+            backend = _match_backend_from_mro(type(t))
         if backend is None:
             warnings.warn(
                 f"Unrecognized transform {type(t).__name__!r}; treating as SPATIAL_KERNEL barrier.",
@@ -120,5 +128,28 @@ def _match_backend(module: str) -> Backend | None:
     """
     for prefix, backend in _BACKEND_PREFIXES.items():
         if module.startswith(prefix):
+            return backend
+    return None
+
+
+def _match_backend_from_mro(cls: type) -> Backend | None:
+    """Walk the MRO looking for an ancestor whose module matches a known backend.
+
+    Skips ``object`` and the class itself (already checked by the caller via
+    its direct ``__module__``).
+
+    Args:
+        cls: The type of the transform.
+
+    Returns:
+        ``Backend`` enum member from the first matching ancestor, or ``None``.
+
+    """
+    for ancestor in cls.__mro__[1:]:
+        if ancestor is object:
+            continue
+        module = ancestor.__module__ or ""
+        backend = _match_backend(module)
+        if backend is not None:
             return backend
     return None

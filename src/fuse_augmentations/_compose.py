@@ -199,7 +199,9 @@ class FusedCompose(nn.Module):
         self.padding_mode: str | None = padding_mode
         self.data_keys: list[str] | None = data_keys
         self._adapter: TransformAdapter | None = adapter
-        self._segments: list[object] = _wrap_passthrough_segments(segments, adapter, transform_adapters)
+        self._segments: list[object] = _wrap_passthrough_segments(
+            segments, adapter, transform_adapters, original_transforms=transforms,
+        )
         self._last_transform_matrix: Tensor | None = None
         self._transform_adapters: dict[int, TransformAdapter] = transform_adapters or {}
 
@@ -320,10 +322,14 @@ class FusedCompose(nn.Module):
                 continue
 
             # Legacy passthrough support for pre-wrapper pickles.
-            # Prefer object-keyed adapters, then fall back to legacy id()-keyed entries.
-            pt_adapter = self._transform_adapters.get(seg)
+            # Try index-based lookup by finding this transform's position.
+            pt_adapter = None
+            for idx, orig_tfm in enumerate(self.original_transforms):
+                if orig_tfm is seg:
+                    pt_adapter = self._transform_adapters.get(idx)
+                    break
             if pt_adapter is None:
-                pt_adapter = self._transform_adapters.get(id(seg), self._adapter)
+                pt_adapter = self._adapter
             if pt_adapter is None:
                 msg = "Passthrough transform encountered but no adapter found; this is a bug in build_segments"
                 raise RuntimeError(msg)
@@ -615,7 +621,7 @@ def _build_mixed_segments(
     reorder: ReorderPolicy,
     interpolation: str | None,
     padding_mode: str | None,
-) -> tuple[TransformAdapter, list[object], dict[object | int, TransformAdapter]]:
+) -> tuple[TransformAdapter, list[object], dict[int, TransformAdapter]]:
     """Build segments for a mixed-backend pipeline.
 
     Groups consecutive transforms that share the same backend, then calls
@@ -641,7 +647,7 @@ def _build_mixed_segments(
         - ``segments`` (``list[object]``): flat, ordered list of fused and
           passthrough segments ready for ``_wrap_passthrough_segments``.
         - ``transform_adapters`` (``dict[int, TransformAdapter]``): maps each
-          transform object (or its ``id()`` as a backward-compat integer key)
+          transform's positional index in the original ``transforms`` list
           to the adapter used for that transform, enabling per-transform
           dispatch in the mixed-backend forward pass.
 
@@ -658,7 +664,7 @@ def _build_mixed_segments(
     # Keyed by positional index (stable across pickle) rather than id()
     # or object identity (which break after deserialization).
     transform_adapters: dict[int, TransformAdapter] = {}
-    for idx, (tfm, bk) in enumerate(zip(transforms, per_backends, strict=True)):
+    for idx, (_tfm, bk) in enumerate(zip(transforms, per_backends, strict=True)):
         if bk is not None:
             transform_adapters[idx] = _get_adapter(bk)
 
@@ -709,25 +715,36 @@ def _build_mixed_segments(
 def _wrap_passthrough_segments(
     segments: list[object],
     default_adapter: TransformAdapter | None,
-    transform_adapters: dict[object | int, TransformAdapter] | None,
+    transform_adapters: dict[int, TransformAdapter] | None,
+    original_transforms: list[object] | None = None,
 ) -> list[object]:
-    """Wrap raw passthrough transforms with their adapter for stable dispatch."""
+    """Wrap raw passthrough transforms with their adapter for stable dispatch.
+
+    When ``transform_adapters`` is keyed by positional index (mixed-backend
+    path), ``original_transforms`` is used to resolve the index of each raw
+    passthrough transform object.
+    """
     wrapped_segments: list[object] = []
     fused_segment_types = (FusedAffineSegment, AlbuFusedAffineSegment, ExactSegment)
 
+    # Build a reverse lookup: transform object id -> index in original_transforms.
+    # Used for index-keyed transform_adapters in the mixed-backend path.
+    _id_to_index: dict[int, int] = {}
+    if original_transforms is not None:
+        for idx, tfm in enumerate(original_transforms):
+            _id_to_index[id(tfm)] = idx
+
     for seg in segments:
-        if isinstance(seg, fused_segment_types + (_PassthroughSegment,)):
+        if isinstance(seg, (*fused_segment_types, _PassthroughSegment)):
             wrapped_segments.append(seg)
             continue
 
         seg_adapter = None
         if transform_adapters is not None:
-            try:
-                seg_adapter = transform_adapters.get(seg)
-            except TypeError:
-                seg_adapter = None
-            if seg_adapter is None:
-                seg_adapter = transform_adapters.get(id(seg))
+            # Index-keyed lookup: find the transform's position
+            seg_idx = _id_to_index.get(id(seg))
+            if seg_idx is not None:
+                seg_adapter = transform_adapters.get(seg_idx)
         if seg_adapter is None:
             seg_adapter = default_adapter
         if seg_adapter is None:
