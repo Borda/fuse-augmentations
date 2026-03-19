@@ -7,7 +7,7 @@ of geometric transforms, inverts the composed matrix once, and executes a single
 Example:
     >>> import torch
     >>> import kornia.augmentation as K
-    >>> from fuse_augmentations._segment import FusedAffineSegment
+    >>> from fuse_augmentations.affine._segment import FusedAffineSegment
     >>> from fuse_augmentations.adapters._kornia import KorniaAdapter
     >>> t = K.RandomHorizontalFlip(p=1.0)
     >>> seg = FusedAffineSegment([t], KorniaAdapter())
@@ -19,12 +19,16 @@ Example:
 
 from __future__ import annotations
 
+from typing import Any
+
+import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
+from numpy.typing import NDArray
 from torch import Tensor, nn
 
-from fuse_augmentations._matrix import inv3x3, matmul3x3, normalize_matrix
 from fuse_augmentations._types import TransformAdapter, TransformCategory
+from fuse_augmentations.affine._matrix import inv3x3, matmul3x3, normalize_matrix
 
 
 class ExactSegment(nn.Module):
@@ -277,6 +281,224 @@ class FusedAffineSegment(nn.Module):
         return image, aux_targets
 
 
+# ---------------------------------------------------------------------------
+# AlbuFusedAffineSegment — scipy backend for Albumentations
+# ---------------------------------------------------------------------------
+
+# scipy interpolation order and border-mode mappings
+_INTERP_ORDERS: dict[str, int] = {"bilinear": 1, "nearest": 0, "bicubic": 3}
+_BORDER_MODES: dict[str, str] = {"zeros": "constant", "border": "nearest", "reflection": "reflect"}
+
+ImageArray = NDArray[np.integer[Any] | np.floating[Any]]
+FloatMatrixArray = NDArray[np.float64]
+
+
+def _warp(
+    img: ImageArray,
+    M_dst2src_3x3: FloatMatrixArray,  # noqa: N803
+    width: int,
+    height: int,
+    interp_order: int,
+    border_mode: str,
+) -> ImageArray:
+    """Apply scipy.ndimage.affine_transform with the dst→src 3x3 pixel-space matrix.
+
+    ``M_dst2src_3x3`` maps destination pixel coordinates (x, y) to source pixel
+    coordinates — the same convention as ``cv2.warpAffine`` without
+    ``WARP_INVERSE_MAP``.  The matrix is converted from (x, y) to scipy's
+    (row, col) = (y, x) coordinate order before calling ``affine_transform``.
+
+    """
+    from scipy.ndimage import affine_transform
+
+    # scipy ndimage uses (row, col) = (y, x); our matrix is in (x, y) — swap axes
+    P = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float64)  # noqa: N806
+    M_yx = P @ M_dst2src_3x3[:2, :2] @ P  # noqa: N806
+    offset_yx = P @ M_dst2src_3x3[:2, 2]
+
+    if img.ndim == 2:
+        result: ImageArray = affine_transform(
+            img,
+            M_yx,
+            offset=offset_yx,
+            output_shape=(height, width),
+            order=interp_order,
+            mode=border_mode,
+            cval=0.0,
+        )
+        return result
+    channels = [
+        affine_transform(
+            img[:, :, c],
+            M_yx,
+            offset=offset_yx,
+            output_shape=(height, width),
+            order=interp_order,
+            mode=border_mode,
+            cval=0.0,
+        )
+        for c in range(img.shape[2])
+    ]
+    return np.stack(channels, axis=-1)
+
+
+class AlbuFusedAffineSegment(nn.Module):
+    """Fused affine segment for NumPy/scipy backends (Albumentations).
+
+    Loops over B samples, composes per-sample ``(3, 3)`` forward affine
+    matrices, and applies a single ``scipy.ndimage.affine_transform`` per sample.
+
+    The input and output are ``(B, C, H, W)`` float32 ``torch.Tensor`` objects.
+    Conversion to/from ``(H, W, C)`` NumPy arrays happens inside ``forward()``.
+
+    No ``normalize_matrix`` step is needed — ``scipy.ndimage.affine_transform``
+    operates in pixel coordinates natively. The accumulated forward (src→dst) matrix is
+    inverted once per sample before being passed to :func:`_warp`.
+
+    Args:
+        transforms: List of Albumentations transform objects to fuse.
+        adapter: An ``AlbumentationsAdapter`` providing ``sample_params``,
+            ``build_matrix``, and category lookup.
+        interpolation: Interpolation mode (``"bilinear"``, ``"nearest"``,
+            ``"bicubic"``). Defaults to ``"bilinear"``.
+        padding_mode: Padding mode (``"zeros"``, ``"border"``,
+            ``"reflection"``). Defaults to ``"zeros"``.
+
+    Example:
+        >>> import numpy as np
+        >>> import torch
+        >>> from fuse_augmentations.affine._segment import AlbuFusedAffineSegment
+        >>> from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+        >>> seg = AlbuFusedAffineSegment([], AlbumentationsAdapter())
+        >>> out = seg(torch.zeros(1, 3, 8, 8))
+        >>> out.shape
+        torch.Size([1, 3, 8, 8])
+
+    """
+
+    def __init__(
+        self,
+        transforms: list[object],
+        adapter: TransformAdapter,
+        interpolation: str | None = None,
+        padding_mode: str | None = None,
+    ) -> None:
+        super().__init__()
+        self.transforms = transforms
+        self.adapter = adapter
+        self.interpolation = interpolation or "bilinear"
+        self.padding_mode = padding_mode or "zeros"
+        self._last_matrix: Tensor | None = None
+
+    @property
+    def last_matrix(self) -> Tensor | None:
+        """Return the ``(B, 3, 3)`` composed forward matrix from the last forward pass.
+
+        Returns:
+            The composed forward matrix (detached clone), or ``None`` before
+            the first call to :meth:`forward`.
+
+        """
+        return self._last_matrix
+
+    def forward(
+        self,
+        image: Tensor,
+        aux_targets: dict[str, Tensor] | None = None,
+    ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
+        """Apply fused affine chain via per-sample scipy.ndimage.affine_transform.
+
+        Args:
+            image: ``(B, C, H, W)`` float32 input tensor.
+            aux_targets: Auxiliary targets (e.g. masks/boxes/keypoints). Currently
+                not supported by :class:`AlbuFusedAffineSegment`. Passing a
+                non-``None`` value will raise a ``RuntimeError`` to avoid
+                silently returning incorrectly aligned targets.
+
+        Returns:
+            The transformed ``image`` tensor.
+
+        """
+        if aux_targets is not None:
+            raise RuntimeError(
+                "AlbuFusedAffineSegment.forward does not yet support aux_targets. "
+                "Passing auxiliary targets here would result in misaligned masks/"
+                "boxes/keypoints. Please call this module with aux_targets=None, "
+                "or use a non-fused Albumentations pipeline that transforms "
+                "auxiliary targets alongside the image."
+            )
+
+        bsz, n_ch, height, width = image.shape
+        device = image.device
+        dtype = image.dtype
+
+        # Compose a (B, 3, 3) forward matrix tensor for last_matrix storage
+        composed_batch = torch.eye(3, dtype=torch.float64, device=device).unsqueeze(0).expand(bsz, -1, -1).clone()
+
+        if bsz == 0 or len(self.transforms) == 0:
+            self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
+            return image
+
+        # Pre-draw per-transform active masks before the sample loop so that
+        # same_on_batch=True collapses to a single Bernoulli draw shared across all samples.
+        active_masks: list[Any] = []
+        for tfm in self.transforms:
+            prob = float(getattr(tfm, "p", 1.0))
+            same_on_batch = bool(getattr(tfm, "same_on_batch", False))
+            if same_on_batch:
+                draw = bool(np.random.rand() < prob)
+                active_masks.append(np.full(bsz, draw))
+            else:
+                active_masks.append(np.random.rand(bsz) < prob)
+
+        interp_order = _INTERP_ORDERS.get(self.interpolation, _INTERP_ORDERS["bilinear"])
+        border_mode = _BORDER_MODES.get(self.padding_mode, _BORDER_MODES["zeros"])
+
+        output_np: list[ImageArray] = []
+
+        for i in range(bsz):
+            acc: FloatMatrixArray = np.eye(3, dtype=np.float64)
+            any_active = False
+
+            for j, tfm in enumerate(self.transforms):
+                active = bool(active_masks[j][i])
+                params = self.adapter.sample_params(tfm, (1, n_ch, height, width), torch.device("cpu"))
+                mtx_i = self.adapter.build_matrix(tfm, params, height, width)
+
+                if active:
+                    any_active = True
+                    acc = mtx_i[0].double().cpu().numpy() @ acc
+
+            composed_batch[i] = torch.from_numpy(acc)
+
+            img_np = image[i].permute(1, 2, 0).cpu().numpy()
+
+            if not any_active:
+                output_np.append(img_np)
+                continue
+
+            # acc is the composed forward (src→dst) matrix; invert to get dst→src for _warp
+            m_dst2src = np.linalg.inv(acc)
+
+            if n_ch == 1:
+                img_np = img_np[:, :, 0]
+                warped = _warp(img_np, m_dst2src, width, height, interp_order, border_mode)
+                warped = warped[:, :, np.newaxis]
+            else:
+                warped = _warp(img_np, m_dst2src, width, height, interp_order, border_mode)
+
+            output_np.append(warped)
+
+        # Stack back to (B, C, H, W)
+        stacked = torch.stack([torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1) for img in output_np]).to(
+            device=device, dtype=dtype
+        )
+
+        self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
+
+        return stacked
+
+
 def reorder_pointwise(
     transforms: list[object],
     adapter: TransformAdapter,
@@ -309,7 +531,7 @@ def reorder_pointwise(
         Using stub objects (the KorniaAdapter registry does not include any
         POINTWISE transforms in v0.2):
 
-    >>> from fuse_augmentations._segment import reorder_pointwise
+    >>> from fuse_augmentations.affine._segment import reorder_pointwise
     >>> from fuse_augmentations._types import TransformCategory
     >>> class _StubAdapter:
     ...     def category(self, t):
@@ -392,8 +614,8 @@ def build_segments(
             (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
         padding_mode: Padding mode override forwarded to each :class:`FusedAffineSegment`
             (``"zeros"``, ``"border"``, ``"reflection"``).
-        use_numpy: When ``True``, produce :class:`NumpyFusedAffineSegment` instances
-            (cv2/NumPy path) instead of the PyTorch :class:`FusedAffineSegment`.
+        use_numpy: When ``True``, produce :class:`AlbuFusedAffineSegment` instances
+            (Albumentations/scipy backend) instead of the PyTorch :class:`FusedAffineSegment`.
             Used for the Albumentations backend.
 
     Returns:
@@ -415,14 +637,12 @@ def build_segments(
         has_interp = any(adapter.category(t) == TransformCategory.GEOMETRIC_INTERP for t in current_geo)
 
         if use_numpy:
-            # Albumentations path: use NumpyFusedAffineSegment only when interpolation is present;
+            # Albumentations path: use AlbuFusedAffineSegment only when interpolation is present;
             # keep ExactSegment for GEOMETRIC_EXACT-only runs to preserve lossless flips and
             # auxiliary-target handling.
-            from fuse_augmentations._np_segment import NumpyFusedAffineSegment
-
             if has_interp:
                 segments.append(
-                    NumpyFusedAffineSegment(
+                    AlbuFusedAffineSegment(
                         list(current_geo),
                         adapter,
                         interpolation=interpolation,

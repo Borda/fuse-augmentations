@@ -6,7 +6,7 @@ is ``cx = (W-1)/2``, ``cy = (H-1)/2``.
 
 Example:
     >>> import torch
-    >>> from fuse_augmentations._matrix import rotation_matrix, matmul3x3, inv3x3
+    >>> from fuse_augmentations.affine._matrix import rotation_matrix, matmul3x3, inv3x3
     >>> M = rotation_matrix(torch.zeros(2), H=64, W=64)
     >>> M.shape
     torch.Size([2, 3, 3])

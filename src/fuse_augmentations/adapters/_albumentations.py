@@ -1,17 +1,17 @@
 """Albumentations backend adapter for the fused affine engine.
 
 Bridges Albumentations augmentation transforms to the canonical parameter
-representation used by ``NumpyFusedAffineSegment``.
+representation used by ``AlbuFusedAffineSegment``.
 
 Each geometric transform (``A.Affine``, ``A.Rotate``, ``A.ShiftScaleRotate``)
 exposes a pre-built ``matrix`` key via ``get_params_dependent_on_data()`` —
 a ``(3, 3)`` forward pixel-space affine matrix in the same convention as
-``_matrix.py``. The adapter reads this matrix directly instead of
+``affine._matrix``. The adapter reads this matrix directly instead of
 reconstructing it from raw angle/scale/shear values.
 
 Flip transforms (``A.HorizontalFlip``, ``A.VerticalFlip``) return an empty
-parameter dict; ``build_matrix()`` constructs their matrices via
-``_np_matrix.py``.
+parameter dict; ``build_matrix()`` constructs their matrices from inline
+NumPy helpers.
 
 Requires ``albumentations >= 2.0``.
 
@@ -29,9 +29,72 @@ import warnings
 
 import numpy as np
 import torch
+from numpy.typing import NDArray
 
-from fuse_augmentations._np_matrix import hflip_matrix_np, vflip_matrix_np
 from fuse_augmentations._types import TransformCategory
+
+# ---------------------------------------------------------------------------
+# Inline NumPy matrix helpers (moved from _np_matrix.py)
+# ---------------------------------------------------------------------------
+
+
+def hflip_matrix_np(W: int) -> NDArray[np.float64]:  # noqa: N803
+    """Build a (3, 3) pixel-space forward horizontal flip matrix.
+
+    Maps ``x' = W - 1 - x``, ``y' = y``.
+
+    Args:
+        W: Image width in pixels.
+
+    Returns:
+        ``(3, 3)`` float64 forward horizontal flip matrix.
+
+    Example:
+        >>> M = hflip_matrix_np(W=4)
+        >>> M[0].tolist()
+        [-1.0, 0.0, 3.0]
+        >>> M[1].tolist()
+        [0.0, 1.0, 0.0]
+
+    """
+    return np.array(
+        [
+            [-1.0, 0.0, float(W - 1)],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+
+
+def vflip_matrix_np(H: int) -> NDArray[np.float64]:  # noqa: N803
+    """Build a (3, 3) pixel-space forward vertical flip matrix.
+
+    Maps ``x' = x``, ``y' = H - 1 - y``.
+
+    Args:
+        H: Image height in pixels.
+
+    Returns:
+        ``(3, 3)`` float64 forward vertical flip matrix.
+
+    Example:
+        >>> M = vflip_matrix_np(H=4)
+        >>> M[1].tolist()
+        [0.0, -1.0, 3.0]
+        >>> M[0].tolist()
+        [1.0, 0.0, 0.0]
+
+    """
+    return np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, float(H - 1)],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Transform registry — lazy import guard (albumentations is optional)
@@ -165,7 +228,7 @@ class AlbumentationsAdapter:
         tensor directly (it was already stacked in ``sample_params()``).
 
         For flip transforms, constructs the appropriate constant matrix using
-        ``_np_matrix.py`` and expands it to batch size B.
+        inline NumPy helpers and expands it to batch size B.
 
         Args:
             transform: An Albumentations transform instance.
@@ -260,7 +323,7 @@ class AlbumentationsAdapter:
 # ---------------------------------------------------------------------------
 
 
-def _sample_matrices(transform: object, B: int, H: int, W: int) -> np.ndarray:  # noqa: N803
+def _sample_matrices(transform: object, B: int, H: int, W: int) -> NDArray[np.float64]:  # noqa: N803
     """Call ``get_params_dependent_on_data()`` B times, stack into (B, 3, 3).
 
     A dummy ``(H, W, 1)`` float32 image is passed so the transform can

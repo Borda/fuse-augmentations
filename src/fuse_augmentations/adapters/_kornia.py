@@ -17,7 +17,8 @@ import warnings
 
 import torch
 
-from fuse_augmentations._matrix import (
+from fuse_augmentations._types import TransformCategory
+from fuse_augmentations.affine._matrix import (
     hflip_matrix,
     matmul3x3,
     rotation_matrix,
@@ -27,7 +28,6 @@ from fuse_augmentations._matrix import (
     translate_matrix,
     vflip_matrix,
 )
-from fuse_augmentations._types import TransformCategory
 
 # ---------------------------------------------------------------------------
 # Transform registry - lazy import guards kornia as optional dependency

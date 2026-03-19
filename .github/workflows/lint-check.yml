@@ -8,6 +8,7 @@ on: # Trigger the workflow on push or pull request, but only for the main branch
 
 env:
   PYTHON_VERSION: "3.10"
+  UV_TORCH_BACKEND: cpu
 
 defaults:
   run:
@@ -59,8 +60,6 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           activate-environment: true
       - name: 📦 Install dependencies
-        env:
-          UV_TORCH_BACKEND: cpu
         run: uv pip install -e ".[all]" --group dev
       - name: 🔬 Run mypy
         run: mypy src/

@@ -21,7 +21,6 @@ from fuse_augmentations._compose import (
     Compose,
     FusedCompose,
 )
-from fuse_augmentations._segment import ExactSegment, FusedAffineSegment, build_segments
 from fuse_augmentations._targets import (
     transform_bbox_xywh,
     transform_bbox_xyxy,
@@ -35,6 +34,7 @@ from fuse_augmentations._types import (
     TransformAdapter,
     TransformCategory,
 )
+from fuse_augmentations.affine._segment import ExactSegment, FusedAffineSegment, build_segments
 
 __all__ = [
     "AugmentationSequential",
