@@ -95,9 +95,11 @@ class AlbumentationsAdapter:
             ``SPATIAL_KERNEL`` with a ``UserWarning``.
 
         """
-        cat = TRANSFORM_REGISTRY.get(type(transform))
-        if cat is not None:
-            return cat
+        # Use isinstance against registered base types so that subclasses or
+        # wrapped Albumentations transforms are classified correctly.
+        for base_type, cat in TRANSFORM_REGISTRY.items():
+            if isinstance(transform, base_type):
+                return cat
         warnings.warn(
             f"Unknown Albumentations transform {type(transform).__name__!r}; treating as SPATIAL_KERNEL barrier.",
             UserWarning,
@@ -279,6 +281,9 @@ def _sample_matrices(transform: object, B: int, H: int, W: int) -> np.ndarray:  
     matrices = np.empty((B, 3, 3), dtype=np.float64)
     for i in range(B):
         base = transform.get_params()  # type: ignore[attr-defined]
+        # update_transform_params adds "shape" (and interpolation/fill keys) needed
+        # by get_params_dependent_on_data to compute center coordinates etc.
+        base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
         full = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]
         matrices[i] = full["matrix"]
     return matrices

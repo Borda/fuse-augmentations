@@ -10,9 +10,9 @@ All matrices are forward pixel-space transforms (src→dst) using the same
 Example:
     >>> from fuse_augmentations._np_matrix import hflip_matrix_np, vflip_matrix_np
     >>> M = hflip_matrix_np(W=4)
-    >>> M[0, 0]
+    >>> float(M[0, 0])
     -1.0
-    >>> M[0, 2]
+    >>> float(M[0, 2])
     3.0
 
 """
@@ -35,9 +35,9 @@ def hflip_matrix_np(W: int) -> np.ndarray:  # noqa: N803
 
     Example:
         >>> M = hflip_matrix_np(W=4)
-        >>> list(M[0])
+        >>> M[0].tolist()
         [-1.0, 0.0, 3.0]
-        >>> list(M[1])
+        >>> M[1].tolist()
         [0.0, 1.0, 0.0]
 
     """
@@ -64,9 +64,9 @@ def vflip_matrix_np(H: int) -> np.ndarray:  # noqa: N803
 
     Example:
         >>> M = vflip_matrix_np(H=4)
-        >>> list(M[1])
+        >>> M[1].tolist()
         [0.0, -1.0, 3.0]
-        >>> list(M[0])
+        >>> M[0].tolist()
         [1.0, 0.0, 0.0]
 
     """
