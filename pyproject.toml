@@ -34,8 +34,8 @@ dynamic = [ "version" ]
 dependencies = [
   "numpy",
   "pillow",
-  "scipy",
-  "torch>=2.1",
+  "scipy>=1.10",
+  "torch>=2.2",
 ]
 optional-dependencies.albumentations = [
   "albumentations>=2.0.0",

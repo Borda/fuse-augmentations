@@ -328,7 +328,7 @@ class TestHflipMatrixNp:
         W = 32
         torch_M = hflip_matrix(W=W, batch_size=1, device=torch.device("cpu"), dtype=torch.float64)
         np_M = hflip_matrix_np(W=W)
-        torch.testing.assert_close(torch.from_numpy(np_M), torch_M[0], rtol=1e-4, atol=1e-10)
+        torch.testing.assert_close(torch.as_tensor(np_M.copy()), torch_M[0], rtol=1e-4, atol=1e-10)
 
 
 class TestVflipMatrixNp:
@@ -393,4 +393,4 @@ class TestVflipMatrixNp:
         H = 32
         torch_M = vflip_matrix(H=H, batch_size=1, device=torch.device("cpu"), dtype=torch.float64)
         np_M = vflip_matrix_np(H=H)
-        torch.testing.assert_close(torch.from_numpy(np_M), torch_M[0], rtol=1e-4, atol=1e-10)
+        torch.testing.assert_close(torch.as_tensor(np_M.copy()), torch_M[0], rtol=1e-4, atol=1e-10)

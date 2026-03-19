@@ -290,12 +290,12 @@ _INTERP_ORDERS: dict[str, int] = {"bilinear": 1, "nearest": 0, "bicubic": 3}
 _BORDER_MODES: dict[str, str] = {"zeros": "constant", "border": "nearest", "reflection": "reflect"}
 
 ImageArray = NDArray[np.integer[Any] | np.floating[Any]]
-FloatMatrixArray = NDArray[np.float64]
+MatrixArray = NDArray[np.floating[Any]]
 
 
 def _warp(
     img: ImageArray,
-    M_dst2src_3x3: FloatMatrixArray,  # noqa: N803
+    M_dst2src_3x3: MatrixArray,  # noqa: N803
     width: int,
     height: int,
     interp_order: int,
@@ -457,7 +457,7 @@ class AlbuFusedAffineSegment(nn.Module):
         output_np: list[ImageArray] = []
 
         for i in range(bsz):
-            acc: FloatMatrixArray = np.eye(3, dtype=np.float64)
+            acc: MatrixArray = np.eye(3, dtype=np.float64)
             any_active = False
 
             for j, tfm in enumerate(self.transforms):
@@ -469,7 +469,7 @@ class AlbuFusedAffineSegment(nn.Module):
                     any_active = True
                     acc = mtx_i[0].double().cpu().numpy() @ acc
 
-            composed_batch[i] = torch.from_numpy(acc)
+            composed_batch[i] = torch.as_tensor(acc.copy())
 
             img_np = image[i].permute(1, 2, 0).cpu().numpy()
 
@@ -490,9 +490,9 @@ class AlbuFusedAffineSegment(nn.Module):
             output_np.append(warped)
 
         # Stack back to (B, C, H, W)
-        stacked = torch.stack([torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1) for img in output_np]).to(
-            device=device, dtype=dtype
-        )
+        stacked = torch.stack([
+            torch.as_tensor(np.ascontiguousarray(img).copy()).permute(2, 0, 1) for img in output_np
+        ]).to(device=device, dtype=dtype)
 
         self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
 

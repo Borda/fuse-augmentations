@@ -313,7 +313,7 @@ class AlbumentationsAdapter:
             img_np = image[i].permute(1, 2, 0).cpu().numpy()
             out_np = transform(image=img_np)["image"]  # type: ignore[operator]
             # (H, W, C) → (C, H, W) tensor
-            results.append(torch.from_numpy(np.ascontiguousarray(out_np)).permute(2, 0, 1))
+            results.append(torch.as_tensor(np.ascontiguousarray(out_np).copy()).permute(2, 0, 1))
 
         return torch.stack(results).to(device=device, dtype=dtype)
 
