@@ -43,7 +43,7 @@ class TestSingleTransformNoFusion:
 
 
 class TestMixedBackend:
-    """Validate mixed-backend rejection in Compose construction."""
+    """Validate mixed-backend acceptance in Compose construction (v0.5+)."""
 
     @pytest.mark.parametrize(
         "second_module",
@@ -53,12 +53,12 @@ class TestMixedBackend:
             "torchvision.transforms.v2",
         ],
     )
-    def test_raises(self, second_module):
-        """Mixing kornia with any other backend raises ValueError or NotImplementedError."""
+    def test_mixed_backend_constructs_successfully(self, second_module):
+        """Mixing kornia with another backend constructs without raising (v0.5+)."""
         cls = type("FakeTransform", (), {"__module__": second_module, "__qualname__": "FakeTransform"})
 
-        with pytest.raises((ValueError, NotImplementedError)):
-            Compose([RandomRotation(degrees=30), cls()])
+        pipe = Compose([RandomRotation(degrees=30), cls()])
+        assert pipe is not None
 
 
 class TestSerialization:

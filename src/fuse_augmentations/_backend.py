@@ -64,12 +64,44 @@ def detect_backend(transforms: list[object]) -> Backend:
             backends.add(backend)
 
     if len(backends) > 1:
-        msg = "Mixed backends are not supported in v0.1-v0.5. All transforms must use the same backend."
+        msg = "Mixed backends are not supported in v0.1-v0.4. All transforms must use the same backend."
         raise ValueError(msg)
 
     if len(backends) == 1:
         return backends.pop()
     return Backend.UNKNOWN
+
+
+def detect_backends_per_transform(transforms: list[object]) -> list[Backend | None]:
+    """Return a per-transform backend list without raising on mixed backends.
+
+    Each entry is the ``Backend`` for the corresponding transform, or ``None``
+    if the transform's module could not be matched to any known backend prefix.
+    Unrecognised transforms emit a ``UserWarning``.
+
+    Args:
+        transforms: List of transform objects.
+
+    Returns:
+        List of ``Backend | None``, same length as *transforms*.
+
+    Example:
+        >>> detect_backends_per_transform([])
+        []
+
+    """
+    result: list[Backend | None] = []
+    for t in transforms:
+        module = type(t).__module__ or ""
+        backend = _match_backend(module)
+        if backend is None:
+            warnings.warn(
+                f"Unrecognized transform {type(t).__name__!r}; treating as SPATIAL_KERNEL barrier.",
+                UserWarning,
+                stacklevel=2,
+            )
+        result.append(backend)
+    return result
 
 
 def _match_backend(module: str) -> Backend | None:
