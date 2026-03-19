@@ -14,7 +14,6 @@ import torch
 
 from fuse_augmentations._types import TransformAdapter, TransformCategory
 
-
 # ---------------------------------------------------------------------------
 # Stub transforms -- no torchvision dependency
 # ---------------------------------------------------------------------------

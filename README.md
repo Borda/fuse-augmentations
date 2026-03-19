@@ -10,7 +10,7 @@ Drop-in replacement for Kornia's `AugmentationSequential` / `Sequential` - same 
 pip install fuse-augmentations
 ```
 
-Requires: Python 3.10+, PyTorch 2.1+. Kornia is optional (needed only when passing Kornia transform objects).
+Requires: Python 3.10+, PyTorch 2.1+. Kornia and TorchVision are optional (needed only when passing Kornia or TorchVision transform objects). Install extras: `pip install fuse-augmentations[kornia]` or `pip install fuse-augmentations[torchvision]`.
 
 ## Quick start
 
@@ -30,6 +30,20 @@ pipe = Compose(
 image = torch.rand(4, 3, 256, 256)  # (B, C, H, W)
 out = pipe(image)  # one grid_sample instead of three
 ```
+
+## TorchVision backend
+
+Works with both `torchvision.transforms` (v1) and `torchvision.transforms.v2`:
+
+```python
+import torchvision.transforms.v2 as T
+from fuse_aug import Compose
+
+pipe = Compose([T.RandomRotation(degrees=30), T.RandomHorizontalFlip(p=0.5)])
+out = pipe(image)  # one grid_sample instead of two
+```
+
+Mixed backends (Kornia + TorchVision in the same pipeline) are also supported.
 
 ## Auxiliary targets - masks, boxes, keypoints
 
