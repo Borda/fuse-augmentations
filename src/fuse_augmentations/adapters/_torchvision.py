@@ -32,12 +32,7 @@ import torch
 from fuse_augmentations._types import TransformCategory
 from fuse_augmentations.affine._matrix import (
     hflip_matrix,
-    matmul3x3,
     rotation_matrix,
-    scale_matrix,
-    shear_x_matrix,
-    shear_y_matrix,
-    translate_matrix,
     vflip_matrix,
 )
 
@@ -337,7 +332,7 @@ def _sample_affine_params(
             t.translate,  # type: ignore[attr-defined]
             t.scale,  # type: ignore[attr-defined]
             t.shear,  # type: ignore[attr-defined]
-            img_size=(H, W),
+            img_size=(W, H),
         )
         angles.append(math.radians(angle))
         translate_xs.append(float(translations[0]))
@@ -361,14 +356,15 @@ def _build_affine_matrix(
     H: int,  # noqa: N803
     W: int,  # noqa: N803
 ) -> torch.Tensor:
-    """Compose full RandomAffine matrix for the fused engine.
+    """Compose full RandomAffine matrix matching TorchVision's semantics.
 
-    Constructs the forward matrix in the order: center-rotate-uncenter, then
-    scale about center, then shear, then translate.
+    TorchVision builds the forward affine as ``T * C * RSS * C^-1`` where
+    ``RSS = R(rot) * S(scale) * SHy(sy) * SHx(sx)`` is a single 2x2 block
+    centered once.  This function reproduces that composition in pixel
+    coordinates with center ``((W-1)/2, (H-1)/2)`` (align_corners=True).
 
-    NOTE: The rotation centre uses ``(W-1)/2`` (align_corners=True convention),
-    which intentionally differs from native TorchVision's ``W/2`` centre — see
-    ``TestAlignCornersOffset``.
+    The rotation centre intentionally differs from native TorchVision's
+    ``W/2`` centre — see ``TestAlignCornersOffset``.
 
     Args:
         params: Canonical-unit parameter dict from ``_sample_affine_params``.
@@ -392,34 +388,35 @@ def _build_affine_matrix(
     if B is None:
         return torch.eye(3, dtype=dtype, device=device).unsqueeze(0)
 
-    # Start with identity
-    acc = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
+    cx = (W - 1) / 2.0
+    cy = (H - 1) / 2.0
 
-    # Rotation (center-rotate-uncenter is handled by rotation_matrix)
-    if "angle_rad" in params:
-        R = rotation_matrix(params["angle_rad"], H=H, W=W)  # noqa: N806
-        acc = matmul3x3(R, acc)
+    rot = params.get("angle_rad", torch.zeros(B, device=device, dtype=dtype))
+    sc = params.get("scale", torch.ones(B, device=device, dtype=dtype))
+    sx = params.get("shear_x_rad", torch.zeros(B, device=device, dtype=dtype))
+    sy = params.get("shear_y_rad", torch.zeros(B, device=device, dtype=dtype))
+    tx = params.get("translate_x", torch.zeros(B, device=device, dtype=dtype))
+    ty = params.get("translate_y", torch.zeros(B, device=device, dtype=dtype))
 
-    # Scale (uniform -- TorchVision RandomAffine returns a single scale factor)
-    if "scale" in params:
-        S = scale_matrix(params["scale"], params["scale"], H=H, W=W)  # noqa: N806
-        acc = matmul3x3(S, acc)
+    # RSS 2x2 block: R(rot) * S(scale) * SHy(sy) * SHx(sx)
+    # Matches TorchVision's _get_inverse_affine_matrix (functional.py L1037-1040)
+    cos_sy = torch.cos(sy)
+    tan_sx = torch.tan(sx)
+    cos_rot_sy = torch.cos(rot - sy)
+    sin_rot_sy = torch.sin(rot - sy)
+    sin_rot = torch.sin(rot)
+    cos_rot = torch.cos(rot)
 
-    # X-Shear
-    if "shear_x_rad" in params:
-        shear_x_tan = torch.tan(params["shear_x_rad"])
-        Sh_x = shear_x_matrix(shear_x_tan, H=H, W=W)  # noqa: N806
-        acc = matmul3x3(Sh_x, acc)
+    a = sc * cos_rot_sy / cos_sy
+    b = sc * (-cos_rot_sy * tan_sx / cos_sy - sin_rot)
+    c = sc * sin_rot_sy / cos_sy
+    d = sc * (-sin_rot_sy * tan_sx / cos_sy + cos_rot)
 
-    # Y-Shear
-    if "shear_y_rad" in params:
-        shear_y_tan = torch.tan(params["shear_y_rad"])
-        Sh_y = shear_y_matrix(shear_y_tan, H=H, W=W)  # noqa: N806
-        acc = matmul3x3(Sh_y, acc)
+    # Forward matrix: M = T_translate * C * [[a,b],[c,d]] * C^-1
+    zeros = torch.zeros(B, device=device, dtype=dtype)
+    ones = torch.ones(B, device=device, dtype=dtype)
 
-    # Translation
-    if "translate_x" in params and "translate_y" in params:
-        T = translate_matrix(params["translate_x"], params["translate_y"])  # noqa: N806
-        acc = matmul3x3(T, acc)
-
-    return acc
+    row0 = torch.stack([a, b, cx * (1 - a) - cy * b + tx], dim=-1)
+    row1 = torch.stack([c, d, cy * (1 - d) - cx * c + ty], dim=-1)
+    row2 = torch.stack([zeros, zeros, ones], dim=-1)
+    return torch.stack([row0, row1, row2], dim=-2)
