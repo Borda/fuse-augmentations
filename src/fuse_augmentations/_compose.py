@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import math
 import warnings
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import torch
@@ -51,6 +52,14 @@ if TYPE_CHECKING:
     from torch import Tensor
 
 _KNOWN_DATA_KEYS = {"input", "mask", "bbox_xyxy", "bbox_xywh", "keypoints"}
+
+
+@dataclass(frozen=True, slots=True)
+class _PassthroughSegment:
+    """Serializable passthrough segment that carries its adapter explicitly."""
+
+    transform: object
+    adapter: TransformAdapter
 
 
 class FusedCompose(nn.Module):
@@ -119,7 +128,7 @@ class FusedCompose(nn.Module):
 
         adapter: TransformAdapter | None
         segments: list[object]
-        tfm_adapters: dict[int, TransformAdapter] | None = None
+        tfm_adapters: dict[object | int, TransformAdapter] | None = None
 
         if not transforms:
             adapter = None
@@ -167,7 +176,7 @@ class FusedCompose(nn.Module):
         data_keys: list[str] | None,
         adapter: TransformAdapter | None,
         segments: list[object],
-        transform_adapters: dict[int, TransformAdapter] | None = None,
+        transform_adapters: dict[object | int, TransformAdapter] | None = None,
     ) -> None:
         """Assign all instance attributes.
 
@@ -180,9 +189,9 @@ class FusedCompose(nn.Module):
         self.padding_mode: str | None = padding_mode
         self.data_keys: list[str] | None = data_keys
         self._adapter: TransformAdapter | None = adapter
-        self._segments: list[object] = segments
+        self._segments: list[object] = _wrap_passthrough_segments(segments, adapter, transform_adapters)
         self._last_transform_matrix: Tensor | None = None
-        self._transform_adapters: dict[int, TransformAdapter] = transform_adapters or {}
+        self._transform_adapters: dict[object | int, TransformAdapter] = transform_adapters or {}
 
         if data_keys is not None:
             # Enforce documented contract: first key must map to the image ("input").
@@ -296,8 +305,12 @@ class FusedCompose(nn.Module):
                     image = result
                 continue
 
-            # Passthrough: apply via the per-transform adapter's call_nonfused (image only).
-            # Prefer object-keyed adapters (pickle-stable), fall back to legacy id()-keyed entries.
+            if isinstance(seg, _PassthroughSegment):
+                image = seg.adapter.call_nonfused(seg.transform, image)
+                continue
+
+            # Legacy passthrough support for pre-wrapper pickles.
+            # Prefer object-keyed adapters, then fall back to legacy id()-keyed entries.
             pt_adapter = self._transform_adapters.get(seg)
             if pt_adapter is None:
                 pt_adapter = self._transform_adapters.get(id(seg), self._adapter)
@@ -388,6 +401,10 @@ class FusedCompose(nn.Module):
             if isinstance(seg, ExactSegment):
                 names = [type(t).__name__ for t in seg.transforms]
                 parts.append(f"exact({', '.join(names)})")
+                continue
+
+            if isinstance(seg, _PassthroughSegment):
+                parts.append(f"passthrough({type(seg.transform).__name__})")
                 continue
 
             parts.append(f"passthrough({type(seg).__name__})")
@@ -588,7 +605,7 @@ def _build_mixed_segments(
     reorder: ReorderPolicy,
     interpolation: str | None,
     padding_mode: str | None,
-) -> tuple[TransformAdapter, list[object], dict[int, TransformAdapter]]:
+) -> tuple[TransformAdapter, list[object], dict[object | int, TransformAdapter]]:
     """Build segments for a mixed-backend pipeline.
 
     Groups consecutive transforms that share the same backend, then calls
@@ -609,8 +626,9 @@ def _build_mixed_segments(
         A tuple of ``(primary_adapter, segments, transform_adapters)`` where
         ``primary_adapter`` is the adapter for the first recognised backend
         (used as fallback), ``segments`` is the flat segment list, and
-        ``transform_adapters`` maps ``id(transform)`` to the adapter used for
-        that transform (for passthrough dispatch).
+        ``transform_adapters`` maps transform objects to the adapter used for
+        that transform. Integer ``id(transform)`` keys are accepted only as a
+        backward-compatibility path for older pickles.
 
     """
     # Cache adapter instances per backend to avoid repeated instantiation
@@ -622,10 +640,13 @@ def _build_mixed_segments(
         return adapter_cache[backend]
 
     # Build per-transform adapter map for passthrough dispatch
-    transform_adapters: dict[int, TransformAdapter] = {}
+    transform_adapters: dict[object | int, TransformAdapter] = {}
     for tfm, bk in zip(transforms, per_backends, strict=True):
         if bk is not None:
-            transform_adapters[id(tfm)] = _get_adapter(bk)
+            try:
+                transform_adapters[tfm] = _get_adapter(bk)
+            except TypeError:
+                transform_adapters[id(tfm)] = _get_adapter(bk)
 
     # Group consecutive transforms by backend
     groups: list[tuple[Backend | None, list[object]]] = []
@@ -662,6 +683,38 @@ def _build_mixed_segments(
     )
 
     return primary_adapter, all_segments, transform_adapters
+
+
+def _wrap_passthrough_segments(
+    segments: list[object],
+    default_adapter: TransformAdapter | None,
+    transform_adapters: dict[object | int, TransformAdapter] | None,
+) -> list[object]:
+    """Wrap raw passthrough transforms with their adapter for stable dispatch."""
+    wrapped_segments: list[object] = []
+    fused_segment_types = (FusedAffineSegment, AlbuFusedAffineSegment, ExactSegment)
+
+    for seg in segments:
+        if isinstance(seg, fused_segment_types + (_PassthroughSegment,)):
+            wrapped_segments.append(seg)
+            continue
+
+        seg_adapter = None
+        if transform_adapters is not None:
+            try:
+                seg_adapter = transform_adapters.get(seg)
+            except TypeError:
+                seg_adapter = None
+            if seg_adapter is None:
+                seg_adapter = transform_adapters.get(id(seg))
+        if seg_adapter is None:
+            seg_adapter = default_adapter
+        if seg_adapter is None:
+            msg = "Passthrough transform encountered but no adapter found; this is a bug in build_segments"
+            raise RuntimeError(msg)
+        wrapped_segments.append(_PassthroughSegment(transform=seg, adapter=seg_adapter))
+
+    return wrapped_segments
 
 
 # ---------------------------------------------------------------------------

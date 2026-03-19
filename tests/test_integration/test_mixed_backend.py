@@ -12,6 +12,8 @@ and matrix construction.
 
 from __future__ import annotations
 
+import pickle
+
 import pytest
 import torch
 
@@ -137,3 +139,22 @@ class TestMixedGeometricSegments:
         img = _rand_image()
         out = pipe(img)
         assert out.shape == img.shape
+
+
+class TestMixedBackendSerialization:
+    def test_pickle_roundtrip_preserves_passthrough_adapter_dispatch(self):
+        """Pickle round-trip keeps mixed-backend passthrough dispatch bound to the right adapter."""
+        pipe = Compose([
+            T.RandomRotation(degrees=30),
+            KColorJitter(brightness=0.2, contrast=0.3, saturation=0.2, hue=0.3, p=1.0),
+        ])
+        loaded = pickle.loads(pickle.dumps(pipe))  # noqa: S301
+
+        img = _rand_image()
+        torch.manual_seed(42)
+        expected = pipe(img)
+        torch.manual_seed(42)
+        actual = loaded(img)
+
+        assert actual.shape == expected.shape
+        torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-6)
