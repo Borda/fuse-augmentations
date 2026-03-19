@@ -11,6 +11,7 @@ Example:
 
 """
 
+from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
 from fuse_augmentations.adapters._kornia import KorniaAdapter
 
-__all__ = ["KorniaAdapter"]
+__all__ = ["AlbumentationsAdapter", "KorniaAdapter"]

@@ -106,31 +106,30 @@ class _StubAdapter:
 
 
 def test_build_matrix_shape_from_known_matrix():
-    """build_matrix returns (B, 3, 3) when sample_params returns a matrix key."""
+    """build_matrix returns (B, 3, 3) when params contains a 'matrix' key."""
     from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
 
     adapter = AlbumentationsAdapter()
     B, H, W = 3, 64, 64
 
-    known = np.eye(3, dtype=np.float64)
-    stub = _StubInterpTransform(known)
-
-    params = adapter.sample_params(stub, (B, 3, H, W), torch.device("cpu"))
-    mtx = adapter.build_matrix(stub, params, H, W)
+    # build_matrix reads params["matrix"] directly — construct it as sample_params would
+    matrix_tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0).expand(B, -1, -1).clone()
+    stub = _StubInterpTransform(np.eye(3))
+    mtx = adapter.build_matrix(stub, {"matrix": matrix_tensor}, H, W)
 
     assert mtx.shape == (B, 3, 3)
 
 
 def test_build_matrix_identity_on_identity_matrix():
-    """build_matrix with identity input produces identity (B, 3, 3)."""
+    """build_matrix with identity params['matrix'] produces identity (B, 3, 3)."""
     from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
 
     adapter = AlbumentationsAdapter()
     B, H, W = 2, 32, 32
 
-    stub = _StubInterpTransform(np.eye(3, dtype=np.float64))
-    params = adapter.sample_params(stub, (B, 3, H, W), torch.device("cpu"))
-    mtx = adapter.build_matrix(stub, params, H, W)
+    matrix_tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0).expand(B, -1, -1).clone()
+    stub = _StubInterpTransform(np.eye(3))
+    mtx = adapter.build_matrix(stub, {"matrix": matrix_tensor}, H, W)
 
     expected = torch.eye(3).unsqueeze(0).expand(B, -1, -1)
     assert torch.allclose(mtx, expected, atol=1e-6)
@@ -143,16 +142,15 @@ def test_build_matrix_non_identity_matrix_preserved():
     adapter = AlbumentationsAdapter()
     B, H, W = 1, 64, 64
 
-    # A simple 30-degree rotation matrix
     angle = np.deg2rad(30.0)
     known = np.array([
         [np.cos(angle), -np.sin(angle), 0.0],
         [np.sin(angle),  np.cos(angle), 0.0],
         [0.0,            0.0,           1.0],
     ])
+    matrix_tensor = torch.tensor(known, dtype=torch.float32).unsqueeze(0)
     stub = _StubInterpTransform(known)
-    params = adapter.sample_params(stub, (B, 3, H, W), torch.device("cpu"))
-    mtx = adapter.build_matrix(stub, params, H, W)
+    mtx = adapter.build_matrix(stub, {"matrix": matrix_tensor}, H, W)
 
     assert torch.allclose(mtx[0], torch.tensor(known, dtype=torch.float32), atol=1e-5)
 
@@ -220,16 +218,24 @@ def test_exact_flip_dims_unknown_raises():
 
 def test_sample_params_matrix_batch_size():
     """sample_params stacks B matrices into (B, 3, 3) via the 'matrix' key."""
+    from fuse_augmentations.adapters import _albumentations as _mod
     from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
 
     adapter = AlbumentationsAdapter()
     B, H, W = 5, 48, 48
 
-    stub = _StubInterpTransform(np.eye(3, dtype=np.float64))
-    params = adapter.sample_params(stub, (B, 3, H, W), torch.device("cpu"))
+    class _InterpStub(_StubInterpTransform):
+        pass
 
-    assert "matrix" in params
-    assert params["matrix"].shape == (B, 3, 3)
+    original = _mod._INTERP_TYPES
+    try:
+        _mod._INTERP_TYPES = frozenset({_InterpStub})
+        stub = _InterpStub(np.eye(3, dtype=np.float64))
+        params = adapter.sample_params(stub, (B, 3, H, W), torch.device("cpu"))
+        assert "matrix" in params
+        assert params["matrix"].shape == (B, 3, 3)
+    finally:
+        _mod._INTERP_TYPES = original
 
 
 def test_sample_params_flip_returns_batch_size_key():
