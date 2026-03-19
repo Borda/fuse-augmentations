@@ -125,12 +125,22 @@ class FusedCompose(nn.Module):
                 from fuse_augmentations.adapters._kornia import KorniaAdapter
 
                 adapter = KorniaAdapter()
+            elif backend == Backend.ALBUMENTATIONS:
+                from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+
+                adapter = AlbumentationsAdapter()
             else:
-                msg = f"Backend '{backend.value}' not yet supported; only kornia is implemented"
+                msg = f"Backend '{backend.value}' not yet supported"
                 raise NotImplementedError(msg)
             if reorder == ReorderPolicy.POINTWISE:
                 transforms = reorder_pointwise(transforms, adapter)
-            segments = build_segments(transforms, adapter, interpolation, padding_mode)
+            segments = build_segments(
+                transforms,
+                adapter,
+                interpolation,
+                padding_mode,
+                use_numpy=(backend == Backend.ALBUMENTATIONS),
+            )
 
         self._setup_instance(
             transforms=transforms,
@@ -261,6 +271,17 @@ class FusedCompose(nn.Module):
                 self._last_transform_matrix = seg.last_matrix
                 continue
 
+            from fuse_augmentations._np_segment import NumpyFusedAffineSegment
+
+            if isinstance(seg, NumpyFusedAffineSegment):
+                result = seg(image, aux_targets)
+                if aux_targets is not None:
+                    image, aux_targets = result
+                else:
+                    image = result
+                self._last_transform_matrix = seg.last_matrix
+                continue
+
             if isinstance(seg, ExactSegment):
                 result = seg(image, aux_targets)
                 if aux_targets is not None:
@@ -320,11 +341,12 @@ class FusedCompose(nn.Module):
             Total number of eliminated warp passes across all fused segments.
 
         """
+        from fuse_augmentations._np_segment import NumpyFusedAffineSegment
+
         total = 0
         for seg in self._segments:
-            if isinstance(seg, FusedAffineSegment):
-                # n transforms fused → 1 grid_sample, saving n-1 passes.
-                # A single-transform FusedAffineSegment saves nothing (n-1 = 0).
+            if isinstance(seg, (FusedAffineSegment, NumpyFusedAffineSegment)):
+                # n transforms fused → 1 warp, saving n-1 passes.
                 n = len(seg.transforms)
                 if n > 1:
                     total += n - 1
@@ -348,9 +370,11 @@ class FusedCompose(nn.Module):
             Returns ``"empty"`` for an empty pipeline.
 
         """
+        from fuse_augmentations._np_segment import NumpyFusedAffineSegment
+
         parts: list[str] = []
         for seg in self._segments:
-            if isinstance(seg, FusedAffineSegment):
+            if isinstance(seg, (FusedAffineSegment, NumpyFusedAffineSegment)):
                 names = [type(t).__name__ for t in seg.transforms]
                 parts.append(f"fused({', '.join(names)})")
                 continue
