@@ -36,7 +36,7 @@ _BORDER_FLAGS: dict[str, int] | None = None
 
 def _get_flags() -> tuple[dict[str, int], dict[str, int]]:
     """Return cv2 interpolation and border mode flag dicts (lazy import)."""
-    global _INTERP_FLAGS, _BORDER_FLAGS  # noqa: PLW0603
+    global _INTERP_FLAGS, _BORDER_FLAGS
     if _INTERP_FLAGS is None:
         import cv2
 
@@ -63,8 +63,8 @@ class NumpyFusedAffineSegment(nn.Module):
     Conversion to/from ``(H, W, C)`` NumPy arrays happens inside ``forward()``.
 
     No ``normalize_matrix`` step is needed — ``cv2.warpAffine`` operates
-    in pixel coordinates natively. The inverse 2×3 matrix is extracted as
-    ``M_inv[:2, :]`` and passed directly to ``cv2.warpAffine``.
+    in pixel coordinates natively. The forward 2x3 matrix is passed
+    directly to ``cv2.warpAffine`` (which inverts it internally).
 
     Args:
         transforms: List of Albumentations transform objects to fuse.
@@ -134,14 +134,13 @@ class NumpyFusedAffineSegment(nn.Module):
 
         # Per-sample warp
         output_np: list[np.ndarray] = []
-        input_shape = (bsz, n_ch, height, width)
 
         for i in range(bsz):
             acc = np.eye(3, dtype=np.float64)
 
             for tfm in self.transforms:
                 prob = float(getattr(tfm, "p", 1.0))
-                active = np.random.rand() < prob  # noqa: NPY002
+                active = np.random.rand() < prob
 
                 params = self.adapter.sample_params(tfm, (1, n_ch, height, width), torch.device("cpu"))
                 mtx_i = self.adapter.build_matrix(tfm, params, height, width)
@@ -175,10 +174,9 @@ class NumpyFusedAffineSegment(nn.Module):
             output_np.append(warped)
 
         # Stack back to (B, C, H, W)
-        stacked = torch.stack([
-            torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1)
-            for img in output_np
-        ]).to(device=device, dtype=dtype)
+        stacked = torch.stack([torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1) for img in output_np]).to(
+            device=device, dtype=dtype
+        )
 
         self._last_matrix = composed_batch.to(torch.float32).detach()
 
@@ -202,10 +200,11 @@ def _warp(
     """
     import cv2
 
-    return cv2.warpAffine(
+    result: np.ndarray = cv2.warpAffine(
         img,
         M_fwd_2x3,
         (width, height),
         flags=interp_flag,
         borderMode=border_flag,
     )
+    return result
