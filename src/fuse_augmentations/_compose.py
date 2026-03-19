@@ -135,6 +135,10 @@ class FusedCompose(nn.Module):
                 from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
 
                 adapter = AlbumentationsAdapter()
+            elif backend == Backend.TORCHVISION:
+                from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
+
+                adapter = TorchVisionAdapter()
             else:
                 msg = f"Backend '{backend.value}' not yet supported"
                 raise NotImplementedError(msg)
