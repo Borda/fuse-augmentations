@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Literal
 import torch
 from torch import nn
 
-from fuse_augmentations._backend import Backend, detect_backend
+from fuse_augmentations._backend import Backend, detect_backends_per_transform
 from fuse_augmentations._types import ReorderPolicy, TransformAdapter, TransformCategory
 from fuse_augmentations.affine._matrix import (
     hflip_matrix,
@@ -99,8 +99,6 @@ class FusedCompose(nn.Module):
 
     Raises:
         NotImplementedError: If ``reorder`` is ``ReorderPolicy.AGGRESSIVE``.
-        NotImplementedError: If the detected backend is not Kornia (only Kornia is currently
-            supported).
 
     """
 
@@ -121,36 +119,33 @@ class FusedCompose(nn.Module):
 
         adapter: TransformAdapter | None
         segments: list[object]
+        tfm_adapters: dict[int, TransformAdapter] | None = None
 
         if not transforms:
             adapter = None
             segments = []
         else:
-            backend = detect_backend(transforms)
-            if backend == Backend.KORNIA:
-                from fuse_augmentations.adapters._kornia import KorniaAdapter
+            per_backends = detect_backends_per_transform(transforms)
+            unique_backends = {b for b in per_backends if b is not None}
 
-                adapter = KorniaAdapter()
-            elif backend == Backend.ALBUMENTATIONS:
-                from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
-
-                adapter = AlbumentationsAdapter()
-            elif backend == Backend.TORCHVISION:
-                from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
-
-                adapter = TorchVisionAdapter()
+            if len(unique_backends) <= 1:
+                # Single-backend fast path (backward compatible)
+                backend = unique_backends.pop() if unique_backends else Backend.UNKNOWN
+                adapter = _adapter_for_backend(backend)
+                if reorder == ReorderPolicy.POINTWISE:
+                    transforms = reorder_pointwise(transforms, adapter)
+                segments = build_segments(
+                    transforms,
+                    adapter,
+                    interpolation,
+                    padding_mode,
+                    use_numpy=(backend == Backend.ALBUMENTATIONS),
+                )
             else:
-                msg = f"Backend '{backend.value}' not yet supported"
-                raise NotImplementedError(msg)
-            if reorder == ReorderPolicy.POINTWISE:
-                transforms = reorder_pointwise(transforms, adapter)
-            segments = build_segments(
-                transforms,
-                adapter,
-                interpolation,
-                padding_mode,
-                use_numpy=(backend == Backend.ALBUMENTATIONS),
-            )
+                # Mixed-backend path: group by backend, build segments per group
+                adapter, segments, tfm_adapters = _build_mixed_segments(
+                    transforms, per_backends, reorder, interpolation, padding_mode,
+                )
 
         self._setup_instance(
             transforms=transforms,
@@ -160,6 +155,7 @@ class FusedCompose(nn.Module):
             data_keys=data_keys,
             adapter=adapter,
             segments=segments,
+            transform_adapters=tfm_adapters,
         )
 
     def _setup_instance(
@@ -171,6 +167,7 @@ class FusedCompose(nn.Module):
         data_keys: list[str] | None,
         adapter: TransformAdapter | None,
         segments: list[object],
+        transform_adapters: dict[int, TransformAdapter] | None = None,
     ) -> None:
         """Assign all instance attributes.
 
@@ -185,6 +182,7 @@ class FusedCompose(nn.Module):
         self._adapter: TransformAdapter | None = adapter
         self._segments: list[object] = segments
         self._last_transform_matrix: Tensor | None = None
+        self._transform_adapters: dict[int, TransformAdapter] = transform_adapters or {}
 
         if data_keys is not None:
             # Enforce documented contract: first key must map to the image ("input").
@@ -298,11 +296,12 @@ class FusedCompose(nn.Module):
                     image = result
                 continue
 
-            # Passthrough: apply via adapter's call_nonfused (image only)
-            if self._adapter is None:
-                msg = "Passthrough transform encountered but adapter is None; this is a bug in build_segments"
+            # Passthrough: apply via the per-transform adapter's call_nonfused (image only)
+            pt_adapter = self._transform_adapters.get(id(seg), self._adapter)
+            if pt_adapter is None:
+                msg = "Passthrough transform encountered but no adapter found; this is a bug in build_segments"
                 raise RuntimeError(msg)
-            image = self._adapter.call_nonfused(seg, image)
+            image = pt_adapter.call_nonfused(seg, image)
 
         if self.data_keys is None:
             return image
@@ -544,6 +543,120 @@ class FusedCompose(nn.Module):
         )
 
         return instance
+
+
+# ---------------------------------------------------------------------------
+# Mixed-backend helpers
+# ---------------------------------------------------------------------------
+
+
+def _adapter_for_backend(backend: Backend) -> TransformAdapter:
+    """Return the adapter instance for a known backend.
+
+    Args:
+        backend: A ``Backend`` enum value.
+
+    Returns:
+        The corresponding ``TransformAdapter`` instance.
+
+    Raises:
+        NotImplementedError: If the backend is not supported.
+
+    """
+    if backend == Backend.KORNIA:
+        from fuse_augmentations.adapters._kornia import KorniaAdapter
+
+        return KorniaAdapter()
+    if backend == Backend.ALBUMENTATIONS:
+        from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+
+        return AlbumentationsAdapter()
+    if backend == Backend.TORCHVISION:
+        from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
+
+        return TorchVisionAdapter()
+    msg = f"Backend '{backend.value}' not yet supported"
+    raise NotImplementedError(msg)
+
+
+def _build_mixed_segments(
+    transforms: list[object],
+    per_backends: list[Backend | None],
+    reorder: ReorderPolicy,
+    interpolation: str | None,
+    padding_mode: str | None,
+) -> tuple[TransformAdapter, list[object], dict[int, TransformAdapter]]:
+    """Build segments for a mixed-backend pipeline.
+
+    Groups consecutive transforms that share the same backend, then calls
+    ``build_segments`` on each group with the appropriate adapter. Backend
+    boundaries act as segment breaks — the same as ``SPATIAL_KERNEL`` barriers.
+
+    Transforms with ``backend=None`` (unrecognised) are emitted as
+    passthrough objects directly.
+
+    Args:
+        transforms: Full list of transform objects.
+        per_backends: Per-transform backend from ``detect_backends_per_transform``.
+        reorder: Reorder policy (applied within each same-backend group).
+        interpolation: Interpolation mode forwarded to segments.
+        padding_mode: Padding mode forwarded to segments.
+
+    Returns:
+        A tuple of ``(primary_adapter, segments)`` where ``primary_adapter``
+        is the adapter for the first recognised backend (used as fallback)
+        and ``segments`` is the flat segment list.
+
+    """
+    # Cache adapter instances per backend to avoid repeated instantiation
+    adapter_cache: dict[Backend, TransformAdapter] = {}
+
+    def _get_adapter(backend: Backend) -> TransformAdapter:
+        if backend not in adapter_cache:
+            adapter_cache[backend] = _adapter_for_backend(backend)
+        return adapter_cache[backend]
+
+    # Build per-transform adapter map for passthrough dispatch
+    transform_adapters: dict[int, TransformAdapter] = {}
+    for tfm, bk in zip(transforms, per_backends, strict=True):
+        if bk is not None:
+            transform_adapters[id(tfm)] = _get_adapter(bk)
+
+    # Group consecutive transforms by backend
+    groups: list[tuple[Backend | None, list[object]]] = []
+    for tfm, bk in zip(transforms, per_backends, strict=True):
+        if groups and groups[-1][0] == bk:
+            groups[-1][1].append(tfm)
+        else:
+            groups.append((bk, [tfm]))
+
+    # Build segments per group
+    all_segments: list[object] = []
+    for bk, group_transforms in groups:
+        if bk is None:
+            # Unrecognised transforms — emit as passthrough
+            all_segments.extend(group_transforms)
+            continue
+
+        adapter = _get_adapter(bk)
+        if reorder == ReorderPolicy.POINTWISE:
+            group_transforms = reorder_pointwise(group_transforms, adapter)
+        group_segments = build_segments(
+            group_transforms,
+            adapter,
+            interpolation,
+            padding_mode,
+            use_numpy=(bk == Backend.ALBUMENTATIONS),
+        )
+        all_segments.extend(group_segments)
+
+    # Primary adapter: first recognised backend, used as fallback for _adapter
+    primary_backend = next((b for b in per_backends if b is not None), None)
+    primary_adapter = (
+        _get_adapter(primary_backend) if primary_backend is not None else _get_adapter(Backend.KORNIA)
+    )
+
+    return primary_adapter, all_segments, transform_adapters
 
 
 # ---------------------------------------------------------------------------
