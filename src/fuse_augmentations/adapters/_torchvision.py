@@ -8,9 +8,9 @@ namespaces. Each geometric transform samples parameters via TorchVision's
 ``get_params()`` static method and reconstructs the affine matrix from
 ``fuse_augmentations.affine._matrix`` primitives.
 
-Flip transforms (``RandomHorizontalFlip``, ``RandomVerticalFlip``) return an
-empty parameter dict; ``build_matrix()`` constructs their matrices from the
-shared matrix primitives.
+Flip transforms (``RandomHorizontalFlip``, ``RandomVerticalFlip``) return a
+minimal parameter dict containing a ``"_batch_size"`` sentinel; ``build_matrix()``
+uses this sentinel to construct their matrices from the shared matrix primitives.
 
 Requires ``torchvision``.
 

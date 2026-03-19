@@ -64,7 +64,11 @@ def detect_backend(transforms: list[object]) -> Backend:
             backends.add(backend)
 
     if len(backends) > 1:
-        msg = "Mixed backends are not supported in v0.1-v0.4. All transforms must use the same backend."
+        msg = (
+            "Mixed backends are not supported by detect_backend(); all transforms must "
+            "use the same backend. For mixed-backend pipelines, use "
+            "detect_backends_per_transform()."
+        )
         raise ValueError(msg)
 
     if len(backends) == 1:

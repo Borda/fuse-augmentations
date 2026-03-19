@@ -15,8 +15,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-TV = pytest.importorskip("torchvision", reason="torchvision required")
-kornia = pytest.importorskip("kornia", reason="kornia required")
+_ = pytest.importorskip("torchvision", reason="torchvision required")
+_ = pytest.importorskip("kornia", reason="kornia required")
 
 import torchvision.transforms as T  # noqa: E402
 from kornia.augmentation import ColorJitter as KColorJitter  # noqa: E402

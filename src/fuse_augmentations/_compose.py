@@ -296,8 +296,11 @@ class FusedCompose(nn.Module):
                     image = result
                 continue
 
-            # Passthrough: apply via the per-transform adapter's call_nonfused (image only)
-            pt_adapter = self._transform_adapters.get(id(seg), self._adapter)
+            # Passthrough: apply via the per-transform adapter's call_nonfused (image only).
+            # Prefer object-keyed adapters (pickle-stable), fall back to legacy id()-keyed entries.
+            pt_adapter = self._transform_adapters.get(seg)
+            if pt_adapter is None:
+                pt_adapter = self._transform_adapters.get(id(seg), self._adapter)
             if pt_adapter is None:
                 msg = "Passthrough transform encountered but no adapter found; this is a bug in build_segments"
                 raise RuntimeError(msg)
@@ -603,9 +606,11 @@ def _build_mixed_segments(
         padding_mode: Padding mode forwarded to segments.
 
     Returns:
-        A tuple of ``(primary_adapter, segments)`` where ``primary_adapter``
-        is the adapter for the first recognised backend (used as fallback)
-        and ``segments`` is the flat segment list.
+        A tuple of ``(primary_adapter, segments, transform_adapters)`` where
+        ``primary_adapter`` is the adapter for the first recognised backend
+        (used as fallback), ``segments`` is the flat segment list, and
+        ``transform_adapters`` maps ``id(transform)`` to the adapter used for
+        that transform (for passthrough dispatch).
 
     """
     # Cache adapter instances per backend to avoid repeated instantiation

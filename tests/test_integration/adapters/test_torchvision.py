@@ -18,7 +18,7 @@ import torch.nn.functional as F
 
 import pytest
 
-TV = pytest.importorskip("torchvision", reason="torchvision required")
+pytest.importorskip("torchvision", reason="torchvision required")
 import torchvision.transforms as T  # noqa: E402
 
 from fuse_augmentations import Compose  # noqa: E402
@@ -288,6 +288,129 @@ class TestV2Parity:
 
         assert torch.allclose(fused_out, native_out, atol=ATOL_EXACT), (
             f"v2 HFlip parity failed: max diff = {(fused_out - native_out).abs().max().item():.2e}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Native parity tests -- fused vs TorchVision native (not self-referential)
+# ---------------------------------------------------------------------------
+
+
+def _tv_forward_matrix(
+    angle: float,
+    translate: tuple[int, int],
+    scale: float,
+    shear: tuple[float, float],
+    cx: float,
+    cy: float,
+) -> torch.Tensor:
+    """Build TorchVision's forward 3x3 matrix from sampled parameters.
+
+    Reproduces TorchVision's affine parameterization for the forward
+    transform (``inverted=False``) with the given center, returning a
+    ``(3, 3)`` tensor.
+
+    """
+    import math
+
+    # TorchVision (and PIL) specify angle and shear in degrees.
+    angle_rad = math.radians(angle)
+    shear_x_rad = math.radians(shear[0])
+    shear_y_rad = math.radians(shear[1])
+
+    tx = float(translate[0])
+    ty = float(translate[1])
+
+    # Forward affine matrix components following TorchVision's convention.
+    # These correspond to the non-inverted case of
+    # ``_get_inverse_affine_matrix(..., inverted=False)``.
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+    cos_sy = math.cos(shear_y_rad)
+    tan_sx = math.tan(shear_x_rad)
+
+    a = (math.cos(angle_rad - shear_y_rad) / cos_sy) * scale
+    b = (math.cos(angle_rad - shear_y_rad) * tan_sx / cos_sy) * scale - sin_a
+    d = (math.sin(angle_rad - shear_y_rad) / cos_sy) * scale
+    e = (math.sin(angle_rad - shear_y_rad) * tan_sx / cos_sy) * scale + cos_a
+
+    c = cx - a * cx - b * cy + tx
+    f = cy - d * cx - e * cy + ty
+
+    flat = [a, b, c, d, e, f]
+    M = torch.zeros(3, 3)
+    M[0, :] = torch.tensor([flat[0], flat[1], flat[2]])
+    M[1, :] = torch.tensor([flat[3], flat[4], flat[5]])
+    M[2, 2] = 1.0
+    return M
+
+
+ATOL_MATRIX = 1e-5  # float32 matrix element tolerance
+
+
+class TestMatrixVsTorchVision:
+    """Compare adapter-built affine matrix against TorchVision's reference.
+
+    Validates that _build_affine_matrix produces the same 2x2 RSS block and correctly centered translation as
+    TorchVision's _get_inverse_affine_matrix. The center is (W-1)/2 (align_corners=True) which intentionally differs
+    from TorchVision's W/2 — this test uses (W-1)/2 for both sides so the comparison is purely about the matrix
+    composition logic.
+
+    """
+
+    @pytest.fixture
+    def adapter(self):
+        return TorchVisionAdapter()
+
+    @pytest.mark.parametrize(
+        "label,kwargs",
+        [
+            ("shear_x", {"degrees": 0, "shear": (10, 10, 0, 0)}),
+            ("shear_y", {"degrees": 0, "shear": (0, 0, 10, 10)}),
+            ("shear_both", {"degrees": 0, "shear": (10, 10, 10, 10)}),
+            ("scale", {"degrees": 0, "scale": (0.8, 0.8)}),
+            ("translate", {"degrees": 0, "translate": (0.1, 0.1)}),
+            ("rotation", {"degrees": (15, 15)}),
+            (
+                "combined",
+                {
+                    "degrees": (15, 15),
+                    "translate": (0.05, 0.05),
+                    "scale": (0.9, 0.9),
+                    "shear": (5, 5, 5, 5),
+                },
+            ),
+        ],
+    )
+    def test_matrix_matches_torchvision(self, adapter, label, kwargs):
+        """Adapter forward matrix matches TorchVision reference (center=(W-1)/2)."""
+        t = T.RandomAffine(**kwargs)
+        cx, cy = (W - 1) / 2.0, (H - 1) / 2.0
+
+        torch.manual_seed(42)
+        params = adapter.sample_params(t, (1, C, H, W), torch.device("cpu"))
+        M_adapter = adapter.build_matrix(t, params, H, W)  # (1, 3, 3) forward
+
+        # Extract the same scalar params to build reference
+        angle_deg = float(torch.rad2deg(params["angle_rad"][0]))
+        sc = float(params.get("scale", torch.ones(1))[0])
+        shear_x_deg = float(torch.rad2deg(params.get("shear_x_rad", torch.zeros(1))[0]))
+        shear_y_deg = float(torch.rad2deg(params.get("shear_y_rad", torch.zeros(1))[0]))
+        tx = float(params.get("translate_x", torch.zeros(1))[0])
+        ty = float(params.get("translate_y", torch.zeros(1))[0])
+
+        M_ref = _tv_forward_matrix(
+            angle=angle_deg,
+            translate=(int(tx), int(ty)),
+            scale=sc,
+            shear=(shear_x_deg, shear_y_deg),
+            cx=cx,
+            cy=cy,
+        )
+
+        max_diff = (M_adapter[0] - M_ref).abs().max().item()
+        assert max_diff < ATOL_MATRIX, (
+            f"[{label}] matrix mismatch: max diff = {max_diff:.2e}\n  adapter:\n{M_adapter[0]}\n  reference:\n{M_ref}"
         )
 
 
