@@ -361,6 +361,8 @@ def build_segments(
     adapter: TransformAdapter,
     interpolation: str | None = None,
     padding_mode: str | None = None,
+    *,
+    use_numpy: bool = False,
 ) -> list[object]:
     """Split a transform list into fused segments and passthrough transforms.
 
@@ -408,6 +410,22 @@ def build_segments(
             return
 
         has_interp = any(adapter.category(t) == TransformCategory.GEOMETRIC_INTERP for t in current_geo)
+
+        if use_numpy:
+            # Albumentations path: always use NumpyFusedAffineSegment (flips fold into matrix)
+            from fuse_augmentations._np_segment import NumpyFusedAffineSegment
+
+            segments.append(
+                NumpyFusedAffineSegment(
+                    list(current_geo),
+                    adapter,
+                    interpolation=interpolation,
+                    padding_mode=padding_mode,
+                )
+            )
+            current_geo.clear()
+            return
+
         if has_interp:
             segments.append(
                 FusedAffineSegment(
