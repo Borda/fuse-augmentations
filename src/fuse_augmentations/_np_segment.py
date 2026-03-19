@@ -111,15 +111,23 @@ class NumpyFusedAffineSegment(nn.Module):
 
         Args:
             image: ``(B, C, H, W)`` float32 input tensor.
-            aux_targets: Ignored in v0.4a (deferred to v0.4b). If provided,
-                returned unchanged alongside the output image.
+            aux_targets: Auxiliary targets (e.g. masks/boxes/keypoints). Currently
+                not supported by :class:`NumpyFusedAffineSegment`. Passing a
+                non-``None`` value will raise a ``RuntimeError`` to avoid
+                silently returning incorrectly aligned targets.
 
         Returns:
-            Bare ``image`` tensor when ``aux_targets`` is ``None``;
-            ``(image, aux_targets)`` tuple otherwise.
+            The transformed ``image`` tensor.
 
         """
-        _has_aux = aux_targets is not None
+        if aux_targets is not None:
+            raise RuntimeError(
+                "NumpyFusedAffineSegment.forward does not yet support aux_targets. "
+                "Passing auxiliary targets here would result in misaligned masks/"
+                "boxes/keypoints. Please call this module with aux_targets=None, "
+                "or use a non-fused Albumentations pipeline that transforms "
+                "auxiliary targets alongside the image."
+            )
 
         interp_flags, border_flags = _get_flags()
         interp_flag = interp_flags.get(self.interpolation, interp_flags["bilinear"])
@@ -130,13 +138,19 @@ class NumpyFusedAffineSegment(nn.Module):
         dtype = image.dtype
 
         # Compose a (B, 3, 3) forward matrix tensor for last_matrix storage
-        composed_batch = torch.eye(3, dtype=torch.float64).unsqueeze(0).expand(bsz, -1, -1).clone()
+        composed_batch = (
+            torch.eye(3, dtype=torch.float64, device=device)
+            .unsqueeze(0)
+            .expand(bsz, -1, -1)
+            .clone()
+        )
 
         # Per-sample warp
         output_np: list[np.ndarray] = []
 
         for i in range(bsz):
             acc = np.eye(3, dtype=np.float64)
+            any_active = False
 
             for tfm in self.transforms:
                 prob = float(getattr(tfm, "p", 1.0))
@@ -146,12 +160,13 @@ class NumpyFusedAffineSegment(nn.Module):
                 mtx_i = self.adapter.build_matrix(tfm, params, height, width)
 
                 if active:
+                    any_active = True
                     acc = mtx_i[0].double().cpu().numpy() @ acc
 
             composed_batch[i] = torch.from_numpy(acc)
 
-            if len(self.transforms) == 0:
-                # Identity: no warp needed
+            if len(self.transforms) == 0 or not any_active:
+                # Identity: no warp needed when no transforms or all inactive
                 img_np = image[i].permute(1, 2, 0).cpu().numpy()
                 output_np.append(img_np)
                 continue
@@ -178,11 +193,10 @@ class NumpyFusedAffineSegment(nn.Module):
             device=device, dtype=dtype
         )
 
-        self._last_matrix = composed_batch.to(torch.float32).detach()
+        # Store a float32 detached clone of the composed transform matrix on the input device
+        self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
 
-        if not _has_aux:
-            return stacked
-        return stacked, aux_targets  # type: ignore[return-value]
+        return stacked
 
 
 def _warp(

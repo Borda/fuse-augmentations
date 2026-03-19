@@ -199,7 +199,7 @@ class TestMultiTransformChain:
             A.GaussianBlur(p=1.0),  # SPATIAL_KERNEL barrier
             A.HorizontalFlip(p=1.0),
         ])
-        assert pipe.n_warps_saved == 0  # no consecutive geometric chain
+        assert pipe.n_warps_saved == 1  # HorizontalFlip after barrier uses ExactSegment (+1), Rotate is standalone
         img = _rand_image()
         out = pipe(img)
         assert out.shape == img.shape

@@ -415,17 +415,23 @@ def build_segments(
         has_interp = any(adapter.category(t) == TransformCategory.GEOMETRIC_INTERP for t in current_geo)
 
         if use_numpy:
-            # Albumentations path: always use NumpyFusedAffineSegment (flips fold into matrix)
+            # Albumentations path: use NumpyFusedAffineSegment only when interpolation is present;
+            # keep ExactSegment for GEOMETRIC_EXACT-only runs to preserve lossless flips and
+            # auxiliary-target handling.
             from fuse_augmentations._np_segment import NumpyFusedAffineSegment
 
-            segments.append(
-                NumpyFusedAffineSegment(
-                    list(current_geo),
-                    adapter,
-                    interpolation=interpolation,
-                    padding_mode=padding_mode,
+            if has_interp:
+                segments.append(
+                    NumpyFusedAffineSegment(
+                        list(current_geo),
+                        adapter,
+                        interpolation=interpolation,
+                        padding_mode=padding_mode,
+                    )
                 )
-            )
+            else:
+                segments.append(ExactSegment(list(current_geo), adapter))
+
             current_geo.clear()
             return
 
