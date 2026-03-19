@@ -99,10 +99,7 @@ _AFFINE_TYPES_FS: frozenset[type] = frozenset(_AFFINE_TYPES)
 def _check_expand(transform: object) -> None:
     """Raise if transform has expand=True (unsupported by fused engine)."""
     if getattr(transform, "expand", False):
-        msg = (
-            "TorchVision RandomRotation with expand=True is not supported "
-            "by the fused engine"
-        )
+        msg = "TorchVision RandomRotation with expand=True is not supported by the fused engine"
         raise ValueError(msg)
 
 
@@ -138,8 +135,7 @@ class TorchVisionAdapter:
             if isinstance(transform, base_type):
                 return cat
         warnings.warn(
-            f"Unknown TorchVision transform {type(transform).__name__!r}; "
-            "treating as SPATIAL_KERNEL barrier.",
+            f"Unknown TorchVision transform {type(transform).__name__!r}; treating as SPATIAL_KERNEL barrier.",
             UserWarning,
             stacklevel=2,
         )
@@ -202,8 +198,10 @@ class TorchVisionAdapter:
         """Build a ``(B, 3, 3)`` pixel-space forward affine matrix.
 
         For ``RandomRotation``, composes center-rotate-uncenter via
-        ``rotation_matrix``. For ``RandomAffine``, composes in TorchVision's
-        documented order: center -> rotate -> scale -> shear -> translate -> uncenter.
+        ``rotation_matrix``. For ``RandomAffine``, composes in the order:
+        center-rotate-uncenter, then scale about center, then shear, then
+        translate. Note: uses ``(W-1)/2`` rotation centre (align_corners=True),
+        not TorchVision's native ``W/2`` — see ``TestAlignCornersOffset``.
 
         Flip transforms use ``hflip_matrix`` / ``vflip_matrix`` expanded to
         batch size B.
@@ -278,6 +276,12 @@ class TorchVisionAdapter:
             Transformed ``(B, C, H, W)`` tensor on the same device as input.
 
         """
+        # TODO(v0.6): add v2 batch fast-path for call_nonfused — v2 transforms
+        # accept (B, C, H, W) directly, so the O(B) loop below is unnecessary for
+        # v2 instances. Safe only when p is handled upstream (probability masking
+        # occurs at the segment level, not here), but needs careful verification
+        # that v2 stochastic transforms behave correctly on batched tensors with
+        # the fused engine's probability contract before removing the loop.
         device = image.device
         dtype = image.dtype
         B = image.shape[0]  # noqa: N806
@@ -357,9 +361,14 @@ def _build_affine_matrix(
     H: int,  # noqa: N803
     W: int,  # noqa: N803
 ) -> torch.Tensor:
-    """Compose full RandomAffine matrix in TorchVision's documented order.
+    """Compose full RandomAffine matrix for the fused engine.
 
-    Order: center -> rotate -> scale -> shear -> translate -> uncenter.
+    Constructs the forward matrix in the order: center-rotate-uncenter, then
+    scale about center, then shear, then translate.
+
+    NOTE: The rotation centre uses ``(W-1)/2`` (align_corners=True convention),
+    which intentionally differs from native TorchVision's ``W/2`` centre — see
+    ``TestAlignCornersOffset``.
 
     Args:
         params: Canonical-unit parameter dict from ``_sample_affine_params``.

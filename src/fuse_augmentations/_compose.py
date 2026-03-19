@@ -128,7 +128,7 @@ class FusedCompose(nn.Module):
 
         adapter: TransformAdapter | None
         segments: list[object]
-        tfm_adapters: dict[object | int, TransformAdapter] | None = None
+        tfm_adapters: dict[int, TransformAdapter] | None = None
 
         if not transforms:
             adapter = None
@@ -139,7 +139,13 @@ class FusedCompose(nn.Module):
 
             if len(unique_backends) <= 1:
                 # Single-backend fast path (backward compatible)
-                backend = unique_backends.pop() if unique_backends else Backend.UNKNOWN
+                if not unique_backends:
+                    raise ValueError(
+                        "No recognised backend transforms found in pipeline. "
+                        "Ensure transforms are from a supported backend: "
+                        "Kornia, TorchVision, or Albumentations."
+                    )
+                backend = unique_backends.pop()
                 adapter = _adapter_for_backend(backend)
                 if reorder == ReorderPolicy.POINTWISE:
                     transforms = reorder_pointwise(transforms, adapter)
@@ -153,7 +159,11 @@ class FusedCompose(nn.Module):
             else:
                 # Mixed-backend path: group by backend, build segments per group
                 adapter, segments, tfm_adapters = _build_mixed_segments(
-                    transforms, per_backends, reorder, interpolation, padding_mode,
+                    transforms,
+                    per_backends,
+                    reorder,
+                    interpolation,
+                    padding_mode,
                 )
 
         self._setup_instance(
@@ -176,7 +186,7 @@ class FusedCompose(nn.Module):
         data_keys: list[str] | None,
         adapter: TransformAdapter | None,
         segments: list[object],
-        transform_adapters: dict[object | int, TransformAdapter] | None = None,
+        transform_adapters: dict[int, TransformAdapter] | None = None,
     ) -> None:
         """Assign all instance attributes.
 
@@ -191,7 +201,7 @@ class FusedCompose(nn.Module):
         self._adapter: TransformAdapter | None = adapter
         self._segments: list[object] = _wrap_passthrough_segments(segments, adapter, transform_adapters)
         self._last_transform_matrix: Tensor | None = None
-        self._transform_adapters: dict[object | int, TransformAdapter] = transform_adapters or {}
+        self._transform_adapters: dict[int, TransformAdapter] = transform_adapters or {}
 
         if data_keys is not None:
             # Enforce documented contract: first key must map to the image ("input").
@@ -623,12 +633,17 @@ def _build_mixed_segments(
         padding_mode: Padding mode forwarded to segments.
 
     Returns:
-        A tuple of ``(primary_adapter, segments, transform_adapters)`` where
-        ``primary_adapter`` is the adapter for the first recognised backend
-        (used as fallback), ``segments`` is the flat segment list, and
-        ``transform_adapters`` maps transform objects to the adapter used for
-        that transform. Integer ``id(transform)`` keys are accepted only as a
-        backward-compatibility path for older pickles.
+        A 3-tuple ``(primary_adapter, segments, transform_adapters)`` where:
+
+        - ``primary_adapter`` (``TransformAdapter``): the adapter for the first
+          recognised backend, used as the fallback adapter on
+          ``FusedCompose._adapter``.
+        - ``segments`` (``list[object]``): flat, ordered list of fused and
+          passthrough segments ready for ``_wrap_passthrough_segments``.
+        - ``transform_adapters`` (``dict[int, TransformAdapter]``): maps each
+          transform object (or its ``id()`` as a backward-compat integer key)
+          to the adapter used for that transform, enabling per-transform
+          dispatch in the mixed-backend forward pass.
 
     """
     # Cache adapter instances per backend to avoid repeated instantiation
@@ -639,14 +654,13 @@ def _build_mixed_segments(
             adapter_cache[backend] = _adapter_for_backend(backend)
         return adapter_cache[backend]
 
-    # Build per-transform adapter map for passthrough dispatch
-    transform_adapters: dict[object | int, TransformAdapter] = {}
-    for tfm, bk in zip(transforms, per_backends, strict=True):
+    # Build per-transform adapter map for passthrough dispatch.
+    # Keyed by positional index (stable across pickle) rather than id()
+    # or object identity (which break after deserialization).
+    transform_adapters: dict[int, TransformAdapter] = {}
+    for idx, (tfm, bk) in enumerate(zip(transforms, per_backends, strict=True)):
         if bk is not None:
-            try:
-                transform_adapters[tfm] = _get_adapter(bk)
-            except TypeError:
-                transform_adapters[id(tfm)] = _get_adapter(bk)
+            transform_adapters[idx] = _get_adapter(bk)
 
     # Group consecutive transforms by backend
     groups: list[tuple[Backend | None, list[object]]] = []
@@ -676,11 +690,18 @@ def _build_mixed_segments(
         )
         all_segments.extend(group_segments)
 
-    # Primary adapter: first recognised backend, used as fallback for _adapter
+    # Primary adapter: first recognised backend, used as fallback for _adapter.
+    # This function is only reachable when len(unique_backends) > 1, which
+    # guarantees at least one non-None backend exists.
     primary_backend = next((b for b in per_backends if b is not None), None)
-    primary_adapter = (
-        _get_adapter(primary_backend) if primary_backend is not None else _get_adapter(Backend.KORNIA)
-    )
+    if primary_backend is None:
+        raise ValueError(
+            "_build_mixed_segments called with no recognised backends. "
+            "This is unreachable from FusedCompose.__init__; if you see "
+            "this error, a caller is invoking _build_mixed_segments directly "
+            "with an all-None per_backends list."
+        )
+    primary_adapter = _get_adapter(primary_backend)
 
     return primary_adapter, all_segments, transform_adapters
 
