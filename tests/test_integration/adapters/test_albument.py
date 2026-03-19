@@ -45,7 +45,7 @@ def _sequential_albu(transforms: list, img_tensor: torch.Tensor) -> torch.Tensor
         img_np = img_tensor[i].permute(1, 2, 0).cpu().numpy()
         for t in transforms:
             img_np = t(image=img_np)["image"]
-        results.append(torch.from_numpy(np.ascontiguousarray(img_np)).permute(2, 0, 1))
+        results.append(torch.as_tensor(img_np.astype(np.float32)).permute(2, 0, 1))
     return torch.stack(results)
 
 
@@ -75,7 +75,7 @@ def _sequential_scipy(transforms: list, img_tensor: torch.Tensor) -> torch.Tenso
                 img_np = warped[:, :, np.newaxis]
             else:
                 img_np = _warp(img_np, M_inv, _W, _H, interp_order, border_mode)
-        results.append(torch.from_numpy(np.ascontiguousarray(img_np.astype(np.float32))).permute(2, 0, 1))
+        results.append(torch.as_tensor(img_np.astype(np.float32)).permute(2, 0, 1))
     return torch.stack(results)
 
 
