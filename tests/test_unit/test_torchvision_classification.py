@@ -1,8 +1,8 @@
 """Unit tests for TorchVision backend detection and transform classification.
 
-No torchvision installation required -- uses module-path mock objects that mimic the class hierarchy without importing
-the real package.
-
+Backend-detection tests use module-path mock objects that mimic the class hierarchy without importing the real
+torchvision package. Transform-category tests use real TorchVision transforms and are skipped via pytest.importorskip
+when torchvision is not installed.
 """
 
 from __future__ import annotations
