@@ -392,6 +392,9 @@ def build_segments(
             (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
         padding_mode: Padding mode override forwarded to each :class:`FusedAffineSegment`
             (``"zeros"``, ``"border"``, ``"reflection"``).
+        use_numpy: When ``True``, produce :class:`NumpyFusedAffineSegment` instances
+            (cv2/NumPy path) instead of the PyTorch :class:`FusedAffineSegment`.
+            Used for the Albumentations backend.
 
     Returns:
         Flat list where each element is a :class:`FusedAffineSegment`
