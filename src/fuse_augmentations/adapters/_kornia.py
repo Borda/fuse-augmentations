@@ -21,6 +21,7 @@ from fuse_augmentations._types import TransformCategory
 from fuse_augmentations.affine._matrix import (
     hflip_matrix,
     matmul3x3,
+    perspective_from_points,
     rotation_matrix,
     scale_matrix,
     shear_x_matrix,
@@ -36,6 +37,7 @@ from fuse_augmentations.affine._matrix import (
 try:
     from kornia.augmentation import RandomAffine as _RandomAffine
     from kornia.augmentation import RandomHorizontalFlip as _RandomHorizontalFlip
+    from kornia.augmentation import RandomPerspective as _RandomPerspective
     from kornia.augmentation import RandomRotation as _RandomRotation
     from kornia.augmentation import RandomVerticalFlip as _RandomVerticalFlip
 
@@ -44,6 +46,7 @@ try:
         _RandomAffine: TransformCategory.GEOMETRIC_INTERP,
         _RandomHorizontalFlip: TransformCategory.GEOMETRIC_EXACT,
         _RandomVerticalFlip: TransformCategory.GEOMETRIC_EXACT,
+        _RandomPerspective: TransformCategory.PROJECTIVE,
     }
 except ImportError:
     TRANSFORM_REGISTRY = {}
@@ -156,6 +159,13 @@ class KorniaAdapter:
 
             return result
 
+        if TRANSFORM_REGISTRY and ttype is _RandomPerspective:
+            params = transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
+            return {
+                "start_points": params["start_points"].to(device=device),
+                "end_points": params["end_points"].to(device=device),
+            }
+
         # Unknown - return empty
         return {}
 
@@ -196,6 +206,9 @@ class KorniaAdapter:
 
         if TRANSFORM_REGISTRY and ttype is _RandomAffine:
             return KorniaAdapter._build_affine_matrix(params, H, W)
+
+        if TRANSFORM_REGISTRY and ttype is _RandomPerspective:
+            return perspective_from_points(params["start_points"], params["end_points"])
 
         # Fallback: identity
         return torch.eye(3).unsqueeze(0)

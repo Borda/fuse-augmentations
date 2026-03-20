@@ -34,6 +34,7 @@ import torch
 from fuse_augmentations._types import TransformCategory
 from fuse_augmentations.affine._matrix import (
     hflip_matrix,
+    perspective_from_points,
     rotation_matrix,
     vflip_matrix,
 )
@@ -47,11 +48,13 @@ _HFLIP_TYPES: set[type] = set()
 _VFLIP_TYPES: set[type] = set()
 _ROTATION_TYPES: set[type] = set()
 _AFFINE_TYPES: set[type] = set()
+_PERSPECTIVE_TYPES: set[type] = set()
 
 # v1: torchvision.transforms
 try:
     from torchvision.transforms import RandomAffine as _V1RandomAffine
     from torchvision.transforms import RandomHorizontalFlip as _V1RandomHorizontalFlip
+    from torchvision.transforms import RandomPerspective as _V1RandomPerspective
     from torchvision.transforms import RandomRotation as _V1RandomRotation
     from torchvision.transforms import RandomVerticalFlip as _V1RandomVerticalFlip
 
@@ -59,11 +62,13 @@ try:
     _TRANSFORM_REGISTRY[_V1RandomAffine] = TransformCategory.GEOMETRIC_INTERP
     _TRANSFORM_REGISTRY[_V1RandomHorizontalFlip] = TransformCategory.GEOMETRIC_EXACT
     _TRANSFORM_REGISTRY[_V1RandomVerticalFlip] = TransformCategory.GEOMETRIC_EXACT
+    _TRANSFORM_REGISTRY[_V1RandomPerspective] = TransformCategory.PROJECTIVE
 
     _HFLIP_TYPES.add(_V1RandomHorizontalFlip)
     _VFLIP_TYPES.add(_V1RandomVerticalFlip)
     _ROTATION_TYPES.add(_V1RandomRotation)
     _AFFINE_TYPES.add(_V1RandomAffine)
+    _PERSPECTIVE_TYPES.add(_V1RandomPerspective)
 except ImportError:
     pass
 
@@ -71,6 +76,7 @@ except ImportError:
 try:
     from torchvision.transforms.v2 import RandomAffine as _V2RandomAffine
     from torchvision.transforms.v2 import RandomHorizontalFlip as _V2RandomHorizontalFlip
+    from torchvision.transforms.v2 import RandomPerspective as _V2RandomPerspective
     from torchvision.transforms.v2 import RandomRotation as _V2RandomRotation
     from torchvision.transforms.v2 import RandomVerticalFlip as _V2RandomVerticalFlip
 
@@ -78,11 +84,13 @@ try:
     _TRANSFORM_REGISTRY[_V2RandomAffine] = TransformCategory.GEOMETRIC_INTERP
     _TRANSFORM_REGISTRY[_V2RandomHorizontalFlip] = TransformCategory.GEOMETRIC_EXACT
     _TRANSFORM_REGISTRY[_V2RandomVerticalFlip] = TransformCategory.GEOMETRIC_EXACT
+    _TRANSFORM_REGISTRY[_V2RandomPerspective] = TransformCategory.PROJECTIVE
 
     _HFLIP_TYPES.add(_V2RandomHorizontalFlip)
     _VFLIP_TYPES.add(_V2RandomVerticalFlip)
     _ROTATION_TYPES.add(_V2RandomRotation)
     _AFFINE_TYPES.add(_V2RandomAffine)
+    _PERSPECTIVE_TYPES.add(_V2RandomPerspective)
 except ImportError:
     pass
 
@@ -91,6 +99,7 @@ _HFLIP_TYPES_FS: frozenset[type] = frozenset(_HFLIP_TYPES)
 _VFLIP_TYPES_FS: frozenset[type] = frozenset(_VFLIP_TYPES)
 _ROTATION_TYPES_FS: frozenset[type] = frozenset(_ROTATION_TYPES)
 _AFFINE_TYPES_FS: frozenset[type] = frozenset(_AFFINE_TYPES)
+_PERSPECTIVE_TYPES_FS: frozenset[type] = frozenset(_PERSPECTIVE_TYPES)
 
 
 def _check_expand(transform: object) -> None:
@@ -201,6 +210,23 @@ class TorchVisionAdapter:
                 transform, B, H, W, device, shared_across_batch=_is_torchvision_v2_transform(transform)
             )
 
+        # RandomPerspective
+        if isinstance(transform, tuple(_PERSPECTIVE_TYPES_FS)):
+            is_v2 = _is_torchvision_v2_transform(transform)
+            sample_count = 1 if is_v2 else B
+            starts, ends = [], []
+            for _ in range(sample_count):
+                sp, ep = type(transform).get_params(W, H, transform.distortion_scale)  # type: ignore[attr-defined]
+                starts.append(sp)  # list of 4 [x,y] pairs
+                ends.append(ep)
+            # Convert to (sample_count, 4, 2) tensors
+            start_t = torch.tensor(starts, dtype=torch.float32, device=device)  # (count, 4, 2)
+            end_t = torch.tensor(ends, dtype=torch.float32, device=device)
+            if is_v2 and B > 1:
+                start_t = start_t.expand(B, -1, -1)
+                end_t = end_t.expand(B, -1, -1)
+            return {"start_points": start_t.clone(), "end_points": end_t.clone()}
+
         # Unknown -- return empty
         return {}
 
@@ -247,6 +273,9 @@ class TorchVisionAdapter:
 
         if isinstance(transform, tuple(_AFFINE_TYPES_FS)):
             return _build_affine_matrix(params, H, W)
+
+        if isinstance(transform, tuple(_PERSPECTIVE_TYPES_FS)):
+            return perspective_from_points(params["start_points"], params["end_points"])
 
         # Fallback: identity (unreachable for registered transforms)
         return torch.eye(3).unsqueeze(0)
