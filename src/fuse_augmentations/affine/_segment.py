@@ -794,7 +794,11 @@ class AlbuProjectiveSegment(nn.Module):
                     any_active = True
                     acc = mtx_i[0].double().cpu().numpy() @ acc
 
-            composed_batch[i] = torch.as_tensor(acc.copy())
+            composed_batch[i] = torch.as_tensor(
+                acc.copy(),
+                device=composed_batch.device,
+                dtype=composed_batch.dtype,
+            )
 
             img_np = image[i].permute(1, 2, 0).cpu().numpy()
 
@@ -805,7 +809,7 @@ class AlbuProjectiveSegment(nn.Module):
             # acc is the composed forward (src→dst) matrix; invert to get dst→src
             m_inv = np.linalg.inv(acc)
 
-            warped: ImageArray = _cv2.warpPerspective(  # type: ignore[union-attr]
+            warped: ImageArray = _cv2.warpPerspective(
                 img_np,
                 m_inv,  # dst->src inverse map
                 (width, height),  # dsize = (W, H)

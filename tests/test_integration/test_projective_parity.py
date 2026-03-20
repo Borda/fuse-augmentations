@@ -1,13 +1,16 @@
-"""Integration parity tests for ProjectiveSegment.
+"""Integration coverage for ProjectiveSegment.
 
 Requires kornia >= 0.6.12 for the Kornia subtests.
 
-For single-transform tests, the fused path and the native backend produce
-identical results because both perform a single grid_sample / warpPerspective.
+These tests verify projective fusion-plan reporting, shape preservation, and
+saved-warp accounting across supported backends.
 
-For multi-transform chains, the fused path composes homography matrices and
-applies a single grid_sample, while the native path would stack two calls.
+Single-transform projective paths are checked for successful execution and
+matrix bookkeeping. Multi-transform chains verify that the fused path composes
+homographies and reduces the number of warp passes.
+
 """
+
 from __future__ import annotations
 
 import pytest
@@ -22,7 +25,7 @@ pytestmark = pytest.mark.integration
 
 
 class TestKorniaProjectiveParity:
-    """Fused ProjectiveSegment vs native K.RandomPerspective."""
+    """ProjectiveSegment coverage for K.RandomPerspective."""
 
     @pytest.fixture(autouse=True)
     def require_kornia(self):
@@ -61,26 +64,23 @@ class TestKorniaProjectiveParity:
         pipe = Compose([t, t])
         assert pipe.n_warps_saved == 1
 
-    def test_single_parity_with_native(self):
-        """Fused single RandomPerspective matches Kornia native output (same grid_sample)."""
+    def test_single_perspective_records_transform_matrix(self):
+        """Single fused RandomPerspective records a finite 3x3 transform matrix."""
         import kornia.augmentation as K
 
         from fuse_augmentations import Compose
 
-        torch.manual_seed(42)
         t = K.RandomPerspective(distortion_scale=0.4, p=1.0)
         img = torch.rand(1, 3, 32, 32)
 
-        # Native path
-        native_out = t(img)
-
         # Fused path -- same transform, uses ProjectiveSegment
         pipe = Compose([t])
-        torch.manual_seed(42)
         fused_out = pipe(img)
 
-        # Both paths sample the same grid_sample from the same matrix, so should be close
-        assert fused_out.shape == native_out.shape
+        assert fused_out.shape == img.shape
+        assert pipe.transform_matrix is not None
+        assert pipe.transform_matrix.shape == (1, 3, 3)
+        assert torch.isfinite(pipe.transform_matrix).all()
 
     def test_mixed_rotate_then_perspective_gives_two_segments(self):
         """[Rotation, RandomPerspective] -> fusion_plan has fused(...) -> projective(...)."""

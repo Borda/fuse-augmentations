@@ -372,20 +372,23 @@ class FusedCompose(nn.Module):
 
     @property
     def transform_matrix(self) -> torch.Tensor | None:
-        """Return the ``(B, 3, 3)`` composed matrix for the last fused affine segment.
+        """Return the ``(B, 3, 3)`` composed matrix for the last fused segment.
 
         This is the composed forward transform matrix produced by the last
-        :class:`~fuse_augmentations._segment.FusedAffineSegment` executed in the
-        most recent :meth:`forward` call. Passthrough (non-fused) transforms do
-        not affect this value, and multiple fused segments are *not* composed into
-        a single whole-pipeline matrix. In mixed-backend pipelines, only the last
-        fused segment across all backends contributes to this value.
+        fused geometric segment executed in the most recent :meth:`forward`
+        call. This includes affine segments and projective segments, so the
+        returned matrix may encode either an affine or a full homography-style
+        projective warp depending on the last fused segment type. Passthrough
+        (non-fused) transforms do not affect this value, and multiple fused
+        segments are *not* composed into a single whole-pipeline matrix. In
+        mixed-backend pipelines, only the last fused segment across all
+        backends contributes to this value.
 
         Returns:
-            The composed matrix for the last fused affine segment, or ``None`` if
-            no such segment has been executed yet (including before the first
-            call to :meth:`forward` or if the last forward contained only
-            passthrough transforms).
+            The composed matrix for the last fused affine or projective
+            segment, or ``None`` if no such segment has been executed yet
+            (including before the first call to :meth:`forward` or if the
+            last forward contained only passthrough transforms).
 
         """
         return self._last_transform_matrix
@@ -753,8 +756,11 @@ def _wrap_passthrough_segments(
     """
     wrapped_segments: list[object] = []
     fused_segment_types = (
-        FusedAffineSegment, AlbuFusedAffineSegment, ExactSegment,
-        ProjectiveSegment, AlbuProjectiveSegment,
+        FusedAffineSegment,
+        AlbuFusedAffineSegment,
+        ExactSegment,
+        ProjectiveSegment,
+        AlbuProjectiveSegment,
     )
 
     # Build a reverse lookup: transform object id -> index in original_transforms.

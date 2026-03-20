@@ -222,9 +222,6 @@ class TorchVisionAdapter:
             # Convert to (sample_count, 4, 2) tensors
             start_t = torch.tensor(starts, dtype=torch.float32, device=device)  # (count, 4, 2)
             end_t = torch.tensor(ends, dtype=torch.float32, device=device)
-            if is_v2 and B > 1:
-                start_t = start_t.expand(B, -1, -1)
-                end_t = end_t.expand(B, -1, -1)
             return {"start_points": start_t.clone(), "end_points": end_t.clone()}
 
         # Unknown -- return empty
