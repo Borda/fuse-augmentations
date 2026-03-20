@@ -282,6 +282,65 @@ class TestV2Parity:
             f"v2 HFlip parity failed: max diff = {(fused_out - native_out).abs().max().item():.2e}"
         )
 
+    def test_v2_hflip_batch_probability_matches_native(self):
+        pytest.importorskip("torchvision.transforms.v2", reason="torchvision v2 required")
+        import torchvision.transforms.v2 as T2
+
+        img = _rand_image(B=4)
+
+        torch.manual_seed(0)
+        native_out = T2.RandomHorizontalFlip(p=0.5)(img)
+
+        torch.manual_seed(0)
+        fused_out = Compose([T2.RandomHorizontalFlip(p=0.5)])(img)
+
+        torch.testing.assert_close(fused_out, native_out, atol=ATOL_EXACT, rtol=0.0)
+
+    def test_v2_rotation_uses_one_matrix_for_the_batch(self):
+        pytest.importorskip("torchvision.transforms.v2", reason="torchvision v2 required")
+        import torchvision.transforms.v2 as T2
+
+        img = _rand_image(B=4)
+        pipe = Compose([T2.RandomRotation(degrees=30)])
+
+        torch.manual_seed(42)
+        _ = pipe(img)
+
+        matrix = pipe.transform_matrix
+        assert matrix is not None
+        for idx in range(1, img.shape[0]):
+            torch.testing.assert_close(matrix[idx], matrix[0], atol=1e-6, rtol=0.0)
+
+    def test_v2_affine_uses_one_matrix_for_the_batch(self):
+        pytest.importorskip("torchvision.transforms.v2", reason="torchvision v2 required")
+        import torchvision.transforms.v2 as T2
+
+        img = _rand_image(B=4)
+        pipe = Compose([T2.RandomAffine(degrees=20, translate=(0.1, 0.1), scale=(0.8, 1.2), shear=(-5, 5, -3, 3))])
+
+        torch.manual_seed(42)
+        _ = pipe(img)
+
+        matrix = pipe.transform_matrix
+        assert matrix is not None
+        for idx in range(1, img.shape[0]):
+            torch.testing.assert_close(matrix[idx], matrix[0], atol=1e-6, rtol=0.0)
+
+    def test_v2_color_jitter_passthrough_matches_native_on_batch(self):
+        pytest.importorskip("torchvision.transforms.v2", reason="torchvision v2 required")
+        import torchvision.transforms.v2 as T2
+
+        img = _rand_image(B=4)
+        transform = T2.ColorJitter(brightness=0.2, contrast=0.3, saturation=0.1, hue=0.05)
+
+        torch.manual_seed(42)
+        native_out = transform(img)
+
+        torch.manual_seed(42)
+        fused_out = Compose([T2.ColorJitter(brightness=0.2, contrast=0.3, saturation=0.1, hue=0.05)])(img)
+
+        torch.testing.assert_close(fused_out, native_out, atol=1e-6, rtol=0.0)
+
 
 # ---------------------------------------------------------------------------
 # Native parity tests -- fused vs TorchVision native (not self-referential)
@@ -298,38 +357,18 @@ def _tv_forward_matrix(
 ) -> torch.Tensor:
     """Build TorchVision's forward 3x3 matrix from sampled parameters.
 
-    Reproduces TorchVision's affine parameterization for the forward
-    transform (``inverted=False``) with the given center, returning a
-    ``(3, 3)`` tensor.
+    Delegates to TorchVision's own affine helper with ``inverted=False`` so
+    the reference matrix stays aligned with upstream parameterization.
 
     """
-    import math
-
-    # TorchVision (and PIL) specify angle and shear in degrees.
-    angle_rad = math.radians(angle)
-    shear_x_rad = math.radians(shear[0])
-    shear_y_rad = math.radians(shear[1])
-
-    tx = float(translate[0])
-    ty = float(translate[1])
-
-    # Forward affine matrix components following TorchVision's convention.
-    # These correspond to the non-inverted case of
-    # ``_get_inverse_affine_matrix(..., inverted=False)``.
-    cos_a = math.cos(angle_rad)
-    sin_a = math.sin(angle_rad)
-    cos_sy = math.cos(shear_y_rad)
-    tan_sx = math.tan(shear_x_rad)
-
-    a = (math.cos(angle_rad - shear_y_rad) / cos_sy) * scale
-    b = (math.cos(angle_rad - shear_y_rad) * tan_sx / cos_sy) * scale - sin_a
-    d = (math.sin(angle_rad - shear_y_rad) / cos_sy) * scale
-    e = (math.sin(angle_rad - shear_y_rad) * tan_sx / cos_sy) * scale + cos_a
-
-    c = cx - a * cx - b * cy + tx
-    f = cy - d * cx - e * cy + ty
-
-    flat = [a, b, c, d, e, f]
+    flat = T.functional._get_inverse_affine_matrix(  # type: ignore[attr-defined]
+        center=[cx, cy],
+        angle=angle,
+        translate=[float(translate[0]), float(translate[1])],
+        scale=scale,
+        shear=[shear[0], shear[1]],
+        inverted=False,
+    )
     M = torch.zeros(3, 3)
     M[0, :] = torch.tensor([flat[0], flat[1], flat[2]])
     M[1, :] = torch.tensor([flat[3], flat[4], flat[5]])

@@ -31,6 +31,14 @@ from fuse_augmentations._types import TransformAdapter, TransformCategory
 from fuse_augmentations.affine._matrix import inv3x3, matmul3x3, normalize_matrix
 
 
+def _shares_randomness_across_batch(adapter: TransformAdapter, transform: object) -> bool:
+    """Return whether a transform should draw one random decision for the batch."""
+    same_on_batch = getattr(adapter, "same_on_batch", None)
+    if callable(same_on_batch):
+        return bool(same_on_batch(transform))
+    return bool(getattr(transform, "same_on_batch", False))
+
+
 class ExactSegment(nn.Module):
     """Lossless segment for GEOMETRIC_EXACT-only chains (HFlip, VFlip).
 
@@ -95,7 +103,7 @@ class ExactSegment(nn.Module):
 
         for tfm in self.transforms:
             prob = getattr(tfm, "p", 1.0)
-            same_on_batch = getattr(tfm, "same_on_batch", False)
+            same_on_batch = _shares_randomness_across_batch(self.adapter, tfm)
             if not same_on_batch:
                 # Independent Bernoulli draw per sample.
                 active = torch.rand(bsz, device=device) < prob
@@ -215,7 +223,7 @@ class FusedAffineSegment(nn.Module):
 
         for tfm in self.transforms:
             prob = getattr(tfm, "p", 1.0)
-            same_on_batch = getattr(tfm, "same_on_batch", False)
+            same_on_batch = _shares_randomness_across_batch(self.adapter, tfm)
             if same_on_batch:
                 active_scalar = torch.rand((), device=device) < prob
                 active = active_scalar.expand(bsz)
