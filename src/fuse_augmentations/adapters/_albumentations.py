@@ -103,6 +103,7 @@ def vflip_matrix_np(H: int) -> NDArray[np.float64]:  # noqa: N803
 try:
     from albumentations import Affine as _Affine
     from albumentations import HorizontalFlip as _HorizontalFlip
+    from albumentations import Perspective as _Perspective
     from albumentations import Rotate as _Rotate
     from albumentations import ShiftScaleRotate as _ShiftScaleRotate
     from albumentations import VerticalFlip as _VerticalFlip
@@ -113,6 +114,7 @@ try:
         _ShiftScaleRotate: TransformCategory.GEOMETRIC_INTERP,
         _HorizontalFlip: TransformCategory.GEOMETRIC_EXACT,
         _VerticalFlip: TransformCategory.GEOMETRIC_EXACT,
+        _Perspective: TransformCategory.PROJECTIVE,
     }
 
     # Frozensets used by exact_flip_dims to identify flip types without
@@ -120,12 +122,14 @@ try:
     _HFLIP_TYPES: frozenset[type] = frozenset({_HorizontalFlip})
     _VFLIP_TYPES: frozenset[type] = frozenset({_VerticalFlip})
     _INTERP_TYPES: frozenset[type] = frozenset({_Affine, _Rotate, _ShiftScaleRotate})
+    _PROJECTIVE_TYPES: frozenset[type] = frozenset({_Perspective})
 
 except ImportError:
     TRANSFORM_REGISTRY = {}
     _HFLIP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _VFLIP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _INTERP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _PROJECTIVE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
 
 
 class AlbumentationsAdapter:
