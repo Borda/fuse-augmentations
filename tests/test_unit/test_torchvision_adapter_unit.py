@@ -116,7 +116,7 @@ def _register_stubs(monkeypatch):
 
     monkeypatch.setattr(
         _mod,
-        "TRANSFORM_REGISTRY",
+        "_TRANSFORM_REGISTRY",
         {
             _StubRotation: TransformCategory.GEOMETRIC_INTERP,
             _StubAffine: TransformCategory.GEOMETRIC_INTERP,

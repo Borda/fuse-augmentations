@@ -12,7 +12,8 @@ Flip transforms (``RandomHorizontalFlip``, ``RandomVerticalFlip``) return a
 minimal parameter dict containing a ``"_batch_size"`` sentinel; ``build_matrix()``
 uses this sentinel to construct their matrices from the shared matrix primitives.
 
-Requires ``torchvision``.
+Optional: ``torchvision`` must be installed at runtime for transform dispatch
+to function; the module is importable without it.
 
 Example:
     >>> from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import math
 import warnings
+from typing import cast
 
 import torch
 
@@ -40,7 +42,7 @@ from fuse_augmentations.affine._matrix import (
 # Transform registry -- lazy import guards (torchvision is optional)
 # ---------------------------------------------------------------------------
 
-TRANSFORM_REGISTRY: dict[type, TransformCategory] = {}
+_TRANSFORM_REGISTRY: dict[type, TransformCategory] = {}
 _HFLIP_TYPES: set[type] = set()
 _VFLIP_TYPES: set[type] = set()
 _ROTATION_TYPES: set[type] = set()
@@ -53,10 +55,10 @@ try:
     from torchvision.transforms import RandomRotation as _V1RandomRotation
     from torchvision.transforms import RandomVerticalFlip as _V1RandomVerticalFlip
 
-    TRANSFORM_REGISTRY[_V1RandomRotation] = TransformCategory.GEOMETRIC_INTERP
-    TRANSFORM_REGISTRY[_V1RandomAffine] = TransformCategory.GEOMETRIC_INTERP
-    TRANSFORM_REGISTRY[_V1RandomHorizontalFlip] = TransformCategory.GEOMETRIC_EXACT
-    TRANSFORM_REGISTRY[_V1RandomVerticalFlip] = TransformCategory.GEOMETRIC_EXACT
+    _TRANSFORM_REGISTRY[_V1RandomRotation] = TransformCategory.GEOMETRIC_INTERP
+    _TRANSFORM_REGISTRY[_V1RandomAffine] = TransformCategory.GEOMETRIC_INTERP
+    _TRANSFORM_REGISTRY[_V1RandomHorizontalFlip] = TransformCategory.GEOMETRIC_EXACT
+    _TRANSFORM_REGISTRY[_V1RandomVerticalFlip] = TransformCategory.GEOMETRIC_EXACT
 
     _HFLIP_TYPES.add(_V1RandomHorizontalFlip)
     _VFLIP_TYPES.add(_V1RandomVerticalFlip)
@@ -72,10 +74,10 @@ try:
     from torchvision.transforms.v2 import RandomRotation as _V2RandomRotation
     from torchvision.transforms.v2 import RandomVerticalFlip as _V2RandomVerticalFlip
 
-    TRANSFORM_REGISTRY[_V2RandomRotation] = TransformCategory.GEOMETRIC_INTERP
-    TRANSFORM_REGISTRY[_V2RandomAffine] = TransformCategory.GEOMETRIC_INTERP
-    TRANSFORM_REGISTRY[_V2RandomHorizontalFlip] = TransformCategory.GEOMETRIC_EXACT
-    TRANSFORM_REGISTRY[_V2RandomVerticalFlip] = TransformCategory.GEOMETRIC_EXACT
+    _TRANSFORM_REGISTRY[_V2RandomRotation] = TransformCategory.GEOMETRIC_INTERP
+    _TRANSFORM_REGISTRY[_V2RandomAffine] = TransformCategory.GEOMETRIC_INTERP
+    _TRANSFORM_REGISTRY[_V2RandomHorizontalFlip] = TransformCategory.GEOMETRIC_EXACT
+    _TRANSFORM_REGISTRY[_V2RandomVerticalFlip] = TransformCategory.GEOMETRIC_EXACT
 
     _HFLIP_TYPES.add(_V2RandomHorizontalFlip)
     _VFLIP_TYPES.add(_V2RandomVerticalFlip)
@@ -101,6 +103,8 @@ def _check_expand(transform: object) -> None:
 def _is_torchvision_v2_transform(transform: object) -> bool:
     """Return whether the transform comes from ``torchvision.transforms.v2``."""
     transform_type = type(transform)
+    # _v1_transform_cls is an undocumented TorchVision internal, stable from 0.15-0.20;
+    # revisit on major TorchVision bumps.
     return transform_type.__module__.startswith("torchvision.transforms.v2") or hasattr(
         transform,
         "_v1_transform_cls",
@@ -135,7 +139,7 @@ class TorchVisionAdapter:
 
         """
         _check_expand(transform)
-        for base_type, cat in TRANSFORM_REGISTRY.items():
+        for base_type, cat in _TRANSFORM_REGISTRY.items():
             if isinstance(transform, base_type):
                 return cat
         warnings.warn(
@@ -303,7 +307,7 @@ class TorchVisionAdapter:
 
         if _is_torchvision_v2_transform(transform):
             out = transform(image)  # type: ignore[operator]
-            return out.to(device=device, dtype=dtype)
+            return cast(torch.Tensor, out.to(device=device, dtype=dtype))
 
         results = []
         for i in range(B):

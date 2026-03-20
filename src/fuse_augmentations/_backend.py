@@ -89,6 +89,10 @@ def detect_backends_per_transform(transforms: list[object]) -> list[Backend | No
     subclasses defined outside the backend package (e.g. a user-defined
     ``class MyRot(torchvision.transforms.RandomRotation)`` in ``__main__``).
 
+    Note:
+        This is a semi-public API accessible via ``fuse_augmentations._backend``.
+        It is not part of the stable public surface and may change without notice.
+
     Args:
         transforms: List of transform objects.
 
