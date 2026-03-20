@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from fuse_augmentations._types import TransformCategory
@@ -664,4 +665,42 @@ class TestProjectiveSegmentBuildSegments:
         img = torch.rand(2, 3, 8, 8)
         out = seg(img)
         assert out.shape == img.shape
+        # atol=1e-5: bilinear interpolation via F.grid_sample introduces floating-point
+        # error even for an identity warp; this is an interpolation tolerance, not an
+        # algebraic identity check.
         assert torch.allclose(out, img, atol=1e-5)
+
+    def test_projective_segment_mask_aux_target(self):
+        """ProjectiveSegment with identity transform returns mask via aux_targets unchanged."""
+        from fuse_augmentations.affine._segment import ProjectiveSegment
+
+        adapter = _StubAdapter()
+        proj = self._proj_transform()
+        seg = ProjectiveSegment([proj], adapter)
+
+        img = torch.rand(2, 3, 8, 8)
+        mask = torch.rand(2, 1, 8, 8)
+        result = seg(img, aux_targets={"mask": mask})
+
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        out_img, out_aux = result
+        assert out_img.shape == img.shape
+        assert "mask" in out_aux
+        assert out_aux["mask"].shape == mask.shape
+        # Identity transform: image and mask should pass through unchanged
+        assert torch.allclose(out_img, img, atol=1e-5)
+        assert torch.allclose(out_aux["mask"], mask, atol=1e-5)
+
+    def test_albu_projective_segment_raises_on_aux_targets(self):
+        """AlbuProjectiveSegment raises RuntimeError when aux_targets is not None."""
+        from fuse_augmentations.affine._segment import AlbuProjectiveSegment
+
+        adapter = _StubAdapter()
+        proj = self._proj_transform()
+        seg = AlbuProjectiveSegment([proj], adapter)
+
+        img = torch.rand(2, 3, 8, 8)
+        mask = torch.rand(2, 1, 8, 8)
+        with pytest.raises(RuntimeError, match="aux_targets"):
+            seg(img, aux_targets={"mask": mask})

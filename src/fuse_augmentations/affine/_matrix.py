@@ -15,8 +15,6 @@ Example:
 
 from __future__ import annotations
 
-from typing import cast
-
 import torch
 
 
@@ -407,9 +405,9 @@ def normalize_matrix(M: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: 
 def perspective_from_points(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
     """Build ``(B, 3, 3)`` homography from 4 point correspondences using DLT.
 
-    Solves the Direct Linear Transform (DLT) for the homography ``H`` such
-    that ``dst ~ H @ src`` in homogeneous coordinates, using SVD to find
-    the null space of the constraint matrix.
+    Solves the 8-unknown homography system for the finite transform ``H`` such
+    that ``dst ~ H @ src`` in homogeneous coordinates, with ``H[..., 2, 2]``
+    fixed to ``1``.
 
     Args:
         src: Source points, shape ``(B, 4, 2)``, ``[x, y]`` order.
@@ -428,24 +426,32 @@ def perspective_from_points(src: torch.Tensor, dst: torch.Tensor) -> torch.Tenso
 
     """
     B, N, _ = src.shape  # N=4  # noqa: N806
+    if N != 4:
+        msg = f"perspective_from_points expects exactly 4 point pairs, got {N}"
+        raise ValueError(msg)
+
     xs, ys = src[..., 0], src[..., 1]  # (B, 4)
     xd, yd = dst[..., 0], dst[..., 1]
     zeros = torch.zeros_like(xs)
     ones = torch.ones_like(xs)
-    # Each correspondence contributes 2 rows to A:
-    # Row x: [-xs, -ys, -1, 0, 0, 0, xd*xs, xd*ys, xd]
-    # Row y: [0, 0, 0, -xs, -ys, -1, yd*xs, yd*ys, yd]
-    row_x = torch.stack([-xs, -ys, -ones, zeros, zeros, zeros, xd * xs, xd * ys, xd], dim=-1)  # (B,4,9)
-    row_y = torch.stack([zeros, zeros, zeros, -xs, -ys, -ones, yd * xs, yd * ys, yd], dim=-1)  # (B,4,9)
-    # Interleave row_x and row_y -> (B, 8, 9)
-    A = torch.stack([row_x, row_y], dim=2).reshape(B, 2 * N, 9)  # noqa: N806
-    # SVD: A = U @ diag(S) @ Vh; solution h is last row of Vh (smallest singular value)
-    _, _, Vh = torch.linalg.svd(A, full_matrices=True)  # noqa: N806  # Vh: (B, 9, 9)
-    h = Vh[..., -1, :]  # (B, 9) — last row of Vh = right singular vector for smallest SV
-    H = h.reshape(B, 3, 3)  # noqa: N806
-    # Normalize so H[2,2] = 1
-    H = H / H[..., 2:3, 2:3]  # noqa: N806
-    return cast(torch.Tensor, H.to(dtype=src.dtype))
+    # Solve A @ h = b for h = [h11, h12, h13, h21, h22, h23, h31, h32].
+    row_x = torch.stack([xs, ys, ones, zeros, zeros, zeros, -(xd * xs), -(xd * ys)], dim=-1)  # (B,4,8)
+    row_y = torch.stack([zeros, zeros, zeros, xs, ys, ones, -(yd * xs), -(yd * ys)], dim=-1)  # (B,4,8)
+    A = torch.stack([row_x, row_y], dim=2).reshape(B, 2 * N, 8)  # noqa: N806
+    b = torch.stack([xd, yd], dim=2).reshape(B, 2 * N, 1)
+    h = torch.linalg.solve(A, b).squeeze(-1)
+
+    H = torch.empty((B, 3, 3), device=src.device, dtype=h.dtype)  # noqa: N806
+    H[..., 0, 0] = h[..., 0]
+    H[..., 0, 1] = h[..., 1]
+    H[..., 0, 2] = h[..., 2]
+    H[..., 1, 0] = h[..., 3]
+    H[..., 1, 1] = h[..., 4]
+    H[..., 1, 2] = h[..., 5]
+    H[..., 2, 0] = h[..., 6]
+    H[..., 2, 1] = h[..., 7]
+    H[..., 2, 2] = 1.0
+    return H.to(dtype=src.dtype)
 
 
 def perspective_grid(M_inv_norm: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: N803

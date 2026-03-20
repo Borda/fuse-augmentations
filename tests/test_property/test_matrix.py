@@ -31,6 +31,10 @@ Invariants tested here:
 - **Inverse round-trip**: ``inv(M) @ M == I`` for random well-conditioned matrices. The custom
   ``inv3x3`` implementation is numerically accurate.
 
+- **Perspective from points**: ``H(src) ≈ dst`` for both pure translation and genuine
+  per-corner projective distortions. The DLT homography correctly maps source corners to
+  destination corners under perspective division.
+
 Example: the rotation group test generates random ``(a_deg, b_deg, H, W)`` tuples and checks::
 
     Ra = rotation_matrix(radians(a_deg), H, W)
@@ -47,13 +51,14 @@ import math
 
 import torch
 from hypothesis import given, settings
-from hypothesis.strategies import floats, integers
+from hypothesis.strategies import floats, integers, lists, tuples
 
 from fuse_augmentations.affine._matrix import (
     hflip_matrix,
     inv3x3,
     matmul3x3,
     normalize_matrix,
+    perspective_from_points,
     rotation_matrix,
     scale_matrix,
     vflip_matrix,
@@ -184,9 +189,6 @@ def test_inverse_round_trip(seed: int) -> None:
     assert torch.allclose(product, I, atol=1e-8)
 
 
-from fuse_augmentations.affine._matrix import perspective_from_points  # noqa: E402
-
-
 @given(
     dx=floats(min_value=-20, max_value=20, allow_nan=False),
     dy=floats(min_value=-20, max_value=20, allow_nan=False),
@@ -195,7 +197,7 @@ from fuse_augmentations.affine._matrix import perspective_from_points  # noqa: E
 )
 @settings(max_examples=100)
 def test_perspective_from_points_maps_src_to_dst(dx: float, dy: float, H: int, W: int) -> None:
-    """H(src) ~ dst: computed homography maps source corners to destination corners."""
+    """H(src) ~ dst: computed homography maps source corners to destination corners (translation)."""
     src = torch.tensor([[[0.0, 0.0], [float(W), 0.0], [float(W), float(H)], [0.0, float(H)]]], dtype=DTYPE)
     dst = src + torch.tensor([dx, dy], dtype=DTYPE)
     Hmat = perspective_from_points(src, dst)
@@ -205,3 +207,41 @@ def test_perspective_from_points_maps_src_to_dst(dx: float, dy: float, H: int, W
     w = projected[..., 2:3]
     xy_out = projected[..., :2] / w
     assert torch.allclose(xy_out, dst, atol=1e-3), f"Homography didn't map src->dst correctly for dx={dx}, dy={dy}"
+
+
+_corner_offset = tuples(
+    floats(min_value=-8.0, max_value=8.0, allow_nan=False, allow_infinity=False),
+    floats(min_value=-8.0, max_value=8.0, allow_nan=False, allow_infinity=False),
+)
+
+
+@given(
+    offsets=lists(_corner_offset, min_size=4, max_size=4),
+    W=integers(min_value=20, max_value=128),
+    H=integers(min_value=20, max_value=128),
+)
+@settings(max_examples=100)
+def test_perspective_from_points_projective_distortion(
+    offsets: list[tuple[float, float]],
+    H: int,
+    W: int,
+) -> None:
+    """H(src) ~ dst: DLT handles genuine per-corner projective distortions.
+
+    Unlike the translation test (which only exercises the affine columns of H), this test
+    applies an independent (dx, dy) offset to each corner, forcing the DLT to use the
+    non-linear terms and exercise the full 8 degrees of freedom of the homography.
+    """
+    src = torch.tensor([[[0.0, 0.0], [float(W), 0.0], [float(W), float(H)], [0.0, float(H)]]], dtype=DTYPE)
+    dst = src.clone()
+    for i, (dx, dy) in enumerate(offsets):
+        dst[0, i, 0] += dx
+        dst[0, i, 1] += dy
+
+    Hmat = perspective_from_points(src, dst)
+    ones = torch.ones(1, 4, 1, dtype=DTYPE)
+    src_h = torch.cat([src, ones], dim=-1)
+    projected = (Hmat @ src_h.transpose(-1, -2)).transpose(-1, -2)
+    w = projected[..., 2:3]
+    xy_out = projected[..., :2] / w
+    assert torch.allclose(xy_out, dst, atol=1e-3), f"Homography didn't map src->dst correctly for offsets={offsets}"
