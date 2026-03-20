@@ -704,3 +704,16 @@ class TestProjectiveSegmentBuildSegments:
         mask = torch.rand(2, 1, 8, 8)
         with pytest.raises(RuntimeError, match="aux_targets"):
             seg(img, aux_targets={"mask": mask})
+
+    def test_albu_projective_segment_requires_cv2(self, monkeypatch: pytest.MonkeyPatch):
+        """AlbuProjectiveSegment raises a clear ImportError when cv2 is unavailable."""
+        import fuse_augmentations.affine._segment as segment_mod
+        from fuse_augmentations.affine._segment import AlbuProjectiveSegment
+
+        monkeypatch.setattr(segment_mod, "_cv2", None)
+
+        adapter = _StubAdapter()
+        proj = self._proj_transform()
+
+        with pytest.raises(ImportError, match="opencv-python"):
+            AlbuProjectiveSegment([proj], adapter)

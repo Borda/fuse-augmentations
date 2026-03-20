@@ -99,7 +99,7 @@ def transform_mask(mask: Tensor, grid: Tensor) -> Tensor:
 
 
 def transform_bbox_xyxy(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N803
-    """Transform ``(B, N, 4)`` xyxy boxes by a ``(B, 3, 3)`` forward affine matrix.
+    """Transform ``(B, N, 4)`` xyxy boxes by a ``(B, 3, 3)`` forward homography.
 
     Computes all four corners of each box, transforms them through the forward
     matrix using homogeneous multiplication, then returns the axis-aligned
@@ -112,8 +112,8 @@ def transform_bbox_xyxy(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N8
     Args:
         boxes: Bounding boxes in xyxy format. Shape ``(B, N, 4)``,
             columns ``[x1, y1, x2, y2]`` in pixel coordinates, dtype ``float32``.
-        M_forward: Forward (not inverse) affine matrix in pixel coordinates.
-            Shape ``(B, 3, 3)``, dtype ``float32``.
+        M_forward: Forward (not inverse) affine or projective matrix in pixel
+            coordinates. Shape ``(B, 3, 3)``, dtype ``float32``.
 
     Returns:
         Transformed AABB boxes. Shape ``(B, N, 4)``, xyxy format.
@@ -149,8 +149,14 @@ def transform_bbox_xyxy(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N8
 
     # Perspective division (for affine, tw=1 so this is a no-op)
     tw_raw = transformed[:, :, 2, :]  # (B, N, 4) — homogeneous w
-    tx = transformed[:, :, 0, :] / tw_raw
-    ty = transformed[:, :, 1, :] / tw_raw
+    # Guard against zero or extremely small |w| to avoid inf/NaN from division
+    eps = torch.finfo(tw_raw.dtype).tiny
+    small = tw_raw.abs() < eps
+    sign = torch.sign(tw_raw)
+    sign = torch.where(sign == 0, torch.ones_like(sign), sign)
+    safe_tw = torch.where(small, eps * sign, tw_raw)
+    tx = transformed[:, :, 0, :] / safe_tw
+    ty = transformed[:, :, 1, :] / safe_tw
 
     new_x1 = tx.min(dim=-1).values
     new_y1 = ty.min(dim=-1).values
@@ -161,7 +167,7 @@ def transform_bbox_xyxy(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N8
 
 
 def transform_bbox_xywh(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N803
-    """Transform ``(B, N, 4)`` xywh boxes by a ``(B, 3, 3)`` forward affine matrix.
+    """Transform ``(B, N, 4)`` xywh boxes by a ``(B, 3, 3)`` forward homography.
 
     Converts boxes from ``[x, y, w, h]`` to ``[x1, y1, x2, y2]``, delegates to
     :func:`transform_bbox_xyxy` (4-corner transform + AABB), then converts back to
@@ -174,8 +180,8 @@ def transform_bbox_xywh(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N8
         boxes: Bounding boxes in xywh format. Shape ``(B, N, 4)``,
             columns ``[x, y, w, h]`` where ``(x, y)`` is the top-left corner,
             dtype ``float32``.
-        M_forward: Forward (not inverse) affine matrix in pixel coordinates.
-            Shape ``(B, 3, 3)``, dtype ``float32``.
+        M_forward: Forward (not inverse) affine or projective matrix in pixel
+            coordinates. Shape ``(B, 3, 3)``, dtype ``float32``.
 
     Returns:
         Transformed boxes in xywh format. Shape ``(B, N, 4)``.
@@ -204,7 +210,7 @@ def transform_bbox_xywh(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N8
 
 
 def transform_keypoints(kps: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N803
-    """Transform ``(B, N, 2)`` keypoints by a ``(B, 3, 3)`` forward affine matrix.
+    """Transform ``(B, N, 2)`` keypoints by a ``(B, 3, 3)`` forward homography.
 
     Converts each keypoint to homogeneous coordinates ``[x, y, 1]``, multiplies by
     the forward matrix, and returns the first two components of the result per point::
@@ -217,8 +223,8 @@ def transform_keypoints(kps: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N803
     Args:
         kps: Keypoints in pixel coordinates. Shape ``(B, N, 2)``,
             columns ``[x, y]``, dtype ``float32``.
-        M_forward: Forward (not inverse) affine matrix in pixel coordinates.
-            Shape ``(B, 3, 3)``, dtype ``float32``.
+        M_forward: Forward (not inverse) affine or projective matrix in pixel
+            coordinates. Shape ``(B, 3, 3)``, dtype ``float32``.
 
     Returns:
         Transformed keypoints. Shape ``(B, N, 2)``.
@@ -240,6 +246,13 @@ def transform_keypoints(kps: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N803
 
     # M_forward: (B, 3, 3); kps_h: (B, N, 3) -> (B, 3, N) for matmul
     transformed = M_forward @ kps_h.transpose(1, 2)  # (B, 3, N)
-    # Perspective division (for affine, tw=1 so this is a no-op)
+    # Perspective division (for affine, tw=1 so this is a no-op).
+    # Clamp tw away from 0 to avoid Inf/NaN for degenerate homographies.
     tw = transformed[:, 2:3, :]  # (B, 1, N)
-    return (transformed[:, :2, :] / tw).transpose(1, 2)  # (B, N, 2)
+    eps = torch.finfo(kps.dtype).eps
+    tw_abs = tw.abs()
+    tw_sign = torch.sign(tw)
+    # Ensure we have a non-zero sign so clamped values keep a consistent direction.
+    tw_sign = torch.where(tw_sign == 0, torch.ones_like(tw_sign), tw_sign)
+    tw_safe = torch.where(tw_abs < eps, tw_sign * eps, tw)
+    return (transformed[:, :2, :] / tw_safe).transpose(1, 2)  # (B, N, 2)
