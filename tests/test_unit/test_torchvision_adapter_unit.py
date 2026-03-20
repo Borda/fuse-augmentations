@@ -50,6 +50,55 @@ class _StubVFlip:
     expand = False
 
 
+class _StubV2Rotation:
+    __module__ = "torchvision.transforms.v2._geometry"
+
+    degrees = (-30.0, 30.0)
+    expand = False
+    _v1_transform_cls = _StubRotation
+
+    @staticmethod
+    def get_params(degrees):
+        return 15.0
+
+
+class _StubV2Affine:
+    __module__ = "torchvision.transforms.v2._geometry"
+
+    degrees = (-30.0, 30.0)
+    translate = (0.1, 0.1)
+    scale = (0.8, 1.2)
+    shear = (-10.0, 10.0, -10.0, 10.0)
+    expand = False
+    _v1_transform_cls = _StubAffine
+
+    @staticmethod
+    def get_params(degrees, translate, scale_ranges, shears, img_size):
+        return 10.0, (5, -3), 0.9, (5.0, 0.0)
+
+
+class _StubBatchTransform:
+    __module__ = "torchvision.transforms.v2._color"
+
+    _v1_transform_cls = object
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, ...]] = []
+
+    def __call__(self, image: torch.Tensor) -> torch.Tensor:
+        self.calls.append(tuple(image.shape))
+        return image + 1
+
+
+class _StubPerSampleTransform:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, ...]] = []
+
+    def __call__(self, image: torch.Tensor) -> torch.Tensor:
+        self.calls.append(tuple(image.shape))
+        return image + 1
+
+
 class _StubExpandTrue:
     expand = True
     degrees = (-30.0, 30.0)
@@ -71,14 +120,16 @@ def _register_stubs(monkeypatch):
         {
             _StubRotation: TransformCategory.GEOMETRIC_INTERP,
             _StubAffine: TransformCategory.GEOMETRIC_INTERP,
+            _StubV2Rotation: TransformCategory.GEOMETRIC_INTERP,
+            _StubV2Affine: TransformCategory.GEOMETRIC_INTERP,
             _StubHFlip: TransformCategory.GEOMETRIC_EXACT,
             _StubVFlip: TransformCategory.GEOMETRIC_EXACT,
         },
     )
     monkeypatch.setattr(_mod, "_HFLIP_TYPES_FS", frozenset({_StubHFlip}))
     monkeypatch.setattr(_mod, "_VFLIP_TYPES_FS", frozenset({_StubVFlip}))
-    monkeypatch.setattr(_mod, "_ROTATION_TYPES_FS", frozenset({_StubRotation}))
-    monkeypatch.setattr(_mod, "_AFFINE_TYPES_FS", frozenset({_StubAffine}))
+    monkeypatch.setattr(_mod, "_ROTATION_TYPES_FS", frozenset({_StubRotation, _StubV2Rotation}))
+    monkeypatch.setattr(_mod, "_AFFINE_TYPES_FS", frozenset({_StubAffine, _StubV2Affine}))
 
 
 @pytest.fixture
@@ -166,6 +217,12 @@ class TestSampleParamsAffine:
         assert params["scale"].item() == pytest.approx(0.9, abs=1e-6)
         assert params["shear_x_rad"].item() == pytest.approx(math.radians(5.0), abs=1e-6)
         assert params["shear_y_rad"].item() == pytest.approx(math.radians(0.0), abs=1e-6)
+
+    @pytest.mark.usefixtures("_register_stubs")
+    def test_v2_affine_samples_one_param_set_per_batch_tensor(self, adapter):
+        params = adapter.sample_params(_StubV2Affine(), (3, 3, 64, 64), torch.device("cpu"))
+        for key in ["angle_rad", "translate_x", "translate_y", "scale", "shear_x_rad", "shear_y_rad"]:
+            assert params[key].shape == (1,)
 
 
 class TestSampleParamsFlips:
@@ -297,3 +354,43 @@ class TestExpandGuard:
     def test_expand_true_in_sample_params(self, adapter):
         with pytest.raises(ValueError, match="expand=True is not supported"):
             adapter.sample_params(_StubExpandTrue(), (2, 3, 64, 64), torch.device("cpu"))
+
+
+class TestV2BatchSemantics:
+    @pytest.mark.usefixtures("_register_stubs")
+    def test_v2_rotation_samples_one_angle_per_batch_tensor(self, adapter):
+        params = adapter.sample_params(_StubV2Rotation(), (4, 3, 64, 64), torch.device("cpu"))
+        assert params["angle_rad"].shape == (1,)
+
+    @pytest.mark.usefixtures("_register_stubs")
+    def test_same_on_batch_true_for_v2_transform(self, adapter):
+        assert adapter.same_on_batch(_StubV2Rotation()) is True
+
+
+class TestCallNonfused:
+    def test_v1_passthrough_loops_per_sample(self, adapter):
+        transform = _StubPerSampleTransform()
+        image = torch.zeros(3, 2, 4, 5)
+
+        out = adapter.call_nonfused(transform, image)
+
+        torch.testing.assert_close(out, image + 1)
+        assert transform.calls == [(2, 4, 5)] * 3
+
+    def test_v2_passthrough_runs_once_on_whole_batch(self, adapter):
+        transform = _StubBatchTransform()
+        image = torch.zeros(3, 2, 4, 5)
+
+        out = adapter.call_nonfused(transform, image)
+
+        torch.testing.assert_close(out, image + 1)
+        assert transform.calls == [(3, 2, 4, 5)]
+
+    def test_empty_batch_returns_input_without_calling_transform(self, adapter):
+        transform = _StubBatchTransform()
+        image = torch.zeros(0, 2, 4, 5)
+
+        out = adapter.call_nonfused(transform, image)
+
+        assert out is image
+        assert transform.calls == []

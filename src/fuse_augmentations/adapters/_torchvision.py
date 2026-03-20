@@ -98,6 +98,15 @@ def _check_expand(transform: object) -> None:
         raise ValueError(msg)
 
 
+def _is_torchvision_v2_transform(transform: object) -> bool:
+    """Return whether the transform comes from ``torchvision.transforms.v2``."""
+    transform_type = type(transform)
+    return transform_type.__module__.startswith("torchvision.transforms.v2") or hasattr(
+        transform,
+        "_v1_transform_cls",
+    )
+
+
 class TorchVisionAdapter:
     """Adapter between TorchVision transforms and the fused affine engine.
 
@@ -144,9 +153,10 @@ class TorchVisionAdapter:
     ) -> dict[str, torch.Tensor]:
         """Sample random parameters for a batch of B images.
 
-        For ``RandomRotation``, calls ``get_params(degrees)`` B times and
-        converts to radians. For ``RandomAffine``, calls ``get_params(...)``
-        B times to obtain angle, translations, scale, and shear values.
+        TorchVision v1 samples one parameter set per image, while TorchVision
+        v2 samples one parameter set per input tensor. For batched v2 inputs,
+        the returned tensors therefore have shape ``(1,)`` and are expanded
+        later by the fused segment.
 
         Flip transforms return a ``{"_batch_size": tensor([B])}`` sentinel.
 
@@ -168,9 +178,14 @@ class TorchVisionAdapter:
 
         # RandomRotation
         if isinstance(transform, tuple(_ROTATION_TYPES_FS)):
+            if _is_torchvision_v2_transform(transform):
+                angle_deg = _sample_rotation_angle(transform)
+                return {
+                    "angle_rad": torch.tensor([math.radians(angle_deg)], dtype=torch.float32, device=device),
+                }
             angles = []
             for _ in range(B):
-                angle_deg = type(transform).get_params(transform.degrees)  # type: ignore[attr-defined]
+                angle_deg = _sample_rotation_angle(transform)
                 angles.append(math.radians(angle_deg))
             return {
                 "angle_rad": torch.tensor(angles, dtype=torch.float32, device=device),
@@ -178,7 +193,9 @@ class TorchVisionAdapter:
 
         # RandomAffine
         if isinstance(transform, tuple(_AFFINE_TYPES_FS)):
-            return _sample_affine_params(transform, B, H, W, device)
+            return _sample_affine_params(
+                transform, B, H, W, device, shared_across_batch=_is_torchvision_v2_transform(transform)
+            )
 
         # Unknown -- return empty
         return {}
@@ -252,6 +269,11 @@ class TorchVisionAdapter:
         raise TypeError(f"Cannot determine flip dims for {type(transform).__name__!r}")
 
     @staticmethod
+    def same_on_batch(transform: object) -> bool:
+        """Return whether randomness should be shared across the input batch."""
+        return _is_torchvision_v2_transform(transform) or bool(getattr(transform, "same_on_batch", False))
+
+    @staticmethod
     def call_nonfused(
         transform: object,
         image: torch.Tensor,
@@ -259,8 +281,9 @@ class TorchVisionAdapter:
     ) -> torch.Tensor:
         """Apply a TorchVision transform directly via its native forward method.
 
-        Loops over the batch dimension, calling the transform on each
-        ``(C, H, W)`` tensor individually.
+        TorchVision v1 transforms are applied per sample because they accept
+        ``(C, H, W)`` inputs. TorchVision v2 transforms are applied to the
+        whole ``(B, C, H, W)`` tensor to preserve batch-wide randomness.
 
         Args:
             transform: A TorchVision transform instance.
@@ -271,15 +294,16 @@ class TorchVisionAdapter:
             Transformed ``(B, C, H, W)`` tensor on the same device as input.
 
         """
-        # TODO(v0.6): add v2 batch fast-path for call_nonfused — v2 transforms
-        # accept (B, C, H, W) directly, so the O(B) loop below is unnecessary for
-        # v2 instances. Safe only when p is handled upstream (probability masking
-        # occurs at the segment level, not here), but needs careful verification
-        # that v2 stochastic transforms behave correctly on batched tensors with
-        # the fused engine's probability contract before removing the loop.
+        if image.shape[0] == 0:
+            return image
+
         device = image.device
         dtype = image.dtype
         B = image.shape[0]  # noqa: N806
+
+        if _is_torchvision_v2_transform(transform):
+            out = transform(image)  # type: ignore[operator]
+            return out.to(device=device, dtype=dtype)
 
         results = []
         for i in range(B):
@@ -300,6 +324,7 @@ def _sample_affine_params(
     H: int,  # noqa: N803
     W: int,  # noqa: N803
     device: torch.device,
+    shared_across_batch: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Call ``RandomAffine.get_params()`` B times, collect into canonical dict.
 
@@ -312,6 +337,8 @@ def _sample_affine_params(
         H: Image height.
         W: Image width.
         device: Target device for returned tensors.
+        shared_across_batch: Whether TorchVision should sample one parameter
+            set for the entire batch.
 
     Returns:
         Dict with keys ``angle_rad``, ``translate_x``, ``translate_y``,
@@ -326,7 +353,8 @@ def _sample_affine_params(
     shear_ys = []
 
     t = transform
-    for _ in range(B):
+    sample_count = 1 if shared_across_batch else B
+    for _ in range(sample_count):
         angle, translations, sc, shear = type(t).get_params(  # type: ignore[attr-defined]
             t.degrees,  # type: ignore[attr-defined]
             t.translate,  # type: ignore[attr-defined]
@@ -349,6 +377,11 @@ def _sample_affine_params(
         "shear_x_rad": torch.tensor(shear_xs, dtype=torch.float32, device=device),
         "shear_y_rad": torch.tensor(shear_ys, dtype=torch.float32, device=device),
     }
+
+
+def _sample_rotation_angle(transform: object) -> float:
+    """Sample one rotation angle in degrees using TorchVision's native helper."""
+    return float(type(transform).get_params(transform.degrees))  # type: ignore[attr-defined]
 
 
 def _build_affine_matrix(
