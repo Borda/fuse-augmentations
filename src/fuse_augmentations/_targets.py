@@ -147,8 +147,10 @@ def transform_bbox_xyxy(boxes: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N8
     M = M_forward.unsqueeze(1)  # (B, 1, 3, 3)  # noqa: N806
     transformed = M @ corners_h  # (B, N, 3, 4)
 
-    tx = transformed[:, :, 0, :]  # (B, N, 4)
-    ty = transformed[:, :, 1, :]
+    # Perspective division (for affine, tw=1 so this is a no-op)
+    tw_raw = transformed[:, :, 2, :]  # (B, N, 4) — homogeneous w
+    tx = transformed[:, :, 0, :] / tw_raw
+    ty = transformed[:, :, 1, :] / tw_raw
 
     new_x1 = tx.min(dim=-1).values
     new_y1 = ty.min(dim=-1).values
@@ -238,4 +240,6 @@ def transform_keypoints(kps: Tensor, M_forward: Tensor) -> Tensor:  # noqa: N803
 
     # M_forward: (B, 3, 3); kps_h: (B, N, 3) -> (B, 3, N) for matmul
     transformed = M_forward @ kps_h.transpose(1, 2)  # (B, 3, N)
-    return transformed[:, :2, :].transpose(1, 2)  # (B, N, 2)
+    # Perspective division (for affine, tw=1 so this is a no-op)
+    tw = transformed[:, 2:3, :]  # (B, 1, N)
+    return (transformed[:, :2, :] / tw).transpose(1, 2)  # (B, N, 2)
