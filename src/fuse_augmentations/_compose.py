@@ -749,6 +749,24 @@ def _wrap_passthrough_segments(
             seg_idx = _id_to_index.get(id(seg))
             if seg_idx is not None:
                 seg_adapter = transform_adapters.get(seg_idx)
+
+        # If we are in the mixed-backend path (transform_adapters is not None)
+        # and still have no adapter, do not fall back to default_adapter. This
+        # can indicate a backend=None or otherwise unknown/custom transform
+        # that would be unsafe to dispatch through a backend-specific adapter
+        # (e.g. AlbumentationsAdapter expecting transform(image=...)).
+        if seg_adapter is None and transform_adapters is not None:
+            msg = (
+                "Passthrough transform encountered in mixed-backend mode but no "
+                "corresponding adapter was found in transform_adapters. This is "
+                "likely caused by a backend=None or custom transform without a "
+                "registered adapter and would otherwise be dispatched through an "
+                "incompatible default_adapter. Please ensure all passthrough "
+                "transforms have an explicit adapter entry."
+            )
+            raise RuntimeError(msg)
+
+        # Outside of mixed-backend mode, fall back to default_adapter as before.
         if seg_adapter is None:
             seg_adapter = default_adapter
         if seg_adapter is None:
