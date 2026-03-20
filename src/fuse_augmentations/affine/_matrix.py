@@ -400,3 +400,89 @@ def normalize_matrix(M: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: 
 
     # Sandwich: N @ M @ N_inv
     return matmul3x3(matmul3x3(N, M), N_inv)
+
+
+def perspective_from_points(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
+    """Build ``(B, 3, 3)`` homography from 4 point correspondences using DLT.
+
+    Solves the Direct Linear Transform (DLT) for the homography ``H`` such
+    that ``dst ~ H @ src`` in homogeneous coordinates, using SVD to find
+    the null space of the constraint matrix.
+
+    Args:
+        src: Source points, shape ``(B, 4, 2)``, ``[x, y]`` order.
+        dst: Destination points, shape ``(B, 4, 2)``, ``[x, y]`` order.
+
+    Returns:
+        ``(B, 3, 3)`` forward homography matrices normalised so that
+        ``H[..., 2, 2] = 1``.
+
+    Example:
+        >>> import torch
+        >>> corners = torch.tensor([[[0., 0.], [1., 0.], [1., 1.], [0., 1.]]])
+        >>> H = perspective_from_points(corners, corners)
+        >>> torch.allclose(H, torch.eye(3).unsqueeze(0), atol=1e-5)
+        True
+
+    """
+    B, N, _ = src.shape  # N=4  # noqa: N806
+    xs, ys = src[..., 0], src[..., 1]  # (B, 4)
+    xd, yd = dst[..., 0], dst[..., 1]
+    zeros = torch.zeros_like(xs)
+    ones = torch.ones_like(xs)
+    # Each correspondence contributes 2 rows to A:
+    # Row x: [-xs, -ys, -1, 0, 0, 0, xd*xs, xd*ys, xd]
+    # Row y: [0, 0, 0, -xs, -ys, -1, yd*xs, yd*ys, yd]
+    row_x = torch.stack([-xs, -ys, -ones, zeros, zeros, zeros, xd * xs, xd * ys, xd], dim=-1)  # (B,4,9)
+    row_y = torch.stack([zeros, zeros, zeros, -xs, -ys, -ones, yd * xs, yd * ys, yd], dim=-1)  # (B,4,9)
+    # Interleave row_x and row_y -> (B, 8, 9)
+    A = torch.stack([row_x, row_y], dim=2).reshape(B, 2 * N, 9)  # noqa: N806
+    # SVD: A = U @ diag(S) @ Vh; solution h is last row of Vh (smallest singular value)
+    _, _, Vh = torch.linalg.svd(A, full_matrices=True)  # noqa: N806  # Vh: (B, 9, 9)
+    h = Vh[..., -1, :]  # (B, 9) — last row of Vh = right singular vector for smallest SV
+    H = h.reshape(B, 3, 3)  # noqa: N806
+    # Normalize so H[2,2] = 1
+    H = H / H[..., 2:3, 2:3]  # noqa: N806
+    return H.to(dtype=src.dtype)
+
+
+def perspective_grid(M_inv_norm: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: N803
+    """Build ``(B, H, W, 2)`` sampling grid from a normalised 3x3 perspective matrix.
+
+    Unlike ``F.affine_grid`` (which uses a ``(B, 2, 3)`` theta), this handles
+    the full ``3x3`` case required by projective/perspective transforms by
+    applying perspective division: ``x' = tx/tw``, ``y' = ty/tw``.
+
+    No Python branching is used — the function is ``torch.compile``-friendly.
+
+    Args:
+        M_inv_norm: ``(B, 3, 3)`` normalised inverse matrix in ``[-1, 1]`` space.
+        H: Image height.
+        W: Image width.
+
+    Returns:
+        ``(B, H, W, 2)`` sampling grid for ``F.grid_sample`` with
+        ``align_corners=True``.
+
+    Example:
+        >>> import torch
+        >>> grid = perspective_grid(torch.eye(3).unsqueeze(0), H=4, W=4)
+        >>> grid.shape
+        torch.Size([1, 4, 4, 2])
+
+    """
+    B = M_inv_norm.shape[0]  # noqa: N806
+    device = M_inv_norm.device
+    dtype = M_inv_norm.dtype
+
+    xs = torch.linspace(-1.0, 1.0, W, device=device, dtype=dtype)  # (W,)
+    ys = torch.linspace(-1.0, 1.0, H, device=device, dtype=dtype)  # (H,)
+    grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")  # both (H, W)
+    ones = torch.ones(H, W, device=device, dtype=dtype)
+    coords = torch.stack([grid_x, grid_y, ones], dim=0).reshape(3, H * W)  # (3, H*W)
+    # Batched matrix multiply: (B, 3, 3) @ (3, H*W) -> (B, 3, H*W)
+    coords_b = coords.unsqueeze(0).expand(B, -1, -1)
+    transformed = torch.bmm(M_inv_norm, coords_b)  # (B, 3, H*W)
+    tw = transformed[:, 2:3, :]  # (B, 1, H*W)
+    xy = transformed[:, :2, :] / tw  # (B, 2, H*W)
+    return xy.permute(0, 2, 1).reshape(B, H, W, 2)
