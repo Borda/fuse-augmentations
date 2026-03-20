@@ -28,7 +28,7 @@ from numpy.typing import NDArray
 from torch import Tensor, nn
 
 from fuse_augmentations._types import TransformAdapter, TransformCategory
-from fuse_augmentations.affine._matrix import inv3x3, matmul3x3, normalize_matrix
+from fuse_augmentations.affine._matrix import inv3x3, matmul3x3, normalize_matrix, perspective_grid
 
 
 def _shares_randomness_across_batch(adapter: TransformAdapter, transform: object) -> bool:
@@ -507,6 +507,324 @@ class AlbuFusedAffineSegment(nn.Module):
         return stacked
 
 
+# ---------------------------------------------------------------------------
+# ProjectiveSegment — PyTorch backend for perspective transforms
+# ---------------------------------------------------------------------------
+
+
+class ProjectiveSegment(nn.Module):
+    """Fused projective segment that composes homography matrices into one grid_sample call.
+
+    Identical to :class:`FusedAffineSegment` in accumulation and auxiliary-target
+    handling, but uses :func:`~fuse_augmentations.affine._matrix.perspective_grid`
+    instead of ``F.affine_grid`` so the full ``3x3`` homography (including
+    perspective division) is applied correctly.
+
+    Args:
+        transforms: List of projective transform objects to fuse.
+        adapter: A ``TransformAdapter`` that bridges the transforms to
+            canonical parameters and matrices.
+        interpolation: Optional interpolation mode override
+            (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
+            Defaults to ``"bilinear"`` when ``None``.
+        padding_mode: Optional padding mode override
+            (``"zeros"``, ``"border"``, ``"reflection"``).
+            Defaults to ``"zeros"`` when ``None``.
+
+    """
+
+    def __init__(
+        self,
+        transforms: list[object],
+        adapter: TransformAdapter,
+        interpolation: str | None = None,
+        padding_mode: str | None = None,
+    ) -> None:
+        super().__init__()
+        self.transforms = transforms
+        self.adapter = adapter
+        self.interpolation = interpolation
+        self.padding_mode = padding_mode
+        self._last_matrix: Tensor | None = None
+
+    @property
+    def last_matrix(self) -> Tensor | None:
+        """Return the ``(B, 3, 3)`` composed forward matrix from the last forward pass.
+
+        Returns:
+            The detached, cloned composed matrix, or ``None`` before the
+            first call to :meth:`forward`.
+
+        """
+        return self._last_matrix
+
+    def forward(
+        self,
+        image: Tensor,
+        aux_targets: dict[str, Tensor] | None = None,
+    ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
+        """Apply the fused projective transform chain via a single grid_sample call.
+
+        Args:
+            image: ``(B, C, H, W)`` float input tensor.
+            aux_targets: Optional dict of auxiliary targets to transform alongside
+                the image (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``,
+                ``"keypoints"``). When ``None``, returns a bare tensor for
+                backward compatibility.
+
+        Returns:
+            Bare ``image`` tensor when ``aux_targets`` is ``None``;
+            ``(image, aux_targets)`` tuple otherwise.
+
+        """
+        _has_aux = aux_targets is not None
+        if aux_targets is None:
+            aux_targets = {}
+
+        bsz, n_ch, height, width = image.shape
+        device = image.device
+        dtype = image.dtype
+
+        eye = torch.eye(3, device=device, dtype=dtype)
+        acc = eye.unsqueeze(0).expand(bsz, -1, -1).clone()
+
+        input_shape = (bsz, n_ch, height, width)
+
+        for tfm in self.transforms:
+            prob = getattr(tfm, "p", 1.0)
+            same_on_batch = _shares_randomness_across_batch(self.adapter, tfm)
+            if same_on_batch:
+                active_scalar = torch.rand((), device=device) < prob
+                active = active_scalar.expand(bsz)
+            else:
+                active = torch.rand(bsz, device=device) < prob
+
+            params = self.adapter.sample_params(tfm, input_shape, device)
+            mtx_i = self.adapter.build_matrix(tfm, params, height, width)
+
+            # Expand to batch if adapter returned (1, 3, 3)
+            if mtx_i.shape[0] == 1 and bsz > 1:
+                mtx_i = mtx_i.expand(bsz, -1, -1)
+
+            # Ensure adapter output is on the same device and dtype as the image
+            mtx_i = mtx_i.to(device=device, dtype=dtype)
+
+            mtx_i = torch.where(
+                active[:, None, None],
+                mtx_i,
+                eye.unsqueeze(0).expand(bsz, -1, -1),
+            )
+            acc = matmul3x3(mtx_i, acc)
+
+        self._last_matrix = acc.detach().clone()
+
+        mtx_inv = inv3x3(acc)
+        mtx_norm = normalize_matrix(mtx_inv, height, width)
+
+        grid = perspective_grid(mtx_norm, height, width)
+        image = F.grid_sample(
+            image,
+            grid,
+            mode=self.interpolation or "bilinear",
+            padding_mode=self.padding_mode or "zeros",
+            align_corners=True,
+        )
+
+        # Transform auxiliary targets using the composed forward matrix
+        if aux_targets:
+            from fuse_augmentations._targets import (
+                transform_bbox_xywh,
+                transform_bbox_xyxy,
+                transform_keypoints,
+                transform_mask,
+            )
+
+            for key in list(aux_targets.keys()):
+                val = aux_targets[key]
+                if key == "mask":
+                    aux_targets[key] = transform_mask(val, grid)
+                    continue
+                if key == "bbox_xyxy":
+                    aux_targets[key] = transform_bbox_xyxy(val, acc)
+                    continue
+                if key == "bbox_xywh":
+                    aux_targets[key] = transform_bbox_xywh(val, acc)
+                    continue
+                if key == "keypoints":
+                    aux_targets[key] = transform_keypoints(val, acc)
+
+        if not _has_aux:
+            return image
+        return image, aux_targets
+
+
+# ---------------------------------------------------------------------------
+# AlbuProjectiveSegment — cv2 backend for Albumentations perspective transforms
+# ---------------------------------------------------------------------------
+
+try:
+    import cv2 as _cv2
+
+    _CV2_INTERP: dict[str, int] = {
+        "bilinear": _cv2.INTER_LINEAR,
+        "nearest": _cv2.INTER_NEAREST,
+        "bicubic": _cv2.INTER_CUBIC,
+    }
+    _CV2_BORDER: dict[str, int] = {
+        "zeros": _cv2.BORDER_CONSTANT,
+        "border": _cv2.BORDER_REPLICATE,
+        "reflection": _cv2.BORDER_REFLECT,
+    }
+    _CV2_WARP_INVERSE_MAP = _cv2.WARP_INVERSE_MAP
+except ImportError:
+    _cv2 = None  # type: ignore[assignment]
+    _CV2_INTERP = {}
+    _CV2_BORDER = {}
+    _CV2_WARP_INVERSE_MAP = 16  # cv2.WARP_INVERSE_MAP = 16
+
+
+class AlbuProjectiveSegment(nn.Module):
+    """Fused projective segment for NumPy/cv2 backends (Albumentations).
+
+    Loops over B samples, composes per-sample ``(3, 3)`` forward homography
+    matrices, and applies a single ``cv2.warpPerspective`` per sample.
+
+    The input and output are ``(B, C, H, W)`` float32 ``torch.Tensor`` objects.
+    Conversion to/from ``(H, W, C)`` NumPy arrays happens inside ``forward()``.
+
+    Args:
+        transforms: List of Albumentations perspective transform objects to fuse.
+        adapter: An ``AlbumentationsAdapter`` providing ``sample_params``,
+            ``build_matrix``, and category lookup.
+        interpolation: Interpolation mode (``"bilinear"``, ``"nearest"``,
+            ``"bicubic"``). Defaults to ``"bilinear"``.
+        padding_mode: Padding mode (``"zeros"``, ``"border"``,
+            ``"reflection"``). Defaults to ``"zeros"``.
+
+    """
+
+    def __init__(
+        self,
+        transforms: list[object],
+        adapter: TransformAdapter,
+        interpolation: str | None = None,
+        padding_mode: str | None = None,
+    ) -> None:
+        super().__init__()
+        self.transforms = transforms
+        self.adapter = adapter
+        self.interpolation = interpolation or "bilinear"
+        self.padding_mode = padding_mode or "zeros"
+        self._last_matrix: Tensor | None = None
+
+    @property
+    def last_matrix(self) -> Tensor | None:
+        """Return the ``(B, 3, 3)`` composed forward matrix from the last forward pass.
+
+        Returns:
+            The composed forward matrix (detached clone), or ``None`` before
+            the first call to :meth:`forward`.
+
+        """
+        return self._last_matrix
+
+    def forward(
+        self,
+        image: Tensor,
+        aux_targets: dict[str, Tensor] | None = None,
+    ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
+        """Apply fused projective chain via per-sample cv2.warpPerspective.
+
+        Args:
+            image: ``(B, C, H, W)`` float32 input tensor.
+            aux_targets: Auxiliary targets (e.g. masks/boxes/keypoints). Currently
+                not supported by :class:`AlbuProjectiveSegment`. Passing a
+                non-``None`` value will raise a ``RuntimeError``.
+
+        Returns:
+            The transformed ``image`` tensor.
+
+        """
+        if aux_targets is not None:
+            raise RuntimeError(
+                "AlbuProjectiveSegment.forward does not yet support aux_targets. "
+                "Passing auxiliary targets here would result in misaligned masks/"
+                "boxes/keypoints. Please call this module with aux_targets=None, "
+                "or use a non-fused Albumentations pipeline that transforms "
+                "auxiliary targets alongside the image."
+            )
+
+        bsz, n_ch, height, width = image.shape
+        device = image.device
+        dtype = image.dtype
+
+        # Compose a (B, 3, 3) forward matrix tensor for last_matrix storage
+        composed_batch = torch.eye(3, dtype=torch.float64, device=device).unsqueeze(0).expand(bsz, -1, -1).clone()
+
+        if bsz == 0 or len(self.transforms) == 0:
+            self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
+            return image
+
+        # Pre-draw per-transform active masks
+        active_masks: list[Any] = []
+        for tfm in self.transforms:
+            prob = float(getattr(tfm, "p", 1.0))
+            same_on_batch = bool(getattr(tfm, "same_on_batch", False))
+            if same_on_batch:
+                draw = bool(np.random.rand() < prob)
+                active_masks.append(np.full(bsz, draw))
+            else:
+                active_masks.append(np.random.rand(bsz) < prob)
+
+        cv2_interp = _CV2_INTERP.get(self.interpolation, _CV2_INTERP.get("bilinear", 1))
+        cv2_border = _CV2_BORDER.get(self.padding_mode, _CV2_BORDER.get("zeros", 0))
+
+        output_np: list[ImageArray] = []
+
+        for i in range(bsz):
+            acc: MatrixArray = np.eye(3, dtype=np.float64)
+            any_active = False
+
+            for j, tfm in enumerate(self.transforms):
+                active = bool(active_masks[j][i])
+                params = self.adapter.sample_params(tfm, (1, n_ch, height, width), torch.device("cpu"))
+                mtx_i = self.adapter.build_matrix(tfm, params, height, width)
+
+                if active:
+                    any_active = True
+                    acc = mtx_i[0].double().cpu().numpy() @ acc
+
+            composed_batch[i] = torch.as_tensor(acc.copy())
+
+            img_np = image[i].permute(1, 2, 0).cpu().numpy()
+
+            if not any_active:
+                output_np.append(img_np)
+                continue
+
+            # acc is the composed forward (src→dst) matrix; invert to get dst→src
+            m_inv = np.linalg.inv(acc)
+
+            warped: ImageArray = _cv2.warpPerspective(  # type: ignore[union-attr]
+                img_np,
+                m_inv,  # dst->src inverse map
+                (width, height),  # dsize = (W, H)
+                flags=cv2_interp | _CV2_WARP_INVERSE_MAP,
+                borderMode=cv2_border,
+                borderValue=0,
+            )
+            output_np.append(warped)
+
+        # Stack back to (B, C, H, W)
+        stacked = torch.stack([
+            torch.as_tensor(np.ascontiguousarray(img).copy()).permute(2, 0, 1) for img in output_np
+        ]).to(device=device, dtype=dtype)
+
+        self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
+
+        return stacked
+
+
 def reorder_pointwise(
     transforms: list[object],
     adapter: TransformAdapter,
@@ -557,7 +875,7 @@ def reorder_pointwise(
     ['GEOMETRIC_INTERP', 'GEOMETRIC_INTERP', 'POINTWISE']
 
     """
-    geometric = {TransformCategory.GEOMETRIC_INTERP, TransformCategory.GEOMETRIC_EXACT}
+    geometric = {TransformCategory.GEOMETRIC_INTERP, TransformCategory.GEOMETRIC_EXACT, TransformCategory.PROJECTIVE}
 
     result: list[object] = []
     geo_buf: list[object] = []
@@ -634,9 +952,11 @@ def build_segments(
 
     """
     fusible = {TransformCategory.GEOMETRIC_INTERP, TransformCategory.GEOMETRIC_EXACT}
+    projective_cat = TransformCategory.PROJECTIVE
 
     segments: list[object] = []
     current_geo: list[object] = []
+    current_proj: list[object] = []
 
     def _flush_geo() -> None:
         if not current_geo:
@@ -678,15 +998,46 @@ def build_segments(
         segments.append(ExactSegment(list(current_geo), adapter))
         current_geo.clear()
 
+    def _flush_proj() -> None:
+        if not current_proj:
+            return
+        if use_numpy:
+            segments.append(
+                AlbuProjectiveSegment(
+                    list(current_proj),
+                    adapter,
+                    interpolation=interpolation,
+                    padding_mode=padding_mode,
+                )
+            )
+        else:
+            segments.append(
+                ProjectiveSegment(
+                    list(current_proj),
+                    adapter,
+                    interpolation=interpolation,
+                    padding_mode=padding_mode,
+                )
+            )
+        current_proj.clear()
+
     for tfm in transforms:
         cat = adapter.category(tfm)
         if cat in fusible:
+            _flush_proj()  # flush any pending projective
             current_geo.append(tfm)
             continue
+        if cat == projective_cat:
+            _flush_geo()  # flush any pending affine
+            current_proj.append(tfm)
+            continue
+        # SPATIAL_KERNEL / POINTWISE barrier: flush both
         _flush_geo()
+        _flush_proj()
         segments.append(tfm)
 
     _flush_geo()
+    _flush_proj()
     return segments
 
 
