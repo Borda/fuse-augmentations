@@ -33,15 +33,16 @@ class TestTransformCategory:
             (TransformCategory.GEOMETRIC_EXACT, "geometric_exact"),
             (TransformCategory.POINTWISE, "pointwise"),
             (TransformCategory.SPATIAL_KERNEL, "spatial_kernel"),
+            (TransformCategory.PROJECTIVE, "projective"),
         ],
     )
     def test_value(self, member, expected_value):
         """Enum member has the expected string value."""
         assert member.value == expected_value, f"{member.name}.value should be {expected_value!r}"
 
-    def test_exactly_four_members(self):
-        """TransformCategory has exactly 4 members."""
-        assert len(TransformCategory) == 4, f"Expected 4 members, got {len(TransformCategory)}"
+    def test_exactly_five_members(self):
+        """TransformCategory has exactly 5 members."""
+        assert len(TransformCategory) == 5, f"Expected 5 members, got {len(TransformCategory)}"
 
     def test_member_names(self):
         """TransformCategory member names match the spec."""
@@ -50,6 +51,7 @@ class TestTransformCategory:
             "GEOMETRIC_EXACT",
             "POINTWISE",
             "SPATIAL_KERNEL",
+            "PROJECTIVE",
         }
 
     @pytest.mark.parametrize("member", list(TransformCategory))

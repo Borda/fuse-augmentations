@@ -15,6 +15,7 @@ class TransformCategory(Enum):
         GEOMETRIC_EXACT: Fusible only when INTERP is present; lossless alone (flip, 90-deg rot).
         POINTWISE: Reorderable per-pixel op; not fusible (color jitter, normalize).
         SPATIAL_KERNEL: Barrier; not fusible and not reorderable (blur, noise, erase).
+        PROJECTIVE: Fusible projective (perspective) op requiring full 3x3 homography.
 
     """
 
@@ -22,6 +23,7 @@ class TransformCategory(Enum):
     GEOMETRIC_EXACT = "geometric_exact"
     POINTWISE = "pointwise"
     SPATIAL_KERNEL = "spatial_kernel"
+    PROJECTIVE = "projective"
 
 
 class ReorderPolicy(Enum):
