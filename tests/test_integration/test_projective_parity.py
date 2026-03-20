@@ -95,6 +95,43 @@ class TestKorniaProjectiveParity:
         assert "fused" in plan
         assert "projective" in plan
 
+    def test_single_parity_with_native(self):
+        """perspective_grid + F.grid_sample numerically matches kornia.geometry.warp_perspective.
+
+        Verifies the core mathematical claim: our perspective grid builder and F.grid_sample
+        produce the same warped image as Kornia's reference warp_perspective for a known
+        homography, confirming that the DLT + perspective_grid pipeline is correct.
+        """
+        import kornia.geometry
+        import torch.nn.functional as F
+
+        from fuse_augmentations.affine._matrix import (
+            inv3x3,
+            normalize_matrix,
+            perspective_from_points,
+            perspective_grid,
+        )
+
+        # Known 4-point correspondence (slight projective distortion)
+        src = torch.tensor([[[0.0, 0.0], [32.0, 0.0], [32.0, 32.0], [0.0, 32.0]]])
+        dst = torch.tensor([[[2.0, 1.0], [30.0, 3.0], [31.0, 29.0], [1.0, 28.0]]])
+        H_fwd = perspective_from_points(src, dst)  # (1, 3, 3) src→dst homography
+
+        img = torch.rand(1, 3, 32, 32)
+
+        # Reference: kornia native warp_perspective (forward src→dst homography)
+        native_out = kornia.geometry.warp_perspective(img, H_fwd, (32, 32), align_corners=True)
+
+        # Fused path: perspective_grid + F.grid_sample (ProjectiveSegment internals)
+        H_inv = inv3x3(H_fwd)
+        H_norm = normalize_matrix(H_inv, 32, 32)
+        grid = perspective_grid(H_norm, 32, 32)
+        fused_out = F.grid_sample(img, grid, mode="bilinear", padding_mode="zeros", align_corners=True)
+
+        assert torch.allclose(fused_out, native_out, atol=1e-4), (
+            "perspective_grid + F.grid_sample must match kornia.geometry.warp_perspective for the same homography"
+        )
+
 
 # ---------------------------------------------------------------------------
 # TorchVision tests
