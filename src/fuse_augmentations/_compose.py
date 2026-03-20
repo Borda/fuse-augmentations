@@ -7,7 +7,13 @@ backend.
 v0.3 additions: ``data_keys`` parameter routes auxiliary targets (masks,
 bounding boxes, keypoints) alongside the image through every segment.
 ``from_params()`` classmethod constructs a fused pipeline directly from
-numeric parameter ranges, without importing any backend (Kornia-free).
+numeric parameter ranges, without importing any backend.
+
+v0.5 additions: mixed-backend support allows transforms from multiple
+frameworks (e.g. TorchVision geometric + Kornia color) in a single
+pipeline. ``_PassthroughSegment`` carries non-fused transforms across
+pickle round-trips via an index-keyed adapter map that survives
+deserialisation (object ids change; positional indices do not).
 
 Example:
     >>> import torch
@@ -361,7 +367,8 @@ class FusedCompose(nn.Module):
         :class:`~fuse_augmentations._segment.FusedAffineSegment` executed in the
         most recent :meth:`forward` call. Passthrough (non-fused) transforms do
         not affect this value, and multiple fused segments are *not* composed into
-        a single whole-pipeline matrix.
+        a single whole-pipeline matrix. In mixed-backend pipelines, only the last
+        fused segment across all backends contributes to this value.
 
         Returns:
             The composed matrix for the last fused affine segment, or ``None`` if
@@ -453,7 +460,7 @@ class FusedCompose(nn.Module):
 
         This factory bypasses backend transform objects entirely and samples
         parameters directly using ``_matrix.py`` primitives. Useful for
-        backend-agnostic pipelines or when Kornia is not installed.
+        backend-agnostic pipelines or when no backend is installed.
 
         All geometric parameters are sampled independently per batch item on
         every :meth:`forward` call (i.e. ``same_on_batch=False`` semantics).
@@ -736,6 +743,15 @@ def _wrap_passthrough_segments(
     _id_to_index: dict[int, int] = {}
     if original_transforms is not None:
         for idx, tfm in enumerate(original_transforms):
+            if id(tfm) in _id_to_index:
+                warnings.warn(
+                    f"The same transform object appears at two positions in the pipeline "
+                    f"({type(tfm).__name__!r} at indices {_id_to_index[id(tfm)]} and {idx}). "
+                    "Reusing the same object is unsupported; only the last occurrence will "
+                    "be used for adapter dispatch.",
+                    UserWarning,
+                    stacklevel=3,
+                )
             _id_to_index[id(tfm)] = idx
 
     for seg in segments:

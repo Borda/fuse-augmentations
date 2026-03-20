@@ -289,6 +289,12 @@ class TorchVisionAdapter:
         ``(C, H, W)`` inputs. TorchVision v2 transforms are applied to the
         whole ``(B, C, H, W)`` tensor to preserve batch-wide randomness.
 
+        Note:
+            The v1 path loops ``B`` times and calls ``torch.stack``, giving
+            O(B) allocations. For large batches prefer v2 transforms or use
+            :meth:`~fuse_augmentations.Compose.from_params` to stay in the
+            fused path and avoid passthrough entirely.
+
         Args:
             transform: A TorchVision transform instance.
             image: ``(B, C, H, W)`` float32 image tensor.
