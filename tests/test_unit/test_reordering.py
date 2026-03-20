@@ -226,3 +226,35 @@ class TestExactWithInterp:
         assert len(segments) == 1
         assert isinstance(segments[0], FusedAffineSegment)
         assert len(segments[0].transforms) == 2
+
+
+class TestProjectiveReorder:
+    """PROJECTIVE category in reorder_pointwise and build_segments."""
+
+    def _proj_transform(self):
+        """Stub with PROJECTIVE category."""
+        return _StubTransform(_identity_matrix_fn, p=1.0, category=TransformCategory.PROJECTIVE)
+
+    def test_pointwise_moves_out_from_between_projective_ops(self):
+        """[Proj, Pointwise, Proj] reorders to [Proj, Proj, Pointwise]."""
+        adapter = _StubAdapter()
+        p = _PointwiseTransform()
+        j1, j2 = self._proj_transform(), self._proj_transform()
+        original = [j1, p, j2]
+        reordered = reorder_pointwise(original, adapter)
+        cats = [adapter.category(t) for t in reordered]
+        geo_idx = [i for i, c in enumerate(cats) if c == TransformCategory.PROJECTIVE]
+        pw_idx = [i for i, c in enumerate(cats) if c == TransformCategory.POINTWISE]
+        assert pw_idx[0] > max(geo_idx), "POINTWISE should be after all PROJECTIVE transforms"
+
+    def test_projective_acts_as_barrier_between_affine_runs(self):
+        """[Affine, Proj, Affine] -> two separate affine segments (proj is barrier)."""
+
+        adapter = _StubAdapter()
+        a1 = _StubTransform(_identity_matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_INTERP)
+        j = self._proj_transform()
+        a2 = _StubTransform(_identity_matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_INTERP)
+        segments = build_segments([a1, j, a2], adapter)
+        seg_types = [type(s).__name__ for s in segments]
+        assert seg_types.count("FusedAffineSegment") == 2, f"Expected 2 FusedAffineSegments, got {seg_types}"
+        assert seg_types.count("ProjectiveSegment") == 1
