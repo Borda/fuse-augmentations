@@ -64,12 +64,14 @@ jobs:
           coverage xml
       - name: ☁️ Upload coverage to Codecov
         uses: codecov/codecov-action@v5
-        if: always()
         # see: https://github.com/actions/toolkit/issues/399
         continue-on-error: true
         with:
-          file: coverage.xml
-          flags: cpu,pytest,python${{ matrix.python-version }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: "coverage.xml"
+          flags: cpu,${{ runner.os }},py${{ matrix.python-version }}
+          env_vars: OS,PYTHON
+          name: codecov-umbrella
           fail_ci_if_error: false
 
   testing-guardian:
