@@ -1,13 +1,18 @@
-"""Albumentations backend adapter for the fused affine engine.
+"""Albumentations backend adapter for the fused geometric engine.
 
 Bridges Albumentations augmentation transforms to the canonical parameter
-representation used by ``AlbuFusedAffineSegment``.
+representation used by the fused Albumentations geometric segments.
 
 Each geometric transform (``A.Affine``, ``A.Rotate``, ``A.ShiftScaleRotate``)
 exposes a pre-built ``matrix`` key via ``get_params_dependent_on_data()`` —
 a ``(3, 3)`` forward pixel-space affine matrix in the same convention as
 ``affine._matrix``. The adapter reads this matrix directly instead of
 reconstructing it from raw angle/scale/shear values.
+
+``A.Perspective`` is also supported and mapped to
+``TransformCategory.PROJECTIVE``. Its sampled ``matrix`` key is treated as a
+forward pixel-space homography and consumed by
+``AlbuProjectiveSegment`` rather than the affine fusion path.
 
 Flip transforms (``A.HorizontalFlip``, ``A.VerticalFlip``) return an empty
 parameter dict; ``build_matrix()`` constructs their matrices from inline
@@ -133,15 +138,17 @@ except ImportError:
 
 
 class AlbumentationsAdapter:
-    """Adapter between Albumentations transforms and the fused affine engine.
+    """Adapter between Albumentations transforms and the fused geometric engine.
 
     Implements the ``TransformAdapter`` protocol for the Albumentations backend.
     Supports ``A.Affine``, ``A.Rotate``, ``A.ShiftScaleRotate`` (GEOMETRIC_INTERP)
     and ``A.HorizontalFlip``, ``A.VerticalFlip`` (GEOMETRIC_EXACT).
+    ``A.Perspective`` is classified as ``PROJECTIVE`` and routed through the
+    projective segment path instead of affine fusion.
 
     Requires ``albumentations >= 2.0``. The adapter reads the pre-built
     ``matrix`` key from ``get_params_dependent_on_data()`` rather than
-    reconstructing the matrix from raw parameters.
+    reconstructing affine or projective matrices from raw parameters.
 
     Example:
         >>> adapter = AlbumentationsAdapter()
@@ -182,7 +189,7 @@ class AlbumentationsAdapter:
     ) -> dict[str, torch.Tensor]:
         """Sample random parameters for a batch of B images.
 
-        For GEOMETRIC_INTERP transforms, calls
+        For ``GEOMETRIC_INTERP`` and ``PROJECTIVE`` transforms, calls
         ``get_params_dependent_on_data()`` once per sample and stacks the
         resulting ``matrix`` arrays into a ``(B, 3, 3)`` tensor. A dummy
         ``(H, W, 1)`` float32 array is passed so the transform can compute
@@ -198,7 +205,8 @@ class AlbumentationsAdapter:
 
         Returns:
             Dict of parameter tensors. ``"matrix"`` key holds ``(B, 3, 3)``
-            for GEOMETRIC_INTERP transforms; ``"_batch_size"`` for flips.
+            for interpolated affine transforms and projective transforms;
+            ``"_batch_size"`` for flips.
 
         """
         B, _C, H, W = input_shape  # noqa: N806
@@ -226,10 +234,11 @@ class AlbumentationsAdapter:
         H: int,  # noqa: N803
         W: int,  # noqa: N803
     ) -> torch.Tensor:
-        """Build a ``(B, 3, 3)`` pixel-space forward affine matrix.
+        """Build a ``(B, 3, 3)`` pixel-space forward geometric matrix.
 
-        For GEOMETRIC_INTERP transforms, returns the pre-sampled ``params["matrix"]``
-        tensor directly (it was already stacked in ``sample_params()``).
+        For ``GEOMETRIC_INTERP`` and ``PROJECTIVE`` transforms, returns the
+        pre-sampled ``params["matrix"]`` tensor directly (it was already
+        stacked in ``sample_params()``).
 
         For flip transforms, constructs the appropriate constant matrix using
         inline NumPy helpers and expands it to batch size B.
@@ -241,7 +250,8 @@ class AlbumentationsAdapter:
             W: Image width in pixels.
 
         Returns:
-            ``(B, 3, 3)`` forward affine matrix in pixel coordinates.
+            ``(B, 3, 3)`` forward affine matrix or homography in pixel
+            coordinates, depending on the transform category.
 
         """
         ttype = type(transform)
@@ -334,7 +344,7 @@ def _sample_matrices(transform: object, B: int, H: int, W: int) -> NDArray[np.fl
     compute center coordinates. No actual pixel data is read.
 
     Args:
-        transform: An Albumentations GEOMETRIC_INTERP transform.
+        transform: An Albumentations interpolated affine or projective transform.
         B: Batch size.
         H: Image height.
         W: Image width.

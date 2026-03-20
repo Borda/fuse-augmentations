@@ -194,7 +194,7 @@ from fuse_augmentations.affine._matrix import perspective_from_points  # noqa: E
     H=integers(min_value=10, max_value=128),
 )
 @settings(max_examples=100)
-def test_perspective_from_points_maps_src_to_dst(dx: float, dy: float, H: int, W: int) -> None:  # noqa: N803
+def test_perspective_from_points_maps_src_to_dst(dx: float, dy: float, H: int, W: int) -> None:
     """H(src) ~ dst: computed homography maps source corners to destination corners."""
     src = torch.tensor([[[0.0, 0.0], [float(W), 0.0], [float(W), float(H)], [0.0, float(H)]]], dtype=DTYPE)
     dst = src + torch.tensor([dx, dy], dtype=DTYPE)
@@ -204,6 +204,4 @@ def test_perspective_from_points_maps_src_to_dst(dx: float, dy: float, H: int, W
     projected = (Hmat @ src_h.transpose(-1, -2)).transpose(-1, -2)
     w = projected[..., 2:3]
     xy_out = projected[..., :2] / w
-    assert torch.allclose(xy_out, dst, atol=1e-3), (
-        f"Homography didn't map src->dst correctly for dx={dx}, dy={dy}"
-    )
+    assert torch.allclose(xy_out, dst, atol=1e-3), f"Homography didn't map src->dst correctly for dx={dx}, dy={dy}"

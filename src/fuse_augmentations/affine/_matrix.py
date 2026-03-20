@@ -15,6 +15,8 @@ Example:
 
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 
 
@@ -443,7 +445,7 @@ def perspective_from_points(src: torch.Tensor, dst: torch.Tensor) -> torch.Tenso
     H = h.reshape(B, 3, 3)  # noqa: N806
     # Normalize so H[2,2] = 1
     H = H / H[..., 2:3, 2:3]  # noqa: N806
-    return H.to(dtype=src.dtype)
+    return cast(torch.Tensor, H.to(dtype=src.dtype))
 
 
 def perspective_grid(M_inv_norm: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: N803
