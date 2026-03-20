@@ -752,7 +752,10 @@ def _wrap_passthrough_segments(
 
     """
     wrapped_segments: list[object] = []
-    fused_segment_types = (FusedAffineSegment, AlbuFusedAffineSegment, ExactSegment, ProjectiveSegment, AlbuProjectiveSegment)
+    fused_segment_types = (
+        FusedAffineSegment, AlbuFusedAffineSegment, ExactSegment,
+        ProjectiveSegment, AlbuProjectiveSegment,
+    )
 
     # Build a reverse lookup: transform object id -> index in original_transforms.
     # Used for index-keyed transform_adapters in the mixed-backend path.
