@@ -48,8 +48,10 @@ from fuse_augmentations.affine._matrix import (
 )
 from fuse_augmentations.affine._segment import (
     AlbuFusedAffineSegment,
+    AlbuProjectiveSegment,
     ExactSegment,
     FusedAffineSegment,
+    ProjectiveSegment,
     build_segments,
     reorder_pointwise,
 )
@@ -318,6 +320,15 @@ class FusedCompose(nn.Module):
                 self._last_transform_matrix = seg.last_matrix
                 continue
 
+            if isinstance(seg, (ProjectiveSegment, AlbuProjectiveSegment)):
+                result = seg(image, aux_targets)
+                if aux_targets is not None:
+                    image, aux_targets = result
+                else:
+                    image = result
+                self._last_transform_matrix = seg.last_matrix
+                continue
+
             if isinstance(seg, ExactSegment):
                 result = seg(image, aux_targets)
                 if aux_targets is not None:
@@ -392,7 +403,7 @@ class FusedCompose(nn.Module):
         """
         total = 0
         for seg in self._segments:
-            if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment)):
+            if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment, ProjectiveSegment, AlbuProjectiveSegment)):
                 # n transforms fused → 1 warp, saving n-1 passes.
                 n = len(seg.transforms)
                 if n > 1:
@@ -419,6 +430,11 @@ class FusedCompose(nn.Module):
         """
         parts: list[str] = []
         for seg in self._segments:
+            if isinstance(seg, (ProjectiveSegment, AlbuProjectiveSegment)):
+                names = [type(t).__name__ for t in seg.transforms]
+                parts.append(f"projective({', '.join(names)})")
+                continue
+
             if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment)):
                 names = [type(t).__name__ for t in seg.transforms]
                 parts.append(f"fused({', '.join(names)})")
@@ -736,7 +752,7 @@ def _wrap_passthrough_segments(
 
     """
     wrapped_segments: list[object] = []
-    fused_segment_types = (FusedAffineSegment, AlbuFusedAffineSegment, ExactSegment)
+    fused_segment_types = (FusedAffineSegment, AlbuFusedAffineSegment, ExactSegment, ProjectiveSegment, AlbuProjectiveSegment)
 
     # Build a reverse lookup: transform object id -> index in original_transforms.
     # Used for index-keyed transform_adapters in the mixed-backend path.
