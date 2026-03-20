@@ -129,6 +129,35 @@ class TestTorchVisionAdapterCategory:
         with pytest.raises(ValueError, match="expand=True is not supported"):
             adapter.category(t)
 
+    def test_sample_params_expand_true_raises_value_error(self, adapter):
+        """sample_params with expand=True raises ValueError."""
+        pytest.importorskip("torchvision", reason="torchvision required")
+        import torch
+        import torchvision.transforms as T
+
+        t = T.RandomRotation(degrees=30, expand=True)
+        with pytest.raises(ValueError, match="expand=True is not supported"):
+            adapter.sample_params(t, (2, 3, 64, 64), torch.device("cpu"))
+
+
+@pytest.mark.xfail(
+    strict=False,
+    reason=(
+        "_v1_transform_cls is an undocumented TorchVision internal, stable 0.15-0.20; "
+        "may be removed in future TorchVision versions"
+    ),
+)
+def test_v1_transform_cls_attribute_exists_on_v2_transform():
+    """V2 transforms expose _v1_transform_cls, used by the adapter for v1/v2 detection."""
+    pytest.importorskip("torchvision", reason="torchvision required")
+    import torchvision.transforms.v2 as T2
+
+    t = T2.RandomHorizontalFlip(p=1.0)
+    assert hasattr(t, "_v1_transform_cls"), (
+        "torchvision.transforms.v2.RandomHorizontalFlip no longer has _v1_transform_cls; "
+        "TorchVisionAdapter._is_torchvision_v2_transform may need updating"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Bug #3 regression: Backend.UNKNOWN raises ValueError (not opaque NotImplementedError)

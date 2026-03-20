@@ -342,6 +342,23 @@ class TestExactFlipDims:
 # ---------------------------------------------------------------------------
 
 
+class TestBuildMatrixFallback:
+    """build_matrix returns identity for an unregistered transform (no stubs registered)."""
+
+    def test_unregistered_transform_returns_identity(self, adapter):
+        """Unregistered transform with empty params returns (1, 3, 3) identity matrix."""
+        mtx = adapter.build_matrix(object(), {}, H=64, W=64)
+        assert mtx.shape == (1, 3, 3), f"Expected shape (1, 3, 3), got {mtx.shape}"
+        expected = torch.eye(3).unsqueeze(0)
+        torch.testing.assert_close(
+            mtx,
+            expected,
+            atol=1e-5,
+            rtol=0.0,
+            msg="Identity fallback matrix does not match torch.eye(3)",
+        )
+
+
 class TestExpandGuard:
     """Expand=True raises ValueError in sample_params and category."""
 

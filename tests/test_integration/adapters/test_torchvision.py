@@ -450,6 +450,29 @@ class TestMatrixVsTorchVision:
 # ---------------------------------------------------------------------------
 
 
+class TestBatchSamplesIndependentAffine:
+    """V1 RandomAffine samples independent parameters per batch element."""
+
+    @pytest.fixture
+    def adapter(self):
+        return TorchVisionAdapter()
+
+    def test_per_sample_matrices_differ(self, adapter):
+        """With B=3, at least one pair of affine matrices must differ (per-sample RNG)."""
+        torch.manual_seed(42)
+        t = T.RandomAffine(degrees=30, translate=(0.1, 0.1), scale=(0.8, 1.2))
+        params = adapter.sample_params(t, (3, C, H, W), device=torch.device("cpu"))
+        mtx = adapter.build_matrix(t, params, H, W)
+        assert mtx.shape[0] == 3, f"Expected batch dim 3, got {mtx.shape[0]}"
+        # At least one pair of the 3 matrices should differ
+        any_differ = (
+            not torch.allclose(mtx[0], mtx[1], atol=1e-6)
+            or not torch.allclose(mtx[0], mtx[2], atol=1e-6)
+            or not torch.allclose(mtx[1], mtx[2], atol=1e-6)
+        )
+        assert any_differ, "All 3 per-sample affine matrices are identical; expected per-sample independence"
+
+
 class TestChain:
     def test_rotate_then_hflip_fusion_plan(self):
         pipe = Compose([T.RandomRotation(degrees=30), T.RandomHorizontalFlip(p=1)])

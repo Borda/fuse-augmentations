@@ -136,6 +136,31 @@ class TestMixedGeometricSegments:
         assert out.shape == img.shape
 
 
+class TestMixedBackendDataKeys:
+    def test_data_keys_mask_shape_preserved(self):
+        """Mixed TV+Kornia pipeline with data_keys=["input", "mask"] preserves mask shape."""
+        torch.manual_seed(0)
+        img = torch.rand(2, 1, H, W, dtype=torch.float32)
+        mask = torch.rand(2, 1, H, W, dtype=torch.float32)
+        pipe = Compose(
+            [
+                T.RandomHorizontalFlip(p=1.0),
+                KColorJitter(brightness=0.2, p=1.0),
+            ],
+            data_keys=["input", "mask"],
+        )
+        _img_out, mask_out = pipe(img, mask)
+        assert mask_out.shape == mask.shape, f"Expected mask shape {mask.shape}, got {mask_out.shape}"
+
+
+class TestMixedBackendDuplicateTransform:
+    def test_duplicate_object_emits_warning(self):
+        """Same transform object at two positions in a mixed pipeline emits UserWarning."""
+        shared_flip = T.RandomHorizontalFlip(p=1.0)
+        with pytest.warns(UserWarning, match="(?i)same transform object"):
+            Compose([shared_flip, KColorJitter(brightness=0.2, p=1.0), shared_flip])
+
+
 class TestMixedBackendSerialization:
     def test_pickle_roundtrip_preserves_passthrough_adapter_dispatch(self):
         """Pickle round-trip keeps mixed-backend passthrough dispatch bound to the right adapter."""
