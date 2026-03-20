@@ -711,6 +711,10 @@ class AlbuProjectiveSegment(nn.Module):
         padding_mode: str | None = None,
     ) -> None:
         super().__init__()
+        if _cv2 is None:
+            raise ImportError(
+                "AlbuProjectiveSegment requires opencv-python because it uses cv2.warpPerspective under the hood."
+            )
         self.transforms = transforms
         self.adapter = adapter
         self.interpolation = interpolation or "bilinear"
@@ -817,6 +821,8 @@ class AlbuProjectiveSegment(nn.Module):
                 borderMode=cv2_border,
                 borderValue=0,
             )
+            if warped.ndim == 2:
+                warped = warped[..., None]
             output_np.append(warped)
 
         # Stack back to (B, C, H, W)

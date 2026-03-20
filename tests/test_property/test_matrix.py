@@ -228,9 +228,10 @@ def test_perspective_from_points_projective_distortion(
 ) -> None:
     """H(src) ~ dst: DLT handles genuine per-corner projective distortions.
 
-    Unlike the translation test (which only exercises the affine columns of H), this test
-    applies an independent (dx, dy) offset to each corner, forcing the DLT to use the
-    non-linear terms and exercise the full 8 degrees of freedom of the homography.
+    Unlike the translation test (which only exercises the affine columns of H), this test applies an independent (dx,
+    dy) offset to each corner, forcing the DLT to use the non-linear terms and exercise the full 8 degrees of freedom of
+    the homography.
+
     """
     src = torch.tensor([[[0.0, 0.0], [float(W), 0.0], [float(W), float(H)], [0.0, float(H)]]], dtype=DTYPE)
     dst = src.clone()

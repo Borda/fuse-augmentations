@@ -492,5 +492,8 @@ def perspective_grid(M_inv_norm: torch.Tensor, H: int, W: int) -> torch.Tensor: 
     coords_b = coords.unsqueeze(0).expand(B, -1, -1)
     transformed = torch.bmm(M_inv_norm, coords_b)  # (B, 3, H*W)
     tw = transformed[:, 2:3, :]  # (B, 1, H*W)
-    xy = transformed[:, :2, :] / tw  # (B, 2, H*W)
+    # Clamp tw away from zero (preserving sign) to avoid Inf/NaN in perspective division.
+    eps = torch.finfo(dtype).eps
+    tw_clamped = torch.where(tw >= 0, torch.clamp(tw, min=eps), torch.clamp(tw, max=-eps))
+    xy = transformed[:, :2, :] / tw_clamped  # (B, 2, H*W)
     return xy.permute(0, 2, 1).reshape(B, H, W, 2)

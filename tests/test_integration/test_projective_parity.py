@@ -2,12 +2,11 @@
 
 Requires kornia >= 0.6.12 for the Kornia subtests.
 
-These tests verify projective fusion-plan reporting, shape preservation, and
-saved-warp accounting across supported backends.
+These tests verify projective fusion-plan reporting, shape preservation, and saved-warp accounting across supported
+backends.
 
-Single-transform projective paths are checked for successful execution and
-matrix bookkeeping. Multi-transform chains verify that the fused path composes
-homographies and reduces the number of warp passes.
+Single-transform projective paths are checked for successful execution and matrix bookkeeping. Multi-transform chains
+verify that the fused path composes homographies and reduces the number of warp passes.
 
 """
 
@@ -101,6 +100,7 @@ class TestKorniaProjectiveParity:
         Verifies the core mathematical claim: our perspective grid builder and F.grid_sample
         produce the same warped image as Kornia's reference warp_perspective for a known
         homography, confirming that the DLT + perspective_grid pipeline is correct.
+
         """
         import kornia.geometry
         import torch.nn.functional as F
@@ -211,6 +211,18 @@ class TestAlbumentationsProjectiveParity:
         t = A.Perspective(p=1.0)
         pipe = Compose([t])
         img = torch.rand(2, 3, 32, 32)
+        out = pipe(img)
+        assert out.shape == img.shape
+
+    def test_single_channel_perspective_shape(self):
+        """Single-channel A.Perspective preserves the grayscale channel axis."""
+        import albumentations as A
+
+        from fuse_augmentations import Compose
+
+        t = A.Perspective(p=1.0)
+        pipe = Compose([t])
+        img = torch.rand(1, 1, 8, 8)
         out = pipe(img)
         assert out.shape == img.shape
 
