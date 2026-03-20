@@ -74,8 +74,12 @@ class TestTorchVisionAdapterCategory:
                 lambda T: T.RandomVerticalFlip(p=0.5),
                 TransformCategory.GEOMETRIC_EXACT,
             ),
+            (
+                lambda T: T.RandomPerspective(distortion_scale=0.5, p=0.5),
+                TransformCategory.PROJECTIVE,
+            ),
         ],
-        ids=["RandomRotation", "RandomAffine", "RandomHorizontalFlip", "RandomVerticalFlip"],
+        ids=["RandomRotation", "RandomAffine", "RandomHorizontalFlip", "RandomVerticalFlip", "RandomPerspective"],
     )
     def test_category_real_v1(self, adapter, transform_factory, expected_cat):
         """V1 transforms map to expected categories (requires torchvision)."""
@@ -103,8 +107,18 @@ class TestTorchVisionAdapterCategory:
                 lambda T: T.RandomVerticalFlip(p=0.5),
                 TransformCategory.GEOMETRIC_EXACT,
             ),
+            (
+                lambda T: T.RandomPerspective(distortion_scale=0.5, p=0.5),
+                TransformCategory.PROJECTIVE,
+            ),
         ],
-        ids=["v2.RandomRotation", "v2.RandomAffine", "v2.RandomHorizontalFlip", "v2.RandomVerticalFlip"],
+        ids=[
+            "v2.RandomRotation",
+            "v2.RandomAffine",
+            "v2.RandomHorizontalFlip",
+            "v2.RandomVerticalFlip",
+            "v2.RandomPerspective",
+        ],
     )
     def test_category_real_v2(self, adapter, transform_factory, expected_cat):
         """V2 transforms map to expected categories (requires torchvision)."""

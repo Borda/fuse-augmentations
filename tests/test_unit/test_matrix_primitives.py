@@ -10,6 +10,8 @@ from fuse_augmentations.affine._matrix import (
     inv3x3,
     matmul3x3,
     normalize_matrix,
+    perspective_from_points,
+    perspective_grid,
     rotation_matrix,
     scale_matrix,
     shear_x_matrix,
@@ -382,3 +384,66 @@ class TestInv3x3:
         mtx_inv = inv3x3(mtx)  # must not raise
         assert not torch.isnan(mtx_inv).any(), "inv3x3 produced NaN for near-singular matrix"
         assert not torch.isinf(mtx_inv).any(), "inv3x3 produced Inf for near-singular matrix"
+
+
+class TestPerspectiveFromPoints:
+    """perspective_from_points() -- DLT homography solver."""
+
+    def test_identity_4point(self) -> None:
+        """Same src and dst produces identity homography."""
+        corners = torch.tensor([[[0.0, 0.0], [63.0, 0.0], [63.0, 63.0], [0.0, 63.0]]])
+        H = perspective_from_points(corners, corners)
+        assert H.shape == (1, 3, 3)
+        assert torch.allclose(H, torch.eye(3).unsqueeze(0), atol=1e-4)
+
+    def test_known_pure_translation(self) -> None:
+        """Pure translation (dx=10, dy=5) should give H close to translation matrix."""
+        dx, dy = 10.0, 5.0
+        src = torch.tensor([[[0.0, 0.0], [63.0, 0.0], [63.0, 63.0], [0.0, 63.0]]])
+        dst = src + torch.tensor([dx, dy])
+        H = perspective_from_points(src, dst)
+        ones = torch.ones(1, 4, 1)
+        src_h = torch.cat([src, ones], dim=-1)
+        projected = (H @ src_h.transpose(-1, -2)).transpose(-1, -2)
+        w = projected[..., 2:3]
+        xy_out = projected[..., :2] / w
+        assert torch.allclose(xy_out, dst, atol=1e-3)
+
+    def test_batch_shape(self) -> None:
+        """Batch of 3 produces (3, 3, 3) output."""
+        corners = torch.tensor([[[0.0, 0.0], [63.0, 0.0], [63.0, 63.0], [0.0, 63.0]]]).expand(3, -1, -1)
+        H = perspective_from_points(corners, corners)
+        assert H.shape == (3, 3, 3)
+
+    def test_dtype_preserved(self) -> None:
+        """Output dtype matches input dtype."""
+        corners = torch.tensor([[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]], dtype=torch.float64)
+        H = perspective_from_points(corners, corners)
+        assert H.dtype == torch.float64
+
+
+class TestPerspectiveGrid:
+    """perspective_grid() -- builds (B, H, W, 2) sampling grid."""
+
+    def test_shape(self) -> None:
+        """Identity matrix produces grid of correct shape."""
+        M = torch.eye(3).unsqueeze(0)
+        grid = perspective_grid(M, H=8, W=8)
+        assert grid.shape == (1, 8, 8, 2)
+
+    def test_identity_grid_matches_affine_grid(self) -> None:
+        """Identity 3x3 produces grid matching F.affine_grid with identity 2x3."""
+        import torch.nn.functional as F
+
+        B, H, W = 2, 8, 8
+        M_id = torch.eye(3).unsqueeze(0).expand(B, -1, -1)
+        grid_proj = perspective_grid(M_id, H=H, W=W)
+        theta_id = torch.eye(2, 3).unsqueeze(0).expand(B, -1, -1)
+        grid_affine = F.affine_grid(theta_id, [B, 1, H, W], align_corners=True)
+        assert torch.allclose(grid_proj, grid_affine, atol=1e-6)
+
+    def test_batch_expanded(self) -> None:
+        """B=3 perspective matrices produce (3, H, W, 2) grid."""
+        M = torch.eye(3).unsqueeze(0).expand(3, -1, -1)
+        grid = perspective_grid(M, H=4, W=6)
+        assert grid.shape == (3, 4, 6, 2)

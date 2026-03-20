@@ -93,3 +93,9 @@ class TestAlbumentationsAdapterCategory:
         import albumentations as A
 
         assert adapter.category(A.VerticalFlip()) == TransformCategory.GEOMETRIC_EXACT
+
+    def test_perspective_is_projective(self, adapter):
+        """A.Perspective -> PROJECTIVE (requires albumentations)."""
+        A = pytest.importorskip("albumentations", reason="albumentations required")
+        cat = adapter.category(A.Perspective())
+        assert cat == TransformCategory.PROJECTIVE

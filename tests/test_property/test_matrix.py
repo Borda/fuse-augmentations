@@ -182,3 +182,28 @@ def test_inverse_round_trip(seed: int) -> None:
     product = matmul3x3(M_inv, M)
     I = torch.eye(3, dtype=DTYPE).unsqueeze(0)
     assert torch.allclose(product, I, atol=1e-8)
+
+
+from fuse_augmentations.affine._matrix import perspective_from_points  # noqa: E402
+
+
+@given(
+    dx=floats(min_value=-20, max_value=20, allow_nan=False),
+    dy=floats(min_value=-20, max_value=20, allow_nan=False),
+    W=integers(min_value=10, max_value=128),
+    H=integers(min_value=10, max_value=128),
+)
+@settings(max_examples=100)
+def test_perspective_from_points_maps_src_to_dst(dx: float, dy: float, H: int, W: int) -> None:  # noqa: N803
+    """H(src) ~ dst: computed homography maps source corners to destination corners."""
+    src = torch.tensor([[[0.0, 0.0], [float(W), 0.0], [float(W), float(H)], [0.0, float(H)]]], dtype=DTYPE)
+    dst = src + torch.tensor([dx, dy], dtype=DTYPE)
+    Hmat = perspective_from_points(src, dst)
+    ones = torch.ones(1, 4, 1, dtype=DTYPE)
+    src_h = torch.cat([src, ones], dim=-1)
+    projected = (Hmat @ src_h.transpose(-1, -2)).transpose(-1, -2)
+    w = projected[..., 2:3]
+    xy_out = projected[..., :2] / w
+    assert torch.allclose(xy_out, dst, atol=1e-3), (
+        f"Homography didn't map src->dst correctly for dx={dx}, dy={dy}"
+    )

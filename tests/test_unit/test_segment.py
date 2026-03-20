@@ -595,3 +595,73 @@ class TestPointwiseReorderBuildSegments:
         assert isinstance(segments[0], FusedAffineSegment)
         assert len(segments[0].transforms) == 2
         assert segments[1] is brightness
+
+
+# ---------------------------------------------------------------------------
+# ProjectiveSegment tests
+# ---------------------------------------------------------------------------
+
+
+class TestProjectiveSegmentBuildSegments:
+    """build_segments() creates ProjectiveSegment for PROJECTIVE transforms."""
+
+    def _proj_transform(self):
+        """Stub with PROJECTIVE category."""
+        return _StubTransform(_identity_matrix_fn, p=1.0, category=TransformCategory.PROJECTIVE)
+
+    def test_two_projective_become_one_segment(self):
+        """[Proj, Proj] -> one ProjectiveSegment."""
+        from fuse_augmentations.affine._segment import ProjectiveSegment
+
+        adapter = _StubAdapter()
+        j1, j2 = self._proj_transform(), self._proj_transform()
+        segments = build_segments([j1, j2], adapter)
+        assert len(segments) == 1
+        assert isinstance(segments[0], ProjectiveSegment)
+        assert len(segments[0].transforms) == 2
+
+    def test_rotate_then_proj_gives_two_segments(self):
+        """[Rot, Proj] -> [FusedAffineSegment, ProjectiveSegment]."""
+        from fuse_augmentations.affine._segment import ProjectiveSegment
+
+        adapter = _StubAdapter()
+        rot = _StubTransform(_identity_matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_INTERP)
+        proj = self._proj_transform()
+        segments = build_segments([rot, proj], adapter)
+        assert len(segments) == 2
+        assert isinstance(segments[0], FusedAffineSegment)
+        assert isinstance(segments[1], ProjectiveSegment)
+
+    def test_proj_then_rotate_gives_two_segments(self):
+        """[Proj, Rot] -> [ProjectiveSegment, FusedAffineSegment]."""
+        from fuse_augmentations.affine._segment import ProjectiveSegment
+
+        adapter = _StubAdapter()
+        proj = self._proj_transform()
+        rot = _StubTransform(_identity_matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_INTERP)
+        segments = build_segments([proj, rot], adapter)
+        assert len(segments) == 2
+        assert isinstance(segments[0], ProjectiveSegment)
+        assert isinstance(segments[1], FusedAffineSegment)
+
+    def test_use_numpy_true_gives_albu_projective(self):
+        """use_numpy=True produces AlbuProjectiveSegment."""
+        from fuse_augmentations.affine._segment import AlbuProjectiveSegment
+
+        adapter = _StubAdapter()
+        proj = self._proj_transform()
+        segments = build_segments([proj], adapter, use_numpy=True)
+        assert len(segments) == 1
+        assert isinstance(segments[0], AlbuProjectiveSegment)
+
+    def test_projective_forward_identity(self):
+        """ProjectiveSegment with identity matrix produces same-shape output."""
+        from fuse_augmentations.affine._segment import ProjectiveSegment
+
+        adapter = _StubAdapter()
+        proj = self._proj_transform()
+        seg = ProjectiveSegment([proj], adapter)
+        img = torch.rand(2, 3, 8, 8)
+        out = seg(img)
+        assert out.shape == img.shape
+        assert torch.allclose(out, img, atol=1e-5)
