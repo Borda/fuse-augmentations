@@ -132,7 +132,15 @@ class ExactAffineSegment(nn.Module):
             if aux_targets:
                 try:
                     flip_dims = self.adapter.exact_flip_dims(tfm)
-                except (TypeError, NotImplementedError):
+                except (TypeError, NotImplementedError) as exc:
+                    if bool(active.any().item()):
+                        msg = (
+                            f"Exact transform {type(tfm).__name__!r} does not support auxiliary-target routing "
+                            "in ExactAffineSegment. This would misalign mask/boxes/keypoints. "
+                            "Use flip-only exact chains when passing aux targets, or route through an "
+                            "interpolating fused segment."
+                        )
+                        raise RuntimeError(msg) from exc
                     continue
                 is_hflip = 3 in flip_dims
                 is_vflip = 2 in flip_dims

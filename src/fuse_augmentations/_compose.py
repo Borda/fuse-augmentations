@@ -485,25 +485,47 @@ class FusedCompose(nn.Module):
             projective segments carry the adapter class name.
 
         """
-        backend = type(self._adapter).__name__ if self._adapter else None
+        def _resolve_backend(seg: object) -> str | None:
+            # from_params() uses _DirectParamAdapter; expose backend-free descriptors.
+            if isinstance(self._adapter, _DirectParamAdapter):
+                return None
+
+            # Mixed-backend mode: resolve by the first transform in this segment.
+            if self._transform_adapters and hasattr(seg, "transforms"):
+                seg_transforms = getattr(seg, "transforms", None)
+                if isinstance(seg_transforms, list) and seg_transforms:
+                    first = seg_transforms[0]
+                    for idx, orig in enumerate(self.original_transforms):
+                        if orig is first:
+                            adapter = self._transform_adapters.get(idx)
+                            if adapter is not None:
+                                return type(adapter).__name__
+                            break
+
+            return type(self._adapter).__name__ if self._adapter else None
+
         descriptors: list[SegmentDescriptor] = []
         for seg in self._segments:
             if isinstance(seg, (ProjectiveSegment, AlbuProjectiveSegment)):
                 names = tuple(type(t).__name__ for t in seg.transforms)
                 n = len(names) - 1 if len(names) > 1 else 0
                 descriptors.append(SegmentDescriptor(
-                    kind="projective", transforms=names, n_warps_saved=n, backend=backend,
+                    kind="projective", transforms=names, n_warps_saved=n, backend=_resolve_backend(seg),
                 ))
                 continue
             if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment)):
                 names = tuple(type(t).__name__ for t in seg.transforms)
                 n = len(names) - 1 if len(names) > 1 else 0
-                descriptors.append(SegmentDescriptor(kind="fused", transforms=names, n_warps_saved=n, backend=backend))
+                descriptors.append(SegmentDescriptor(
+                    kind="fused", transforms=names, n_warps_saved=n, backend=_resolve_backend(seg),
+                ))
                 continue
             if isinstance(seg, ExactAffineSegment):
                 names = tuple(type(t).__name__ for t in seg.transforms)
                 n = len(names)  # Each flip saves 1 warp vs grid_sample
-                descriptors.append(SegmentDescriptor(kind="exact", transforms=names, n_warps_saved=n, backend=backend))
+                descriptors.append(SegmentDescriptor(
+                    kind="exact", transforms=names, n_warps_saved=n, backend=_resolve_backend(seg),
+                ))
                 continue
             if isinstance(seg, _PassthroughSegment):
                 descriptors.append(SegmentDescriptor(
