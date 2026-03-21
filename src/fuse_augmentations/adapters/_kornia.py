@@ -3,6 +3,49 @@
 Bridges Kornia augmentation transforms to the canonical parameter
 representation and matrix primitives used by ``FusedAffineSegment``.
 
+Coverage survey (Phase A.2)
+---------------------------
+
+.. list-table:: Kornia geometric transforms — adapter coverage
+   :header-rows: 1
+
+   * - Transform
+     - Category
+     - Status
+     - Notes
+   * - ``RandomRotation``
+     - ``GEOMETRIC_INTERP``
+     - Covered (v0.1)
+     - Angle in degrees; negated to CCW convention.
+   * - ``RandomAffine``
+     - ``GEOMETRIC_INTERP``
+     - Covered (v0.1)
+     - Full affine: angle, translate, scale, shear.
+   * - ``RandomHorizontalFlip``
+     - ``GEOMETRIC_EXACT``
+     - Covered (v0.1)
+     - Exact pixel flip; no interpolation.
+   * - ``RandomVerticalFlip``
+     - ``GEOMETRIC_EXACT``
+     - Covered (v0.1)
+     - Exact pixel flip; no interpolation.
+   * - ``RandomPerspective``
+     - ``PROJECTIVE``
+     - Covered (v0.5)
+     - Start/end point pairs for homography.
+   * - ``RandomShear``
+     - ``GEOMETRIC_INTERP``
+     - **NEW (Phase A.2)**
+     - Pure shear; ``shear_x``/``shear_y`` in degrees.
+   * - ``RandomTranslate``
+     - ``GEOMETRIC_INTERP``
+     - **NEW (Phase A.2)**
+     - Pure translation; ``translate_x``/``translate_y`` in pixels.
+   * - ``RandomRotation90``
+     - (deferred)
+     - Not covered
+     - Uses ``torch.rot90``; no affine matrix path.
+
 Example:
     >>> from fuse_augmentations.adapters._kornia import KorniaAdapter
     >>> adapter = KorniaAdapter()
@@ -39,11 +82,15 @@ try:
     from kornia.augmentation import RandomHorizontalFlip as _RandomHorizontalFlip
     from kornia.augmentation import RandomPerspective as _RandomPerspective
     from kornia.augmentation import RandomRotation as _RandomRotation
+    from kornia.augmentation import RandomShear as _RandomShear
+    from kornia.augmentation import RandomTranslate as _RandomTranslate
     from kornia.augmentation import RandomVerticalFlip as _RandomVerticalFlip
 
     TRANSFORM_REGISTRY: dict[type, TransformCategory] = {
         _RandomRotation: TransformCategory.GEOMETRIC_INTERP,
         _RandomAffine: TransformCategory.GEOMETRIC_INTERP,
+        _RandomShear: TransformCategory.GEOMETRIC_INTERP,
+        _RandomTranslate: TransformCategory.GEOMETRIC_INTERP,
         _RandomHorizontalFlip: TransformCategory.GEOMETRIC_EXACT,
         _RandomVerticalFlip: TransformCategory.GEOMETRIC_EXACT,
         _RandomPerspective: TransformCategory.PROJECTIVE,
@@ -159,6 +206,23 @@ class KorniaAdapter:
 
             return result
 
+        if TRANSFORM_REGISTRY and ttype is _RandomShear:
+            # RandomShear emits "shear_x" / "shear_y" keys in degrees (shape (B,)).
+            # Same conversion as the RandomAffine shear path.
+            result_shear: dict[str, torch.Tensor] = {}
+            if "shear_x" in params:
+                result_shear["shear_x_rad"] = -torch.deg2rad(params["shear_x"].to(device=device))
+            if "shear_y" in params:
+                result_shear["shear_y_rad"] = -torch.deg2rad(params["shear_y"].to(device=device))
+            return result_shear
+
+        if TRANSFORM_REGISTRY and ttype is _RandomTranslate:
+            # RandomTranslate emits "translate_x" / "translate_y" in pixels (shape (B,)).
+            return {
+                "translate_x": params["translate_x"].to(device=device),
+                "translate_y": params["translate_y"].to(device=device),
+            }
+
         if TRANSFORM_REGISTRY and ttype is _RandomPerspective:
             params = transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
             return {
@@ -205,6 +269,12 @@ class KorniaAdapter:
             return rotation_matrix(angle_rad, H=H, W=W)
 
         if TRANSFORM_REGISTRY and ttype is _RandomAffine:
+            return KorniaAdapter._build_affine_matrix(params, H, W)
+
+        if TRANSFORM_REGISTRY and ttype is _RandomShear:
+            return KorniaAdapter._build_affine_matrix(params, H, W)
+
+        if TRANSFORM_REGISTRY and ttype is _RandomTranslate:
             return KorniaAdapter._build_affine_matrix(params, H, W)
 
         if TRANSFORM_REGISTRY and ttype is _RandomPerspective:
