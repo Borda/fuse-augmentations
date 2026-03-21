@@ -23,6 +23,7 @@
 - [📖 API Reference](#-api-reference)
 - [🎯 Auxiliary Targets](#-auxiliary-targets)
 - [🔌 Backend-Free Pipelines](#-backend-free-pipelines)
+- [🔧 Backend-Agnostic Meta-Config](#-backend-agnostic-meta-config)
 - [🔗 Multi-Backend Pipelines](#-multi-backend-pipelines)
 - [🔀 Reorder Policy](#-reorder-policy)
 - [🔬 Fusion Introspection](#-fusion-introspection)
@@ -59,6 +60,7 @@ A pipeline of three affine transforms saves two interpolation passes. At trainin
 - Auxiliary target support: masks, bounding boxes (`xyxy` and `xywh`), and keypoints warped by the same composed matrix.
 - Multi-backend: Kornia, TorchVision, and Albumentations transforms in the same pipeline.
 - Backend-free mode: construct a pipeline from numeric parameter ranges with no framework imports.
+- Meta-config mode: describe a pipeline as a list of `TransformSpec` objects and resolve it to any supported backend at construction time — swap backends without rewriting the pipeline.
 - Reorder policy: `NONE` (default), `POINTWISE` (bubble color ops after geometric runs), or `AGGRESSIVE` (currently an alias of `POINTWISE`).
 - Fusion introspection: inspect `fusion_plan`, `n_warps_saved`, and `transform_matrix` after each forward pass.
 - Projective (perspective) transform fusion via full 3x3 homography matrices.
@@ -123,15 +125,17 @@ For flip-only chains, `fuse-augmentations` uses an `ExactAffineSegment` that app
 
 ### Core
 
-| Class / Function           | Description                                                                                                                                                          |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Compose`                  | Main entry point. Wraps a list of transforms, groups them into fusible runs, and fuses each group on `forward()`. Aliases: `FusedCompose`, `AugmentationSequential`. |
-| `Compose.from_params(...)` | Classmethod. Build a backend-free pipeline from numeric parameter ranges.                                                                                            |
-| `FusedAffineSegment`       | Handles one fusible run: samples random params, composes matrices, applies a single interpolation pass.                                                              |
-| `ExactAffineSegment`       | Lossless segment for flip-only chains. Uses `tensor.flip` -- no interpolation.                                                                                       |
-| `ProjectiveSegment`        | Fuses projective transforms using 3x3 homography matrices.                                                                                                           |
-| `build_segments()`         | Internal. Partitions a transform list into fusible segments and passthrough barriers.                                                                                |
-| `SegmentDescriptor`        | Frozen dataclass describing one pipeline segment: `kind`, `transforms`, `n_warps_saved`, `backend`. Returned by `FusedCompose.fusion_plan_descriptors`.              |
+| Class / Function                      | Description                                                                                                                                                          |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Compose`                             | Main entry point. Wraps a list of transforms, groups them into fusible runs, and fuses each group on `forward()`. Aliases: `FusedCompose`, `AugmentationSequential`. |
+| `Compose.from_params(...)`            | Classmethod. Build a backend-free pipeline from numeric parameter ranges, or from a `specs` list of `TransformSpec` objects in backend-free mode.                    |
+| `Compose.from_config(specs, backend)` | Classmethod. Resolve a list of `TransformSpec` objects to a specific backend and build the pipeline -- no backend imports needed at spec time.                        |
+| `TransformSpec`                       | Frozen dataclass for declarative, backend-agnostic pipeline configuration: `op`, `params`, `p`. JSON-serialisable via `to_dict()` / `from_dict()`.                   |
+| `FusedAffineSegment`                  | Handles one fusible run: samples random params, composes matrices, applies a single interpolation pass.                                                              |
+| `ExactAffineSegment`                  | Lossless segment for flip-only chains. Uses `tensor.flip` -- no interpolation.                                                                                       |
+| `ProjectiveSegment`                   | Fuses projective transforms using 3x3 homography matrices.                                                                                                           |
+| `build_segments()`                    | Internal. Partitions a transform list into fusible segments and passthrough barriers.                                                                                |
+| `SegmentDescriptor`                   | Frozen dataclass describing one pipeline segment: `kind`, `transforms`, `n_warps_saved`, `backend`. Returned by `FusedCompose.fusion_plan_descriptors`.              |
 
 ### Enums
 
@@ -199,9 +203,52 @@ pipe = Compose.from_params(
 out = pipe(image)
 ```
 
-`from_params` accepts: `rotation`, `scale`, `scale_x`, `scale_y`, `shear_x`, `shear_y`, `translate_x`, `translate_y`, `hflip_p`, `vflip_p`, `interpolation`, `padding_mode`, `reorder`, `data_keys`.
+`from_params` accepts: `rotation`, `scale`, `scale_x`, `scale_y`, `shear_x`, `shear_y`, `translate_x`, `translate_y`, `hflip_p`, `vflip_p`, `interpolation`, `padding_mode`, `reorder`, `data_keys`, `specs`.
 
-**Future**: `from_params` will accept a list of per-transform dicts/dataclasses, each covering native parameters and per-transform probability -- enabling complete parity with passing native backend transforms directly.
+## 🔧 Backend-Agnostic Meta-Config
+
+`TransformSpec` is a frozen, JSON-serialisable dataclass that describes one augmentation operation without importing any backend. Use it to define pipelines in configuration files or experiment configs, then materialise them at runtime with either `from_config` (backend-specific) or `from_params(specs=...)` (backend-free):
+
+```python
+from fuse_aug import Compose, TransformSpec
+
+specs = [
+    TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.8),
+    TransformSpec(op="hflip", params={}, p=0.5),
+]
+
+# Resolve to a specific backend -- backend imports happen here, not at spec time
+pipe = Compose.from_config(specs, backend="kornia")
+out = pipe(image)
+
+# Or stay fully backend-free using from_params(specs=...)
+pipe2 = Compose.from_params(specs=specs)
+out2 = pipe2(image)
+```
+
+`TransformSpec` fields:
+
+| Field    | Type                   | Description                                                             |
+| -------- | ---------------------- | ----------------------------------------------------------------------- |
+| `op`     | `str`                  | Canonical op name: `"rotation"`, `"hflip"`, `"vflip"`, `"scale"`, etc. |
+| `params` | `dict[str, object]`    | Op-specific kwargs passed to the backend class constructor.             |
+| `p`      | `float`                | Per-sample application probability. Default `1.0`.                      |
+
+Specs are JSON round-trip safe via `to_dict()` / `from_dict()`:
+
+```python
+import json
+from fuse_aug import TransformSpec
+
+spec = TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.8)
+payload = json.dumps(spec.to_dict())
+restored = TransformSpec.from_dict(json.loads(payload))
+assert restored == spec
+```
+
+Supported ops for `from_config`: all ops in `SUPPORTED_OPS` (`"rotation"`, `"affine"`, `"shear"`, `"translate"`, `"hflip"`, `"vflip"`, `"scale"`, `"perspective"`, `"rotation90"`), subject to each backend's coverage (see `_resolver.py`).
+
+Supported ops for `from_params(specs=...)`: `"rotation"`, `"scale"`, `"scale_x"`, `"scale_y"`, `"shear_x"`, `"shear_y"`, `"translate_x"`, `"translate_y"`, `"hflip"`, `"vflip"`.
 
 ## 🔗 Multi-Backend Pipelines
 
