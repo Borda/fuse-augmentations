@@ -480,22 +480,46 @@ def _apply_discrete_exact(
 
     """
     ttype = type(transform)
+    bsz = int(image.shape[0])
+    same_on_batch = bool(getattr(transform, "same_on_batch", False))
 
     if TRANSFORM_REGISTRY and ttype is _RandomRotate90:
-        params = transform.get_params()  # type: ignore[attr-defined]
-        k = int(params["factor"]) % 4
-        if k in (1, 3):
-            _check_square_for_shape_changing_op(image, "RandomRotate90")
-        return torch.rot90(image, k=k, dims=[2, 3])
+        if same_on_batch:
+            params = transform.get_params()  # type: ignore[attr-defined]
+            k = int(params["factor"]) % 4
+            if k in (1, 3):
+                _check_square_for_shape_changing_op(image, "RandomRotate90")
+            return torch.rot90(image, k=k, dims=[2, 3])
+
+        if bsz == 0:
+            return image
+        out = image.clone()
+        for i in range(bsz):
+            params = transform.get_params()  # type: ignore[attr-defined]
+            k = int(params["factor"]) % 4
+            if k in (1, 3):
+                _check_square_for_shape_changing_op(image, "RandomRotate90")
+            out[i : i + 1] = torch.rot90(image[i : i + 1], k=k, dims=[2, 3])
+        return out
 
     if TRANSFORM_REGISTRY and ttype is _Transpose:
         _check_square_for_shape_changing_op(image, "Transpose")
         return image.permute(0, 1, 3, 2).contiguous()
 
     if TRANSFORM_REGISTRY and ttype is _D4:
-        params = transform.get_params()  # type: ignore[attr-defined]
-        elem = str(params["group_element"])
-        return _apply_d4_element(image, elem)
+        if same_on_batch:
+            params = transform.get_params()  # type: ignore[attr-defined]
+            elem = str(params["group_element"])
+            return _apply_d4_element(image, elem)
+
+        if bsz == 0:
+            return image
+        out = image.clone()
+        for i in range(bsz):
+            params = transform.get_params()  # type: ignore[attr-defined]
+            elem = str(params["group_element"])
+            out[i : i + 1] = _apply_d4_element(image[i : i + 1], elem)
+        return out
 
     msg = f"Cannot apply discrete exact op for {ttype.__name__!r}"
     raise TypeError(msg)

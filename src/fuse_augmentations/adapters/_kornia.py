@@ -365,21 +365,33 @@ class KorniaAdapter:
         if TRANSFORM_REGISTRY and ttype is _RandomVerticalFlip:
             return image.flip(dims=[2])
         if TRANSFORM_REGISTRY and ttype is _RandomRotation90:
-            # Sample k from the times range
+            # Sample per-batch k values using Kornia's native sampler.
             params = transform.generate_parameters(  # type: ignore[attr-defined]
                 torch.Size(image.shape),
             )
-            k = int(params["times"][0].item()) % 4
-            if k in (1, 3) and image.shape[2] != image.shape[3]:
+            k_values = params["times"].to(device=image.device).to(dtype=torch.int64) % 4
+            if image.shape[2] != image.shape[3] and bool(((k_values == 1) | (k_values == 3)).any().item()):
                 msg = (
-                    f"RandomRotation90 with k={k} changes spatial dimensions "
+                    "RandomRotation90 with k in {1, 3} changes spatial dimensions "
                     f"({image.shape[2]}x{image.shape[3]}). "
                     "ExactAffineSegment requires shape-preserving ops. "
                     "Use square images or pair with a GEOMETRIC_INTERP transform "
                     "to route through FusedAffineSegment instead."
                 )
                 raise RuntimeError(msg)
-            return torch.rot90(image, k=k, dims=[2, 3])
+            if k_values.numel() == 0:
+                return image
+            # Fast path: shared k across batch.
+            if bool((k_values == k_values[0]).all().item()):
+                return torch.rot90(image, k=int(k_values[0].item()), dims=[2, 3])
+
+            out = image.clone()
+            for kval in (1, 2, 3):
+                idx = torch.nonzero(k_values == kval, as_tuple=False).squeeze(1)
+                if idx.numel() == 0:
+                    continue
+                out[idx] = torch.rot90(image[idx], k=kval, dims=[2, 3])
+            return out
         msg = f"Cannot apply exact op for {ttype.__name__!r}"
         raise TypeError(msg)
 
