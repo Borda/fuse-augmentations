@@ -299,6 +299,27 @@ class TorchVisionAdapter:
         raise TypeError(f"Cannot determine flip dims for {type(transform).__name__!r}")
 
     @staticmethod
+    def exact_apply(transform: object, image: torch.Tensor) -> torch.Tensor:
+        """Apply a GEOMETRIC_EXACT transform losslessly.
+
+        TorchVision currently only supports flip transforms as GEOMETRIC_EXACT.
+
+        Args:
+            transform: A TorchVision GEOMETRIC_EXACT transform.
+            image: ``(B, C, H, W)`` input tensor.
+
+        Returns:
+            Transformed ``(B, C, H, W)`` tensor.
+
+        """
+        if isinstance(transform, tuple(_HFLIP_TYPES_FS)):
+            return image.flip(dims=[3])
+        if isinstance(transform, tuple(_VFLIP_TYPES_FS)):
+            return image.flip(dims=[2])
+        msg = f"Cannot apply exact op for {type(transform).__name__!r}"
+        raise TypeError(msg)
+
+    @staticmethod
     def same_on_batch(transform: object) -> bool:
         """Return whether randomness should be shared across the input batch."""
         return _is_torchvision_v2_transform(transform) or bool(getattr(transform, "same_on_batch", False))

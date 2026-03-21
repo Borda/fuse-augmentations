@@ -366,6 +366,9 @@ class _FlipAdapter:
     def exact_flip_dims(self, transform):
         return getattr(transform, "_flip_dims", [])
 
+    def exact_apply(self, transform, image):
+        return image.flip(dims=self.exact_flip_dims(transform))
+
     def sample_params(self, transform, input_shape, device):
         bsz = input_shape[0]
         return {"_batch_size": torch.tensor([bsz])}
