@@ -157,12 +157,15 @@ def vflip_matrix_np(H: int) -> NDArray[np.float64]:  # noqa: N803
 # ---------------------------------------------------------------------------
 
 try:
+    from albumentations import D4 as _D4
     from albumentations import Affine as _Affine
     from albumentations import HorizontalFlip as _HorizontalFlip
     from albumentations import Perspective as _Perspective
+    from albumentations import RandomRotate90 as _RandomRotate90
     from albumentations import Rotate as _Rotate
     from albumentations import SafeRotate as _SafeRotate
     from albumentations import ShiftScaleRotate as _ShiftScaleRotate
+    from albumentations import Transpose as _Transpose
     from albumentations import VerticalFlip as _VerticalFlip
 
     TRANSFORM_REGISTRY: dict[type, TransformCategory] = {
@@ -172,6 +175,9 @@ try:
         _ShiftScaleRotate: TransformCategory.GEOMETRIC_INTERP,
         _HorizontalFlip: TransformCategory.GEOMETRIC_EXACT,
         _VerticalFlip: TransformCategory.GEOMETRIC_EXACT,
+        _RandomRotate90: TransformCategory.GEOMETRIC_EXACT,
+        _D4: TransformCategory.GEOMETRIC_EXACT,
+        _Transpose: TransformCategory.GEOMETRIC_EXACT,
         _Perspective: TransformCategory.PROJECTIVE,
     }
 
@@ -181,6 +187,7 @@ try:
     # but sample_params/build_matrix/exact_flip_dims use these frozensets directly.
     _HFLIP_TYPES: frozenset[type] = frozenset({_HorizontalFlip})
     _VFLIP_TYPES: frozenset[type] = frozenset({_VerticalFlip})
+    _EXACT_DISCRETE_TYPES: frozenset[type] = frozenset({_RandomRotate90, _D4, _Transpose})
     _INTERP_TYPES: frozenset[type] = frozenset({_Affine, _Rotate, _SafeRotate, _ShiftScaleRotate})
     _ALL_REGISTRY_TYPES: frozenset[type] = frozenset(TRANSFORM_REGISTRY)
 
@@ -188,6 +195,7 @@ except ImportError:
     TRANSFORM_REGISTRY = {}
     _HFLIP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _VFLIP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _EXACT_DISCRETE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _INTERP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _ALL_REGISTRY_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
 
@@ -271,8 +279,9 @@ class AlbumentationsAdapter:
         """
         B, _C, H, W = input_shape  # noqa: N806
 
-        # Flip transforms have no sampled params — only need batch size.
-        if _is_albu_instance(transform, _HFLIP_TYPES | _VFLIP_TYPES):
+        # Exact discrete transforms have no sampled params — only need batch size.
+        _exact_types = _HFLIP_TYPES | _VFLIP_TYPES | _EXACT_DISCRETE_TYPES
+        if _is_albu_instance(transform, _exact_types):
             return {"_batch_size": torch.tensor([B], device=device, dtype=torch.int64)}
 
         # GEOMETRIC_INTERP: extract the pre-built matrix B times (once per sample)
@@ -324,6 +333,12 @@ class AlbumentationsAdapter:
             M_np = vflip_matrix_np(H=H)  # noqa: N806
             return torch.tensor(M_np, dtype=torch.float32, device=device).unsqueeze(0).expand(B, -1, -1).clone()
 
+        if _is_albu_instance(transform, _EXACT_DISCRETE_TYPES):
+            # Discrete exact ops (rot90, D4, transpose) are handled by exact_apply;
+            # build_matrix returns identity since they bypass the matrix path.
+            B = int(params["_batch_size"].item())  # noqa: N806
+            return torch.eye(3).unsqueeze(0).expand(B, -1, -1).clone()
+
         if "matrix" in params:
             # Already (B, 3, 3) float32 from sample_params
             return params["matrix"]
@@ -351,6 +366,35 @@ class AlbumentationsAdapter:
         if _is_albu_instance(transform, _VFLIP_TYPES):
             return [2]
         raise TypeError(f"Cannot determine flip dims for {type(transform).__name__!r}")
+
+    @staticmethod
+    def exact_apply(transform: object, image: torch.Tensor) -> torch.Tensor:
+        """Apply a GEOMETRIC_EXACT transform losslessly.
+
+        Dispatches flips via ``tensor.flip``, 90-degree rotations via
+        ``torch.rot90``, transposes via ``.permute``, and D4 elements via
+        the appropriate combination.
+
+        Args:
+            transform: An Albumentations GEOMETRIC_EXACT transform.
+            image: ``(B, C, H, W)`` input tensor.
+
+        Returns:
+            Transformed ``(B, C, H, W)`` tensor.
+
+        Raises:
+            RuntimeError: If a discrete op would change spatial dimensions
+                on non-square images.
+
+        """
+        if _is_albu_instance(transform, _HFLIP_TYPES):
+            return image.flip(dims=[3])
+        if _is_albu_instance(transform, _VFLIP_TYPES):
+            return image.flip(dims=[2])
+        if _is_albu_instance(transform, _EXACT_DISCRETE_TYPES):
+            return _apply_discrete_exact(transform, image)
+        msg = f"Cannot apply exact op for {type(transform).__name__!r}"
+        raise TypeError(msg)
 
     @staticmethod
     def call_nonfused(
@@ -390,6 +434,107 @@ class AlbumentationsAdapter:
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def _check_square_for_shape_changing_op(
+    image: torch.Tensor,
+    op_name: str,
+) -> None:
+    """Raise if a shape-changing discrete op is used on non-square images."""
+    if image.shape[2] != image.shape[3]:
+        msg = (
+            f"{op_name} changes spatial dimensions on non-square images "
+            f"({image.shape[2]}x{image.shape[3]}). "
+            "ExactAffineSegment requires shape-preserving ops. "
+            "Use square images or pair with a GEOMETRIC_INTERP transform "
+            "to route through FusedAffineSegment instead."
+        )
+        raise RuntimeError(msg)
+
+
+# D4 group element -> tensor operation mapping
+_D4_OPS: dict[str, str] = {
+    "e": "identity",
+    "r90": "rot90_1",
+    "r180": "rot90_2",
+    "r270": "rot90_3",
+    "h": "hflip",
+    "v": "vflip",
+    "t": "transpose",
+    "hvt": "hvt",
+}
+
+
+def _apply_discrete_exact(
+    transform: object,
+    image: torch.Tensor,
+) -> torch.Tensor:
+    """Apply a discrete exact transform (RandomRotate90, D4, Transpose).
+
+    Args:
+        transform: An Albumentations discrete exact transform.
+        image: ``(B, C, H, W)`` input tensor.
+
+    Returns:
+        Transformed ``(B, C, H, W)`` tensor.
+
+    """
+    ttype = type(transform)
+
+    if TRANSFORM_REGISTRY and ttype is _RandomRotate90:
+        params = transform.get_params()  # type: ignore[attr-defined]
+        k = int(params["factor"]) % 4
+        if k in (1, 3):
+            _check_square_for_shape_changing_op(image, "RandomRotate90")
+        return torch.rot90(image, k=k, dims=[2, 3])
+
+    if TRANSFORM_REGISTRY and ttype is _Transpose:
+        _check_square_for_shape_changing_op(image, "Transpose")
+        return image.permute(0, 1, 3, 2).contiguous()
+
+    if TRANSFORM_REGISTRY and ttype is _D4:
+        params = transform.get_params()  # type: ignore[attr-defined]
+        elem = str(params["group_element"])
+        return _apply_d4_element(image, elem)
+
+    msg = f"Cannot apply discrete exact op for {ttype.__name__!r}"
+    raise TypeError(msg)
+
+
+def _apply_d4_element(image: torch.Tensor, elem: str) -> torch.Tensor:
+    """Apply a single D4 group element to a (B, C, H, W) tensor.
+
+    Args:
+        image: ``(B, C, H, W)`` input tensor.
+        elem: D4 group element name (``"e"``, ``"r90"``, ``"r180"``,
+            ``"r270"``, ``"h"``, ``"v"``, ``"t"``, ``"hvt"``).
+
+    Returns:
+        Transformed ``(B, C, H, W)`` tensor.
+
+    """
+    if elem == "e":
+        return image
+    if elem == "r90":
+        _check_square_for_shape_changing_op(image, "D4(r90)")
+        return torch.rot90(image, k=1, dims=[2, 3])
+    if elem == "r180":
+        return torch.rot90(image, k=2, dims=[2, 3])
+    if elem == "r270":
+        _check_square_for_shape_changing_op(image, "D4(r270)")
+        return torch.rot90(image, k=3, dims=[2, 3])
+    if elem == "h":
+        return image.flip(dims=[3])
+    if elem == "v":
+        return image.flip(dims=[2])
+    if elem == "t":
+        _check_square_for_shape_changing_op(image, "D4(t)")
+        return image.permute(0, 1, 3, 2).contiguous()
+    if elem == "hvt":
+        _check_square_for_shape_changing_op(image, "D4(hvt)")
+        return image.flip(dims=[2, 3]).permute(0, 1, 3, 2).contiguous()
+    msg = f"Unknown D4 group element: {elem!r}"
+    raise ValueError(msg)
 
 
 def _sample_matrices(transform: object, B: int, H: int, W: int) -> NDArray[np.float64]:  # noqa: N803

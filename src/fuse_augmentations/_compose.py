@@ -1041,6 +1041,16 @@ class _DirectParamAdapter:
         raise TypeError(msg)
 
     @staticmethod
+    def exact_apply(transform: object, image: torch.Tensor) -> torch.Tensor:
+        """Apply a GEOMETRIC_EXACT transform losslessly."""
+        if isinstance(transform, _DirectFlipTransform):
+            if transform.flip_type == "hflip":
+                return image.flip(dims=[3])
+            return image.flip(dims=[2])
+        msg = f"Cannot apply exact op for {type(transform).__name__!r}"
+        raise TypeError(msg)
+
+    @staticmethod
     def call_nonfused(
         transform: object,
         image: torch.Tensor,

@@ -39,6 +39,7 @@ try:
     from kornia.augmentation import RandomHorizontalFlip as _RandomHorizontalFlip
     from kornia.augmentation import RandomPerspective as _RandomPerspective
     from kornia.augmentation import RandomRotation as _RandomRotation
+    from kornia.augmentation import RandomRotation90 as _RandomRotation90
     from kornia.augmentation import RandomShear as _RandomShear
     from kornia.augmentation import RandomTranslate as _RandomTranslate
     from kornia.augmentation import RandomVerticalFlip as _RandomVerticalFlip
@@ -50,6 +51,7 @@ try:
         _RandomTranslate: TransformCategory.GEOMETRIC_INTERP,
         _RandomHorizontalFlip: TransformCategory.GEOMETRIC_EXACT,
         _RandomVerticalFlip: TransformCategory.GEOMETRIC_EXACT,
+        _RandomRotation90: TransformCategory.GEOMETRIC_EXACT,
         _RandomPerspective: TransformCategory.PROJECTIVE,
     }
 except ImportError:
@@ -117,11 +119,12 @@ class KorniaAdapter:
 
         B, _C, _H, _W = input_shape  # noqa: N806
 
-        # Flips have no sampled params - p-mask handles them.
+        # Exact discrete transforms have no sampled params — p-mask handles them.
         # Store batch metadata so build_matrix can construct the right shape.
         if TRANSFORM_REGISTRY and ttype in (
             _RandomHorizontalFlip,
             _RandomVerticalFlip,
+            _RandomRotation90,
         ):
             return {
                 "_batch_size": torch.tensor([B], device=device, dtype=torch.int64),
@@ -220,6 +223,11 @@ class KorniaAdapter:
             B = int(params["_batch_size"].item())  # noqa: N806
             device = params["_batch_size"].device
             return vflip_matrix(H=H, batch_size=B, device=device, dtype=torch.float32)
+
+        if TRANSFORM_REGISTRY and ttype is _RandomRotation90:
+            # Discrete exact op handled by exact_apply; return identity
+            B = int(params["_batch_size"].item())  # noqa: N806
+            return torch.eye(3).unsqueeze(0).expand(B, -1, -1).clone()
 
         if TRANSFORM_REGISTRY and ttype is _RandomRotation:
             angle_rad = params["angle_rad"]
@@ -329,6 +337,51 @@ class KorniaAdapter:
         if TRANSFORM_REGISTRY and ttype is _RandomVerticalFlip:
             return [2]
         raise TypeError(f"Cannot determine flip dims for {ttype.__name__!r}")
+
+    @staticmethod
+    def exact_apply(transform: object, image: torch.Tensor) -> torch.Tensor:
+        """Apply a GEOMETRIC_EXACT transform losslessly.
+
+        Dispatches flips via ``tensor.flip`` and 90-degree rotations via
+        ``torch.rot90``. For ``RandomRotation90``, the rotation count ``k``
+        is sampled from the transform's ``times`` range.
+
+        Args:
+            transform: A Kornia GEOMETRIC_EXACT transform.
+            image: ``(B, C, H, W)`` input tensor.
+
+        Returns:
+            Transformed ``(B, C, H, W)`` tensor.
+
+        Raises:
+            RuntimeError: If ``RandomRotation90`` is used on non-square images
+                with an odd rotation count (k=1 or k=3), since these change
+                spatial dimensions.
+
+        """
+        ttype = type(transform)
+        if TRANSFORM_REGISTRY and ttype is _RandomHorizontalFlip:
+            return image.flip(dims=[3])
+        if TRANSFORM_REGISTRY and ttype is _RandomVerticalFlip:
+            return image.flip(dims=[2])
+        if TRANSFORM_REGISTRY and ttype is _RandomRotation90:
+            # Sample k from the times range
+            params = transform.generate_parameters(  # type: ignore[attr-defined]
+                torch.Size(image.shape),
+            )
+            k = int(params["times"][0].item()) % 4
+            if k in (1, 3) and image.shape[2] != image.shape[3]:
+                msg = (
+                    f"RandomRotation90 with k={k} changes spatial dimensions "
+                    f"({image.shape[2]}x{image.shape[3]}). "
+                    "ExactAffineSegment requires shape-preserving ops. "
+                    "Use square images or pair with a GEOMETRIC_INTERP transform "
+                    "to route through FusedAffineSegment instead."
+                )
+                raise RuntimeError(msg)
+            return torch.rot90(image, k=k, dims=[2, 3])
+        msg = f"Cannot apply exact op for {ttype.__name__!r}"
+        raise TypeError(msg)
 
     @staticmethod
     def call_nonfused(

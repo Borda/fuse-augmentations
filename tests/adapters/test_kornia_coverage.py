@@ -40,6 +40,7 @@ _CONSTRUCTOR_KWARGS: dict[str, dict] = {
     # Future entries (Phase A.2):
     "RandomShear": {"shear": (10.0, 10.0), "p": 1.0},
     "RandomTranslate": {"translate": (0.3, 0.3), "p": 1.0},
+    "RandomRotation90": {"times": (0, 3), "p": 1.0},
 }
 
 BSZ, C, H, W = 2, 3, 32, 32

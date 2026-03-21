@@ -38,6 +38,9 @@ _CONSTRUCTOR_KWARGS: dict[str, dict] = {
     "Perspective": {"scale": (0.05, 0.1), "p": 1.0},
     # Future entries (Phase A.4):
     "SafeRotate": {"limit": (-30, 30), "p": 1.0},
+    "RandomRotate90": {"p": 1.0},
+    "D4": {"p": 1.0},
+    "Transpose": {"p": 1.0},
 }
 
 BSZ, C, H, W = 2, 3, 32, 32

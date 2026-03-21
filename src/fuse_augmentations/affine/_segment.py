@@ -123,12 +123,17 @@ class ExactAffineSegment(nn.Module):
                 active_scalar = torch.rand((), device=device) < prob
                 active = active_scalar.expand(bsz)
 
-            flip_dims = self.adapter.exact_flip_dims(tfm)
-            flipped = image.flip(dims=flip_dims)
-            image = torch.where(active[:, None, None, None], flipped, image)
+            transformed = self.adapter.exact_apply(tfm, image)
+            image = torch.where(active[:, None, None, None], transformed, image)
 
-            # Transform auxiliary targets with the same per-sample active mask
+            # Transform auxiliary targets with the same per-sample active mask.
+            # Flip-based aux routing uses exact_flip_dims; non-flip exact ops
+            # (rot90, transpose) do not yet support auxiliary targets.
             if aux_targets:
+                try:
+                    flip_dims = self.adapter.exact_flip_dims(tfm)
+                except (TypeError, NotImplementedError):
+                    continue
                 is_hflip = 3 in flip_dims
                 is_vflip = 2 in flip_dims
                 for key in list(aux_targets.keys()):

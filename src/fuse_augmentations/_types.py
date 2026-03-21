@@ -147,6 +147,24 @@ class TransformAdapter(Protocol):
         """
         raise NotImplementedError("Adapter does not implement exact_flip_dims; required for ExactAffineSegment support")
 
+    def exact_apply(self, transform: object, image: Tensor) -> Tensor:
+        """Apply a GEOMETRIC_EXACT transform losslessly to an image batch.
+
+        Default implementation flips the image along the dims returned by
+        :meth:`exact_flip_dims`. Adapters that support non-flip discrete ops
+        (e.g. 90-degree rotations, transposes) should override this method
+        to dispatch via ``torch.rot90``, ``.permute``, etc.
+
+        Args:
+            transform: The backend transform object (GEOMETRIC_EXACT category).
+            image: ``(B, C, H, W)`` input tensor.
+
+        Returns:
+            Transformed ``(B, C, H, W)`` tensor.
+
+        """
+        return image.flip(dims=self.exact_flip_dims(transform))
+
     def call_nonfused(
         self,
         transform: object,
