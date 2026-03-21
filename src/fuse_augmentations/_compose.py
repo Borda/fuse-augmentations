@@ -35,7 +35,7 @@ import torch
 from torch import nn
 
 from fuse_augmentations._backend import Backend, detect_backends_per_transform
-from fuse_augmentations._types import ReorderPolicy, TransformAdapter, TransformCategory
+from fuse_augmentations._types import ReorderPolicy, SegmentDescriptor, TransformAdapter, TransformCategory
 from fuse_augmentations.affine._matrix import (
     hflip_matrix,
     matmul3x3,
@@ -454,6 +454,51 @@ class FusedCompose(nn.Module):
 
             parts.append(f"passthrough({type(seg).__name__})")
         return " \u2192 ".join(parts) if parts else "empty"
+
+    @property
+    def fusion_plan_descriptors(self) -> list[SegmentDescriptor]:
+        """Return a structured list of segment descriptors for the fusion plan.
+
+        Each descriptor captures the kind of segment, the transform class names,
+        warps saved, and optionally the backend adapter. This is the machine-readable
+        counterpart of the :attr:`fusion_plan` string property.
+
+        The fusion_plan string is derivable from this list:
+        ``" \u2192 ".join(f"{d.kind}({', '.join(d.transforms)})" for d in descriptors)``.
+
+        Returns:
+            List of :class:`~fuse_augmentations._types.SegmentDescriptor` instances,
+            one per segment in the pipeline.
+
+        """
+        backend = type(self._adapter).__name__ if self._adapter else None
+        descriptors: list[SegmentDescriptor] = []
+        for seg in self._segments:
+            if isinstance(seg, (ProjectiveSegment, AlbuProjectiveSegment)):
+                names = tuple(type(t).__name__ for t in seg.transforms)
+                n = len(names) - 1 if len(names) > 1 else 0
+                descriptors.append(SegmentDescriptor(
+                    kind="projective", transforms=names, n_warps_saved=n, backend=backend,
+                ))
+                continue
+            if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment)):
+                names = tuple(type(t).__name__ for t in seg.transforms)
+                n = len(names) - 1 if len(names) > 1 else 0
+                descriptors.append(SegmentDescriptor(kind="fused", transforms=names, n_warps_saved=n, backend=backend))
+                continue
+            if isinstance(seg, ExactAffineSegment):
+                names = tuple(type(t).__name__ for t in seg.transforms)
+                n = len(names)  # Each flip saves 1 warp vs grid_sample
+                descriptors.append(SegmentDescriptor(kind="exact", transforms=names, n_warps_saved=n, backend=backend))
+                continue
+            if isinstance(seg, _PassthroughSegment):
+                descriptors.append(SegmentDescriptor(
+                    kind="passthrough", transforms=(type(seg.transform).__name__,), n_warps_saved=0,
+                ))
+                continue
+            # Legacy passthrough
+            descriptors.append(SegmentDescriptor(kind="passthrough", transforms=(type(seg).__name__,), n_warps_saved=0))
+        return descriptors
 
     @classmethod
     def from_params(
