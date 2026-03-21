@@ -123,9 +123,18 @@ class ExactAffineSegment(nn.Module):
                 active_scalar = torch.rand((), device=device) < prob
                 active = active_scalar.expand(bsz)
 
-            transformed = self.adapter.exact_apply(tfm, image)
-            image = torch.where(active[:, None, None, None], transformed, image)
+            # Skip this transform entirely if no samples are active.
+            if not bool(active.any().item()):
+                continue
 
+            # Apply the exact transform only to the active subset to avoid
+            # failures on inactive samples (e.g. shape constraints).
+            active_idx = active.nonzero(as_tuple=True)[0]
+            transformed_active = self.adapter.exact_apply(tfm, image[active_idx])
+
+            # Scatter the transformed subset back into the full batch.
+            image = image.clone()
+            image[active_idx] = transformed_active
             # Transform auxiliary targets with the same per-sample active mask.
             # Flip-based aux routing uses exact_flip_dims; non-flip exact ops
             # (rot90, transpose) do not yet support auxiliary targets.
@@ -944,12 +953,12 @@ def reorder_aggressive(
 ) -> list[object]:
     """Reorder transforms aggressively -- bubble-sort POINTWISE ops after geometric chains.
 
-    Applies the POINTWISE reorder algorithm iteratively until the list stabilizes.
-    This is the superset of :func:`reorder_pointwise`: for well-formed pipelines the
-    result is identical, but the multi-pass approach provides stronger guarantees
-    for edge cases where a single pass might miss POINTWISE ops.
+    Applies the POINTWISE reorder algorithm iteratively until the list stabilizes
+    (convergence guarantee). ``SPATIAL_KERNEL`` barriers are never crossed.
 
-    ``SPATIAL_KERNEL`` barriers are never crossed.
+    For typical pipelines the result is identical to a single :func:`reorder_pointwise`
+    pass; the multi-pass variant provides a convergence guarantee for pathological
+    orderings.
 
     Args:
         transforms: List of transform objects to reorder.
@@ -963,7 +972,7 @@ def reorder_aggressive(
     current = transforms
     for _ in range(len(transforms)):  # max n iterations
         reordered = reorder_pointwise(current, adapter)
-        if reordered == current:  # stable
+        if len(reordered) == len(current) and all(a is b for a, b in zip(reordered, current, strict=True)):
             break
         current = reordered
     return current

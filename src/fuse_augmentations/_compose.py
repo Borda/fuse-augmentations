@@ -99,7 +99,8 @@ class FusedCompose(nn.Module):
         reorder: Reorder policy applied before segmentation.
             ``NONE`` (default) preserves the original order.
             ``POINTWISE`` reorders pointwise ops after geometric chains.
-            ``AGGRESSIVE`` applies the multi-pass bubble-sort variant of POINTWISE.
+            ``AGGRESSIVE`` currently aliases ``POINTWISE`` and is kept for API
+            compatibility with future stronger reorder semantics.
         interpolation: Interpolation mode override for fused segments
             (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
             Defaults to ``"bilinear"`` when ``None``.
@@ -485,6 +486,7 @@ class FusedCompose(nn.Module):
             projective segments carry the adapter class name.
 
         """
+
         def _resolve_backend(seg: object) -> str | None:
             # from_params() uses _DirectParamAdapter; expose backend-free descriptors.
             if isinstance(self._adapter, _DirectParamAdapter):
@@ -509,28 +511,47 @@ class FusedCompose(nn.Module):
             if isinstance(seg, (ProjectiveSegment, AlbuProjectiveSegment)):
                 names = tuple(type(t).__name__ for t in seg.transforms)
                 n = len(names) - 1 if len(names) > 1 else 0
-                descriptors.append(SegmentDescriptor(
-                    kind="projective", transforms=names, n_warps_saved=n, backend=_resolve_backend(seg),
-                ))
+                descriptors.append(
+                    SegmentDescriptor(
+                        kind="projective",
+                        transforms=names,
+                        n_warps_saved=n,
+                        backend=_resolve_backend(seg),
+                    )
+                )
                 continue
             if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment)):
                 names = tuple(type(t).__name__ for t in seg.transforms)
                 n = len(names) - 1 if len(names) > 1 else 0
-                descriptors.append(SegmentDescriptor(
-                    kind="fused", transforms=names, n_warps_saved=n, backend=_resolve_backend(seg),
-                ))
+                descriptors.append(
+                    SegmentDescriptor(
+                        kind="fused",
+                        transforms=names,
+                        n_warps_saved=n,
+                        backend=_resolve_backend(seg),
+                    )
+                )
                 continue
             if isinstance(seg, ExactAffineSegment):
                 names = tuple(type(t).__name__ for t in seg.transforms)
                 n = len(names)  # Each flip saves 1 warp vs grid_sample
-                descriptors.append(SegmentDescriptor(
-                    kind="exact", transforms=names, n_warps_saved=n, backend=_resolve_backend(seg),
-                ))
+                descriptors.append(
+                    SegmentDescriptor(
+                        kind="exact",
+                        transforms=names,
+                        n_warps_saved=n,
+                        backend=_resolve_backend(seg),
+                    )
+                )
                 continue
             if isinstance(seg, _PassthroughSegment):
-                descriptors.append(SegmentDescriptor(
-                    kind="passthrough", transforms=(type(seg.transform).__name__,), n_warps_saved=0,
-                ))
+                descriptors.append(
+                    SegmentDescriptor(
+                        kind="passthrough",
+                        transforms=(type(seg.transform).__name__,),
+                        n_warps_saved=0,
+                    )
+                )
                 continue
             # Legacy passthrough
             descriptors.append(SegmentDescriptor(kind="passthrough", transforms=(type(seg).__name__,), n_warps_saved=0))

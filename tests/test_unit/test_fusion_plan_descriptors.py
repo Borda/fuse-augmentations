@@ -1,4 +1,5 @@
 """Unit tests for FusedCompose.fusion_plan_descriptors property (Phase B.2)."""
+
 from __future__ import annotations
 
 import pytest
@@ -88,7 +89,5 @@ class TestFusionPlanDescriptorsConsistency:
         from fuse_augmentations._compose import FusedCompose
 
         pipe = FusedCompose.from_params(rotation=(-30, 30), hflip_p=0.5)
-        total_from_descriptors = sum(
-            d.n_warps_saved for d in pipe.fusion_plan_descriptors
-        )
+        total_from_descriptors = sum(d.n_warps_saved for d in pipe.fusion_plan_descriptors)
         assert total_from_descriptors == pipe.n_warps_saved

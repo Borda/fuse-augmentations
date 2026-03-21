@@ -160,6 +160,37 @@ def test_build_matrix_non_identity_matrix_preserved():
     assert torch.allclose(mtx[0], torch.tensor(known, dtype=torch.float32), atol=1e-5)
 
 
+def test_build_matrix_transpose_returns_non_identity_on_square_images():
+    """Transpose must provide a real affine matrix in mixed fused segments."""
+    from fuse_augmentations.adapters import _albumentations as _mod
+    from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+
+    adapter = AlbumentationsAdapter()
+
+    class _TransposeStub:
+        pass
+
+    params = {"_batch_size": torch.tensor([2], dtype=torch.int64)}
+    with (
+        patch.object(_mod, "_RandomRotate90", type("_RandomRotate90Stub", (), {}), create=True),
+        patch.object(_mod, "_D4", type("_D4Stub", (), {}), create=True),
+        patch.object(_mod, "_Transpose", _TransposeStub, create=True),
+        patch.object(_mod, "_EXACT_DISCRETE_TYPES", frozenset({_TransposeStub})),
+    ):
+        mtx = adapter.build_matrix(_TransposeStub(), params, H=32, W=32)
+
+    expected = (
+        torch
+        .tensor(
+            [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            dtype=torch.float32,
+        )
+        .unsqueeze(0)
+        .expand(2, -1, -1)
+    )
+    assert torch.allclose(mtx, expected)
+
+
 # ---------------------------------------------------------------------------
 # Flip dims tests
 # ---------------------------------------------------------------------------

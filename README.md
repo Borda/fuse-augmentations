@@ -59,7 +59,7 @@ A pipeline of three affine transforms saves two interpolation passes. At trainin
 - Auxiliary target support: masks, bounding boxes (`xyxy` and `xywh`), and keypoints warped by the same composed matrix.
 - Multi-backend: Kornia, TorchVision, and Albumentations transforms in the same pipeline.
 - Backend-free mode: construct a pipeline from numeric parameter ranges with no framework imports.
-- Reorder policy: `NONE` (default), `POINTWISE` (bubble color ops after geometric runs), or `AGGRESSIVE` (multi-pass, maximal fusion window).
+- Reorder policy: `NONE` (default), `POINTWISE` (bubble color ops after geometric runs), or `AGGRESSIVE` (currently an alias of `POINTWISE`).
 - Fusion introspection: inspect `fusion_plan`, `n_warps_saved`, and `transform_matrix` after each forward pass.
 - Projective (perspective) transform fusion via full 3x3 homography matrices.
 - **Roadmap**: future versions will allow passing transforms as meta-configuration and receiving output in any supported backend -- e.g. build a pipeline with Albumentations ops and switch to Kornia output when changing accelerator, without rewriting the pipeline.
@@ -135,12 +135,12 @@ For flip-only chains, `fuse-augmentations` uses an `ExactAffineSegment` that app
 
 ### Enums
 
-| Enum                | Values                                                                             |
-| ------------------- | ---------------------------------------------------------------------------------- |
-| `ReorderPolicy`     | `NONE` (default), `POINTWISE` (bubble color ops after geometric runs), `AGGRESSIVE` (multi-pass maximal bubble-sort) |
-| `InterpolationMode` | `NEAREST`, `BILINEAR`, `BICUBIC`                                                   |
-| `PaddingMode`       | `ZEROS`, `BORDER`, `REFLECTION`                                                    |
-| `TransformCategory` | `GEOMETRIC_INTERP`, `GEOMETRIC_EXACT`, `POINTWISE`, `SPATIAL_KERNEL`, `PROJECTIVE` |
+| Enum                | Values                                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `ReorderPolicy`     | `NONE` (default), `POINTWISE` (bubble color ops after geometric runs), `AGGRESSIVE` (currently same as `POINTWISE`) |
+| `InterpolationMode` | `NEAREST`, `BILINEAR`, `BICUBIC`                                                                                    |
+| `PaddingMode`       | `ZEROS`, `BORDER`, `REFLECTION`                                                                                     |
+| `TransformCategory` | `GEOMETRIC_INTERP`, `GEOMETRIC_EXACT`, `POINTWISE`, `SPATIAL_KERNEL`, `PROJECTIVE`                                  |
 
 ### Auxiliary Target Functions
 
@@ -249,25 +249,7 @@ print(pipe.fusion_plan)
 
 **`ReorderPolicy.NONE`** (default): preserves declared order, merges consecutive fusible transforms.
 
-**`ReorderPolicy.AGGRESSIVE`**: multi-pass variant that extends the fusion window maximally. It repeatedly applies the same single-pass bubble used by `POINTWISE` until the transform order stops changing — equivalent to bubble-sorting all `POINTWISE` ops past all geometric ops across the entire pipeline:
-
-```python
-pipe = Compose(
-    [
-        K.RandomRotation(degrees=15, p=0.8),
-        K.ColorJitter(brightness=0.3, p=0.5),  # POINTWISE
-        K.RandomHorizontalFlip(p=0.5),
-        K.ColorJitter(contrast=0.2, p=0.4),    # POINTWISE
-        K.RandomAffine(degrees=0, scale=(0.8, 1.2)),
-    ],
-    reorder=ReorderPolicy.AGGRESSIVE,
-)
-
-print(pipe.fusion_plan)
-# fused(RandomRotation, RandomHorizontalFlip, RandomAffine) -> passthrough(ColorJitter) -> passthrough(ColorJitter)
-```
-
-Because `AGGRESSIVE` may move `POINTWISE` ops past multiple geometric groups, the order in which color ops are applied may differ from the declared order. Use `POINTWISE` when the relative order of color operations must be preserved; use `AGGRESSIVE` when maximum fusion window is the priority.
+**`ReorderPolicy.AGGRESSIVE`**: currently behaves the same as `POINTWISE`. It is accepted for forward compatibility, but today it preserves the same pointwise ordering and yields the same fusion plan as `POINTWISE`.
 
 ## 🔬 Fusion Introspection
 
@@ -297,18 +279,19 @@ for desc in pipe.fusion_plan_descriptors:
 
 # Each descriptor is also JSON-serialisable:
 import json
+
 plan_json = [d.to_dict() for d in pipe.fusion_plan_descriptors]
 print(json.dumps(plan_json, indent=2))
 ```
 
 `SegmentDescriptor` fields:
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `kind` | `str` | Segment type: `"fused"`, `"exact"`, `"projective"`, or `"passthrough"` |
-| `transforms` | `tuple[str, ...]` | Class names of transforms in this segment (`list` in `to_dict()` output) |
-| `n_warps_saved` | `int` | Interpolation passes eliminated by this segment |
-| `backend` | `str \| None` | Adapter class name (`"KorniaAdapter"`, `"AlbumentationsAdapter"`, `"TorchVisionAdapter"`) for fused/exact/projective segments; `None` for passthrough segments and backend-free pipelines |
+| Field           | Type              | Description                                                                                                                                                                               |
+| --------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kind`          | `str`             | Segment type: `"fused"`, `"exact"`, `"projective"`, or `"passthrough"`                                                                                                                    |
+| `transforms`    | `tuple[str, ...]` | Class names of transforms in this segment (`list` in `to_dict()` output)                                                                                                                  |
+| `n_warps_saved` | `int`             | Interpolation passes eliminated by this segment                                                                                                                                           |
+| `backend`       | `str \| None`     | Adapter class name (`"KorniaAdapter"`, `"AlbumentationsAdapter"`, `"TorchVisionAdapter"`) for fused/exact/projective segments; `None` for passthrough segments and backend-free pipelines |
 
 ## ⚠️ Limitations
 

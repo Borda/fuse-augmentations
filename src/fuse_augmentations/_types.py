@@ -33,7 +33,7 @@ class ReorderPolicy(Enum):
     Attributes:
         NONE: No reordering; fuse only consecutive geometric ops as-is (v0.1 default).
         POINTWISE: Move POINTWISE ops out of geometric chains (v0.2).
-        AGGRESSIVE: Multi-pass bubble-sort reorder; superset of POINTWISE (v0.8).
+        AGGRESSIVE: Alias of POINTWISE today; reserved for stronger reorder semantics later.
 
     """
 
@@ -150,10 +150,12 @@ class TransformAdapter(Protocol):
     def exact_apply(self, transform: object, image: Tensor) -> Tensor:
         """Apply a GEOMETRIC_EXACT transform losslessly to an image batch.
 
-        Default implementation flips the image along the dims returned by
-        :meth:`exact_flip_dims`. Adapters that support non-flip discrete ops
-        (e.g. 90-degree rotations, transposes) should override this method
-        to dispatch via ``torch.rot90``, ``.permute``, etc.
+        Implementers **must** provide this method for adapters that are used
+        with :class:`ExactAffineSegment`. A typical implementation flips the
+        image along the dims returned by :meth:`exact_flip_dims`.
+        Adapters that support non-flip discrete ops (e.g. 90-degree rotations,
+        transposes) can instead dispatch via ``torch.rot90``, ``.permute``,
+        etc.
 
         Args:
             transform: The backend transform object (GEOMETRIC_EXACT category).

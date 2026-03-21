@@ -1,4 +1,5 @@
 """Unit tests for ReorderPolicy.AGGRESSIVE (Phase B.3)."""
+
 from __future__ import annotations
 
 import pytest
@@ -72,9 +73,7 @@ class TestAggressiveNoLongerRaisesError:
     def test_from_params_accepts_aggressive_policy(self):
         from fuse_augmentations._compose import FusedCompose
 
-        pipe = FusedCompose.from_params(
-            rotation=(-30, 30), reorder=ReorderPolicy.AGGRESSIVE
-        )
+        pipe = FusedCompose.from_params(rotation=(-30, 30), reorder=ReorderPolicy.AGGRESSIVE)
         assert pipe is not None
 
 

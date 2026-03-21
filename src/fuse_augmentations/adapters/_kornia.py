@@ -119,12 +119,11 @@ class KorniaAdapter:
 
         B, _C, _H, _W = input_shape  # noqa: N806
 
-        # Exact discrete transforms have no sampled params — p-mask handles them.
+        # Flip transforms have no sampled params — p-mask handles them.
         # Store batch metadata so build_matrix can construct the right shape.
         if TRANSFORM_REGISTRY and ttype in (
             _RandomHorizontalFlip,
             _RandomVerticalFlip,
-            _RandomRotation90,
         ):
             return {
                 "_batch_size": torch.tensor([B], device=device, dtype=torch.int64),
@@ -132,6 +131,12 @@ class KorniaAdapter:
 
         # Generate Kornia-native params
         params = transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
+
+        if TRANSFORM_REGISTRY and ttype is _RandomRotation90:
+            return {
+                "_batch_size": torch.tensor([B], device=device, dtype=torch.int64),
+                "k90": params["times"].to(device=device, dtype=torch.int64) % 4,
+            }
 
         if TRANSFORM_REGISTRY and ttype is _RandomRotation:
             # Negate: Kornia's positive angle is CW; our rotation_matrix uses CCW convention.
@@ -225,10 +230,19 @@ class KorniaAdapter:
             return vflip_matrix(H=H, batch_size=B, device=device, dtype=torch.float32)
 
         if TRANSFORM_REGISTRY and ttype is _RandomRotation90:
-            # Discrete exact op handled by exact_apply; return identity
+            # Build per-sample 90-degree multiple rotation matrices.
+            # Expect an integer parameter "k90" in {0, 1, 2, 3} per batch element.
             B = int(params["_batch_size"].item())  # noqa: N806
-            return torch.eye(3).unsqueeze(0).expand(B, -1, -1).clone()
+            device = params["_batch_size"].device
 
+            k = params.get("k90")
+            if k is None:
+                # Fallback: sample k uniformly if not provided in params.
+                k = torch.randint(0, 4, (B,), device=device)
+
+            # Convert discrete k to angle in radians: 0, π/2, π, 3π/2
+            angles_rad = k.to(dtype=torch.float32) * (torch.pi / 2.0)
+            return rotation_matrix(angles_rad, H=H, W=W)
         if TRANSFORM_REGISTRY and ttype is _RandomRotation:
             angle_rad = params["angle_rad"]
             return rotation_matrix(angle_rad, H=H, W=W)
@@ -375,8 +389,7 @@ class KorniaAdapter:
                     "RandomRotation90 with k in {1, 3} changes spatial dimensions "
                     f"({image.shape[2]}x{image.shape[3]}). "
                     "ExactAffineSegment requires shape-preserving ops. "
-                    "Use square images or pair with a GEOMETRIC_INTERP transform "
-                    "to route through FusedAffineSegment instead."
+                    "Use square images for exact 90-degree rotations."
                 )
                 raise RuntimeError(msg)
             if k_values.numel() == 0:
