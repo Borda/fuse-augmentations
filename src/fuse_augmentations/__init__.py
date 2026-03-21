@@ -34,6 +34,7 @@ from fuse_augmentations._types import (
     SegmentDescriptor,
     TransformAdapter,
     TransformCategory,
+    TransformSpec,
 )
 from fuse_augmentations.affine._segment import (
     ExactAffineSegment,
@@ -55,6 +56,7 @@ __all__ = [
     "SegmentDescriptor",
     "TransformAdapter",
     "TransformCategory",
+    "TransformSpec",
     "build_segments",
     "transform_bbox_xywh",
     "transform_bbox_xyxy",

@@ -188,6 +188,80 @@ class TransformAdapter(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class TransformSpec:
+    """Declarative specification for a single augmentation transform.
+
+    A backend-agnostic, JSON-serialisable description of one augmentation
+    operation. Used by :meth:`FusedCompose.from_config
+    <fuse_augmentations._compose.FusedCompose.from_config>` and
+    :meth:`FusedCompose.from_params
+    <fuse_augmentations._compose.FusedCompose.from_params>` to build
+    pipelines from configuration data rather than live transform objects.
+
+    Args:
+        op: Canonical operation name (e.g. ``"rotation"``, ``"hflip"``).
+        params: Operation-specific parameters (e.g. ``{"degrees": (-30, 30)}``).
+        p: Per-sample application probability. Default ``1.0``.
+
+    Example:
+        >>> spec = TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.8)
+        >>> spec.op
+        'rotation'
+        >>> spec.p
+        0.8
+
+    """
+
+    op: str
+    params: dict[str, object]
+    p: float = 1.0
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serialisable dict representation.
+
+        Returns:
+            Dict with keys ``"op"``, ``"params"``, and ``"p"``.
+
+        Example:
+            >>> spec = TransformSpec(op="hflip", params={}, p=0.5)
+            >>> spec.to_dict()
+            {'op': 'hflip', 'params': {}, 'p': 0.5}
+
+        """
+        # Convert tuples to lists for JSON serialisation compatibility.
+        params = {k: list(v) if isinstance(v, tuple) else v for k, v in self.params.items()}
+        return {"op": self.op, "params": params, "p": self.p}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, object]) -> "TransformSpec":
+        """Construct a ``TransformSpec`` from a dict (e.g. parsed JSON).
+
+        Args:
+            d: Dict with at least an ``"op"`` key. ``"params"`` defaults to
+                ``{}`` and ``"p"`` defaults to ``1.0`` when absent.
+
+        Returns:
+            A new ``TransformSpec`` instance.
+
+        Example:
+            >>> d = {"op": "rotation", "params": {"degrees": (-30.0, 30.0)}, "p": 0.8}
+            >>> TransformSpec.from_dict(d)
+            TransformSpec(op='rotation', params={'degrees': (-30.0, 30.0)}, p=0.8)
+
+        """
+        raw_params = d.get("params")
+        if raw_params is None or not isinstance(raw_params, dict):
+            raw_params = {}
+        # Restore tuples from JSON lists so that round-trip equality holds
+        # (JSON has no tuple type; ranges like (-30.0, 30.0) serialise as lists).
+        params: dict[str, object] = {
+            k: tuple(v) if isinstance(v, list) else v for k, v in raw_params.items()
+        }
+        raw_p = d.get("p", 1.0)
+        return cls(op=str(d["op"]), params=params, p=float(raw_p))  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True, slots=True)
 class SegmentDescriptor:
     """Structured description of one segment in a fused augmentation pipeline.
 
