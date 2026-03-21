@@ -658,6 +658,8 @@ class FusedCompose(nn.Module):
         padding_mode: str = "zeros",
         reorder: ReorderPolicy = ReorderPolicy.POINTWISE,
         data_keys: list[str] | None = None,
+        *,
+        specs: list[TransformSpec] | None = None,
     ) -> FusedCompose:
         """Create a ``FusedCompose`` pipeline directly from parameter ranges.
 
@@ -700,6 +702,9 @@ class FusedCompose(nn.Module):
                 Defaults to ``ReorderPolicy.POINTWISE``.
             data_keys: Key list for auxiliary target routing, forwarded to
                 :meth:`__init__`. ``None`` preserves single-tensor I/O.
+            specs: List of :class:`TransformSpec` objects. When provided,
+                all other geometric keyword arguments must be at their
+                defaults (mutually exclusive). Keyword-only.
 
         Returns:
             A configured ``FusedCompose`` instance ready for inference or training.
@@ -723,6 +728,25 @@ class FusedCompose(nn.Module):
         if contrast is not None:
             msg = "contrast not yet supported, planned v0.4"
             raise NotImplementedError(msg)
+
+        # --- specs= overload path (C.4) ---
+        if specs is not None:
+            # Validate mutual exclusivity
+            has_keyword_params = any([
+                rotation, scale, scale_x, scale_y,
+                shear_x, shear_y, translate_x, translate_y,
+                hflip_p > 0.0, vflip_p > 0.0,
+            ])
+            if has_keyword_params:
+                msg = "specs and keyword params are mutually exclusive"
+                raise ValueError(msg)
+            return cls._from_param_specs(
+                specs=specs,
+                interpolation=interpolation,
+                padding_mode=padding_mode,
+                reorder=reorder,
+                data_keys=data_keys,
+            )
 
         # Collect geometric param specs
         param_specs: dict[str, tuple[float, float]] = {}
@@ -772,6 +796,79 @@ class FusedCompose(nn.Module):
             transforms.append(_DirectFlipTransform(flip_type="vflip", p=vflip_p))
 
         # Build instance bypassing detect_backend
+        instance = cls.__new__(cls)
+        nn.Module.__init__(instance)
+
+        segments = build_segments(transforms, adapter, interpolation, padding_mode)
+        instance._setup_instance(
+            transforms=transforms,
+            reorder=reorder,
+            interpolation=interpolation,
+            padding_mode=padding_mode,
+            data_keys=data_keys,
+            adapter=adapter,
+            segments=segments,
+        )
+
+        return instance
+
+    @classmethod
+    def _from_param_specs(
+        cls,
+        specs: list[TransformSpec],
+        interpolation: str,
+        padding_mode: str,
+        reorder: ReorderPolicy,
+        data_keys: list[str] | None,
+    ) -> FusedCompose:
+        """Build a from_params pipeline from a list of TransformSpec objects.
+
+        Each spec is converted to the appropriate internal direct-param
+        transform (``_DirectParamTransform`` or ``_DirectFlipTransform``).
+
+        """
+        op_to_param_key: dict[str, str] = {
+            "rotation": "rotation",
+            "scale": "scale",
+            "scale_x": "scale_x",
+            "scale_y": "scale_y",
+            "shear_x": "shear_x",
+            "shear_y": "shear_y",
+            "translate_x": "translate_x",
+            "translate_y": "translate_y",
+        }
+
+        adapter = _DirectParamAdapter()
+        transforms: list[object] = []
+
+        for spec in specs:
+            if spec.op in ("hflip", "vflip"):
+                transforms.append(
+                    _DirectFlipTransform(flip_type=spec.op, p=spec.p),  # type: ignore[arg-type]
+                )
+            elif spec.op in op_to_param_key:
+                param_key = op_to_param_key[spec.op]
+                # Extract the range value from spec.params.
+                # The canonical param key varies: "degrees" for rotation,
+                # "scale" for scale, etc.
+                param_value = next(iter(spec.params.values())) if spec.params else None
+                param_specs = {param_key: param_value} if param_value is not None else {}
+                transforms.append(
+                    _DirectParamTransform(param_specs, p=spec.p),  # type: ignore[arg-type]
+                )
+            else:
+                msg = f"Unsupported op for from_params: {spec.op!r}"
+                raise ValueError(msg)
+
+        if not transforms:
+            return cls(
+                [],
+                interpolation=interpolation,
+                padding_mode=padding_mode,
+                data_keys=data_keys,
+                reorder=reorder,
+            )
+
         instance = cls.__new__(cls)
         nn.Module.__init__(instance)
 
