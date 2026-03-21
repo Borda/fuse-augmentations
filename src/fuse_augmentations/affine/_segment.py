@@ -40,22 +40,29 @@ def _shares_randomness_across_batch(adapter: TransformAdapter, transform: object
 
 
 class ExactAffineSegment(nn.Module):
-    """Lossless segment for GEOMETRIC_EXACT-only chains (HFlip, VFlip).
+    """Lossless segment for GEOMETRIC_EXACT-only chains.
 
     Used when a run of consecutive geometric transforms consists entirely of
-    ``GEOMETRIC_EXACT`` operations (currently: horizontal and vertical flips).
-    Applies each transform as a tensor index operation (``tensor.flip``) instead
-    of ``grid_sample``, introducing zero interpolation error.
+    ``GEOMETRIC_EXACT`` operations, such as flips and other discrete,
+    lossless image-space transforms supported by the active adapter
+    (for example 90-degree rotations or transpose-like ops).
+    Applies each transform via :meth:`TransformAdapter.exact_apply`
+    instead of ``grid_sample``, introducing zero interpolation error.
 
-    Per-sample probability masking is implemented with ``torch.where``:
-    for each transform, a boolean mask of shape ``(B,)`` is drawn from the
-    transform's ``p`` attribute, and only samples whose mask is ``True`` receive
-    the flip; the others keep their original values unchanged.
+    Per-sample probability masking is implemented by sampling a boolean mask
+    of shape ``(B,)`` from each transform's ``p`` attribute and applying the
+    exact transform only to active samples.
+
+    Auxiliary-target routing currently remains flip-only: mask/box/keypoint
+    updates rely on :meth:`TransformAdapter.exact_flip_dims`, so non-flip
+    exact ops raise at runtime when ``aux_targets`` are present and at least
+    one sample is active.
 
     Args:
-        transforms: List of ``GEOMETRIC_EXACT`` transform objects (flips only).
-        adapter: A ``TransformAdapter`` providing an ``exact_flip_dims`` method
-            (duck-typed; required for ``ExactAffineSegment`` use).
+        transforms: List of ``GEOMETRIC_EXACT`` transform objects.
+        adapter: A ``TransformAdapter`` providing ``exact_apply`` for image
+            updates and, when auxiliary targets are used, ``exact_flip_dims``
+            for flip-compatible target routing.
 
     Example:
         >>> import torch
@@ -85,11 +92,13 @@ class ExactAffineSegment(nn.Module):
         image: Tensor,
         aux_targets: dict[str, Tensor] | None = None,
     ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
-        """Apply flip transforms losslessly via tensor.flip with per-sample masking.
+        """Apply exact transforms losslessly with per-sample masking.
 
         For each transform, draws a per-sample boolean mask from the transform's
-        ``p`` probability, flips the full batch, then selects flipped vs original
-        values per sample using ``torch.where``.
+        ``p`` probability, applies :meth:`TransformAdapter.exact_apply` only to
+        active samples, and scatters the transformed subset back into the batch.
+        Auxiliary-target routing is currently supported only for flip-compatible
+        exact ops exposed through :meth:`TransformAdapter.exact_flip_dims`.
 
         Args:
             image: Input image batch. Shape: ``(B, C, H, W)``, dtype: float32.
@@ -996,8 +1005,9 @@ def build_segments(
     After grouping, each accumulated geometric run is classified:
 
     - **EXACT-only** - if the run contains *only* ``GEOMETRIC_EXACT`` ops
-      (e.g. HFlip, VFlip), it becomes an :class:`ExactAffineSegment` that uses
-      ``tensor.flip`` with zero interpolation error.
+      (e.g. flips, 90-degree rotations, transpose-like discrete ops), it
+      becomes an :class:`ExactAffineSegment` that uses adapter-provided exact
+      image operations with zero interpolation error.
     - **Mixed / INTERP** - if any op in the run is ``GEOMETRIC_INTERP``, the
       whole run becomes a :class:`FusedAffineSegment` that composes matrices
       and applies one ``grid_sample`` call.
@@ -1021,8 +1031,9 @@ def build_segments(
     Returns:
         Flat list where each element is a :class:`FusedAffineSegment`
         (mixed/INTERP geometric run), an :class:`ExactAffineSegment`
-        (EXACT-only geometric run), or the original transform object
-        (passthrough for ``SPATIAL_KERNEL`` and ``POINTWISE`` transforms).
+        (EXACT-only geometric run; auxiliary targets remain flip-only), or the
+        original transform object (passthrough for ``SPATIAL_KERNEL`` and
+        ``POINTWISE`` transforms).
 
     """
     fusible = {TransformCategory.GEOMETRIC_INTERP, TransformCategory.GEOMETRIC_EXACT}

@@ -205,9 +205,10 @@ class SegmentDescriptor:
         n_warps_saved: Number of ``grid_sample`` interpolation passes
             eliminated by fusing this segment. Zero for passthrough and
             single-transform segments.
-        backend: Name of the backend adapter used for this segment
-            (``"kornia"``, ``"albumentations"``, ``"torchvision"``), or
-            ``None`` for backend-free pipelines created via
+        backend: Adapter class name used for this segment
+            (for example ``"KorniaAdapter"``, ``"AlbumentationsAdapter"``,
+            ``"TorchVisionAdapter"``), or ``None`` for backend-free pipelines
+            created via
             :meth:`FusedCompose.from_params <fuse_augmentations._compose.FusedCompose.from_params>`.
 
     Example:
@@ -215,7 +216,7 @@ class SegmentDescriptor:
         ...     kind="fused",
         ...     transforms=("RandomRotation", "RandomHorizontalFlip"),
         ...     n_warps_saved=1,
-        ...     backend="kornia",
+        ...     backend="KorniaAdapter",
         ... )
         >>> d.kind
         'fused'
