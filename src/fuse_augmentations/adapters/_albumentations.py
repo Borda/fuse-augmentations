@@ -20,56 +20,6 @@ NumPy helpers.
 
 Requires ``albumentations >= 2.0``.
 
-Coverage survey (Phase A.4)
----------------------------
-
-.. list-table:: Albumentations geometric transforms -- adapter coverage
-   :header-rows: 1
-
-   * - Transform
-     - Category
-     - Status
-     - Notes
-   * - ``Affine``
-     - ``GEOMETRIC_INTERP``
-     - Covered (v0.2)
-     - Pre-built ``matrix`` from ``get_params_dependent_on_data()``.
-   * - ``Rotate``
-     - ``GEOMETRIC_INTERP``
-     - Covered (v0.2)
-     - Pre-built ``matrix``; rotation about image center.
-   * - ``ShiftScaleRotate``
-     - ``GEOMETRIC_INTERP``
-     - Covered (v0.2)
-     - Pre-built ``matrix``; shift + scale + rotation.
-   * - ``SafeRotate``
-     - ``GEOMETRIC_INTERP``
-     - **NEW (Phase A.4)**
-     - Pre-built ``matrix``; rotation with border-safe padding.
-   * - ``HorizontalFlip``
-     - ``GEOMETRIC_EXACT``
-     - Covered (v0.2)
-     - Exact pixel flip; no interpolation.
-   * - ``VerticalFlip``
-     - ``GEOMETRIC_EXACT``
-     - Covered (v0.2)
-     - Exact pixel flip; no interpolation.
-   * - ``Perspective``
-     - ``PROJECTIVE``
-     - Covered (v0.5)
-     - Pre-built ``matrix``; homography.
-   * - ``RandomRotate90``
-     - (deferred)
-     - Not covered
-     - No ``matrix`` key; uses discrete 90-degree steps.
-   * - ``D4``
-     - (deferred)
-     - Not covered
-     - No ``matrix`` key; dihedral group ops.
-   * - ``Transpose``
-     - (deferred)
-     - Not covered
-     - No ``matrix`` key; axes swap.
 
 Example:
     >>> from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
@@ -290,11 +240,11 @@ class AlbumentationsAdapter:
 
             if TRANSFORM_REGISTRY and isinstance(transform, _RandomRotate90):
                 if same_on_batch:
-                    factor = int(transform.get_params()["factor"]) % 4  # type: ignore[attr-defined]
+                    factor = int(transform.get_params()["factor"]) % 4
                     result["k90"] = torch.full((B,), factor, device=device, dtype=torch.int64)
                     return result
                 result["k90"] = torch.tensor(
-                    [int(transform.get_params()["factor"]) % 4 for _ in range(B)],  # type: ignore[attr-defined]
+                    [int(transform.get_params()["factor"]) % 4 for _ in range(B)],
                     device=device,
                     dtype=torch.int64,
                 )
@@ -302,14 +252,11 @@ class AlbumentationsAdapter:
 
             if TRANSFORM_REGISTRY and isinstance(transform, _D4):
                 if same_on_batch:
-                    elem = str(transform.get_params()["group_element"])  # type: ignore[attr-defined]
+                    elem = str(transform.get_params()["group_element"])
                     result["d4_code"] = torch.full((B,), _D4_ELEM_TO_CODE[elem], device=device, dtype=torch.int64)
                     return result
                 result["d4_code"] = torch.tensor(
-                    [
-                        _D4_ELEM_TO_CODE[str(transform.get_params()["group_element"])]  # type: ignore[attr-defined]
-                        for _ in range(B)
-                    ],
+                    [_D4_ELEM_TO_CODE[str(transform.get_params()["group_element"])] for _ in range(B)],
                     device=device,
                     dtype=torch.int64,
                 )
@@ -610,6 +557,17 @@ def _d4_matrix(
 ) -> torch.Tensor:
     """Build forward pixel-space matrices for D4 group elements."""
     batch_size = int(d4_code.shape[0])
+    if H != W:
+        _shape_changing = frozenset({_D4_ELEM_TO_CODE["r90"], _D4_ELEM_TO_CODE["r270"], _D4_ELEM_TO_CODE["hvt"]})
+        for code in d4_code.tolist():
+            elem = _D4_CODE_TO_ELEM[int(code)]
+            if int(code) in _shape_changing:
+                msg = (
+                    f"D4 element {elem!r} changes spatial dimensions on non-square images "
+                    f"({H}x{W}). Mixed affine fusion requires shape-preserving ops. "
+                    "Use square images for exact discrete transforms."
+                )
+                raise RuntimeError(msg)
     out = torch.empty(batch_size, 3, 3, device=device, dtype=dtype)
     base_h = hflip_matrix(W=W, batch_size=1, device=device, dtype=dtype)
     base_v = vflip_matrix(H=H, batch_size=1, device=device, dtype=dtype)

@@ -417,6 +417,51 @@ class TestVflipMatrixNp:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# D4 matrix round-trip tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("elem", "inv_elem"),
+    [
+        ("e", "e"),
+        ("r90", "r270"),
+        ("r180", "r180"),
+        ("r270", "r90"),
+        ("h", "h"),
+        ("v", "v"),
+        ("t", "t"),
+        ("hvt", "hvt"),
+    ],
+)
+def test_d4_matrix_composition_with_inverse_is_identity(elem: str, inv_elem: str) -> None:
+    """M[elem] @ M[inv_elem] == I for all D4 elements on square images."""
+    from fuse_augmentations.adapters._albumentations import _D4_ELEM_TO_CODE, _d4_matrix
+
+    H = W = 8
+    device = torch.device("cpu")
+    dtype = torch.float32
+    code = torch.tensor([_D4_ELEM_TO_CODE[elem]], dtype=torch.int64)
+    inv_code = torch.tensor([_D4_ELEM_TO_CODE[inv_elem]], dtype=torch.int64)
+    M = _d4_matrix(code, H=H, W=W, device=device, dtype=dtype)[0]
+    M_inv = _d4_matrix(inv_code, H=H, W=W, device=device, dtype=dtype)[0]
+    product = M @ M_inv
+    assert torch.allclose(product, torch.eye(3, dtype=dtype), atol=1e-5), (
+        f"D4: {elem!r} @ {inv_elem!r} != I (max diff {(product - torch.eye(3)).abs().max():.2e})"
+    )
+
+
+@pytest.mark.parametrize("elem", ["r90", "r270", "hvt"])
+def test_d4_matrix_raises_on_nonsquare_for_shape_changing_elements(elem: str) -> None:
+    """_d4_matrix raises RuntimeError for shape-changing D4 elements on non-square images."""
+    from fuse_augmentations.adapters._albumentations import _D4_ELEM_TO_CODE, _d4_matrix
+
+    code = torch.tensor([_D4_ELEM_TO_CODE[elem]], dtype=torch.int64)
+    with pytest.raises(RuntimeError, match="changes spatial dimensions"):
+        _d4_matrix(code, H=8, W=12, device=torch.device("cpu"), dtype=torch.float32)
+
+
 class TestIsAlbuInstanceSubclassDispatch:
     """Verify that isinstance-based dispatch correctly routes subclasses of registered base types.
 
