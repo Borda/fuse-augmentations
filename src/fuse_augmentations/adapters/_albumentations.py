@@ -3,11 +3,11 @@
 Bridges Albumentations augmentation transforms to the canonical parameter
 representation used by the fused Albumentations geometric segments.
 
-Each geometric transform (``A.Affine``, ``A.Rotate``, ``A.ShiftScaleRotate``)
-exposes a pre-built ``matrix`` key via ``get_params_dependent_on_data()`` —
-a ``(3, 3)`` forward pixel-space affine matrix in the same convention as
-``affine._matrix``. The adapter reads this matrix directly instead of
-reconstructing it from raw angle/scale/shear values.
+Each geometric transform (``A.Affine``, ``A.Rotate``, ``A.ShiftScaleRotate``,
+``A.SafeRotate``) exposes a pre-built ``matrix`` key via
+``get_params_dependent_on_data()`` -- a ``(3, 3)`` forward pixel-space affine
+matrix in the same convention as ``affine._matrix``. The adapter reads this
+matrix directly instead of reconstructing it from raw angle/scale/shear values.
 
 ``A.Perspective`` is also supported and mapped to
 ``TransformCategory.PROJECTIVE``. Its sampled ``matrix`` key is treated as a
@@ -19,6 +19,57 @@ parameter dict; ``build_matrix()`` constructs their matrices from inline
 NumPy helpers.
 
 Requires ``albumentations >= 2.0``.
+
+Coverage survey (Phase A.4)
+---------------------------
+
+.. list-table:: Albumentations geometric transforms -- adapter coverage
+   :header-rows: 1
+
+   * - Transform
+     - Category
+     - Status
+     - Notes
+   * - ``Affine``
+     - ``GEOMETRIC_INTERP``
+     - Covered (v0.2)
+     - Pre-built ``matrix`` from ``get_params_dependent_on_data()``.
+   * - ``Rotate``
+     - ``GEOMETRIC_INTERP``
+     - Covered (v0.2)
+     - Pre-built ``matrix``; rotation about image center.
+   * - ``ShiftScaleRotate``
+     - ``GEOMETRIC_INTERP``
+     - Covered (v0.2)
+     - Pre-built ``matrix``; shift + scale + rotation.
+   * - ``SafeRotate``
+     - ``GEOMETRIC_INTERP``
+     - **NEW (Phase A.4)**
+     - Pre-built ``matrix``; rotation with border-safe padding.
+   * - ``HorizontalFlip``
+     - ``GEOMETRIC_EXACT``
+     - Covered (v0.2)
+     - Exact pixel flip; no interpolation.
+   * - ``VerticalFlip``
+     - ``GEOMETRIC_EXACT``
+     - Covered (v0.2)
+     - Exact pixel flip; no interpolation.
+   * - ``Perspective``
+     - ``PROJECTIVE``
+     - Covered (v0.5)
+     - Pre-built ``matrix``; homography.
+   * - ``RandomRotate90``
+     - (deferred)
+     - Not covered
+     - No ``matrix`` key; uses discrete 90-degree steps.
+   * - ``D4``
+     - (deferred)
+     - Not covered
+     - No ``matrix`` key; dihedral group ops.
+   * - ``Transpose``
+     - (deferred)
+     - Not covered
+     - No ``matrix`` key; axes swap.
 
 Example:
     >>> from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
@@ -110,12 +161,14 @@ try:
     from albumentations import HorizontalFlip as _HorizontalFlip
     from albumentations import Perspective as _Perspective
     from albumentations import Rotate as _Rotate
+    from albumentations import SafeRotate as _SafeRotate
     from albumentations import ShiftScaleRotate as _ShiftScaleRotate
     from albumentations import VerticalFlip as _VerticalFlip
 
     TRANSFORM_REGISTRY: dict[type, TransformCategory] = {
         _Affine: TransformCategory.GEOMETRIC_INTERP,
         _Rotate: TransformCategory.GEOMETRIC_INTERP,
+        _SafeRotate: TransformCategory.GEOMETRIC_INTERP,
         _ShiftScaleRotate: TransformCategory.GEOMETRIC_INTERP,
         _HorizontalFlip: TransformCategory.GEOMETRIC_EXACT,
         _VerticalFlip: TransformCategory.GEOMETRIC_EXACT,
@@ -126,7 +179,7 @@ try:
     # enumerating them explicitly (supports subclasses of _ShiftScaleRotate etc.)
     _HFLIP_TYPES: frozenset[type] = frozenset({_HorizontalFlip})
     _VFLIP_TYPES: frozenset[type] = frozenset({_VerticalFlip})
-    _INTERP_TYPES: frozenset[type] = frozenset({_Affine, _Rotate, _ShiftScaleRotate})
+    _INTERP_TYPES: frozenset[type] = frozenset({_Affine, _Rotate, _SafeRotate, _ShiftScaleRotate})
     _PROJECTIVE_TYPES: frozenset[type] = frozenset({_Perspective})
 
 except ImportError:
@@ -141,10 +194,10 @@ class AlbumentationsAdapter:
     """Adapter between Albumentations transforms and the fused geometric engine.
 
     Implements the ``TransformAdapter`` protocol for the Albumentations backend.
-    Supports ``A.Affine``, ``A.Rotate``, ``A.ShiftScaleRotate`` (GEOMETRIC_INTERP)
-    and ``A.HorizontalFlip``, ``A.VerticalFlip`` (GEOMETRIC_EXACT).
-    ``A.Perspective`` is classified as ``PROJECTIVE`` and routed through the
-    projective segment path instead of affine fusion.
+    Supports ``A.Affine``, ``A.Rotate``, ``A.SafeRotate``, ``A.ShiftScaleRotate``
+    (GEOMETRIC_INTERP) and ``A.HorizontalFlip``, ``A.VerticalFlip``
+    (GEOMETRIC_EXACT). ``A.Perspective`` is classified as ``PROJECTIVE`` and
+    routed through the projective segment path instead of affine fusion.
 
     Requires ``albumentations >= 2.0``. The adapter reads the pre-built
     ``matrix`` key from ``get_params_dependent_on_data()`` rather than
