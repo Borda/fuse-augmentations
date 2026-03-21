@@ -19,7 +19,6 @@ Example:
 
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 import numpy as np
@@ -68,6 +67,7 @@ class ExactAffineSegment(nn.Module):
         >>> out = seg(torch.zeros(1, 3, 8, 8))
         >>> out.shape
         torch.Size([1, 3, 8, 8])
+
     """
 
     def __init__(self, transforms: list[object], adapter: TransformAdapter) -> None:

@@ -10,6 +10,7 @@ Each registered transform must satisfy:
   (possibly empty) with ``torch.Tensor`` values (or sentinel ``_batch_size``).
 - ``adapter.build_matrix(instance, params, H, W)`` returns a ``(B, 3, 3)``
   ``torch.Tensor``.
+
 """
 
 from __future__ import annotations

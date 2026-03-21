@@ -138,6 +138,20 @@ class TestSingleTransformParity:
         fused_out = Compose([A.VerticalFlip(p=1.0)])(img)
         assert torch.allclose(fused_out, seq_out, atol=ATOL_PIXEL)
 
+    def test_safe_rotate_parity(self):
+        img = _rand_image()
+
+        np.random.seed(42)
+        seq_out = _sequential_scipy([A.SafeRotate(limit=(30, 30), p=1.0)], img)
+
+        np.random.seed(42)
+        fused_out = Compose([A.SafeRotate(limit=(30, 30), p=1.0)])(img)
+
+        assert fused_out.shape == img.shape
+        assert torch.allclose(fused_out, seq_out, atol=ATOL_SCIPY), (
+            f"Max diff: {(fused_out - seq_out).abs().max().item():.2e}"
+        )
+
     def test_shift_scale_rotate_parity(self):
         img = _rand_image()
         with warnings.catch_warnings():
@@ -232,7 +246,8 @@ class TestMultiTransformChain:
             A.GaussianBlur(p=1.0),  # SPATIAL_KERNEL barrier
             A.HorizontalFlip(p=1.0),
         ])
-        assert pipe.n_warps_saved == 1  # HorizontalFlip after barrier uses ExactAffineSegment (+1), Rotate is standalone
+        # HorizontalFlip after barrier uses ExactAffineSegment (+1); Rotate is standalone
+        assert pipe.n_warps_saved == 1
         img = _rand_image()
         out = pipe(img)
         assert out.shape == img.shape

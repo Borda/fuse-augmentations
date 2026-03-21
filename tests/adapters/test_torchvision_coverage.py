@@ -7,6 +7,7 @@ Each registered transform must satisfy:
 - ``adapter.category(instance)`` returns a ``TransformCategory`` member.
 - ``adapter.sample_params(instance, input_shape, device)`` returns a dict of tensors.
 - ``adapter.build_matrix(instance, params, H, W)`` returns a ``(B, 3, 3)`` tensor.
+
 """
 
 from __future__ import annotations

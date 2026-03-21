@@ -10,7 +10,7 @@ class TestExactAffineSegmentImport:
         import fuse_augmentations
 
         assert hasattr(fuse_augmentations, "ExactAffineSegment"), (
-            "fuse_augmentations.ExactAffineSegment does not exist yet; A.1 rename has not been applied."
+            "fuse_augmentations.ExactAffineSegment must remain importable from the top-level package."
         )
         assert isinstance(fuse_augmentations.ExactAffineSegment, type), "ExactAffineSegment exists but is not a class"
 
