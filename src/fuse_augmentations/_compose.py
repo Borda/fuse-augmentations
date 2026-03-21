@@ -593,6 +593,10 @@ class FusedCompose(nn.Module):
         Returns:
             A configured ``FusedCompose`` instance.
 
+        Raises:
+            ValueError: If ``backend`` is not in :data:`~fuse_augmentations._resolver.SUPPORTED_BACKENDS`,
+                or if a spec's ``op`` is not supported by the chosen backend.
+
         Example:
             >>> import torch
             >>> from fuse_augmentations._compose import FusedCompose
@@ -711,6 +715,12 @@ class FusedCompose(nn.Module):
 
         Raises:
             NotImplementedError: If ``brightness`` or ``contrast`` is not ``None``.
+            ValueError: If ``specs`` is provided together with any geometric keyword
+                argument (they are mutually exclusive).
+            ValueError: If ``specs`` contains an op that is not supported in
+                backend-free mode (i.e. not one of ``"rotation"``, ``"scale"``,
+                ``"scale_x"``, ``"scale_y"``, ``"shear_x"``, ``"shear_y"``,
+                ``"translate_x"``, ``"translate_y"``, ``"hflip"``, ``"vflip"``).
 
         Example:
             >>> import torch
