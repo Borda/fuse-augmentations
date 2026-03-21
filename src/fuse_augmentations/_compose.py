@@ -77,11 +77,11 @@ class FusedCompose(nn.Module):
     transforms, then executes them sequentially. Consecutive geometric ops are
     grouped and executed as either:
 
-    - A :class:`~fuse_augmentations._segment.FusedAffineSegment` - when the run
+    - A :class:`~fuse_augmentations.affine._segment.FusedAffineSegment` - when the run
       contains at least one ``GEOMETRIC_INTERP`` op. Matrices are composed and
       a single ``grid_sample`` call is used, eliminating redundant interpolation
       passes.
-    - An :class:`~fuse_augmentations._segment.ExactAffineSegment` - when the run
+    - An :class:`~fuse_augmentations.affine._segment.ExactAffineSegment` - when the run
       contains *only* ``GEOMETRIC_EXACT`` ops (HFlip, VFlip). Transforms are
       applied via ``tensor.flip`` with zero interpolation error.
 

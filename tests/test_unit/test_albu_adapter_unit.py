@@ -7,6 +7,8 @@ package.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 import torch
@@ -172,15 +174,10 @@ def test_exact_flip_dims_hflip():
     class _HFlipStub(_StubFlipTransform):
         pass
 
-    # Inject stub type as hflip
     from fuse_augmentations.adapters import _albumentations as _mod
 
-    original = _mod._HFLIP_TYPES
-    try:
-        _mod._HFLIP_TYPES = frozenset({_HFlipStub})
+    with patch.object(_mod, "_HFLIP_TYPES", frozenset({_HFlipStub})):
         assert adapter.exact_flip_dims(_HFlipStub()) == [3]
-    finally:
-        _mod._HFLIP_TYPES = original
 
 
 def test_exact_flip_dims_vflip():
@@ -193,12 +190,8 @@ def test_exact_flip_dims_vflip():
     class _VFlipStub(_StubFlipTransform):
         pass
 
-    original = _mod._VFLIP_TYPES
-    try:
-        _mod._VFLIP_TYPES = frozenset({_VFlipStub})
+    with patch.object(_mod, "_VFLIP_TYPES", frozenset({_VFlipStub})):
         assert adapter.exact_flip_dims(_VFlipStub()) == [2]
-    finally:
-        _mod._VFLIP_TYPES = original
 
 
 def test_exact_flip_dims_unknown_raises():
@@ -230,15 +223,11 @@ def test_sample_params_matrix_batch_size():
     class _InterpStub(_StubInterpTransform):
         pass
 
-    original = _mod._INTERP_TYPES
-    try:
-        _mod._INTERP_TYPES = frozenset({_InterpStub})
+    with patch.object(_mod, "_INTERP_TYPES", frozenset({_InterpStub})):
         stub = _InterpStub(np.eye(3, dtype=np.float64))
         params = adapter.sample_params(stub, (B, 3, H, W), torch.device("cpu"))
         assert "matrix" in params
         assert params["matrix"].shape == (B, 3, 3)
-    finally:
-        _mod._INTERP_TYPES = original
 
 
 def test_sample_params_flip_returns_batch_size_key():
@@ -251,14 +240,10 @@ def test_sample_params_flip_returns_batch_size_key():
     class _HFlipStub(_StubFlipTransform):
         pass
 
-    original = _mod._HFLIP_TYPES
-    try:
-        _mod._HFLIP_TYPES = frozenset({_HFlipStub})
+    with patch.object(_mod, "_HFLIP_TYPES", frozenset({_HFlipStub})):
         params = adapter.sample_params(_HFlipStub(), (4, 3, 32, 32), torch.device("cpu"))
         assert "_batch_size" in params
         assert int(params["_batch_size"].item()) == 4
-    finally:
-        _mod._HFLIP_TYPES = original
 
 
 # ---------------------------------------------------------------------------
@@ -394,3 +379,60 @@ class TestVflipMatrixNp:
         torch_M = vflip_matrix(H=H, batch_size=1, device=torch.device("cpu"), dtype=torch.float64)
         np_M = vflip_matrix_np(H=H)
         torch.testing.assert_close(torch.as_tensor(np_M.copy()), torch_M[0], rtol=1e-4, atol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# Subclass isinstance dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestIsAlbuInstanceSubclassDispatch:
+    """Verify that isinstance-based dispatch correctly routes subclasses of registered base types.
+
+    The core semantic guarantee: category/sample_params/build_matrix/exact_flip_dims all
+    use _is_albu_instance which calls isinstance(), so a subclass of a registered base type
+    is routed to the same path as the base type itself.
+
+    """
+
+    def test_subclass_of_hflip_is_matched(self):
+        """A subclass of a registered HFlip base type routes to the hflip path."""
+        from fuse_augmentations.adapters import _albumentations as _mod
+
+        class _BaseHFlip(_StubFlipTransform):
+            pass
+
+        class _SubHFlip(_BaseHFlip):
+            pass
+
+        with patch.object(_mod, "_HFLIP_TYPES", frozenset({_BaseHFlip})):
+            assert _mod._is_albu_instance(_SubHFlip(), _mod._HFLIP_TYPES) is True
+
+    def test_sibling_class_is_not_matched(self):
+        """A sibling (unrelated) class does not match the flip frozenset."""
+        from fuse_augmentations.adapters import _albumentations as _mod
+
+        class _BaseHFlip(_StubFlipTransform):
+            pass
+
+        class _SiblingFlip(_StubFlipTransform):
+            pass
+
+        with patch.object(_mod, "_HFLIP_TYPES", frozenset({_BaseHFlip})):
+            assert _mod._is_albu_instance(_SiblingFlip(), _mod._HFLIP_TYPES) is False
+
+    def test_exact_flip_dims_with_subclass(self):
+        """exact_flip_dims returns correct dims for a subclass of a registered flip type."""
+        from fuse_augmentations.adapters import _albumentations as _mod
+        from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+
+        adapter = AlbumentationsAdapter()
+
+        class _BaseHFlip(_StubFlipTransform):
+            pass
+
+        class _SubHFlip(_BaseHFlip):
+            pass
+
+        with patch.object(_mod, "_HFLIP_TYPES", frozenset({_BaseHFlip})):
+            assert adapter.exact_flip_dims(_SubHFlip()) == [3]

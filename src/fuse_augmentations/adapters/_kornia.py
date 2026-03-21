@@ -182,7 +182,6 @@ class KorniaAdapter:
             }
 
         if TRANSFORM_REGISTRY and ttype is _RandomPerspective:
-            params = transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
             return {
                 "start_points": params["start_points"].to(device=device),
                 "end_points": params["end_points"].to(device=device),

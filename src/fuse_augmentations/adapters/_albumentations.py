@@ -175,19 +175,26 @@ try:
         _Perspective: TransformCategory.PROJECTIVE,
     }
 
-    # Frozensets used by exact_flip_dims to identify flip types without
-    # enumerating them explicitly (supports subclasses of _ShiftScaleRotate etc.)
+    # Canonical base classes for fast isinstance dispatch in the adapter paths below.
+    # NOTE: when adding a new transform to TRANSFORM_REGISTRY, also add it to the
+    # appropriate frozenset here — category() iterates TRANSFORM_REGISTRY automatically,
+    # but sample_params/build_matrix/exact_flip_dims use these frozensets directly.
     _HFLIP_TYPES: frozenset[type] = frozenset({_HorizontalFlip})
     _VFLIP_TYPES: frozenset[type] = frozenset({_VerticalFlip})
     _INTERP_TYPES: frozenset[type] = frozenset({_Affine, _Rotate, _SafeRotate, _ShiftScaleRotate})
-    _PROJECTIVE_TYPES: frozenset[type] = frozenset({_Perspective})
+    _ALL_REGISTRY_TYPES: frozenset[type] = frozenset(TRANSFORM_REGISTRY)
 
 except ImportError:
     TRANSFORM_REGISTRY = {}
     _HFLIP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _VFLIP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _INTERP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
-    _PROJECTIVE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _ALL_REGISTRY_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+
+
+def _is_albu_instance(transform: object, candidates: frozenset[type]) -> bool:
+    """Return whether ``transform`` is an instance of any Albumentations base type."""
+    return any(isinstance(transform, base_type) for base_type in candidates)
 
 
 class AlbumentationsAdapter:
@@ -264,14 +271,12 @@ class AlbumentationsAdapter:
         """
         B, _C, H, W = input_shape  # noqa: N806
 
-        ttype = type(transform)
-
         # Flip transforms have no sampled params — only need batch size.
-        if ttype in _HFLIP_TYPES or ttype in _VFLIP_TYPES:
+        if _is_albu_instance(transform, _HFLIP_TYPES | _VFLIP_TYPES):
             return {"_batch_size": torch.tensor([B], device=device, dtype=torch.int64)}
 
         # GEOMETRIC_INTERP: extract the pre-built matrix B times (once per sample)
-        if ttype in _INTERP_TYPES or ttype in TRANSFORM_REGISTRY:
+        if _is_albu_instance(transform, _INTERP_TYPES) or _is_albu_instance(transform, _ALL_REGISTRY_TYPES):
             matrices = _sample_matrices(transform, B, H, W)  # (B, 3, 3) float64 ndarray
             return {
                 "matrix": torch.tensor(matrices, dtype=torch.float32, device=device),
@@ -307,15 +312,13 @@ class AlbumentationsAdapter:
             coordinates, depending on the transform category.
 
         """
-        ttype = type(transform)
-
-        if ttype in _HFLIP_TYPES:
+        if _is_albu_instance(transform, _HFLIP_TYPES):
             B = int(params["_batch_size"].item())  # noqa: N806
             device = params["_batch_size"].device
             M_np = hflip_matrix_np(W=W)  # noqa: N806
             return torch.tensor(M_np, dtype=torch.float32, device=device).unsqueeze(0).expand(B, -1, -1).clone()
 
-        if ttype in _VFLIP_TYPES:
+        if _is_albu_instance(transform, _VFLIP_TYPES):
             B = int(params["_batch_size"].item())  # noqa: N806
             device = params["_batch_size"].device
             M_np = vflip_matrix_np(H=H)  # noqa: N806
@@ -343,12 +346,11 @@ class AlbumentationsAdapter:
             TypeError: If the transform is not a recognised flip type.
 
         """
-        ttype = type(transform)
-        if ttype in _HFLIP_TYPES:
+        if _is_albu_instance(transform, _HFLIP_TYPES):
             return [3]
-        if ttype in _VFLIP_TYPES:
+        if _is_albu_instance(transform, _VFLIP_TYPES):
             return [2]
-        raise TypeError(f"Cannot determine flip dims for {ttype.__name__!r}")
+        raise TypeError(f"Cannot determine flip dims for {type(transform).__name__!r}")
 
     @staticmethod
     def call_nonfused(

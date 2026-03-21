@@ -10,6 +10,8 @@ from kornia.augmentation import (  # noqa: E402
     RandomAffine,
     RandomHorizontalFlip,
     RandomRotation,
+    RandomShear,
+    RandomTranslate,
     RandomVerticalFlip,
 )
 
@@ -150,6 +152,58 @@ class TestNativeParity:
 
         assert torch.allclose(native_out, fused_out, atol=1e-3), (
             f"Rotation parity failed: max diff = {(native_out - fused_out).abs().max().item():.6f}"
+        )
+
+    def test_random_shear(self, adapter):
+        """RandomShear matrix path matches native Kornia output."""
+        bsz, n_ch, height, width = 2, 3, 64, 64
+        img = torch.rand(bsz, n_ch, height, width)
+
+        t = RandomShear(shear=(-20.0, 20.0), p=1.0, align_corners=True)
+        fp = t.forward_parameters(torch.Size((bsz, n_ch, height, width)))
+        native_out = t(img, params=fp)
+
+        params: dict[str, torch.Tensor] = {}
+        if "shear_x" in fp:
+            params["shear_x_rad"] = -torch.deg2rad(fp["shear_x"].to(DEVICE))
+        if "shear_y" in fp:
+            params["shear_y_rad"] = -torch.deg2rad(fp["shear_y"].to(DEVICE))
+
+        mtx_fwd = adapter.build_matrix(t, params, height, width)
+        mtx_inv = inv3x3(mtx_fwd)
+        mtx_norm = normalize_matrix(mtx_inv, height, width)
+        grid = torch.nn.functional.affine_grid(mtx_norm[:, :2, :], (bsz, n_ch, height, width), align_corners=True)
+        fused_out = torch.nn.functional.grid_sample(
+            img, grid, mode="bilinear", padding_mode="zeros", align_corners=True
+        )
+
+        assert torch.allclose(native_out, fused_out, atol=1e-3), (
+            f"RandomShear parity failed: max diff = {(native_out - fused_out).abs().max().item():.6f}"
+        )
+
+    def test_random_translate(self, adapter):
+        """RandomTranslate matrix path matches native Kornia output."""
+        bsz, n_ch, height, width = 2, 3, 64, 64
+        img = torch.rand(bsz, n_ch, height, width)
+
+        t = RandomTranslate(translate_x=(0.1, 0.2), translate_y=(0.1, 0.2), p=1.0, align_corners=True)
+        fp = t.forward_parameters(torch.Size((bsz, n_ch, height, width)))
+        native_out = t(img, params=fp)
+
+        params = {
+            "translate_x": fp["translate_x"].to(DEVICE),
+            "translate_y": fp["translate_y"].to(DEVICE),
+        }
+        mtx_fwd = adapter.build_matrix(t, params, height, width)
+        mtx_inv = inv3x3(mtx_fwd)
+        mtx_norm = normalize_matrix(mtx_inv, height, width)
+        grid = torch.nn.functional.affine_grid(mtx_norm[:, :2, :], (bsz, n_ch, height, width), align_corners=True)
+        fused_out = torch.nn.functional.grid_sample(
+            img, grid, mode="bilinear", padding_mode="zeros", align_corners=True
+        )
+
+        assert torch.allclose(native_out, fused_out, atol=1e-3), (
+            f"RandomTranslate parity failed: max diff = {(native_out - fused_out).abs().max().item():.6f}"
         )
 
     def test_vflip(self, adapter):
