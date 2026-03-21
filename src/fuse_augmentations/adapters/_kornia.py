@@ -3,49 +3,6 @@
 Bridges Kornia augmentation transforms to the canonical parameter
 representation and matrix primitives used by ``FusedAffineSegment``.
 
-Coverage survey (Phase A.2)
----------------------------
-
-.. list-table:: Kornia geometric transforms — adapter coverage
-   :header-rows: 1
-
-   * - Transform
-     - Category
-     - Status
-     - Notes
-   * - ``RandomRotation``
-     - ``GEOMETRIC_INTERP``
-     - Covered (v0.1)
-     - Angle in degrees; negated to CCW convention.
-   * - ``RandomAffine``
-     - ``GEOMETRIC_INTERP``
-     - Covered (v0.1)
-     - Full affine: angle, translate, scale, shear.
-   * - ``RandomHorizontalFlip``
-     - ``GEOMETRIC_EXACT``
-     - Covered (v0.1)
-     - Exact pixel flip; no interpolation.
-   * - ``RandomVerticalFlip``
-     - ``GEOMETRIC_EXACT``
-     - Covered (v0.1)
-     - Exact pixel flip; no interpolation.
-   * - ``RandomPerspective``
-     - ``PROJECTIVE``
-     - Covered (v0.5)
-     - Start/end point pairs for homography.
-   * - ``RandomShear``
-     - ``GEOMETRIC_INTERP``
-     - **NEW (Phase A.2)**
-     - Pure shear; ``shear_x``/``shear_y`` in degrees.
-   * - ``RandomTranslate``
-     - ``GEOMETRIC_INTERP``
-     - **NEW (Phase A.2)**
-     - Pure translation; ``translate_x``/``translate_y`` in pixels.
-   * - ``RandomRotation90``
-     - (deferred)
-     - Not covered
-     - Uses ``torch.rot90``; no affine matrix path.
-
 Example:
     >>> from fuse_augmentations.adapters._kornia import KorniaAdapter
     >>> adapter = KorniaAdapter()
@@ -103,8 +60,9 @@ class KorniaAdapter:
     """Adapter between Kornia augmentation transforms and the fused affine engine.
 
     Implements the ``TransformAdapter`` protocol for the Kornia backend.
-    Supports ``RandomRotation``, ``RandomAffine``, ``RandomHorizontalFlip``,
-    and ``RandomVerticalFlip`` in v0.1.
+    Supports ``RandomRotation``, ``RandomAffine``, ``RandomShear``,
+    ``RandomTranslate``, ``RandomHorizontalFlip``, ``RandomVerticalFlip``
+    (affine path), and ``RandomPerspective`` (projective path).
 
     Example:
         >>> adapter = KorniaAdapter()

@@ -141,10 +141,10 @@ class TransformAdapter(Protocol):
             e.g. ``[3]`` for a horizontal flip, ``[2]`` for a vertical flip.
 
         Raises:
-            NotImplementedError: If the adapter does not support ExactSegment.
+            NotImplementedError: If the adapter does not support ExactAffineSegment.
 
         """
-        raise NotImplementedError("Adapter does not implement exact_flip_dims; required for ExactSegment support")
+        raise NotImplementedError("Adapter does not implement exact_flip_dims; required for ExactAffineSegment support")
 
     def call_nonfused(
         self,

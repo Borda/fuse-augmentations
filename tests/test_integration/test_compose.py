@@ -145,7 +145,7 @@ class TestTransformMatrix:
         assert pipe.transform_matrix.shape == torch.Size([4, 3, 3])
 
     def test_none_for_exact_only(self):
-        """transform_matrix is None when pipeline has only ExactSegments."""
+        """transform_matrix is None when pipeline has only ExactAffineSegments."""
         pipe = Compose([RandomHorizontalFlip(p=1.0)])
         pipe(torch.rand(1, 3, 8, 8))
         assert pipe.transform_matrix is None
@@ -187,13 +187,13 @@ class TestPassthroughPath:
         assert pipe.n_warps_saved == 0
 
     def test_spatial_kernel_exact_warps_saved(self):
-        """ExactSegment single-transform on each side of a passthrough: 1 warp saved each."""
+        """ExactAffineSegment single-transform on each side of a passthrough: 1 warp saved each."""
         pipe = Compose([
             RandomHorizontalFlip(p=1.0),
             RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
             RandomHorizontalFlip(p=1.0),
         ])
-        # Each ExactSegment with 1 transform saves 1 warp (no grid_sample at all)
+        # Each ExactAffineSegment with 1 transform saves 1 warp (no grid_sample at all)
         assert pipe.n_warps_saved == 2
 
 

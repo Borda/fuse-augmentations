@@ -3,7 +3,7 @@
 Requires albumentations >= 2.0. Tests are skipped gracefully if not installed.
 
 Parity contracts:
-- GEOMETRIC_EXACT (flip) transforms: fused ExactSegment vs albumentations cv2 → atol=1e-3
+- GEOMETRIC_EXACT (flip) transforms: fused ExactAffineSegment vs albumentations cv2 → atol=1e-3
   (tensor.flip is exact; any diff is float32 representation noise)
 - GEOMETRIC_INTERP transforms: fused scipy vs sequential scipy reference → atol=1e-5
   (same matrix, same scipy call → essentially identical; cv2 and scipy use different
@@ -232,7 +232,7 @@ class TestMultiTransformChain:
             A.GaussianBlur(p=1.0),  # SPATIAL_KERNEL barrier
             A.HorizontalFlip(p=1.0),
         ])
-        assert pipe.n_warps_saved == 1  # HorizontalFlip after barrier uses ExactSegment (+1), Rotate is standalone
+        assert pipe.n_warps_saved == 1  # HorizontalFlip after barrier uses ExactAffineSegment (+1), Rotate is standalone
         img = _rand_image()
         out = pipe(img)
         assert out.shape == img.shape

@@ -1,4 +1,4 @@
-"""Unit tests for _segment.py: FusedAffineSegment, ExactSegment, and build_segments."""
+"""Unit tests for _segment.py: FusedAffineSegment, ExactAffineSegment, and build_segments."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import torch
 
 from fuse_augmentations._types import TransformCategory
 from fuse_augmentations.affine._matrix import inv3x3, matmul3x3
-from fuse_augmentations.affine._segment import ExactSegment, FusedAffineSegment, build_segments, reorder_pointwise
+from fuse_augmentations.affine._segment import ExactAffineSegment, FusedAffineSegment, build_segments, reorder_pointwise
 
 
 class _StubTransform:
@@ -335,12 +335,12 @@ class TestLastMatrixProperty:
 
 
 # ---------------------------------------------------------------------------
-# ExactSegment tests
+# ExactAffineSegment tests
 # ---------------------------------------------------------------------------
 
 
 class _HFlipTransform:
-    """Stub HFlip transform for ExactSegment tests."""
+    """Stub HFlip transform for ExactAffineSegment tests."""
 
     def __init__(self, p=1.0):
         self.p = p
@@ -349,7 +349,7 @@ class _HFlipTransform:
 
 
 class _VFlipTransform:
-    """Stub VFlip transform for ExactSegment tests."""
+    """Stub VFlip transform for ExactAffineSegment tests."""
 
     def __init__(self, p=1.0):
         self.p = p
@@ -358,7 +358,7 @@ class _VFlipTransform:
 
 
 class _FlipAdapter:
-    """Adapter stub that supports exact_flip_dims for ExactSegment tests."""
+    """Adapter stub that supports exact_flip_dims for ExactAffineSegment tests."""
 
     def category(self, transform):
         return getattr(transform, "_category", TransformCategory.SPATIAL_KERNEL)
@@ -378,42 +378,42 @@ class _FlipAdapter:
         return image
 
 
-class TestExactSegmentLossless:
-    """Verify ExactSegment applies lossless flips via tensor.flip."""
+class TestExactAffineSegmentLossless:
+    """Verify ExactAffineSegment applies lossless flips via tensor.flip."""
 
     def test_hflip_p1_matches_tensor_flip(self):
         """HFlip with p=1.0 produces pixel-exact same result as image.flip(dims=[3])."""
         adapter = _FlipAdapter()
         t = _HFlipTransform(p=1.0)
-        seg = ExactSegment([t], adapter)
+        seg = ExactAffineSegment([t], adapter)
 
         img = torch.rand(2, 3, 8, 8)
         out = seg(img)
         expected = img.flip(dims=[3])
 
-        assert torch.equal(out, expected), "ExactSegment HFlip should be pixel-exact"
+        assert torch.equal(out, expected), "ExactAffineSegment HFlip should be pixel-exact"
 
     def test_vflip_p1_matches_tensor_flip(self):
         """VFlip with p=1.0 produces pixel-exact same result as image.flip(dims=[2])."""
         adapter = _FlipAdapter()
         t = _VFlipTransform(p=1.0)
-        seg = ExactSegment([t], adapter)
+        seg = ExactAffineSegment([t], adapter)
 
         img = torch.rand(2, 3, 8, 8)
         out = seg(img)
         expected = img.flip(dims=[2])
 
-        assert torch.equal(out, expected), "ExactSegment VFlip should be pixel-exact"
+        assert torch.equal(out, expected), "ExactAffineSegment VFlip should be pixel-exact"
 
 
-class TestExactSegmentP0:
+class TestExactAffineSegmentP0:
     """Verify p=0 leaves the image unchanged."""
 
     def test_p0_output_equals_input(self):
-        """ExactSegment with p=0 returns the input tensor unchanged."""
+        """ExactAffineSegment with p=0 returns the input tensor unchanged."""
         adapter = _FlipAdapter()
         t = _HFlipTransform(p=0.0)
-        seg = ExactSegment([t], adapter)
+        seg = ExactAffineSegment([t], adapter)
 
         img = torch.rand(2, 3, 8, 8)
         out = seg(img)
@@ -421,7 +421,7 @@ class TestExactSegmentP0:
         assert torch.equal(out, img), "p=0 should leave image unchanged"
 
 
-class TestExactSegmentDoubleFlip:
+class TestExactAffineSegmentDoubleFlip:
     """Verify HFlip then VFlip with p=1 composes correctly."""
 
     def test_hflip_then_vflip(self):
@@ -429,7 +429,7 @@ class TestExactSegmentDoubleFlip:
         adapter = _FlipAdapter()
         t_h = _HFlipTransform(p=1.0)
         t_v = _VFlipTransform(p=1.0)
-        seg = ExactSegment([t_h, t_v], adapter)
+        seg = ExactAffineSegment([t_h, t_v], adapter)
 
         img = torch.rand(2, 3, 8, 8)
         out = seg(img)
@@ -439,19 +439,19 @@ class TestExactSegmentDoubleFlip:
         assert torch.equal(out, expected), "HFlip+VFlip should match sequential tensor.flip"
 
 
-class TestExactSegmentPerSampleMask:
-    """Verify per-sample p=0.5 masking in ExactSegment."""
+class TestExactAffineSegmentPerSampleMask:
+    """Verify per-sample p=0.5 masking in ExactAffineSegment."""
 
     def test_p05_heterogeneous_batch(self):
         """With B=8 and p=0.5, at least one sample changed, at least one unchanged."""
         adapter = _FlipAdapter()
         t = _HFlipTransform(p=0.5)
-        seg = ExactSegment([t], adapter)
+        seg = ExactAffineSegment([t], adapter)
 
         bsz = 8
         img = torch.rand(bsz, 1, 8, 8)
 
-        # Make the per-sample mask used inside ExactSegment deterministic so that
+        # Make the per-sample mask used inside ExactAffineSegment deterministic so that
         # some samples are flipped and some are not, avoiding flaky behavior.
         pattern = torch.tensor([0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0])
         orig_rand = torch.rand
@@ -481,42 +481,42 @@ class TestExactSegmentPerSampleMask:
         assert has_unchanged, "Expected at least one sample to remain unchanged"
 
 
-class TestExactSegmentLastMatrix:
-    """Verify ExactSegment.last_matrix is always None."""
+class TestExactAffineSegmentLastMatrix:
+    """Verify ExactAffineSegment.last_matrix is always None."""
 
     def test_last_matrix_none_before_forward(self):
         """last_matrix is None before any forward pass."""
         adapter = _FlipAdapter()
         t = _HFlipTransform(p=1.0)
-        seg = ExactSegment([t], adapter)
+        seg = ExactAffineSegment([t], adapter)
         assert seg.last_matrix is None
 
     def test_last_matrix_none_after_forward(self):
-        """last_matrix remains None after forward (ExactSegment has no matrix)."""
+        """last_matrix remains None after forward (ExactAffineSegment has no matrix)."""
         adapter = _FlipAdapter()
         t = _HFlipTransform(p=1.0)
-        seg = ExactSegment([t], adapter)
+        seg = ExactAffineSegment([t], adapter)
         seg(torch.rand(2, 3, 8, 8))
         assert seg.last_matrix is None
 
 
 class TestBuildSegmentsExactOnly:
-    """Verify build_segments routes an EXACT-only run to ExactSegment."""
+    """Verify build_segments routes an EXACT-only run to ExactAffineSegment."""
 
     def test_exact_only_returns_exact_segment(self):
-        """An EXACT-only run (no INTERP) produces an ExactSegment, not FusedAffineSegment."""
+        """An EXACT-only run (no INTERP) produces an ExactAffineSegment, not FusedAffineSegment."""
         adapter = _StubAdapter()
         t1 = _StubTransform(_hflip_matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_EXACT)
         t2 = _StubTransform(_vflip_matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_EXACT)
         result = build_segments([t1, t2], adapter)
 
         assert len(result) == 1
-        assert isinstance(result[0], ExactSegment)
+        assert isinstance(result[0], ExactAffineSegment)
         assert len(result[0].transforms) == 2
 
 
-class TestExactSegmentSameOnBatch:
-    """Verify ExactSegment respects same_on_batch=True."""
+class TestExactAffineSegmentSameOnBatch:
+    """Verify ExactAffineSegment respects same_on_batch=True."""
 
     def test_same_on_batch_p1_all_flipped(self):
         """With same_on_batch=True and p=1, every sample in the batch is flipped."""
@@ -528,7 +528,7 @@ class TestExactSegmentSameOnBatch:
             _flip_dims = (3,)
 
         adapter = _FlipAdapter()
-        seg = ExactSegment([_SameOnBatchHFlip()], adapter)
+        seg = ExactAffineSegment([_SameOnBatchHFlip()], adapter)
 
         img = torch.rand(4, 3, 8, 8)
         out = seg(img)
@@ -545,7 +545,7 @@ class TestExactSegmentSameOnBatch:
             _flip_dims = (3,)
 
         adapter = _FlipAdapter()
-        seg = ExactSegment([_SameOnBatchHFlip()], adapter)
+        seg = ExactAffineSegment([_SameOnBatchHFlip()], adapter)
 
         img = torch.rand(4, 3, 8, 8)
         out = seg(img)
@@ -567,10 +567,10 @@ class TestBatchSizeOne:
         assert out.shape == (1, 3, 8, 8)
 
     def test_exact_segment_b1_shape(self):
-        """ExactSegment with B=1 produces output of shape (1, C, H, W)."""
+        """ExactAffineSegment with B=1 produces output of shape (1, C, H, W)."""
         adapter = _FlipAdapter()
         t = _HFlipTransform(p=1.0)
-        seg = ExactSegment([t], adapter)
+        seg = ExactAffineSegment([t], adapter)
 
         out = seg(torch.rand(1, 3, 8, 8))
 

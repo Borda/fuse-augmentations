@@ -49,7 +49,7 @@ from fuse_augmentations.affine._matrix import (
 from fuse_augmentations.affine._segment import (
     AlbuFusedAffineSegment,
     AlbuProjectiveSegment,
-    ExactSegment,
+    ExactAffineSegment,
     FusedAffineSegment,
     ProjectiveSegment,
     build_segments,
@@ -81,7 +81,7 @@ class FusedCompose(nn.Module):
       contains at least one ``GEOMETRIC_INTERP`` op. Matrices are composed and
       a single ``grid_sample`` call is used, eliminating redundant interpolation
       passes.
-    - An :class:`~fuse_augmentations._segment.ExactSegment` - when the run
+    - An :class:`~fuse_augmentations._segment.ExactAffineSegment` - when the run
       contains *only* ``GEOMETRIC_EXACT`` ops (HFlip, VFlip). Transforms are
       applied via ``tensor.flip`` with zero interpolation error.
 
@@ -329,7 +329,7 @@ class FusedCompose(nn.Module):
                 self._last_transform_matrix = seg.last_matrix
                 continue
 
-            if isinstance(seg, ExactSegment):
+            if isinstance(seg, ExactAffineSegment):
                 result = seg(image, aux_targets)
                 if aux_targets is not None:
                     image, aux_targets = result
@@ -413,10 +413,10 @@ class FusedCompose(nn.Module):
                     total += n - 1
                 continue
 
-            if isinstance(seg, ExactSegment):
-                # Each flip in an ExactSegment avoids grid_sample entirely
+            if isinstance(seg, ExactAffineSegment):
+                # Each flip in an ExactAffineSegment avoids grid_sample entirely
                 # (uses tensor.flip), so every transform saves exactly 1 warp.
-                # This is why ExactSegment contributes n rather than n-1:
+                # This is why ExactAffineSegment contributes n rather than n-1:
                 # even a single flip is lossless and free of grid_sample cost.
                 total += len(seg.transforms)
         return total
@@ -443,7 +443,7 @@ class FusedCompose(nn.Module):
                 parts.append(f"fused({', '.join(names)})")
                 continue
 
-            if isinstance(seg, ExactSegment):
+            if isinstance(seg, ExactAffineSegment):
                 names = [type(t).__name__ for t in seg.transforms]
                 parts.append(f"exact({', '.join(names)})")
                 continue
@@ -758,7 +758,7 @@ def _wrap_passthrough_segments(
     fused_segment_types = (
         FusedAffineSegment,
         AlbuFusedAffineSegment,
-        ExactSegment,
+        ExactAffineSegment,
         ProjectiveSegment,
         AlbuProjectiveSegment,
     )

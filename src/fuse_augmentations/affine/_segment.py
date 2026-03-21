@@ -19,6 +19,7 @@ Example:
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import numpy as np
@@ -39,7 +40,7 @@ def _shares_randomness_across_batch(adapter: TransformAdapter, transform: object
     return bool(getattr(transform, "same_on_batch", False))
 
 
-class ExactSegment(nn.Module):
+class ExactAffineSegment(nn.Module):
     """Lossless segment for GEOMETRIC_EXACT-only chains (HFlip, VFlip).
 
     Used when a run of consecutive geometric transforms consists entirely of
@@ -50,13 +51,23 @@ class ExactSegment(nn.Module):
     Per-sample probability masking is implemented with ``torch.where``:
     for each transform, a boolean mask of shape ``(B,)`` is drawn from the
     transform's ``p`` attribute, and only samples whose mask is ``True`` receive
-    the flip - the others keep their original values unchanged.
+    the flip; the others keep their original values unchanged.
 
     Args:
-        transforms: List of ``GEOMETRIC_EXACT`` transform objects (flips only in v0.2).
+        transforms: List of ``GEOMETRIC_EXACT`` transform objects (flips only).
         adapter: A ``TransformAdapter`` providing an ``exact_flip_dims`` method
-            (duck-typed; required for ``ExactSegment`` use).
+            (duck-typed; required for ``ExactAffineSegment`` use).
 
+    Example:
+        >>> import torch
+        >>> import kornia.augmentation as K
+        >>> from fuse_augmentations.affine._segment import ExactAffineSegment
+        >>> from fuse_augmentations.adapters._kornia import KorniaAdapter
+        >>> t = K.RandomHorizontalFlip(p=1.0)
+        >>> seg = ExactAffineSegment([t], KorniaAdapter())
+        >>> out = seg(torch.zeros(1, 3, 8, 8))
+        >>> out.shape
+        torch.Size([1, 3, 8, 8])
     """
 
     def __init__(self, transforms: list[object], adapter: TransformAdapter) -> None:
@@ -66,7 +77,7 @@ class ExactSegment(nn.Module):
 
     @property
     def last_matrix(self) -> Tensor | None:
-        """Return ``None`` always (ExactSegment does not compute a matrix)."""
+        """Return ``None`` always (ExactAffineSegment does not compute a matrix)."""
         return None
 
     def forward(
@@ -932,7 +943,7 @@ def build_segments(
     After grouping, each accumulated geometric run is classified:
 
     - **EXACT-only** - if the run contains *only* ``GEOMETRIC_EXACT`` ops
-      (e.g. HFlip, VFlip), it becomes an :class:`ExactSegment` that uses
+      (e.g. HFlip, VFlip), it becomes an :class:`ExactAffineSegment` that uses
       ``tensor.flip`` with zero interpolation error.
     - **Mixed / INTERP** - if any op in the run is ``GEOMETRIC_INTERP``, the
       whole run becomes a :class:`FusedAffineSegment` that composes matrices
@@ -946,17 +957,17 @@ def build_segments(
     Args:
         transforms: List of transform objects (already reordered if a reorder policy applies).
         adapter: A ``TransformAdapter`` for category lookup and matrix building.
-        interpolation: Interpolation mode override forwarded to each :class:`FusedAffineSegment`
-            (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
-        padding_mode: Padding mode override forwarded to each :class:`FusedAffineSegment`
-            (``"zeros"``, ``"border"``, ``"reflection"``).
+        interpolation: Interpolation mode override forwarded to each
+            :class:`FusedAffineSegment` (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
+        padding_mode: Padding mode override forwarded to each
+            :class:`FusedAffineSegment` (``"zeros"``, ``"border"``, ``"reflection"``).
         use_numpy: When ``True``, produce :class:`AlbuFusedAffineSegment` instances
-            (Albumentations/scipy backend) instead of the PyTorch :class:`FusedAffineSegment`.
-            Used for the Albumentations backend.
+            (Albumentations/scipy backend) instead of the PyTorch
+            :class:`FusedAffineSegment`. Used for the Albumentations backend.
 
     Returns:
         Flat list where each element is a :class:`FusedAffineSegment`
-        (mixed/INTERP geometric run), an :class:`ExactSegment`
+        (mixed/INTERP geometric run), an :class:`ExactAffineSegment`
         (EXACT-only geometric run), or the original transform object
         (passthrough for ``SPATIAL_KERNEL`` and ``POINTWISE`` transforms).
 
@@ -976,7 +987,7 @@ def build_segments(
 
         if use_numpy:
             # Albumentations path: use AlbuFusedAffineSegment only when interpolation is present;
-            # keep ExactSegment for GEOMETRIC_EXACT-only runs to preserve lossless flips and
+            # keep ExactAffineSegment for GEOMETRIC_EXACT-only runs to preserve lossless flips and
             # auxiliary-target handling.
             if has_interp:
                 segments.append(
@@ -988,7 +999,7 @@ def build_segments(
                     )
                 )
             else:
-                segments.append(ExactSegment(list(current_geo), adapter))
+                segments.append(ExactAffineSegment(list(current_geo), adapter))
 
             current_geo.clear()
             return
@@ -1005,7 +1016,7 @@ def build_segments(
             current_geo.clear()
             return
 
-        segments.append(ExactSegment(list(current_geo), adapter))
+        segments.append(ExactAffineSegment(list(current_geo), adapter))
         current_geo.clear()
 
     def _flush_proj() -> None:
@@ -1052,7 +1063,7 @@ def build_segments(
 
 
 # ---------------------------------------------------------------------------
-# Private helpers for ExactSegment auxiliary-target flipping
+# Private helpers for ExactAffineSegment auxiliary-target flipping
 # ---------------------------------------------------------------------------
 
 

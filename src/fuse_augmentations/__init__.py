@@ -34,12 +34,17 @@ from fuse_augmentations._types import (
     TransformAdapter,
     TransformCategory,
 )
-from fuse_augmentations.affine._segment import ExactSegment, FusedAffineSegment, ProjectiveSegment, build_segments
+from fuse_augmentations.affine._segment import (
+    ExactAffineSegment,
+    FusedAffineSegment,
+    ProjectiveSegment,
+    build_segments,
+)
 
 __all__ = [
     "AugmentationSequential",
     "Compose",
-    "ExactSegment",
+    "ExactAffineSegment",
     "FusedAffineSegment",
     "FusedCompose",
     "InterpolationMode",

@@ -6,7 +6,7 @@ import torch
 
 from fuse_augmentations._types import TransformCategory
 from fuse_augmentations.affine._segment import (
-    ExactSegment,
+    ExactAffineSegment,
     FusedAffineSegment,
     build_segments,
     reorder_pointwise,
@@ -161,10 +161,10 @@ class TestBarrierSplits:
 
 
 class TestExactOnlyDetection:
-    """EXACT-only transforms produce ExactSegment (not FusedAffineSegment)."""
+    """EXACT-only transforms produce ExactAffineSegment (not FusedAffineSegment)."""
 
     def test_exact_only_creates_exact_segment(self):
-        """[HFlip, VFlip] -> ExactSegment (no FusedAffineSegment)."""
+        """[HFlip, VFlip] -> ExactAffineSegment (no FusedAffineSegment)."""
         adapter = _StubAdapter()
         hflip = _StubTransform(_identity_matrix_fn, category=TransformCategory.GEOMETRIC_EXACT)
         vflip = _StubTransform(_identity_matrix_fn, category=TransformCategory.GEOMETRIC_EXACT)
@@ -172,19 +172,19 @@ class TestExactOnlyDetection:
         segments = build_segments([hflip, vflip], adapter)
 
         assert len(segments) == 1
-        assert isinstance(segments[0], ExactSegment)
+        assert isinstance(segments[0], ExactAffineSegment)
         assert not isinstance(segments[0], FusedAffineSegment)
         assert len(segments[0].transforms) == 2
 
     def test_single_exact_creates_exact_segment(self):
-        """Single GEOMETRIC_EXACT transform produces ExactSegment."""
+        """Single GEOMETRIC_EXACT transform produces ExactAffineSegment."""
         adapter = _StubAdapter()
         hflip = _StubTransform(_identity_matrix_fn, category=TransformCategory.GEOMETRIC_EXACT)
 
         segments = build_segments([hflip], adapter)
 
         assert len(segments) == 1
-        assert isinstance(segments[0], ExactSegment)
+        assert isinstance(segments[0], ExactAffineSegment)
 
 
 class TestExactWithInterp:
