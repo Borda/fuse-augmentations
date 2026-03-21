@@ -3,7 +3,7 @@
 Requires torchvision. Tests are skipped gracefully if not installed.
 
 Parity contracts:
-- GEOMETRIC_EXACT (flip) transforms: fused ExactSegment vs native TorchVision -> atol=1e-5
+- GEOMETRIC_EXACT (flip) transforms: fused ExactAffineSegment vs native TorchVision -> atol=1e-5
   (tensor.flip is exact; any diff is float32 representation noise)
 - GEOMETRIC_INTERP transforms: fused pipeline vs manual grid_sample reference
   built from the same adapter-sampled parameters. Both paths use

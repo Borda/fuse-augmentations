@@ -4,7 +4,7 @@ Pure mathematical functions that transform masks, bounding boxes, and keypoints
 using precomputed affine matrices or grids from the fused pipeline.
 
 These helpers are called internally by :class:`~fuse_augmentations._segment.FusedAffineSegment`
-and :class:`~fuse_augmentations._segment.ExactSegment` when ``data_keys`` includes auxiliary
+and :class:`~fuse_augmentations._segment.ExactAffineSegment` when ``data_keys`` includes auxiliary
 targets. They are also exported as public API for callers that want to apply the same
 math outside of the pipeline (e.g. to transform a stored transform matrix after the fact).
 
