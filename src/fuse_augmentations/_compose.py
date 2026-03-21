@@ -26,6 +26,7 @@ Example:
 
 from __future__ import annotations
 
+import contextlib
 import math
 import warnings
 from dataclasses import dataclass
@@ -35,7 +36,13 @@ import torch
 from torch import nn
 
 from fuse_augmentations._backend import Backend, detect_backends_per_transform
-from fuse_augmentations._types import ReorderPolicy, SegmentDescriptor, TransformAdapter, TransformCategory
+from fuse_augmentations._types import (
+    ReorderPolicy,
+    SegmentDescriptor,
+    TransformAdapter,
+    TransformCategory,
+    TransformSpec,
+)
 from fuse_augmentations.affine._matrix import (
     hflip_matrix,
     matmul3x3,
@@ -556,6 +563,81 @@ class FusedCompose(nn.Module):
             # Legacy passthrough
             descriptors.append(SegmentDescriptor(kind="passthrough", transforms=(type(seg).__name__,), n_warps_saved=0))
         return descriptors
+
+    @classmethod
+    def from_config(
+        cls,
+        specs: list[TransformSpec],
+        backend: str,
+        interpolation: str = "bilinear",
+        padding_mode: str = "zeros",
+        reorder: ReorderPolicy = ReorderPolicy.POINTWISE,
+        data_keys: list[str] | None = None,
+    ) -> FusedCompose:
+        """Create a FusedCompose pipeline from a list of TransformSpec objects.
+
+        Resolves each spec's op name to the corresponding backend transform
+        class, instantiates it with the spec's params and p, then builds the
+        pipeline via ``cls(transforms, ...)``.
+
+        Args:
+            specs: List of :class:`TransformSpec` objects describing the
+                pipeline.
+            backend: Backend name (``"kornia"``, ``"torchvision"``,
+                ``"albumentations"``).
+            interpolation: Interpolation mode for ``grid_sample`` warp.
+            padding_mode: Padding mode for out-of-bounds samples.
+            reorder: Reorder policy applied before segmentation.
+            data_keys: Key list for auxiliary target routing.
+
+        Returns:
+            A configured ``FusedCompose`` instance.
+
+        Example:
+            >>> import torch
+            >>> from fuse_augmentations._compose import FusedCompose
+            >>> from fuse_augmentations._types import TransformSpec
+            >>> spec = TransformSpec(op="hflip", params={}, p=0.5)
+            >>> pipe = FusedCompose.from_config([spec], backend="kornia")  # doctest: +SKIP
+            >>> pipe(torch.zeros(1, 3, 8, 8)).shape  # doctest: +SKIP
+            torch.Size([1, 3, 8, 8])
+
+        """
+        from fuse_augmentations._resolver import resolve_op
+
+        if not specs:
+            return cls(
+                [],
+                interpolation=interpolation,
+                padding_mode=padding_mode,
+                data_keys=data_keys,
+                reorder=reorder,
+            )
+
+        transforms: list[object] = []
+        for spec in specs:
+            tfm_cls = resolve_op(spec.op, backend)
+            kwargs: dict[str, object] = {**spec.params}
+            # Most backends accept p= for per-transform probability.
+            # Some (e.g. TorchVision rotation) don't; pass it and let
+            # the backend ignore it via **kwargs or TypeError fallback.
+            try:
+                tfm = tfm_cls(**kwargs, p=spec.p)
+            except TypeError:
+                # Backend class does not accept p= (e.g. TorchVision RandomRotation)
+                tfm = tfm_cls(**kwargs)
+                # Attach p as attribute so the fused engine can read it
+                with contextlib.suppress(AttributeError, TypeError):
+                    tfm.p = spec.p
+            transforms.append(tfm)
+
+        return cls(
+            transforms,
+            interpolation=interpolation,
+            padding_mode=padding_mode,
+            data_keys=data_keys,
+            reorder=reorder,
+        )
 
     @classmethod
     def from_params(
