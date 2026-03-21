@@ -381,6 +381,13 @@ class _FlipAdapter:
         return image
 
 
+class _RaisingExactAdapter(_FlipAdapter):
+    """Adapter whose exact_apply must never run for inactive transforms."""
+
+    def exact_apply(self, transform, image):
+        raise RuntimeError("exact_apply should not be called for inactive samples")
+
+
 class TestExactAffineSegmentLossless:
     """Verify ExactAffineSegment applies lossless flips via tensor.flip."""
 
@@ -422,6 +429,17 @@ class TestExactAffineSegmentP0:
         out = seg(img)
 
         assert torch.equal(out, img), "p=0 should leave image unchanged"
+
+    def test_p0_skips_exact_apply_entirely(self):
+        """Inactive exact transforms must not evaluate exact_apply."""
+        adapter = _RaisingExactAdapter()
+        t = _HFlipTransform(p=0.0)
+        seg = ExactAffineSegment([t], adapter)
+
+        img = torch.rand(2, 3, 8, 8)
+        out = seg(img)
+
+        assert torch.equal(out, img), "p=0 should bypass exact_apply and leave image unchanged"
 
 
 class TestExactAffineSegmentDoubleFlip:

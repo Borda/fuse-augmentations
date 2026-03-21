@@ -88,6 +88,7 @@ import torch
 from numpy.typing import NDArray
 
 from fuse_augmentations._types import TransformCategory
+from fuse_augmentations.affine._matrix import hflip_matrix, matmul3x3, rotation_matrix, vflip_matrix
 
 # ---------------------------------------------------------------------------
 # Inline NumPy matrix helpers (moved from _np_matrix.py)
@@ -279,10 +280,42 @@ class AlbumentationsAdapter:
         """
         B, _C, H, W = input_shape  # noqa: N806
 
-        # Exact discrete transforms have no sampled params — only need batch size.
-        _exact_types = _HFLIP_TYPES | _VFLIP_TYPES | _EXACT_DISCRETE_TYPES
-        if _is_albu_instance(transform, _exact_types):
+        if _is_albu_instance(transform, _HFLIP_TYPES | _VFLIP_TYPES):
             return {"_batch_size": torch.tensor([B], device=device, dtype=torch.int64)}
+        if _is_albu_instance(transform, _EXACT_DISCRETE_TYPES):
+            result: dict[str, torch.Tensor] = {
+                "_batch_size": torch.tensor([B], device=device, dtype=torch.int64),
+            }
+            same_on_batch = bool(getattr(transform, "same_on_batch", False))
+
+            if TRANSFORM_REGISTRY and isinstance(transform, _RandomRotate90):
+                if same_on_batch:
+                    factor = int(transform.get_params()["factor"]) % 4  # type: ignore[attr-defined]
+                    result["k90"] = torch.full((B,), factor, device=device, dtype=torch.int64)
+                    return result
+                result["k90"] = torch.tensor(
+                    [int(transform.get_params()["factor"]) % 4 for _ in range(B)],  # type: ignore[attr-defined]
+                    device=device,
+                    dtype=torch.int64,
+                )
+                return result
+
+            if TRANSFORM_REGISTRY and isinstance(transform, _D4):
+                if same_on_batch:
+                    elem = str(transform.get_params()["group_element"])  # type: ignore[attr-defined]
+                    result["d4_code"] = torch.full((B,), _D4_ELEM_TO_CODE[elem], device=device, dtype=torch.int64)
+                    return result
+                result["d4_code"] = torch.tensor(
+                    [
+                        _D4_ELEM_TO_CODE[str(transform.get_params()["group_element"])]  # type: ignore[attr-defined]
+                        for _ in range(B)
+                    ],
+                    device=device,
+                    dtype=torch.int64,
+                )
+                return result
+
+            return result
 
         # GEOMETRIC_INTERP: extract the pre-built matrix B times (once per sample)
         if _is_albu_instance(transform, _INTERP_TYPES) or _is_albu_instance(transform, _ALL_REGISTRY_TYPES):
@@ -334,10 +367,31 @@ class AlbumentationsAdapter:
             return torch.tensor(M_np, dtype=torch.float32, device=device).unsqueeze(0).expand(B, -1, -1).clone()
 
         if _is_albu_instance(transform, _EXACT_DISCRETE_TYPES):
-            # Discrete exact ops (rot90, D4, transpose) are handled by exact_apply;
-            # build_matrix returns identity since they bypass the matrix path.
             B = int(params["_batch_size"].item())  # noqa: N806
-            return torch.eye(3).unsqueeze(0).expand(B, -1, -1).clone()
+            device = params["_batch_size"].device
+            dtype = torch.float32
+
+            if _is_albu_instance(transform, frozenset({_RandomRotate90})):
+                k90 = params.get("k90")
+                if k90 is None:
+                    k90 = torch.zeros(B, device=device, dtype=torch.int64)
+                if H != W and bool(((k90 == 1) | (k90 == 3)).any().item()):
+                    msg = (
+                        "RandomRotate90 with k in {1, 3} changes spatial dimensions "
+                        f"({H}x{W}). Mixed affine fusion requires shape-preserving ops."
+                    )
+                    raise RuntimeError(msg)
+                angles = k90.to(dtype=dtype) * (torch.pi / 2.0)
+                return rotation_matrix(angles, H=H, W=W)
+
+            if _is_albu_instance(transform, frozenset({_Transpose})):
+                return _transpose_matrix(H=H, W=W, batch_size=B, device=device, dtype=dtype)
+
+            if _is_albu_instance(transform, frozenset({_D4})):
+                d4_code = params.get("d4_code")
+                if d4_code is None:
+                    d4_code = torch.zeros(B, device=device, dtype=torch.int64)
+                return _d4_matrix(d4_code, H=H, W=W, device=device, dtype=dtype)
 
         if "matrix" in params:
             # Already (B, 3, 3) float32 from sample_params
@@ -446,8 +500,7 @@ def _check_square_for_shape_changing_op(
             f"{op_name} changes spatial dimensions on non-square images "
             f"({image.shape[2]}x{image.shape[3]}). "
             "ExactAffineSegment requires shape-preserving ops. "
-            "Use square images or pair with a GEOMETRIC_INTERP transform "
-            "to route through FusedAffineSegment instead."
+            "Use square images for exact discrete transforms."
         )
         raise RuntimeError(msg)
 
@@ -463,6 +516,8 @@ _D4_OPS: dict[str, str] = {
     "t": "transpose",
     "hvt": "hvt",
 }
+_D4_ELEM_TO_CODE: dict[str, int] = {name: idx for idx, name in enumerate(_D4_OPS)}
+_D4_CODE_TO_ELEM: dict[int, str] = {idx: name for name, idx in _D4_ELEM_TO_CODE.items()}
 
 
 def _apply_discrete_exact(
@@ -523,6 +578,72 @@ def _apply_discrete_exact(
 
     msg = f"Cannot apply discrete exact op for {ttype.__name__!r}"
     raise TypeError(msg)
+
+
+def _transpose_matrix(
+    H: int,  # noqa: N803
+    W: int,  # noqa: N803
+    batch_size: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Build the forward pixel-space matrix for transpose."""
+    if H != W:
+        msg = (
+            f"Transpose changes spatial dimensions on non-square images ({H}x{W})."
+            f" Mixed affine fusion requires shape-preserving ops."
+        )
+        raise RuntimeError(msg)
+    matrix = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)
+    matrix[:, 0, 1] = 1.0
+    matrix[:, 1, 0] = 1.0
+    matrix[:, 2, 2] = 1.0
+    return matrix
+
+
+def _d4_matrix(
+    d4_code: torch.Tensor,
+    H: int,  # noqa: N803
+    W: int,  # noqa: N803
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Build forward pixel-space matrices for D4 group elements."""
+    batch_size = int(d4_code.shape[0])
+    out = torch.empty(batch_size, 3, 3, device=device, dtype=dtype)
+    base_h = hflip_matrix(W=W, batch_size=1, device=device, dtype=dtype)
+    base_v = vflip_matrix(H=H, batch_size=1, device=device, dtype=dtype)
+    base_t = _transpose_matrix(H=H, W=W, batch_size=1, device=device, dtype=dtype)
+
+    for idx, code in enumerate(d4_code.tolist()):
+        elem = _D4_CODE_TO_ELEM[int(code)]
+        if elem == "e":
+            out[idx] = torch.eye(3, device=device, dtype=dtype)
+            continue
+        if elem == "r90":
+            out[idx] = rotation_matrix(torch.tensor([torch.pi / 2.0], device=device, dtype=dtype), H=H, W=W)[0]
+            continue
+        if elem == "r180":
+            out[idx] = rotation_matrix(torch.tensor([torch.pi], device=device, dtype=dtype), H=H, W=W)[0]
+            continue
+        if elem == "r270":
+            out[idx] = rotation_matrix(torch.tensor([3.0 * torch.pi / 2.0], device=device, dtype=dtype), H=H, W=W)[0]
+            continue
+        if elem == "h":
+            out[idx] = base_h[0]
+            continue
+        if elem == "v":
+            out[idx] = base_v[0]
+            continue
+        if elem == "t":
+            out[idx] = base_t[0]
+            continue
+        if elem == "hvt":
+            out[idx] = matmul3x3(base_t, matmul3x3(base_v, base_h))[0]
+            continue
+        msg = f"Unknown D4 group element: {elem!r}"
+        raise ValueError(msg)
+    return out
 
 
 def _apply_d4_element(image: torch.Tensor, elem: str) -> torch.Tensor:

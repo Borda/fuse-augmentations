@@ -1,4 +1,5 @@
 """Unit tests for SegmentDescriptor dataclass (Phase B.1)."""
+
 from __future__ import annotations
 
 import json
@@ -23,9 +24,7 @@ class TestSegmentDescriptorConstruction:
     def test_minimal_construction(self):
         from fuse_augmentations import SegmentDescriptor
 
-        d = SegmentDescriptor(
-            kind="fused", transforms=("RandomRotation",), n_warps_saved=0
-        )
+        d = SegmentDescriptor(kind="fused", transforms=("RandomRotation",), n_warps_saved=0)
         assert d.kind == "fused"
         assert d.transforms == ("RandomRotation",)
         assert d.n_warps_saved == 0
@@ -45,9 +44,7 @@ class TestSegmentDescriptorConstruction:
     def test_frozen_immutable(self):
         from fuse_augmentations import SegmentDescriptor
 
-        d = SegmentDescriptor(
-            kind="fused", transforms=("Rotate",), n_warps_saved=1
-        )
+        d = SegmentDescriptor(kind="fused", transforms=("Rotate",), n_warps_saved=1)
         with pytest.raises((AttributeError, TypeError)):
             d.kind = "exact"  # type: ignore[misc]
 
@@ -73,9 +70,7 @@ class TestSegmentDescriptorToDict:
     def test_to_dict_json_serializable(self):
         from fuse_augmentations import SegmentDescriptor
 
-        d = SegmentDescriptor(
-            kind="projective", transforms=("Perspective",), n_warps_saved=0
-        )
+        d = SegmentDescriptor(kind="projective", transforms=("Perspective",), n_warps_saved=0)
         serialized = json.dumps(d.to_dict())
         restored = json.loads(serialized)
         assert restored["kind"] == "projective"
@@ -87,9 +82,7 @@ class TestSegmentDescriptorToDict:
         """to_dict() converts tuple to list for JSON compatibility."""
         from fuse_augmentations import SegmentDescriptor
 
-        d = SegmentDescriptor(
-            kind="exact", transforms=("HFlip",), n_warps_saved=1
-        )
+        d = SegmentDescriptor(kind="exact", transforms=("HFlip",), n_warps_saved=1)
         result = d.to_dict()
         assert isinstance(result["transforms"], list)
 
@@ -97,9 +90,7 @@ class TestSegmentDescriptorToDict:
     def test_all_kind_values_round_trip(self, kind):
         from fuse_augmentations import SegmentDescriptor
 
-        d = SegmentDescriptor(
-            kind=kind, transforms=("SomeTransform",), n_warps_saved=0
-        )
+        d = SegmentDescriptor(kind=kind, transforms=("SomeTransform",), n_warps_saved=0)
         serialized = json.dumps(d.to_dict())
         restored = json.loads(serialized)
         assert restored["kind"] == kind

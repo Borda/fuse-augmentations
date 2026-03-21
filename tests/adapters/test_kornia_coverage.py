@@ -123,6 +123,19 @@ class TestRegistryCoverage:
         assert not torch.isnan(mtx).any(), f"NaN in build_matrix for {transform_cls.__name__}"
         assert not torch.isinf(mtx).any(), f"Inf in build_matrix for {transform_cls.__name__}"
 
+    def test_random_rotation90_sample_params_include_k90(self, adapter):
+        """RandomRotation90 must expose sampled quarter turns for mixed affine fusion."""
+        transform_cls = next((cls for cls in TRANSFORM_REGISTRY if cls.__name__ == "RandomRotation90"), None)
+        if transform_cls is None:
+            pytest.skip("RandomRotation90 not available in installed kornia version")
+        instance = _make_instance(transform_cls)
+
+        params = adapter.sample_params(instance, INPUT_SHAPE, DEVICE)
+
+        assert "k90" in params
+        assert params["k90"].shape == (BSZ,)
+        assert params["k90"].dtype == torch.int64
+
 
 class TestRegistryCompleteness:
     """Verify the registry is non-empty (guards against broken lazy import)."""
