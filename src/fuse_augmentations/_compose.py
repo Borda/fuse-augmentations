@@ -53,6 +53,7 @@ from fuse_augmentations.affine._segment import (
     FusedAffineSegment,
     ProjectiveSegment,
     build_segments,
+    reorder_aggressive,
     reorder_pointwise,
 )
 
@@ -98,7 +99,7 @@ class FusedCompose(nn.Module):
         reorder: Reorder policy applied before segmentation.
             ``NONE`` (default) preserves the original order.
             ``POINTWISE`` reorders pointwise ops after geometric chains.
-            ``AGGRESSIVE`` raises ``NotImplementedError``.
+            ``AGGRESSIVE`` applies the multi-pass bubble-sort variant of POINTWISE.
         interpolation: Interpolation mode override for fused segments
             (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
             Defaults to ``"bilinear"`` when ``None``.
@@ -114,9 +115,6 @@ class FusedCompose(nn.Module):
             single-tensor input/output.
         **backend_kwargs: Reserved for backend-specific options (currently unused).
 
-    Raises:
-        NotImplementedError: If ``reorder`` is ``ReorderPolicy.AGGRESSIVE``.
-
     """
 
     def __init__(
@@ -130,7 +128,7 @@ class FusedCompose(nn.Module):
     ) -> None:
         super().__init__()
 
-        if reorder not in (ReorderPolicy.NONE, ReorderPolicy.POINTWISE):
+        if reorder not in (ReorderPolicy.NONE, ReorderPolicy.POINTWISE, ReorderPolicy.AGGRESSIVE):
             msg = f"ReorderPolicy.{reorder.name} not yet supported"
             raise NotImplementedError(msg)
 
@@ -157,6 +155,8 @@ class FusedCompose(nn.Module):
                 adapter = _adapter_for_backend(backend)
                 if reorder == ReorderPolicy.POINTWISE:
                     transforms = reorder_pointwise(transforms, adapter)
+                elif reorder == ReorderPolicy.AGGRESSIVE:
+                    transforms = reorder_aggressive(transforms, adapter)
                 segments = build_segments(
                     transforms,
                     adapter,
@@ -457,18 +457,32 @@ class FusedCompose(nn.Module):
 
     @property
     def fusion_plan_descriptors(self) -> list[SegmentDescriptor]:
-        """Return a structured list of segment descriptors for the fusion plan.
+        """Return a structured, machine-readable description of the fusion plan.
 
-        Each descriptor captures the kind of segment, the transform class names,
-        warps saved, and optionally the backend adapter. This is the machine-readable
-        counterpart of the :attr:`fusion_plan` string property.
-
-        The fusion_plan string is derivable from this list:
-        ``" \u2192 ".join(f"{d.kind}({', '.join(d.transforms)})" for d in descriptors)``.
+        Each element corresponds to one segment in the pipeline, in execution
+        order. This is the structured counterpart to the human-readable
+        :attr:`fusion_plan` string. Available immediately after construction —
+        does not require a :meth:`forward` call.
 
         Returns:
-            List of :class:`~fuse_augmentations._types.SegmentDescriptor` instances,
-            one per segment in the pipeline.
+            List of :class:`~fuse_augmentations._types.SegmentDescriptor`
+            instances, one per segment. Empty list for an empty pipeline.
+            Each descriptor's ``backend`` field is the adapter class name
+            (e.g. ``"KorniaAdapter"``) for fused, exact, and projective
+            segments, and ``None`` for passthrough segments and backend-free
+            pipelines created via :meth:`from_params`.
+
+        Example:
+            >>> import torch
+            >>> from fuse_augmentations._compose import FusedCompose
+            >>> pipe = FusedCompose([])
+            >>> pipe.fusion_plan_descriptors
+            []
+
+        Note:
+            The ``backend`` field on passthrough segments is always ``None``,
+            regardless of the pipeline's backend. Only fused, exact, and
+            projective segments carry the adapter class name.
 
         """
         backend = type(self._adapter).__name__ if self._adapter else None
@@ -578,11 +592,6 @@ class FusedCompose(nn.Module):
             torch.Size([2, 3, 64, 64])
 
         """
-        if reorder is ReorderPolicy.AGGRESSIVE:
-            raise NotImplementedError(
-                "ReorderPolicy.AGGRESSIVE is not supported for Compose.from_params(); "
-                "use a supported reorder policy, such as ReorderPolicy.POINTWISE."
-            )
         if brightness is not None:
             msg = "brightness not yet supported, planned v0.4"
             raise NotImplementedError(msg)
@@ -761,6 +770,8 @@ def _build_mixed_segments(
         adapter = _get_adapter(bk)
         if reorder == ReorderPolicy.POINTWISE:
             group_transforms = reorder_pointwise(group_transforms, adapter)
+        elif reorder == ReorderPolicy.AGGRESSIVE:
+            group_transforms = reorder_aggressive(group_transforms, adapter)
         group_segments = build_segments(
             group_transforms,
             adapter,
