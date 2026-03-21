@@ -925,6 +925,37 @@ def reorder_pointwise(
     return result
 
 
+def reorder_aggressive(
+    transforms: list[object],
+    adapter: TransformAdapter,
+) -> list[object]:
+    """Reorder transforms aggressively -- bubble-sort POINTWISE ops after geometric chains.
+
+    Applies the POINTWISE reorder algorithm iteratively until the list stabilizes.
+    This is the superset of :func:`reorder_pointwise`: for well-formed pipelines the
+    result is identical, but the multi-pass approach provides stronger guarantees
+    for edge cases where a single pass might miss POINTWISE ops.
+
+    ``SPATIAL_KERNEL`` barriers are never crossed.
+
+    Args:
+        transforms: List of transform objects to reorder.
+        adapter: TransformAdapter for category lookup.
+
+    Returns:
+        Reordered list with all POINTWISE ops placed after geometric runs within
+        each SPATIAL_KERNEL-bounded stretch.
+
+    """
+    current = transforms
+    for _ in range(len(transforms)):  # max n iterations
+        reordered = reorder_pointwise(current, adapter)
+        if reordered == current:  # stable
+            break
+        current = reordered
+    return current
+
+
 def build_segments(
     transforms: list[object],
     adapter: TransformAdapter,

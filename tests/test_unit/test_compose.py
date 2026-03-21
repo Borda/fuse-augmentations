@@ -50,12 +50,10 @@ class TestEmptyPipeline:
 class TestReorderPolicyAggressive:
     """Verify reorder policy acceptance and rejection."""
 
-    def test_aggressive_reorder_raises(self):
-        """AGGRESSIVE reorder policy raises NotImplementedError in v0.1."""
-        import pytest
-
-        with pytest.raises(NotImplementedError, match="AGGRESSIVE"):
-            Compose([], reorder=ReorderPolicy.AGGRESSIVE)
+    def test_aggressive_reorder_accepted(self):
+        """AGGRESSIVE reorder policy is accepted (v0.8+)."""
+        pipe = Compose([], reorder=ReorderPolicy.AGGRESSIVE)
+        assert pipe.reorder is ReorderPolicy.AGGRESSIVE
 
     def test_none_reorder_accepted(self):
         """NONE reorder policy is accepted without error."""

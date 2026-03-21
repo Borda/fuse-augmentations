@@ -33,7 +33,7 @@ class ReorderPolicy(Enum):
     Attributes:
         NONE: No reordering; fuse only consecutive geometric ops as-is (v0.1 default).
         POINTWISE: Move POINTWISE ops out of geometric chains (v0.2).
-        AGGRESSIVE: Reserved; raises NotImplementedError (v0.1-v0.6).
+        AGGRESSIVE: Multi-pass bubble-sort reorder; superset of POINTWISE (v0.8).
 
     """
 
@@ -169,20 +169,40 @@ class TransformAdapter(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class SegmentDescriptor:
-    """Structured description of one segment in the fusion plan.
+    """Structured description of one segment in a fused augmentation pipeline.
 
-    Attributes:
-        kind: Segment type -- ``"fused"`` | ``"exact"`` | ``"projective"`` | ``"passthrough"``.
-        transforms: Tuple of transform class names in this segment.
-        n_warps_saved: Number of interpolation passes eliminated by this segment.
-        backend: Adapter class name owning this segment (``None`` for ``from_params`` pipelines).
+    Returned by :attr:`FusedCompose.fusion_plan_descriptors
+    <fuse_augmentations._compose.FusedCompose.fusion_plan_descriptors>`.
+    Each instance describes exactly one segment — a fused geometric group,
+    a lossless exact segment, a projective segment, or a passthrough barrier —
+    and is frozen and JSON-serialisable via :meth:`to_dict`.
+
+    Args:
+        kind: Segment type. One of ``"fused"``, ``"exact"``, ``"projective"``,
+            or ``"passthrough"``.
+        transforms: Class names of the transforms in this segment, in
+            execution order.
+        n_warps_saved: Number of ``grid_sample`` interpolation passes
+            eliminated by fusing this segment. Zero for passthrough and
+            single-transform segments.
+        backend: Name of the backend adapter used for this segment
+            (``"kornia"``, ``"albumentations"``, ``"torchvision"``), or
+            ``None`` for backend-free pipelines created via
+            :meth:`FusedCompose.from_params <fuse_augmentations._compose.FusedCompose.from_params>`.
 
     Example:
-        >>> d = SegmentDescriptor(kind="fused", transforms=("RandomRotation",), n_warps_saved=0)
+        >>> d = SegmentDescriptor(
+        ...     kind="fused",
+        ...     transforms=("RandomRotation", "RandomHorizontalFlip"),
+        ...     n_warps_saved=1,
+        ...     backend="kornia",
+        ... )
         >>> d.kind
         'fused'
-        >>> import json; json.dumps(d.to_dict())  # doctest: +SKIP
-        '...'
+        >>> d.n_warps_saved
+        1
+        >>> d.to_dict()  # doctest: +SKIP
+        {'kind': 'fused', 'transforms': ['RandomRotation', ...], ...}
 
     """
 
@@ -192,7 +212,24 @@ class SegmentDescriptor:
     backend: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        """Return a JSON-serialisable dict representation."""
+        """Return a JSON-serialisable dict representation of this descriptor.
+
+        Returns:
+            Dict with keys ``"kind"``, ``"transforms"``, ``"n_warps_saved"``,
+            and ``"backend"``. The ``"transforms"`` value is a ``list`` of
+            strings (not a ``tuple``) for JSON compatibility.
+
+        Example:
+            >>> d = SegmentDescriptor(
+            ...     kind="passthrough",
+            ...     transforms=("RandomGaussianBlur",),
+            ...     n_warps_saved=0,
+            ...     backend="kornia",
+            ... )
+            >>> d.to_dict()
+            {'kind': 'passthrough', 'transforms': ['RandomGaussianBlur'], 'n_warps_saved': 0, 'backend': 'kornia'}
+
+        """
         return {
             "kind": self.kind,
             "transforms": list(self.transforms),
