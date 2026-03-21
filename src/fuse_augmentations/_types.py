@@ -1,5 +1,6 @@
 """Type definitions for the fuse-augmentations library."""
 
+from dataclasses import dataclass
 from enum import Enum, IntEnum
 from typing import Protocol, runtime_checkable
 
@@ -164,3 +165,37 @@ class TransformAdapter(Protocol):
 
         """
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentDescriptor:
+    """Structured description of one segment in the fusion plan.
+
+    Attributes:
+        kind: Segment type -- ``"fused"`` | ``"exact"`` | ``"projective"`` | ``"passthrough"``.
+        transforms: Tuple of transform class names in this segment.
+        n_warps_saved: Number of interpolation passes eliminated by this segment.
+        backend: Adapter class name owning this segment (``None`` for ``from_params`` pipelines).
+
+    Example:
+        >>> d = SegmentDescriptor(kind="fused", transforms=("RandomRotation",), n_warps_saved=0)
+        >>> d.kind
+        'fused'
+        >>> import json; json.dumps(d.to_dict())  # doctest: +SKIP
+        '...'
+
+    """
+
+    kind: str
+    transforms: tuple[str, ...]
+    n_warps_saved: int
+    backend: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serialisable dict representation."""
+        return {
+            "kind": self.kind,
+            "transforms": list(self.transforms),
+            "n_warps_saved": self.n_warps_saved,
+            "backend": self.backend,
+        }
