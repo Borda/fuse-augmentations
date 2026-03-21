@@ -31,6 +31,7 @@ from fuse_augmentations._types import (
     InterpolationMode,
     PaddingMode,
     ReorderPolicy,
+    SegmentDescriptor,
     TransformAdapter,
     TransformCategory,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "PaddingMode",
     "ProjectiveSegment",
     "ReorderPolicy",
+    "SegmentDescriptor",
     "TransformAdapter",
     "TransformCategory",
     "build_segments",
