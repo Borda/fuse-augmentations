@@ -28,6 +28,7 @@ from fuse_augmentations._targets import (
     transform_mask,
 )
 from fuse_augmentations._types import (
+    BackendConverter,
     InterpolationMode,
     PaddingMode,
     ReorderPolicy,
@@ -45,6 +46,7 @@ from fuse_augmentations.affine._segment import (
 
 __all__ = [
     "AugmentationSequential",
+    "BackendConverter",
     "Compose",
     "ExactAffineSegment",
     "FusedAffineSegment",

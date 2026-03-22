@@ -74,6 +74,33 @@ class PaddingMode(IntEnum):
 
 
 @runtime_checkable
+class BackendConverter(Protocol):
+    """Protocol for output format converters used with ``output_backend=``.
+
+    Implementations convert the pipeline's native ``torch.Tensor`` output to a
+    target backend format (e.g. NumPy ``ndarray``).
+
+    """
+
+    def convert(self, tensor: Any) -> Any:  # noqa: ANN401
+        """Convert tensor to target backend format.
+
+        Args:
+            tensor: The input tensor to convert.
+
+        Returns:
+            Converted object in the target backend format.
+
+        """
+        ...
+
+    @property
+    def target_backend(self) -> str:
+        """Target backend identifier (e.g. ``'numpy'``, ``'torch'``)."""
+        ...
+
+
+@runtime_checkable
 class TransformAdapter(Protocol):
     """Adapter between a backend transform and the fused affine engine.
 
