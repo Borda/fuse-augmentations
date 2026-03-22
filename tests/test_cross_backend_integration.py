@@ -9,6 +9,7 @@ Each test verifies:
 - Output shape is correct (BCHW for torch, BHWC/HWC for numpy)
 - Value range is plausible ([0, 1] for float data)
 - No NaN/Inf in output
+
 """
 
 from __future__ import annotations

@@ -21,6 +21,7 @@ from fuse_augmentations._compose import (
     Compose,
     FusedCompose,
 )
+from fuse_augmentations._converters import NumpyToTorchConverter, TorchToNumpyConverter
 from fuse_augmentations._targets import (
     transform_bbox_xywh,
     transform_bbox_xyxy,
@@ -52,10 +53,12 @@ __all__ = [
     "FusedAffineSegment",
     "FusedCompose",
     "InterpolationMode",
+    "NumpyToTorchConverter",
     "PaddingMode",
     "ProjectiveSegment",
     "ReorderPolicy",
     "SegmentDescriptor",
+    "TorchToNumpyConverter",
     "TransformAdapter",
     "TransformCategory",
     "TransformSpec",
