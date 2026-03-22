@@ -126,6 +126,53 @@ _BACKEND_REGISTRY_BUILDERS: dict[str, Callable[[], dict[str, type]]] = {
 }
 
 
+def translate_params(op: str, backend: str, params: dict[str, object]) -> dict[str, object]:
+    """Translate canonical ``TransformSpec.params`` into backend ctor kwargs.
+
+    Args:
+        op: Canonical operation name.
+        backend: Target backend name.
+        params: Canonical transform params.
+
+    Returns:
+        Backend-specific constructor kwargs.
+
+    Raises:
+        ValueError: If ``op`` or ``backend`` is unknown.
+
+    """
+    if backend not in SUPPORTED_BACKENDS:
+        msg = f"unknown backend {backend!r}; supported: {sorted(SUPPORTED_BACKENDS)}"
+        raise ValueError(msg)
+    if op not in SUPPORTED_OPS:
+        msg = f"unknown op {op!r}; supported: {sorted(SUPPORTED_OPS)}"
+        raise ValueError(msg)
+
+    kwargs = dict(params)
+
+    def _move(src: str, dst: str) -> None:
+        if src in kwargs:
+            value = kwargs.pop(src)
+            kwargs.setdefault(dst, value)
+
+    if op in {"rotation", "affine"}:
+        if backend == "albumentations":
+            _move("rotation", "rotate" if op == "affine" else "limit")
+            _move("degrees", "rotate" if op == "affine" else "limit")
+        else:
+            _move("rotation", "degrees")
+
+    if op == "scale":
+        _move("factor", "scale")
+        if backend in {"torchvision", "kornia"}:
+            kwargs.setdefault("degrees", 0.0)
+
+    if op == "shear" and backend == "kornia":
+        _move("degrees", "shear")
+
+    return kwargs
+
+
 def resolve_op(op: str, backend: str) -> type:
     """Resolve a canonical operation name to its backend transform class.
 

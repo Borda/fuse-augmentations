@@ -610,7 +610,7 @@ class FusedCompose(nn.Module):
             torch.Size([1, 3, 8, 8])
 
         """
-        from fuse_augmentations._resolver import SUPPORTED_BACKENDS, resolve_op
+        from fuse_augmentations._resolver import SUPPORTED_BACKENDS, resolve_op, translate_params
 
         if backend not in SUPPORTED_BACKENDS:
             msg = f"unknown backend {backend!r}; supported: {sorted(SUPPORTED_BACKENDS)}"
@@ -628,7 +628,7 @@ class FusedCompose(nn.Module):
         transforms: list[object] = []
         for spec in specs:
             tfm_cls = resolve_op(spec.op, backend)
-            kwargs: dict[str, object] = {**spec.params}
+            kwargs = translate_params(spec.op, backend, dict(spec.params))
             # Most backends accept p= for per-transform probability.
             # Some (e.g. TorchVision rotation) don't; pass it and let
             # the backend ignore it via **kwargs or TypeError fallback.
