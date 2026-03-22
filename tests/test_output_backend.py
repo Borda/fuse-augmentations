@@ -1,0 +1,79 @@
+"""Tests for output_backend parameter on FusedCompose (D.3)."""
+
+from __future__ import annotations
+
+import pytest
+import torch
+
+np = pytest.importorskip("numpy")
+
+from fuse_augmentations import Compose, FusedCompose
+
+
+class TestOutputBackend:
+    """Verify output_backend parameter converts pipeline output correctly."""
+
+    def test_default_returns_tensor(self) -> None:
+        """output_backend=None (default) returns torch.Tensor — regression test."""
+        pipe = FusedCompose.from_params(rotation=(-10.0, 10.0))
+        x = torch.rand(1, 3, 16, 16)
+        result = pipe(x)
+        assert isinstance(result, torch.Tensor)
+
+    def test_numpy_returns_ndarray(self) -> None:
+        """output_backend='numpy' returns np.ndarray."""
+        pipe = FusedCompose.from_params(rotation=(-10.0, 10.0), output_backend="numpy")
+        x = torch.rand(1, 3, 16, 16)
+        result = pipe(x)
+        assert isinstance(result, np.ndarray)
+
+    def test_torch_returns_tensor(self) -> None:
+        """output_backend='torch' returns torch.Tensor (identity)."""
+        pipe = FusedCompose.from_params(rotation=(-10.0, 10.0), output_backend="torch")
+        x = torch.rand(1, 3, 16, 16)
+        result = pipe(x)
+        assert isinstance(result, torch.Tensor)
+
+    def test_unknown_raises_valueerror(self) -> None:
+        """Unknown output_backend raises ValueError."""
+        with pytest.raises(ValueError, match="Unknown output_backend"):
+            FusedCompose.from_params(rotation=(-10.0, 10.0), output_backend="jax")
+
+    def test_numpy_output_shape_bhwc(self) -> None:
+        """output_backend='numpy' produces (B, H, W, C) for batch > 1."""
+        pipe = FusedCompose.from_params(rotation=(-5.0, 5.0), output_backend="numpy")
+        x = torch.rand(4, 3, 16, 16)
+        result = pipe(x)
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (4, 16, 16, 3)
+
+    def test_numpy_output_shape_hwc_single(self) -> None:
+        """output_backend='numpy' produces (H, W, C) for batch == 1."""
+        pipe = FusedCompose.from_params(rotation=(-5.0, 5.0), output_backend="numpy")
+        x = torch.rand(1, 3, 16, 16)
+        result = pipe(x)
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (16, 16, 3)
+
+    def test_from_params_with_output_backend(self) -> None:
+        """Real pipeline: from_params with output_backend='numpy' returns ndarray."""
+        pipe = FusedCompose.from_params(rotation=(-10.0, 10.0), output_backend="numpy")
+        x = torch.rand(2, 3, 32, 32)
+        result = pipe(x)
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (2, 32, 32, 3)
+
+    def test_empty_pipeline_numpy(self) -> None:
+        """Empty pipeline with output_backend='numpy' still converts."""
+        pipe = FusedCompose([], output_backend="numpy")
+        x = torch.rand(1, 3, 8, 8)
+        result = pipe(x)
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (8, 8, 3)
+
+    def test_empty_pipeline_default(self) -> None:
+        """Empty pipeline with default output_backend returns Tensor."""
+        pipe = FusedCompose([])
+        x = torch.rand(1, 3, 8, 8)
+        result = pipe(x)
+        assert isinstance(result, torch.Tensor)

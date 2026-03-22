@@ -121,6 +121,11 @@ class FusedCompose(nn.Module):
             alongside the image. Unknown keys are passed through unchanged
             with a ``UserWarning``. ``None`` preserves backward-compatible
             single-tensor input/output.
+        output_backend: Target output format. ``"numpy"`` converts the primary
+            image output to a NumPy ``ndarray`` (HWC layout). ``"torch"`` or
+            ``None`` keeps the native ``torch.Tensor`` output. Conversion
+            applies only to single-tensor output; when ``data_keys`` is active
+            and a tuple is returned, conversion is NOT applied.
         **backend_kwargs: Reserved for backend-specific options (currently unused).
 
     """
@@ -132,6 +137,7 @@ class FusedCompose(nn.Module):
         interpolation: str | None = None,
         padding_mode: str | None = None,
         data_keys: list[str] | None = None,
+        output_backend: str | None = None,
         **backend_kwargs: object,
     ) -> None:
         super().__init__()
@@ -191,6 +197,7 @@ class FusedCompose(nn.Module):
             adapter=adapter,
             segments=segments,
             transform_adapters=tfm_adapters,
+            output_backend=output_backend,
         )
 
     def _setup_instance(
@@ -203,6 +210,7 @@ class FusedCompose(nn.Module):
         adapter: TransformAdapter | None,
         segments: list[object],
         transform_adapters: dict[int, TransformAdapter] | None = None,
+        output_backend: str | None = None,
     ) -> None:
         """Assign all instance attributes.
 
@@ -223,6 +231,22 @@ class FusedCompose(nn.Module):
         )
         self._last_transform_matrix: Tensor | None = None
         self._transform_adapters: dict[int, TransformAdapter] = transform_adapters or {}
+
+        # Resolve output_backend converter.
+        from fuse_augmentations._types import BackendConverter
+
+        self._output_converter: BackendConverter | None
+        if output_backend is None:
+            self._output_converter = None
+        elif output_backend in ("numpy", "numpy_hwc"):
+            from fuse_augmentations._converters import TorchToNumpyConverter
+
+            self._output_converter = TorchToNumpyConverter()
+        elif output_backend == "torch":
+            self._output_converter = None  # identity — already torch
+        else:
+            msg = f"Unknown output_backend {output_backend!r}; supported: 'numpy', 'torch', None"
+            raise ValueError(msg)
 
         if data_keys is not None:
             # Enforce documented contract: first key must map to the image ("input").
@@ -282,6 +306,12 @@ class FusedCompose(nn.Module):
             only. Auxiliary targets skip passthrough segments and retain their
             values from the preceding fused segment. This is by design -
             passthrough backends do not expose a target-routing API.
+
+            ``output_backend`` conversion applies to the primary image output only.
+            When ``data_keys`` is set and a tuple is returned, conversion is NOT
+            applied -- aux_targets (masks, bboxes, keypoints) require
+            backend-specific handling. Use ``output_backend=None`` when
+            ``data_keys`` is active.
 
         """
         if self.data_keys is None:
@@ -363,9 +393,18 @@ class FusedCompose(nn.Module):
                 raise RuntimeError(msg)
             image = pt_adapter.call_nonfused(seg, image)
 
+        # Apply output_backend conversion to the primary image output only.
+        # NOTE: output_backend conversion applies to the primary image output only.
+        # When data_keys is set and a tuple is returned, conversion is NOT applied —
+        # aux_targets (masks, bboxes, keypoints) require backend-specific handling.
+        # Use output_backend=None when data_keys is active.
         if self.data_keys is None:
+            if self._output_converter is not None and isinstance(image, torch.Tensor):
+                return self._output_converter.convert(image)
             return image
         if len(self.data_keys) == 1:
+            if self._output_converter is not None and isinstance(image, torch.Tensor):
+                return self._output_converter.convert(image)
             return image
         # Return tuple in data_keys order (aux_targets is guaranteed non-None here
         # because data_keys is set and has >1 entry)
@@ -690,6 +729,7 @@ class FusedCompose(nn.Module):
         padding_mode: str = "zeros",
         reorder: ReorderPolicy = ReorderPolicy.POINTWISE,
         data_keys: list[str] | None = None,
+        output_backend: str | None = None,
         *,
         specs: list[TransformSpec] | None = None,
     ) -> FusedCompose:
@@ -797,6 +837,7 @@ class FusedCompose(nn.Module):
                 padding_mode=padding_mode,
                 reorder=reorder,
                 data_keys=data_keys,
+                output_backend=output_backend,
             )
 
         # Collect geometric param specs
@@ -830,6 +871,7 @@ class FusedCompose(nn.Module):
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 data_keys=data_keys,
+                output_backend=output_backend,
                 reorder=reorder,
             )
 
@@ -859,6 +901,7 @@ class FusedCompose(nn.Module):
             data_keys=data_keys,
             adapter=adapter,
             segments=segments,
+            output_backend=output_backend,
         )
 
         return instance
@@ -871,6 +914,7 @@ class FusedCompose(nn.Module):
         padding_mode: str,
         reorder: ReorderPolicy,
         data_keys: list[str] | None,
+        output_backend: str | None = None,
     ) -> FusedCompose:
         """Build a from_params pipeline from a list of TransformSpec objects.
 
@@ -915,6 +959,7 @@ class FusedCompose(nn.Module):
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 data_keys=data_keys,
+                output_backend=output_backend,
                 reorder=reorder,
             )
 
@@ -930,6 +975,7 @@ class FusedCompose(nn.Module):
             data_keys=data_keys,
             adapter=adapter,
             segments=segments,
+            output_backend=output_backend,
         )
 
         return instance
