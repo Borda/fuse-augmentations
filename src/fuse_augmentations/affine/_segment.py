@@ -939,9 +939,11 @@ def reorder_pointwise(
         geo_buf.clear()
         pw_buf.clear()
 
+    _reorderable = {TransformCategory.POINTWISE, TransformCategory.POINTWISE_LINEAR}
+
     for tfm in transforms:
         cat = adapter.category(tfm)
-        if cat == TransformCategory.POINTWISE:
+        if cat in _reorderable:
             pw_buf.append(tfm)
             continue
         if cat in geometric:
@@ -999,8 +1001,8 @@ def build_segments(
 
     Walks the transforms left to right and groups consecutive geometric
     transforms (``GEOMETRIC_INTERP`` or ``GEOMETRIC_EXACT``) into a single
-    segment.  Any ``SPATIAL_KERNEL`` or ``POINTWISE`` transform breaks the
-    current geometric group and is returned as-is.
+    segment.  Any ``SPATIAL_KERNEL``, ``POINTWISE``, or ``POINTWISE_LINEAR``
+    transform breaks the current geometric group and is returned as-is.
 
     After grouping, each accumulated geometric run is classified:
 
@@ -1032,8 +1034,8 @@ def build_segments(
         Flat list where each element is a :class:`FusedAffineSegment`
         (mixed/INTERP geometric run), an :class:`ExactAffineSegment`
         (EXACT-only geometric run; auxiliary targets remain flip-only), or the
-        original transform object (passthrough for ``SPATIAL_KERNEL`` and
-        ``POINTWISE`` transforms).
+        original transform object (passthrough for ``SPATIAL_KERNEL``,
+        ``POINTWISE``, and ``POINTWISE_LINEAR`` transforms).
 
     """
     fusible = {TransformCategory.GEOMETRIC_INTERP, TransformCategory.GEOMETRIC_EXACT}
@@ -1116,7 +1118,7 @@ def build_segments(
             _flush_geo()  # flush any pending affine
             current_proj.append(tfm)
             continue
-        # SPATIAL_KERNEL / POINTWISE barrier: flush both
+        # SPATIAL_KERNEL / POINTWISE / POINTWISE_LINEAR barrier: flush both
         _flush_geo()
         _flush_proj()
         segments.append(tfm)

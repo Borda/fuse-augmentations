@@ -153,13 +153,9 @@ class TestPointwiseLinearReordering:
         # All geometric ops must come before all reorderable ops
         geo_indices = [i for i, t in enumerate(result) if adapter.category(t) == TransformCategory.GEOMETRIC_INTERP]
         pw_indices = [i for i, t in enumerate(result) if adapter.category(t) == TransformCategory.POINTWISE]
-        pl_indices = [
-            i for i, t in enumerate(result) if adapter.category(t) == TransformCategory.POINTWISE_LINEAR
-        ]
+        pl_indices = [i for i, t in enumerate(result) if adapter.category(t) == TransformCategory.POINTWISE_LINEAR]
         assert len(result) == 4
-        assert max(geo_indices) < min(pw_indices + pl_indices), (
-            "All geometric ops should precede all reorderable ops"
-        )
+        assert max(geo_indices) < min(pw_indices + pl_indices), "All geometric ops should precede all reorderable ops"
 
     def test_pl_does_not_cross_spatial_kernel_barrier(self):
         """POINTWISE_LINEAR is not reordered across a SPATIAL_KERNEL barrier."""
@@ -398,9 +394,7 @@ def test_n_color_ops_fuse_to_single_matrix(seed: int, n_ops: int) -> None:
 
     c_fused = _apply_color_matrix(A_fused, c)
 
-    assert torch.allclose(c_seq, c_fused, atol=1e-8), (
-        f"N={n_ops} ops: fused and sequential differ; seed={seed}"
-    )
+    assert torch.allclose(c_seq, c_fused, atol=1e-8), f"N={n_ops} ops: fused and sequential differ; seed={seed}"
 
 
 @given(
