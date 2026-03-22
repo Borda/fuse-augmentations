@@ -7,6 +7,8 @@ data_keys forwarding, and fusion verification.
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 import torch
 
@@ -171,6 +173,18 @@ class TestFromConfigTorchVision:
         out = pipe(x)
         assert out.shape == torch.Size([2, 3, 32, 32])
 
+    def test_scale_uses_zero_degree_affine_default(self) -> None:
+        from fuse_augmentations import TransformSpec
+
+        specs = [TransformSpec(op="scale", params={"scale": (0.8, 1.2)})]
+        pipe = Compose.from_config(specs, backend="torchvision")
+        transform = pipe.original_transforms[0]
+        assert transform.degrees == [0.0, 0.0]
+        assert transform.scale == (0.8, 1.2)
+        x = torch.rand(2, 3, 32, 32)
+        out = pipe(x)
+        assert out.shape == x.shape
+
 
 class TestFromConfigAlbumentations:
     """from_config with backend='albumentations'."""
@@ -187,6 +201,43 @@ class TestFromConfigAlbumentations:
         x = torch.rand(2, 3, 32, 32)
         out = pipe(x)
         assert out.shape == torch.Size([2, 3, 32, 32])
+
+    def test_rotation_translates_canonical_degrees_to_limit(self) -> None:
+        from fuse_augmentations import TransformSpec
+
+        specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
+        pipe = Compose.from_config(specs, backend="albumentations")
+        transform = pipe.original_transforms[0]
+        assert transform.limit == (-10.0, 10.0)
+
+    def test_affine_translates_canonical_degrees_to_rotate(self) -> None:
+        from fuse_augmentations import TransformSpec
+
+        specs = [TransformSpec(op="affine", params={"degrees": (-5.0, 5.0), "scale": (0.9, 1.1)})]
+        pipe = Compose.from_config(specs, backend="albumentations")
+        transform = pipe.original_transforms[0]
+        assert transform.rotate == (-5.0, 5.0)
+        assert transform.scale == {"x": (0.9, 1.1), "y": (0.9, 1.1)}
+
+
+class TestFromConfigScaleKornia:
+    """Canonical scale config remains constructible on Kornia."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_without_kornia(self):
+        pytest.importorskip("kornia")
+
+    def test_scale_uses_zero_degree_affine_default(self) -> None:
+        from fuse_augmentations import TransformSpec
+
+        specs = [TransformSpec(op="scale", params={"scale": (0.8, 1.2)})]
+        pipe = Compose.from_config(specs, backend="kornia")
+        transform = pipe.original_transforms[0]
+        assert "degrees=0.0" in repr(transform)
+        assert "scale=(0.8, 1.2)" in repr(transform)
+        x = torch.rand(2, 3, 32, 32)
+        out = pipe(x)
+        assert out.shape == x.shape
 
 
 class TestFromConfigDataKeys:
@@ -267,11 +318,9 @@ class TestFromConfigUserWarning:
         specs = [TransformSpec(op="hflip", params={}, p=0.5)]
         with warnings.catch_warnings(record=True) as recorded:
             warnings.simplefilter("always")
-            try:
+            with contextlib.suppress(ValueError, Exception):
                 # FusedCompose.__init__ rejects unknown transforms after the warning fires
                 Compose.from_config(specs, backend="mock_backend")
-            except (ValueError, Exception):
-                pass
 
         matching = [
             w for w in recorded if issubclass(w.category, UserWarning) and "could not be applied" in str(w.message)
