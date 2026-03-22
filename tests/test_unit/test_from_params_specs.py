@@ -315,3 +315,23 @@ class TestFromParamsSpecsUnsupportedOp:
         specs = [TransformSpec(op="affine", params={}, p=1.0)]
         with pytest.raises(ValueError, match="Unsupported op for from_params"):
             Compose.from_params(specs=specs)
+
+
+class TestFromParamsSpecsOrderingWithReservedParams:
+    """Brightness/contrast reserved-param checks fire before the specs= mutual-exclusivity check."""
+
+    def test_brightness_with_specs_raises_not_implemented(self) -> None:
+        """Brightness check (NotImplementedError) fires before specs mutual-exclusivity (ValueError)."""
+        from fuse_augmentations import Compose, TransformSpec
+
+        specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
+        with pytest.raises(NotImplementedError):
+            Compose.from_params(specs=specs, brightness=0.5)
+
+    def test_contrast_with_specs_raises_not_implemented(self) -> None:
+        """Contrast check (NotImplementedError) fires before specs mutual-exclusivity (ValueError)."""
+        from fuse_augmentations import Compose, TransformSpec
+
+        specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
+        with pytest.raises(NotImplementedError):
+            Compose.from_params(specs=specs, contrast=0.3)

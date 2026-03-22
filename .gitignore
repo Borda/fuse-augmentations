@@ -209,6 +209,10 @@ __marimo__/
 # IntelliJ IDEA specific template and configuration files
 .idea/
 
+# Codex temporary files
+.codex/handover/
+.codex/logs/
+
 # Claude Code temporary files
 .claude/logs/
 .claude/state/

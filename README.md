@@ -231,10 +231,10 @@ out2 = pipe2(image)
 | Field    | Type                | Description                                                            |
 | -------- | ------------------- | ---------------------------------------------------------------------- |
 | `op`     | `str`               | Canonical op name: `"rotation"`, `"hflip"`, `"vflip"`, `"scale"`, etc. |
-| `params` | `dict[str, object]` | Op-specific kwargs passed to the backend class constructor.            |
+| `params` | `dict[str, object]` | Op-specific parameters associated with the canonical op.               |
 | `p`      | `float`             | Per-sample application probability. Default `1.0`.                     |
 
-For `from_config`, `op` names are canonical but `params` are still backend-specific constructor kwargs. That means the same `TransformSpec` list is portable only when the chosen backend accepts the same parameter names and value structure for each op; switching backends may require rewriting `params`.
+For `from_config`, `op` names are canonical and `params` are first passed through `translate_params()` before being forwarded to the backend constructor. A small set of canonical parameter names (for example, `degrees` for rotation-like ops or `factor` for scale) are translated into the appropriate backend-specific kwargs for each supported backend. Any keys that are not recognized by `translate_params()` remain backend-specific constructor kwargs and are passed through unchanged. This means a `TransformSpec` list that uses only the canonical subset of parameters is generally portable across backends, while specs that rely on backend-only parameters may still need adjustment when switching backends.
 
 Specs are JSON round-trip safe via `to_dict()` / `from_dict()`:
 

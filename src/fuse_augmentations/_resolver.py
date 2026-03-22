@@ -21,7 +21,7 @@ Example:
 from __future__ import annotations
 
 from collections.abc import Callable
-from functools import lru_cache
+from functools import cache
 
 SUPPORTED_OPS: frozenset[str] = frozenset({
     "rotation",
@@ -35,6 +35,19 @@ SUPPORTED_OPS: frozenset[str] = frozenset({
     "rotation90",
 })
 
+# Per-backend op coverage matrix.
+# op          | kornia | torchvision | albumentations
+# ------------|--------|-------------|----------------
+# rotation    |   v    |      v      |       v
+# affine      |   v    |      v      |       v
+# shear       |   v    |      x      |       x
+# translate   |   v    |      x      |       x
+# hflip       |   v    |      v      |       v
+# vflip       |   v    |      v      |       v
+# scale       |   v    |      v      |       v
+# perspective |   v    |      v      |       v
+# rotation90  |   v    |      x      |       v
+
 SUPPORTED_BACKENDS: frozenset[str] = frozenset({
     "kornia",
     "torchvision",
@@ -42,7 +55,7 @@ SUPPORTED_BACKENDS: frozenset[str] = frozenset({
 })
 
 
-@lru_cache(maxsize=1)
+@cache
 def _kornia_registry() -> dict[str, type]:
     """Build op -> class map for the Kornia backend (lazy import)."""
     from kornia.augmentation import RandomAffine as _RandomAffine
@@ -67,7 +80,7 @@ def _kornia_registry() -> dict[str, type]:
     }
 
 
-@lru_cache(maxsize=1)
+@cache
 def _torchvision_registry() -> dict[str, type]:
     """Build op -> class map for the TorchVision backend (lazy import)."""
     # Prefer v2 when available, fall back to v1
@@ -98,7 +111,7 @@ def _torchvision_registry() -> dict[str, type]:
     }
 
 
-@lru_cache(maxsize=1)
+@cache
 def _albumentations_registry() -> dict[str, type]:
     """Build op -> class map for the Albumentations backend (lazy import)."""
     from albumentations import Affine as _Affine
@@ -139,6 +152,18 @@ def translate_params(op: str, backend: str, params: dict[str, object]) -> dict[s
 
     Raises:
         ValueError: If ``op`` or ``backend`` is unknown.
+
+    Notes:
+        Canonical-to-backend translations applied automatically:
+
+        - rotation / affine + albumentations:
+          'degrees' -> 'limit' (rotation) or 'rotate' (affine).
+        - scale + kornia / torchvision:
+          'factor' -> 'scale' and degrees=0.0 injected (required by Affine ctor).
+        - scale + albumentations:
+          'factor' -> 'scale' only; degrees is NOT injected.
+        - shear + kornia:
+          'degrees' -> 'shear'.
 
     """
     if backend not in SUPPORTED_BACKENDS:

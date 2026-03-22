@@ -209,3 +209,94 @@ class TestResolveOpBackendGap:
             assert callable(result)
         except ValueError:
             pass  # acceptable — backend-gap path
+
+    def test_shear_not_in_torchvision_raises_value_error(self) -> None:
+        pytest.importorskip("torchvision")
+        from fuse_augmentations._resolver import resolve_op
+
+        with pytest.raises(ValueError, match="does not support op"):
+            resolve_op("shear", "torchvision")
+
+    def test_translate_not_in_torchvision_raises_value_error(self) -> None:
+        pytest.importorskip("torchvision")
+        from fuse_augmentations._resolver import resolve_op
+
+        with pytest.raises(ValueError, match="does not support op"):
+            resolve_op("translate", "torchvision")
+
+
+class TestTranslateParams:
+    def test_rotation_kornia_degrees_unchanged(self) -> None:
+        from fuse_augmentations._resolver import translate_params
+
+        result = translate_params("rotation", "kornia", {"degrees": (-30.0, 30.0)})
+        assert result == {"degrees": (-30.0, 30.0)}
+
+    def test_rotation_albumentations_degrees_to_limit(self) -> None:
+        from fuse_augmentations._resolver import translate_params
+
+        result = translate_params("rotation", "albumentations", {"degrees": (-10.0, 10.0)})
+        assert "limit" in result
+        assert result["limit"] == (-10.0, 10.0)
+        assert "degrees" not in result
+
+    def test_affine_albumentations_degrees_to_rotate(self) -> None:
+        from fuse_augmentations._resolver import translate_params
+
+        result = translate_params("affine", "albumentations", {"degrees": (-5.0, 5.0)})
+        assert "rotate" in result
+        assert result["rotate"] == (-5.0, 5.0)
+        assert "degrees" not in result
+
+    def test_scale_kornia_injects_degrees_default(self) -> None:
+        from fuse_augmentations._resolver import translate_params
+
+        result = translate_params("scale", "kornia", {"scale": (0.8, 1.2)})
+        assert result.get("degrees") == 0.0
+        assert result.get("scale") == (0.8, 1.2)
+
+    def test_scale_torchvision_injects_degrees_default(self) -> None:
+        from fuse_augmentations._resolver import translate_params
+
+        result = translate_params("scale", "torchvision", {"scale": (0.8, 1.2)})
+        assert result.get("degrees") == 0.0
+        assert result.get("scale") == (0.8, 1.2)
+
+    def test_scale_albumentations_no_degrees_injection(self) -> None:
+        from fuse_augmentations._resolver import translate_params
+
+        result = translate_params("scale", "albumentations", {"scale": (0.8, 1.2)})
+        assert "degrees" not in result
+        assert result.get("scale") == (0.8, 1.2)
+
+    def test_scale_factor_key_renamed_to_scale(self) -> None:
+        from fuse_augmentations._resolver import translate_params
+
+        result = translate_params("scale", "kornia", {"factor": (0.9, 1.1)})
+        assert "scale" in result
+        assert "factor" not in result
+
+    def test_shear_kornia_degrees_to_shear(self) -> None:
+        from fuse_augmentations._resolver import translate_params
+
+        result = translate_params("shear", "kornia", {"degrees": (-10.0, 10.0)})
+        assert "shear" in result
+        assert "degrees" not in result
+
+    def test_hflip_passthrough(self) -> None:
+        from fuse_augmentations._resolver import translate_params
+
+        result = translate_params("hflip", "kornia", {})
+        assert result == {}
+
+    def test_unknown_op_raises_value_error(self) -> None:
+        from fuse_augmentations._resolver import translate_params
+
+        with pytest.raises(ValueError, match="unknown op"):
+            translate_params("nonexistent", "kornia", {})
+
+    def test_unknown_backend_raises_value_error(self) -> None:
+        from fuse_augmentations._resolver import translate_params
+
+        with pytest.raises(ValueError, match="unknown backend"):
+            translate_params("rotation", "bad_backend", {})

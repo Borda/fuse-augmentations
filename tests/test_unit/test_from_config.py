@@ -109,6 +109,13 @@ class TestFromConfigErrors:
         with pytest.raises(ValueError, match="unknown op"):
             Compose.from_config(specs, backend="kornia")
 
+    def test_params_cannot_shadow_transform_probability(self) -> None:
+        from fuse_augmentations import TransformSpec
+
+        specs = [TransformSpec(op="hflip", params={"p": 0.1}, p=0.5)]
+        with pytest.raises(ValueError, match="must not include 'p'"):
+            Compose.from_config(specs, backend="kornia")
+
 
 class TestFromConfigProbability:
     """Per-transform probability via TransformSpec.p."""

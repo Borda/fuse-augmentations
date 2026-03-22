@@ -627,6 +627,9 @@ class FusedCompose(nn.Module):
 
         transforms: list[object] = []
         for spec in specs:
+            if "p" in spec.params:
+                msg = f"TransformSpec.params must not include 'p'; use TransformSpec.p for op {spec.op!r} instead."
+                raise ValueError(msg)
             tfm_cls = resolve_op(spec.op, backend)
             kwargs = translate_params(spec.op, backend, dict(spec.params))
             # Most backends accept p= for per-transform probability.
@@ -634,7 +637,12 @@ class FusedCompose(nn.Module):
             # the backend ignore it via **kwargs or TypeError fallback.
             try:
                 tfm = tfm_cls(**kwargs, p=spec.p)
-            except TypeError:
+            except TypeError as exc:
+                # Re-raise if the error is not about the p= keyword — that would indicate
+                # a malformed kwarg (wrong type for a constructor param), which must not
+                # be silently swallowed. Only 'unexpected keyword argument p' falls through.
+                if "p" not in str(exc) and "unexpected keyword" not in str(exc):
+                    raise
                 # Backend class does not accept p= (e.g. TorchVision RandomRotation)
                 tfm = tfm_cls(**kwargs)
                 # Attach p as attribute so the fused engine can read it
@@ -757,9 +765,15 @@ class FusedCompose(nn.Module):
             raise NotImplementedError(msg)
 
         # --- specs= overload path (C.4) ---
+        # Note: specs= is a convenience alias for declarative pipeline construction.
+        # In a future minor version this dual-path may be split into a from_specs()
+        # classmethod; for now mutual exclusivity of specs and geometric kwargs enforces intent.
         if specs is not None:
             # Validate mutual exclusivity
-            has_keyword_params = any([
+            # Geometric tuple params (rotation, scale, ...) default to None so truthiness
+            # works directly. Flip probs default to 0.0 (falsy), so they need explicit
+            # != 0.0 comparison rather than relying on truthiness.
+            has_keyword_params = any((
                 rotation,
                 scale,
                 scale_x,
@@ -770,7 +784,7 @@ class FusedCompose(nn.Module):
                 translate_y,
                 hflip_p != 0.0,
                 vflip_p != 0.0,
-            ])
+            ))
             if has_keyword_params:
                 msg = "specs and keyword params are mutually exclusive"
                 raise ValueError(msg)
