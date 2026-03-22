@@ -20,6 +20,10 @@ class TransformCategory(Enum):
         POINTWISE: Reorderable per-pixel op; not fusible (color jitter, normalize).
         SPATIAL_KERNEL: Barrier; not fusible and not reorderable (blur, noise, erase).
         PROJECTIVE: Fusible projective (perspective) op requiring full 3x3 homography.
+        POINTWISE_LINEAR: Reorderable per-pixel *linear* op; self-fusible as 4x4 color-space
+            affine matrix (brightness, contrast, channel mix, hue rotation).  Not yet fused by
+            the engine in v0.6 -- treated as a pass-through like ``POINTWISE`` until
+            ``FusedColorSegment`` is implemented in a later version.
 
     """
 
@@ -28,6 +32,7 @@ class TransformCategory(Enum):
     POINTWISE = "pointwise"
     SPATIAL_KERNEL = "spatial_kernel"
     PROJECTIVE = "projective"
+    POINTWISE_LINEAR = "pointwise_linear"
 
 
 class ReorderPolicy(Enum):

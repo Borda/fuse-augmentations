@@ -93,13 +93,13 @@ class FusedCompose(nn.Module):
       contains *only* ``GEOMETRIC_EXACT`` ops (HFlip, VFlip). Transforms are
       applied via ``tensor.flip`` with zero interpolation error.
 
-    ``SPATIAL_KERNEL`` and ``POINTWISE`` transforms are passed through to the
-    backend adapter unchanged.
+    ``SPATIAL_KERNEL``, ``POINTWISE``, and ``POINTWISE_LINEAR`` transforms are
+    passed through to the backend adapter unchanged.
 
     ``ReorderPolicy.POINTWISE`` is fully implemented: before segmentation,
-    ``POINTWISE`` ops are bubbled past geometric ops within each
-    ``SPATIAL_KERNEL``-bounded stretch, maximising the geometric run length
-    available for fusion.
+    ``POINTWISE`` and ``POINTWISE_LINEAR`` ops are bubbled past geometric ops
+    within each ``SPATIAL_KERNEL``-bounded stretch, maximising the geometric
+    run length available for fusion.
 
     Args:
         transforms: List of augmentation transform objects.
@@ -400,11 +400,11 @@ class FusedCompose(nn.Module):
         # Use output_backend=None when data_keys is active.
         if self.data_keys is None:
             if self._output_converter is not None and isinstance(image, torch.Tensor):
-                return self._output_converter.convert(image)
+                return self._output_converter.convert(image)  # type: ignore[no-any-return]
             return image
         if len(self.data_keys) == 1:
             if self._output_converter is not None and isinstance(image, torch.Tensor):
-                return self._output_converter.convert(image)
+                return self._output_converter.convert(image)  # type: ignore[no-any-return]
             return image
         # Return tuple in data_keys order (aux_targets is guaranteed non-None here
         # because data_keys is set and has >1 entry)
@@ -774,6 +774,8 @@ class FusedCompose(nn.Module):
                 Defaults to ``ReorderPolicy.POINTWISE``.
             data_keys: Key list for auxiliary target routing, forwarded to
                 :meth:`__init__`. ``None`` preserves single-tensor I/O.
+            output_backend: Target output format (``"numpy"``, ``"torch"``, or
+                ``None``). Forwarded to :meth:`__init__`.
             specs: List of :class:`TransformSpec` objects. When provided,
                 all other geometric keyword arguments must be at their
                 defaults (mutually exclusive). Keyword-only.

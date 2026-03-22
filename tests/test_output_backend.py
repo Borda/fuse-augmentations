@@ -7,7 +7,7 @@ import torch
 
 np = pytest.importorskip("numpy")
 
-from fuse_augmentations import Compose, FusedCompose
+from fuse_augmentations import FusedCompose  # noqa: E402
 
 
 class TestOutputBackend:

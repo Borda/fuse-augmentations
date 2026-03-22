@@ -11,7 +11,7 @@ from fuse_augmentations import BackendConverter
 class _ValidConverter:
     """Concrete class satisfying BackendConverter."""
 
-    def convert(self, tensor: Any) -> Any:  # noqa: ANN401
+    def convert(self, tensor: Any) -> Any:
         return tensor
 
     @property
@@ -45,6 +45,6 @@ class TestBackendConverterProtocol:
         assert not isinstance(obj, BackendConverter)
 
     def test_importable_from_fuse_aug(self) -> None:
-        from fuse_aug import BackendConverter as BC  # noqa: N811
+        from fuse_aug import BackendConverter as BC
 
         assert BC is BackendConverter
