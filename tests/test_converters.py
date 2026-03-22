@@ -6,8 +6,8 @@ import torch
 
 np = __import__("pytest").importorskip("numpy")
 
-from fuse_augmentations import BackendConverter
-from fuse_augmentations._converters import NumpyToTorchConverter, TorchToNumpyConverter
+from fuse_augmentations import BackendConverter  # noqa: E402
+from fuse_augmentations._converters import NumpyToTorchConverter, TorchToNumpyConverter  # noqa: E402
 
 
 class TestNumpyToTorchConverter:

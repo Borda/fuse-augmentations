@@ -44,13 +44,8 @@ class NumpyToTorchConverter:
         tensor = torch.from_numpy(array)
         if tensor.dtype == torch.uint8:
             tensor = tensor.to(torch.float32) / 255.0
-        if tensor.ndim == 3:
-            # (H, W, C) -> (1, C, H, W)
-            tensor = tensor.permute(2, 0, 1).unsqueeze(0)
-        else:
-            # (B, H, W, C) -> (B, C, H, W)
-            tensor = tensor.permute(0, 3, 1, 2)
-        return tensor
+        # (H, W, C) -> (1, C, H, W) or (B, H, W, C) -> (B, C, H, W)
+        return tensor.permute(2, 0, 1).unsqueeze(0) if tensor.ndim == 3 else tensor.permute(0, 3, 1, 2)
 
 
 class TorchToNumpyConverter:
