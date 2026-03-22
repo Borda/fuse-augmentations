@@ -255,6 +255,13 @@ class TransformSpec:
         Returns:
             A new ``TransformSpec`` instance.
 
+        Note:
+            Tuple restoration from JSON lists applies only to canonical range-parameter
+            keys ('degrees', 'factor', 'scale', 'pixels', etc. — the
+            full set is :data:`_RANGE_PARAM_KEYS`). Backend-specific keys not in that
+            set (e.g. Albumentations 'limit') are preserved as lists after JSON
+            round-trip. This is documented behaviour, not a bug.
+
         Example:
             >>> import json
             >>> spec = TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.8)
@@ -263,8 +270,15 @@ class TransformSpec:
             True
 
         """
-        raw_params = d.get("params")
-        if raw_params is None or not isinstance(raw_params, dict):
+        if "params" in d:
+            raw_params = d["params"]
+            if raw_params is None:
+                raw_params = {}
+            elif not isinstance(raw_params, Mapping):
+                raise TypeError(
+                    f"TransformSpec.from_dict expected 'params' to be a mapping, got {type(raw_params).__name__!r}."
+                )
+        else:
             raw_params = {}
         params = _normalize_loaded_params(raw_params)
         raw_p = d.get("p", 1.0)
@@ -280,8 +294,11 @@ _RANGE_PARAM_KEYS: frozenset[str] = frozenset({
     "scale",
     "scale_x",
     "scale_y",
+    "shear",
     "shear_x",
     "shear_y",
+    "times",
+    "translate",
     "translate_x",
     "translate_y",
 })

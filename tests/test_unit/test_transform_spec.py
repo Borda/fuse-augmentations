@@ -165,6 +165,16 @@ class TestTransformSpecSerialization:
         assert spec.params["padding"] == [1, 2, 3]
         assert spec.params["degrees"] == (-10.0, 10.0)
 
+    def test_from_dict_backend_specific_key_stays_list(self) -> None:
+        import json
+
+        from fuse_augmentations import TransformSpec
+
+        spec = TransformSpec.from_dict({"op": "rotation", "params": {"limit": [-10, 10]}, "p": 1.0})
+        assert spec.params["limit"] == [-10, 10], f"Expected limit to remain a list, got {spec.params['limit']!r}"
+        reloaded = TransformSpec.from_dict(json.loads(json.dumps(spec.to_dict())))
+        assert reloaded.params["limit"] == [-10, 10]
+
     def test_from_dict_extra_keys_behavior(self):
         """from_dict with extra unknown keys should raise TypeError (frozen dataclass rejects unknowns)."""
         from fuse_augmentations import TransformSpec
@@ -245,9 +255,10 @@ class TestTransformSpecFromDictValidation:
     """from_dict() validates p bounds and type errors."""
 
     def test_from_dict_invalid_p_type_raises(self) -> None:
+        """float('not_a_float') raises ValueError precisely — not TypeError."""
         from fuse_augmentations import TransformSpec
 
-        with pytest.raises((ValueError, TypeError)):
+        with pytest.raises(ValueError, match="could not convert"):
             TransformSpec.from_dict({"op": "rotation", "params": {}, "p": "not_a_float"})
 
     def test_from_dict_p_out_of_range_raises(self) -> None:

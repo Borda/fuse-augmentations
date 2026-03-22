@@ -627,6 +627,9 @@ class FusedCompose(nn.Module):
 
         transforms: list[object] = []
         for spec in specs:
+            if "p" in spec.params:
+                msg = f"TransformSpec.params must not include 'p'; use TransformSpec.p for op {spec.op!r} instead."
+                raise ValueError(msg)
             tfm_cls = resolve_op(spec.op, backend)
             kwargs = translate_params(spec.op, backend, dict(spec.params))
             # Most backends accept p= for per-transform probability.
@@ -634,7 +637,15 @@ class FusedCompose(nn.Module):
             # the backend ignore it via **kwargs or TypeError fallback.
             try:
                 tfm = tfm_cls(**kwargs, p=spec.p)
-            except TypeError:
+            except TypeError as exc:
+                # Re-raise unless this is specifically a rejected p= keyword.
+                # Constructor errors about other kwargs/types must not be masked.
+                exc_msg = str(exc).lower()
+                is_p_keyword_rejection = "'p'" in exc_msg and (
+                    "unexpected keyword" in exc_msg or "keyword argument" in exc_msg or "does not accept" in exc_msg
+                )
+                if not is_p_keyword_rejection:
+                    raise
                 # Backend class does not accept p= (e.g. TorchVision RandomRotation)
                 tfm = tfm_cls(**kwargs)
                 # Attach p as attribute so the fused engine can read it
@@ -757,20 +768,26 @@ class FusedCompose(nn.Module):
             raise NotImplementedError(msg)
 
         # --- specs= overload path (C.4) ---
+        # Note: specs= is a convenience alias for declarative pipeline construction.
+        # In a future minor version this dual-path may be split into a from_specs()
+        # classmethod; for now mutual exclusivity of specs and geometric kwargs enforces intent.
         if specs is not None:
             # Validate mutual exclusivity
-            has_keyword_params = any([
-                rotation,
-                scale,
-                scale_x,
-                scale_y,
-                shear_x,
-                shear_y,
-                translate_x,
-                translate_y,
+            # Geometric tuple params default to None; use explicit is-not-None
+            # checks so invalid falsey values (e.g. empty tuple/list) are still
+            # treated as "provided" and rejected in specs mode.
+            has_keyword_params = any((
+                rotation is not None,
+                scale is not None,
+                scale_x is not None,
+                scale_y is not None,
+                shear_x is not None,
+                shear_y is not None,
+                translate_x is not None,
+                translate_y is not None,
                 hflip_p != 0.0,
                 vflip_p != 0.0,
-            ])
+            ))
             if has_keyword_params:
                 msg = "specs and keyword params are mutually exclusive"
                 raise ValueError(msg)
