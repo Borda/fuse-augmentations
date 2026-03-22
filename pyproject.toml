@@ -142,6 +142,7 @@ keep_full_version = true
 [tool.mypy]
 python_version = "3.10"
 files = [ "src/fuse_augmentations" ]
+exclude = [ "^tests/" ]
 strict = true
 ignore_missing_imports = true
 warn_unused_configs = true

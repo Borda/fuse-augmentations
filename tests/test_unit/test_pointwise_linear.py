@@ -8,6 +8,7 @@ Covers:
     (M2, b2) o (M1, b1) = (M2*M1, M2*b1 + b2)
   This validates the mathematical foundation proved in docs/math/fusible-categories-proofs.md
   and will be the correctness invariant for FusedColorSegment when implemented.
+
 """
 
 from __future__ import annotations
@@ -264,6 +265,27 @@ class TestPointwiseLinearSegmentation:
         assert segments[0] is pl1
         assert segments[1] is pl2
 
+    def test_mixed_pointwise_and_pointwise_linear_both_act_as_barriers(self):
+        """POINTWISE and POINTWISE_LINEAR both act as pass-through barriers in segmentation.
+
+        [Rotate, POINTWISE, POINTWISE_LINEAR, Scale] -> [FusedAffine(Rotate), pw, pl, FusedAffine(Scale)]
+
+        """
+        adapter = _StubAdapter()
+        rotate = _GeoTransform()
+        pw = _PointwiseTransform()
+        pl = _PointwiseLinearTransform()
+        scale = _GeoTransform()
+
+        segments = build_segments([rotate, pw, pl, scale], adapter)
+
+        # 4 segments: fused(rotate), pw, pl, fused(scale)
+        assert len(segments) == 4
+        assert isinstance(segments[0], FusedAffineSegment)
+        assert segments[1] is pw
+        assert segments[2] is pl
+        assert isinstance(segments[3], FusedAffineSegment)
+
     def test_geometric_exact_pl_geometric_interp(self):
         """[ExactOp, POINTWISE_LINEAR, InterpOp] -> [ExactSegment, pl, FusedSegment]."""
         adapter = _StubAdapter()
@@ -308,7 +330,11 @@ def _make_color_matrix(M: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
 
 def _apply_color_matrix(A: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-    """Apply a (1, 4, 4) color matrix to a (3,) RGB vector. Returns (3,) result."""
+    """Apply a (1, 4, 4) color matrix to a (3,) RGB vector.
+
+    Returns (3,) result.
+
+    """
     c_hom = torch.cat([c, torch.ones(1, dtype=c.dtype)])  # (4,)
     return (A[0] @ c_hom)[:3]
 
@@ -411,9 +437,9 @@ def test_brightness_then_contrast_non_commutative(
 ) -> None:
     """Brightness(a) then Contrast(b,mu) != Contrast then Brightness in general.
 
-    Validates the non-commutativity result from D.5 section 1.3.
-    The counter-example uses diagonal ops with bias, confirming that
-    POINTWISE_LINEAR order must be preserved.
+    Validates the non-commutativity result from D.5 section 1.3. The counter-example uses diagonal ops with bias,
+    confirming that POINTWISE_LINEAR order must be preserved.
+
     """
     # Brightness: c' = alpha*c
     M_b = alpha * torch.eye(3, dtype=DTYPE)
@@ -460,6 +486,7 @@ def test_color_matrix_composition_law(seed: int) -> None:
     """A_fused = A2 * A1 satisfies M_fused = M2*M1 and b_fused = M2*b1 + b2.
 
     Direct verification of the composition formula from D.5 section 1.2.
+
     """
     torch.manual_seed(seed)
     M1 = torch.randn(3, 3, dtype=DTYPE)

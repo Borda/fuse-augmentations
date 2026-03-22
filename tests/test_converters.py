@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 np = __import__("pytest").importorskip("numpy")
@@ -35,6 +36,19 @@ class TestNumpyToTorchConverter:
         assert result.dtype == torch.float32
         assert torch.allclose(result, torch.ones(1, 3, 8, 8))
 
+    def test_hwc_with_non_rgb_channel_count_round_trips(self) -> None:
+        arr = np.random.rand(8, 8, 5).astype(np.float32)
+        converter = NumpyToTorchConverter()
+        result = converter.convert(arr)
+        assert isinstance(result, torch.Tensor)
+        assert result.shape == (1, 5, 8, 8)
+
+    def test_zero_channel_axis_raises(self) -> None:
+        arr = np.empty((8, 8, 0), dtype=np.float32)
+        converter = NumpyToTorchConverter()
+        with pytest.raises(ValueError, match="non-empty channel axis"):
+            converter.convert(arr)
+
     def test_isinstance_backend_converter(self) -> None:
         assert isinstance(NumpyToTorchConverter(), BackendConverter)
 
@@ -60,8 +74,39 @@ class TestTorchToNumpyConverter:
         assert isinstance(result, np.ndarray)
         assert result.shape == (4, 16, 24, 3)
 
+    def test_multichannel_round_trip(self) -> None:
+        tensor = torch.rand(1, 5, 8, 8)
+        numpy_result = TorchToNumpyConverter().convert(tensor)
+        torch_result = NumpyToTorchConverter().convert(numpy_result)
+        torch.testing.assert_close(torch_result, tensor)
+
     def test_isinstance_backend_converter(self) -> None:
         assert isinstance(TorchToNumpyConverter(), BackendConverter)
 
     def test_target_backend(self) -> None:
         assert TorchToNumpyConverter().target_backend == "numpy"
+
+    def test_3d_chw_input_raises_valueerror(self) -> None:
+        """3-D tensor (C, H, W) raises ValueError — converter expects 4-D (B, C, H, W)."""
+        converter = TorchToNumpyConverter()
+        tensor_3d = torch.rand(3, 16, 16)
+        with pytest.raises(ValueError, match="Expected 4-D tensor"):
+            converter.convert(tensor_3d)
+
+
+class TestNumpyToTorchConverterEdgeCases:
+    """Edge-case dimensionality checks for NumpyToTorchConverter."""
+
+    def test_1d_input_raises_valueerror(self) -> None:
+        """1-D array raises ValueError — only 2-D/3-D/4-D are accepted."""
+        arr = np.zeros(8, dtype=np.float32)
+        converter = NumpyToTorchConverter()
+        with pytest.raises(ValueError, match="Expected 2-D/3-D/4-D"):
+            converter.convert(arr)
+
+    def test_5d_input_raises_valueerror(self) -> None:
+        """5-D array raises ValueError — only 2-D/3-D/4-D are accepted."""
+        arr = np.zeros((2, 2, 8, 8, 3), dtype=np.float32)
+        converter = NumpyToTorchConverter()
+        with pytest.raises(ValueError, match="Expected 2-D/3-D/4-D"):
+            converter.convert(arr)

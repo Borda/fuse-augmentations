@@ -86,6 +86,15 @@ class TestFromConfigEmptySpecs:
         pipe = Compose.from_config([], backend="kornia")
         assert isinstance(pipe, FusedCompose)
 
+    def test_empty_specs_forwards_output_backend(self) -> None:
+        np = pytest.importorskip("numpy")
+
+        pipe = Compose.from_config([], backend="kornia", output_backend="numpy")
+        x = torch.rand(1, 3, 32, 32)
+        out = pipe(x)
+        assert isinstance(out, np.ndarray)
+        assert out.shape == (32, 32, 3)
+
 
 class TestFromConfigErrors:
     """Error paths for from_config."""

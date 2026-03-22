@@ -27,6 +27,14 @@ class TestOutputBackend:
         result = pipe(x)
         assert isinstance(result, np.ndarray)
 
+    def test_numpy_hwc_alias_returns_ndarray(self) -> None:
+        """output_backend='numpy_hwc' uses the same NumPy channel-last conversion."""
+        pipe = FusedCompose.from_params(rotation=(-10.0, 10.0), output_backend="numpy_hwc")
+        x = torch.rand(1, 3, 16, 16)
+        result = pipe(x)
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (16, 16, 3)
+
     def test_torch_returns_tensor(self) -> None:
         """output_backend='torch' returns torch.Tensor (identity)."""
         pipe = FusedCompose.from_params(rotation=(-10.0, 10.0), output_backend="torch")
@@ -71,9 +79,50 @@ class TestOutputBackend:
         assert isinstance(result, np.ndarray)
         assert result.shape == (8, 8, 3)
 
+    def test_empty_pipeline_numpy_from_chw_input(self) -> None:
+        """Unbatched CHW tensors convert to HWC when output_backend='numpy'."""
+        pipe = FusedCompose([], output_backend="numpy")
+        x = torch.rand(3, 8, 8)
+        result = pipe(x)
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (8, 8, 3)
+
     def test_empty_pipeline_default(self) -> None:
         """Empty pipeline with default output_backend returns Tensor."""
         pipe = FusedCompose([])
         x = torch.rand(1, 3, 8, 8)
         result = pipe(x)
         assert isinstance(result, torch.Tensor)
+
+    def test_single_data_key_converts_without_warning(self) -> None:
+        """output_backend='numpy' + data_keys=['input'] (single key) converts and does NOT warn."""
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            pipe = FusedCompose([], output_backend="numpy", data_keys=["input"])
+
+        x = torch.rand(1, 3, 8, 8)
+        result = pipe(x)
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (8, 8, 3)
+
+    def test_output_backend_with_data_keys_warns(self) -> None:
+        """output_backend + data_keys emits UserWarning at construction time."""
+        with pytest.warns(UserWarning, match="output_backend.*data_keys"):
+            FusedCompose([], output_backend="numpy", data_keys=["input", "mask"])
+
+    def test_output_backend_with_data_keys_no_conversion(self) -> None:
+        """When data_keys is set, output_backend conversion is NOT applied (no-op)."""
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            pipe = FusedCompose([], output_backend="numpy", data_keys=["input", "mask"])
+
+        x = torch.rand(1, 3, 8, 8)
+        mask = torch.zeros(1, 1, 8, 8)
+        result = pipe(x, mask)
+        # Multi-key pipeline returns tuple of raw tensors regardless of output_backend.
+        assert isinstance(result, tuple)
+        assert all(isinstance(t, torch.Tensor) for t in result)

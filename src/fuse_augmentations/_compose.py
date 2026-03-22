@@ -30,7 +30,7 @@ import contextlib
 import math
 import warnings
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import torch
 from torch import nn
@@ -65,6 +65,7 @@ from fuse_augmentations.affine._segment import (
 )
 
 if TYPE_CHECKING:
+    from numpy.typing import NDArray
     from torch import Tensor
 
 _KNOWN_DATA_KEYS = {"input", "mask", "bbox_xyxy", "bbox_xywh", "keypoints"}
@@ -121,11 +122,15 @@ class FusedCompose(nn.Module):
             alongside the image. Unknown keys are passed through unchanged
             with a ``UserWarning``. ``None`` preserves backward-compatible
             single-tensor input/output.
-        output_backend: Target output format. ``"numpy"`` converts the primary
-            image output to a NumPy ``ndarray`` (HWC layout). ``"torch"`` or
-            ``None`` keeps the native ``torch.Tensor`` output. Conversion
-            applies only to single-tensor output; when ``data_keys`` is active
-            and a tuple is returned, conversion is NOT applied.
+        output_backend: Target output format. ``"numpy"`` (or its alias
+            ``"numpy_hwc"``) converts the primary image output to a NumPy
+            ``ndarray`` with channel-last layout: batched inputs of shape
+            ``(B, C, H, W)`` become ``(B, H, W, C)``, while unbatched inputs
+            of shape ``(C, H, W)`` become ``(H, W, C)`` (i.e. the batch
+            dimension is implicit/squeezed). ``"torch"`` or ``None`` keeps
+            the native ``torch.Tensor`` output. Conversion applies only to
+            single-tensor output; when ``data_keys`` is active and a tuple is
+            returned, conversion is NOT applied.
         **backend_kwargs: Reserved for backend-specific options (currently unused).
 
     """
@@ -137,7 +142,7 @@ class FusedCompose(nn.Module):
         interpolation: str | None = None,
         padding_mode: str | None = None,
         data_keys: list[str] | None = None,
-        output_backend: str | None = None,
+        output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
         **backend_kwargs: object,
     ) -> None:
         super().__init__()
@@ -210,7 +215,7 @@ class FusedCompose(nn.Module):
         adapter: TransformAdapter | None,
         segments: list[object],
         transform_adapters: dict[int, TransformAdapter] | None = None,
-        output_backend: str | None = None,
+        output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
     ) -> None:
         """Assign all instance attributes.
 
@@ -245,8 +250,17 @@ class FusedCompose(nn.Module):
         elif output_backend == "torch":
             self._output_converter = None  # identity — already torch
         else:
-            msg = f"Unknown output_backend {output_backend!r}; supported: 'numpy', 'torch', None"
+            msg = f"Unknown output_backend {output_backend!r}; supported: 'numpy', 'numpy_hwc', 'torch', None"
             raise ValueError(msg)
+        if self._output_converter is not None and self._output_converter.target_backend not in (
+            output_backend,
+            "numpy",  # "numpy_hwc" alias maps to TorchToNumpyConverter whose target_backend is "numpy"
+        ):
+            msg = (
+                "Configured output converter target_backend does not match output_backend. "
+                f"Requested {output_backend!r}, converter advertises {self._output_converter.target_backend!r}."
+            )
+            raise RuntimeError(msg)
 
         if data_keys is not None:
             # Enforce documented contract: first key must map to the image ("input").
@@ -270,11 +284,32 @@ class FusedCompose(nn.Module):
                         stacklevel=3,
                     )
 
-    def forward(self, *args: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, ...]:
+        # Warn early when output_backend and multi-key data_keys are both set: conversion is a no-op in that
+        # case (forward() returns a tuple and only the single-tensor path applies conversion).
+        if self._output_converter is not None and data_keys is not None and len(data_keys) > 1:
+            warnings.warn(
+                "output_backend is set but data_keys contains more than one key. "
+                "output_backend conversion is NOT applied in this multi-target mode — "
+                "the pipeline returns a tuple of raw tensors. "
+                "When using multiple data_keys, set output_backend=None or perform conversion manually.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    def _convert_primary_output(self, image: torch.Tensor) -> torch.Tensor | NDArray[Any]:
+        """Convert the primary image output to the requested backend."""
+        if self._output_converter is None:
+            return image
+
+        image_for_conversion = image.unsqueeze(0) if image.ndim == 3 else image
+        return self._output_converter.convert(image_for_conversion)  # type: ignore[no-any-return]
+
+    def forward(self, *args: torch.Tensor) -> torch.Tensor | NDArray[Any] | tuple[torch.Tensor, ...]:
         """Apply the augmentation pipeline to an image batch and optional auxiliary targets.
 
         **Single-tensor mode** (``data_keys=None``, default): accepts one image
-        tensor and returns one tensor. This is the backward-compatible path.
+        tensor and returns one tensor or a NumPy ``ndarray`` when
+        ``output_backend="numpy"``. This is the backward-compatible path.
 
         **Multi-target mode** (``data_keys`` is set): accepts positional
         arguments in the same order as ``data_keys``. The first key must map
@@ -292,8 +327,10 @@ class FusedCompose(nn.Module):
                 ``"keypoints"`` as ``(B, N, 2)`` float32.
 
         Returns:
-            Single ``Tensor`` when ``data_keys`` is ``None`` or has one entry;
-            ``tuple[Tensor, ...]`` in ``data_keys`` order otherwise.
+            Single ``Tensor`` or NumPy ``ndarray`` when ``data_keys`` is
+            ``None`` or has one entry. NumPy output is returned only when
+            ``output_backend="numpy"``. ``tuple[Tensor, ...]`` in
+            ``data_keys`` order otherwise.
 
         Raises:
             TypeError: If the number of positional arguments does not match
@@ -308,10 +345,10 @@ class FusedCompose(nn.Module):
             passthrough backends do not expose a target-routing API.
 
             ``output_backend`` conversion applies to the primary image output only.
-            When ``data_keys`` is set and a tuple is returned, conversion is NOT
-            applied -- aux_targets (masks, bboxes, keypoints) require
-            backend-specific handling. Use ``output_backend=None`` when
-            ``data_keys`` is active.
+            When ``data_keys`` has more than one entry a tuple is returned and
+            conversion is NOT applied -- aux_targets (masks, bboxes, keypoints)
+            require backend-specific handling. Use ``output_backend=None`` when
+            multi-target ``data_keys`` mode is active.
 
         """
         if self.data_keys is None:
@@ -393,19 +430,10 @@ class FusedCompose(nn.Module):
                 raise RuntimeError(msg)
             image = pt_adapter.call_nonfused(seg, image)
 
-        # Apply output_backend conversion to the primary image output only.
-        # NOTE: output_backend conversion applies to the primary image output only.
-        # When data_keys is set and a tuple is returned, conversion is NOT applied —
-        # aux_targets (masks, bboxes, keypoints) require backend-specific handling.
-        # Use output_backend=None when data_keys is active.
         if self.data_keys is None:
-            if self._output_converter is not None and isinstance(image, torch.Tensor):
-                return self._output_converter.convert(image)  # type: ignore[no-any-return]
-            return image
+            return self._convert_primary_output(image)
         if len(self.data_keys) == 1:
-            if self._output_converter is not None and isinstance(image, torch.Tensor):
-                return self._output_converter.convert(image)  # type: ignore[no-any-return]
-            return image
+            return self._convert_primary_output(image)
         # Return tuple in data_keys order (aux_targets is guaranteed non-None here
         # because data_keys is set and has >1 entry)
         _aux: dict[str, torch.Tensor] = aux_targets or {}
@@ -614,6 +642,7 @@ class FusedCompose(nn.Module):
         padding_mode: str = "zeros",
         reorder: ReorderPolicy = ReorderPolicy.POINTWISE,
         data_keys: list[str] | None = None,
+        output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
     ) -> FusedCompose:
         """Create a FusedCompose pipeline from a list of TransformSpec objects.
 
@@ -630,6 +659,9 @@ class FusedCompose(nn.Module):
             padding_mode: Padding mode for out-of-bounds samples.
             reorder: Reorder policy applied before segmentation.
             data_keys: Key list for auxiliary target routing.
+            output_backend: Target output format (``"numpy"``,
+                ``"numpy_hwc"``, ``"torch"``, or ``None``). Forwarded to
+                :meth:`__init__`.
 
         Returns:
             A configured ``FusedCompose`` instance.
@@ -662,6 +694,7 @@ class FusedCompose(nn.Module):
                 padding_mode=padding_mode,
                 data_keys=data_keys,
                 reorder=reorder,
+                output_backend=output_backend,
             )
 
         transforms: list[object] = []
@@ -708,6 +741,7 @@ class FusedCompose(nn.Module):
             padding_mode=padding_mode,
             data_keys=data_keys,
             reorder=reorder,
+            output_backend=output_backend,
         )
 
     @classmethod
@@ -729,7 +763,7 @@ class FusedCompose(nn.Module):
         padding_mode: str = "zeros",
         reorder: ReorderPolicy = ReorderPolicy.POINTWISE,
         data_keys: list[str] | None = None,
-        output_backend: str | None = None,
+        output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
         *,
         specs: list[TransformSpec] | None = None,
     ) -> FusedCompose:
@@ -774,8 +808,9 @@ class FusedCompose(nn.Module):
                 Defaults to ``ReorderPolicy.POINTWISE``.
             data_keys: Key list for auxiliary target routing, forwarded to
                 :meth:`__init__`. ``None`` preserves single-tensor I/O.
-            output_backend: Target output format (``"numpy"``, ``"torch"``, or
-                ``None``). Forwarded to :meth:`__init__`.
+            output_backend: Target output format (``"numpy"``,
+                ``"numpy_hwc"``, ``"torch"``, or ``None``). Forwarded to
+                :meth:`__init__`.
             specs: List of :class:`TransformSpec` objects. When provided,
                 all other geometric keyword arguments must be at their
                 defaults (mutually exclusive). Keyword-only.
@@ -916,7 +951,7 @@ class FusedCompose(nn.Module):
         padding_mode: str,
         reorder: ReorderPolicy,
         data_keys: list[str] | None,
-        output_backend: str | None = None,
+        output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
     ) -> FusedCompose:
         """Build a from_params pipeline from a list of TransformSpec objects.
 

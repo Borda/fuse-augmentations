@@ -22,7 +22,7 @@ class TransformCategory(Enum):
         PROJECTIVE: Fusible projective (perspective) op requiring full 3x3 homography.
         POINTWISE_LINEAR: Reorderable per-pixel *linear* op; self-fusible as 4x4 color-space
             affine matrix (brightness, contrast, channel mix, hue rotation).  Not yet fused by
-            the engine in v0.6 -- treated as a pass-through like ``POINTWISE`` until
+            the current engine -- treated as a pass-through like ``POINTWISE`` until
             ``FusedColorSegment`` is implemented in a later version.
 
     """
