@@ -129,7 +129,7 @@ For flip-only chains, `fuse-augmentations` uses an `ExactAffineSegment` that app
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Compose`                             | Main entry point. Wraps a list of transforms, groups them into fusible runs, and fuses each group on `forward()`. Aliases: `FusedCompose`, `AugmentationSequential`. |
 | `Compose.from_params(...)`            | Classmethod. Build a backend-free pipeline from numeric parameter ranges, or from a `specs` list of `TransformSpec` objects in backend-free mode.                    |
-| `Compose.from_config(specs, backend)` | Classmethod. Resolve a list of `TransformSpec` objects to a specific backend and build the pipeline -- no backend imports needed at spec time.                        |
+| `Compose.from_config(specs, backend)` | Classmethod. Resolve a list of `TransformSpec` objects to a specific backend and build the pipeline -- no backend imports needed at spec time.                       |
 | `TransformSpec`                       | Frozen dataclass for declarative, backend-agnostic pipeline configuration: `op`, `params`, `p`. JSON-serialisable via `to_dict()` / `from_dict()`.                   |
 | `FusedAffineSegment`                  | Handles one fusible run: samples random params, composes matrices, applies a single interpolation pass.                                                              |
 | `ExactAffineSegment`                  | Lossless segment for flip-only chains. Uses `tensor.flip` -- no interpolation.                                                                                       |
@@ -228,11 +228,13 @@ out2 = pipe2(image)
 
 `TransformSpec` fields:
 
-| Field    | Type                   | Description                                                             |
-| -------- | ---------------------- | ----------------------------------------------------------------------- |
-| `op`     | `str`                  | Canonical op name: `"rotation"`, `"hflip"`, `"vflip"`, `"scale"`, etc. |
-| `params` | `dict[str, object]`    | Op-specific kwargs passed to the backend class constructor.             |
-| `p`      | `float`                | Per-sample application probability. Default `1.0`.                      |
+| Field    | Type                | Description                                                            |
+| -------- | ------------------- | ---------------------------------------------------------------------- |
+| `op`     | `str`               | Canonical op name: `"rotation"`, `"hflip"`, `"vflip"`, `"scale"`, etc. |
+| `params` | `dict[str, object]` | Op-specific kwargs passed to the backend class constructor.            |
+| `p`      | `float`             | Per-sample application probability. Default `1.0`.                     |
+
+For `from_config`, `op` names are canonical but `params` are still backend-specific constructor kwargs. That means the same `TransformSpec` list is portable only when the chosen backend accepts the same parameter names and value structure for each op; switching backends may require rewriting `params`.
 
 Specs are JSON round-trip safe via `to_dict()` / `from_dict()`:
 

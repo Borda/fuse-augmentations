@@ -405,8 +405,10 @@ class FusedCompose(nn.Module):
     def n_warps_saved(self) -> int:
         """Return the number of interpolation passes eliminated vs sequential execution.
 
-        Each fused segment with *n* transforms saves *n - 1* warp passes.
-        Single-transform segments contribute zero savings.
+        For affine fused segments with *n* transforms, *n - 1* warp passes
+        are saved. For exact (flip-only) segments with *n* transforms, *n*
+        passes are saved because no interpolation is performed at all.
+        Single-transform fused segments contribute zero savings.
 
         Returns:
             Total number of eliminated warp passes across all fused segments.
@@ -596,6 +598,7 @@ class FusedCompose(nn.Module):
         Raises:
             ValueError: If ``backend`` is not in :data:`~fuse_augmentations._resolver.SUPPORTED_BACKENDS`,
                 or if a spec's ``op`` is not supported by the chosen backend.
+                This validation applies even when ``specs`` is empty.
 
         Example:
             >>> import torch
@@ -607,7 +610,11 @@ class FusedCompose(nn.Module):
             torch.Size([1, 3, 8, 8])
 
         """
-        from fuse_augmentations._resolver import resolve_op
+        from fuse_augmentations._resolver import SUPPORTED_BACKENDS, resolve_op
+
+        if backend not in SUPPORTED_BACKENDS:
+            msg = f"unknown backend {backend!r}; supported: {sorted(SUPPORTED_BACKENDS)}"
+            raise ValueError(msg)
 
         if not specs:
             return cls(
@@ -631,8 +638,18 @@ class FusedCompose(nn.Module):
                 # Backend class does not accept p= (e.g. TorchVision RandomRotation)
                 tfm = tfm_cls(**kwargs)
                 # Attach p as attribute so the fused engine can read it
+                p_set = False
                 with contextlib.suppress(AttributeError, TypeError):
                     tfm.p = spec.p
+                    p_set = True
+                if not p_set and spec.p != 1.0:
+                    warnings.warn(
+                        f"TransformSpec.p={spec.p!r} for op {spec.op!r} could not be applied to "
+                        f"{tfm_cls.__name__!r} (backend does not accept p= and attribute is read-only). "
+                        "The transform will always be applied (p=1.0 effective).",
+                        UserWarning,
+                        stacklevel=3,
+                    )
             transforms.append(tfm)
 
         return cls(
@@ -743,9 +760,16 @@ class FusedCompose(nn.Module):
         if specs is not None:
             # Validate mutual exclusivity
             has_keyword_params = any([
-                rotation, scale, scale_x, scale_y,
-                shear_x, shear_y, translate_x, translate_y,
-                hflip_p > 0.0, vflip_p > 0.0,
+                rotation,
+                scale,
+                scale_x,
+                scale_y,
+                shear_x,
+                shear_y,
+                translate_x,
+                translate_y,
+                hflip_p != 0.0,
+                vflip_p != 0.0,
             ])
             if has_keyword_params:
                 msg = "specs and keyword params are mutually exclusive"
@@ -858,13 +882,11 @@ class FusedCompose(nn.Module):
                 )
             elif spec.op in op_to_param_key:
                 param_key = op_to_param_key[spec.op]
-                # Extract the range value from spec.params.
-                # The canonical param key varies: "degrees" for rotation,
-                # "scale" for scale, etc.
-                param_value = next(iter(spec.params.values())) if spec.params else None
-                param_specs = {param_key: param_value} if param_value is not None else {}
+                # Resolve and validate one numeric range for this op.
+                param_value = cls._extract_param_range_from_spec(spec)
+                param_specs = {param_key: param_value}
                 transforms.append(
-                    _DirectParamTransform(param_specs, p=spec.p),  # type: ignore[arg-type]
+                    _DirectParamTransform(param_specs, p=spec.p),
                 )
             else:
                 msg = f"Unsupported op for from_params: {spec.op!r}"
@@ -894,6 +916,37 @@ class FusedCompose(nn.Module):
         )
 
         return instance
+
+    @staticmethod
+    def _extract_param_range_from_spec(spec: TransformSpec) -> tuple[float, float]:
+        """Extract one numeric range tuple from a TransformSpec params dict."""
+        op_to_allowed_keys: dict[str, tuple[str, ...]] = {
+            "rotation": ("degrees", "rotation"),
+            "scale": ("factor", "scale"),
+            "scale_x": ("factor", "scale_x"),
+            "scale_y": ("factor", "scale_y"),
+            "shear_x": ("degrees", "shear_x"),
+            "shear_y": ("degrees", "shear_y"),
+            "translate_x": ("pixels", "translate_x"),
+            "translate_y": ("pixels", "translate_y"),
+        }
+
+        allowed_keys = op_to_allowed_keys.get(spec.op, ())
+        for key in allowed_keys:
+            if key in spec.params:
+                value = spec.params[key]
+                if (
+                    isinstance(value, tuple)
+                    and len(value) == 2
+                    and isinstance(value[0], (int, float))
+                    and isinstance(value[1], (int, float))
+                ):
+                    return float(value[0]), float(value[1])
+                msg = f"Invalid range for {spec.op!r}: expected tuple[float, float] in params[{key!r}]"
+                raise ValueError(msg)
+
+        msg = f"Missing required range for {spec.op!r}; expected one of keys: {allowed_keys}"
+        raise ValueError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -1260,7 +1313,12 @@ class _DirectParamAdapter:
 
             return acc
 
-        return torch.eye(3).unsqueeze(0)
+        msg = (
+            f"_DirectParamAdapter.build_matrix: no recognized param keys in {list(params.keys())}. "
+            "This is a bug — either sample_params() returned unexpected keys or the transform "
+            "was constructed with an unknown op name."
+        )
+        raise RuntimeError(msg)
 
     @staticmethod
     def exact_flip_dims(transform: object) -> list[int]:

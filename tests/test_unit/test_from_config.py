@@ -1,7 +1,8 @@
 """Comprehensive integration tests for Compose.from_config() classmethod (Phase C.3).
 
-Tests cover pipeline construction from TransformSpec lists, backend dispatch,
-error handling, probability masking, data_keys forwarding, and fusion verification.
+Tests cover pipeline construction from TransformSpec lists, backend dispatch, error handling, probability masking,
+data_keys forwarding, and fusion verification.
+
 """
 
 from __future__ import annotations
@@ -91,15 +92,19 @@ class TestFromConfigErrors:
         from fuse_augmentations import TransformSpec
 
         specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="unknown backend"):
             Compose.from_config(specs, backend="nonexistent_backend")
+
+    def test_invalid_backend_raises_value_error_for_empty_specs(self):
+        with pytest.raises(ValueError, match="unknown backend"):
+            Compose.from_config([], backend="nonexistent_backend")
 
     def test_invalid_op_raises_at_construction(self):
         """Invalid op name should raise ValueError at construction, not at forward time."""
         from fuse_augmentations import TransformSpec
 
         specs = [TransformSpec(op="definitely_not_a_real_op", params={})]
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="unknown op"):
             Compose.from_config(specs, backend="kornia")
 
 
@@ -232,3 +237,56 @@ class TestFromConfigInterpolationPadding:
         x = torch.rand(2, 3, 32, 32)
         out = pipe(x)
         assert out.shape == x.shape
+
+
+class TestFromConfigUserWarning:
+    """UserWarning emitted when spec.p != 1.0 and the backend cannot set p= on the transform."""
+
+    def test_p_not_applied_emits_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """UserWarning fires when p≠1.0 and backend transform has no settable p attribute."""
+        import warnings
+
+        import fuse_augmentations._resolver as resolver_mod
+        from fuse_augmentations import Compose, TransformSpec
+
+        class _NoPTransform:
+            """Mock: explicitly rejects p= kwarg, has no settable p attribute (slots)."""
+
+            __slots__ = ()
+
+            def __init__(self, **_kwargs: object) -> None:
+                if "p" in _kwargs:
+                    raise TypeError("_NoPTransform does not accept 'p' keyword argument")
+
+        def _mock_resolve(op: str, backend: str) -> type:
+            return _NoPTransform
+
+        monkeypatch.setattr(resolver_mod, "resolve_op", _mock_resolve)
+        monkeypatch.setattr(resolver_mod, "SUPPORTED_BACKENDS", frozenset({"mock_backend"}))
+
+        specs = [TransformSpec(op="hflip", params={}, p=0.5)]
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            try:
+                # FusedCompose.__init__ rejects unknown transforms after the warning fires
+                Compose.from_config(specs, backend="mock_backend")
+            except (ValueError, Exception):
+                pass
+
+        matching = [
+            w for w in recorded if issubclass(w.category, UserWarning) and "could not be applied" in str(w.message)
+        ]
+        assert matching, f"Expected UserWarning about p= not applied. Got: {[str(w.message) for w in recorded]}"
+
+
+class TestFromConfigBackendGap:
+    """Ops that are valid globally but unsupported by a specific backend."""
+
+    def test_rotation90_unsupported_by_torchvision_raises(self) -> None:
+        """Rotation90 is in SUPPORTED_OPS but TorchVision has no such transform."""
+        pytest.importorskip("torchvision")
+        from fuse_augmentations import Compose, TransformSpec
+
+        specs = [TransformSpec(op="rotation90", params={}, p=1.0)]
+        with pytest.raises(ValueError, match="does not support op"):
+            Compose.from_config(specs, backend="torchvision")

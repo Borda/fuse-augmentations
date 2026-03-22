@@ -1,8 +1,11 @@
 """Type definitions for the fuse-augmentations library."""
 
+import copy
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum, IntEnum
-from typing import Protocol, runtime_checkable
+from types import MappingProxyType
+from typing import Any, Protocol, runtime_checkable
 
 import torch
 from torch import Tensor
@@ -201,6 +204,9 @@ class TransformSpec:
     Args:
         op: Canonical operation name (e.g. ``"rotation"``, ``"hflip"``).
         params: Operation-specific parameters (e.g. ``{"degrees": (-30, 30)}``).
+            Range values (``degrees``, ``scale``, etc.) must be 2-tuples, not
+            lists. For JSON/YAML-deserialized configs use :meth:`from_dict`,
+            which restores tuple semantics from lists automatically.
         p: Per-sample application probability. Default ``1.0``.
 
     Example:
@@ -213,8 +219,15 @@ class TransformSpec:
     """
 
     op: str
-    params: dict[str, object]
+    params: Mapping[str, object]
     p: float = 1.0
+
+    def __post_init__(self) -> None:
+        """Freeze mapping-like params and validate probability bounds."""
+        if not (0.0 <= self.p <= 1.0):
+            msg = f"TransformSpec.p must be in [0.0, 1.0], got {self.p!r}"
+            raise ValueError(msg)
+        object.__setattr__(self, "params", _freeze_param_mapping(self.params))
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serialisable dict representation.
@@ -228,8 +241,7 @@ class TransformSpec:
             {'op': 'hflip', 'params': {}, 'p': 0.5}
 
         """
-        # Convert tuples to lists for JSON serialisation compatibility.
-        params = {k: list(v) if isinstance(v, tuple) else v for k, v in self.params.items()}
+        params = _to_json_compatible(self.params)
         return {"op": self.op, "params": params, "p": self.p}
 
     @classmethod
@@ -244,21 +256,83 @@ class TransformSpec:
             A new ``TransformSpec`` instance.
 
         Example:
-            >>> d = {"op": "rotation", "params": {"degrees": (-30.0, 30.0)}, "p": 0.8}
-            >>> TransformSpec.from_dict(d)
-            TransformSpec(op='rotation', params={'degrees': (-30.0, 30.0)}, p=0.8)
+            >>> import json
+            >>> spec = TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.8)
+            >>> restored = TransformSpec.from_dict(json.loads(json.dumps(spec.to_dict())))
+            >>> restored == spec  # list → tuple restored
+            True
 
         """
         raw_params = d.get("params")
         if raw_params is None or not isinstance(raw_params, dict):
             raw_params = {}
-        # Restore tuples from JSON lists so that round-trip equality holds
-        # (JSON has no tuple type; ranges like (-30.0, 30.0) serialise as lists).
-        params: dict[str, object] = {
-            k: tuple(v) if isinstance(v, list) else v for k, v in raw_params.items()
-        }
+        params = _normalize_loaded_params(raw_params)
         raw_p = d.get("p", 1.0)
-        return cls(op=str(d["op"]), params=params, p=float(raw_p))  # type: ignore[arg-type]
+        p = float(raw_p)  # type: ignore[arg-type]
+        return cls(op=str(d["op"]), params=params, p=p)
+
+
+_RANGE_PARAM_KEYS: frozenset[str] = frozenset({
+    "degrees",
+    "factor",
+    "pixels",
+    "rotation",
+    "scale",
+    "scale_x",
+    "scale_y",
+    "shear_x",
+    "shear_y",
+    "translate_x",
+    "translate_y",
+})
+
+
+def _freeze_param_mapping(params: Mapping[str, object]) -> MappingProxyType[str, object]:
+    """Copy params into an immutable top-level mapping."""
+    return MappingProxyType({key: _freeze_param_value(value) for key, value in params.items()})
+
+
+def _freeze_param_value(value: object) -> object:
+    """Recursively freeze nested mappings while preserving list semantics."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_param_value(nested) for key, nested in value.items()})
+    if isinstance(value, list):
+        return [_freeze_param_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_freeze_param_value(item) for item in value)
+    return copy.deepcopy(value)
+
+
+def _to_json_compatible(value: object) -> Any:  # noqa: ANN401
+    """Convert params tree into JSON-friendly builtin containers."""
+    if isinstance(value, Mapping):
+        return {key: _to_json_compatible(nested) for key, nested in value.items()}
+    if isinstance(value, tuple):
+        return [_to_json_compatible(item) for item in value]
+    if isinstance(value, list):
+        return [_to_json_compatible(item) for item in value]
+    return value
+
+
+def _normalize_loaded_params(params: Mapping[str, object]) -> dict[str, object]:
+    """Restore range tuples from JSON while preserving non-range lists."""
+    return {key: _normalize_loaded_value(key, value) for key, value in params.items()}
+
+
+def _normalize_loaded_value(key: str | None, value: object) -> object:
+    """Normalize one loaded param tree."""
+    if isinstance(value, Mapping):
+        return {nested_key: _normalize_loaded_value(nested_key, nested) for nested_key, nested in value.items()}
+    if isinstance(value, list):
+        normalized_items = [_normalize_loaded_value(None, item) for item in value]
+        if (
+            key in _RANGE_PARAM_KEYS
+            and len(normalized_items) == 2
+            and all(isinstance(item, (int, float)) for item in normalized_items)
+        ):
+            return tuple(normalized_items)
+        return normalized_items
+    return value
 
 
 @dataclass(frozen=True, slots=True)

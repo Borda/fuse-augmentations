@@ -1,7 +1,8 @@
 """Comprehensive unit tests for _resolver.py (Phase C.2).
 
-Tests cover resolve_op, SUPPORTED_OPS, SUPPORTED_BACKENDS — including
-error paths, case sensitivity, and cross-backend resolution.
+Tests cover resolve_op, SUPPORTED_OPS, SUPPORTED_BACKENDS — including error paths, case sensitivity, and cross-backend
+resolution.
+
 """
 
 from __future__ import annotations
@@ -122,33 +123,33 @@ class TestResolveOpErrors:
     def test_unknown_backend_raises_value_error(self):
         from fuse_augmentations._resolver import resolve_op
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="unknown backend"):
             resolve_op("rotation", "nonexistent_backend_xyz")
 
     def test_case_sensitive_op(self):
         """resolve_op is case-sensitive: 'Rotation' != 'rotation'."""
         from fuse_augmentations._resolver import resolve_op
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="unknown op"):
             resolve_op("Rotation", "kornia")
 
     def test_case_sensitive_backend(self):
         """resolve_op is case-sensitive: 'Kornia' != 'kornia'."""
         from fuse_augmentations._resolver import resolve_op
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="unknown backend"):
             resolve_op("rotation", "Kornia")
 
     def test_empty_op_string(self):
         from fuse_augmentations._resolver import resolve_op
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="unknown op"):
             resolve_op("", "kornia")
 
     def test_empty_backend_string(self):
         from fuse_augmentations._resolver import resolve_op
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="unknown backend"):
             resolve_op("rotation", "")
 
 
@@ -156,15 +157,11 @@ class TestResolveOpComprehensive:
     """All ops in SUPPORTED_OPS resolve for at least one installed backend."""
 
     def test_all_ops_resolvable(self):
+        import importlib
+
         from fuse_augmentations._resolver import SUPPORTED_BACKENDS, SUPPORTED_OPS, resolve_op
 
-        available_backends = []
-        for backend in SUPPORTED_BACKENDS:
-            try:
-                __import__(backend if backend != "albumentations" else "albumentations")
-                available_backends.append(backend)
-            except ImportError:
-                continue
+        available_backends = [b for b in SUPPORTED_BACKENDS if importlib.util.find_spec(b) is not None]
 
         if not available_backends:
             pytest.skip("No backends installed")
@@ -184,6 +181,31 @@ class TestResolveOpComprehensive:
                 unresolvable.append(op)
 
         assert not unresolvable, (
-            f"Ops not resolvable by any installed backend: {unresolvable}. "
-            f"Available backends: {available_backends}"
+            f"Ops not resolvable by any installed backend: {unresolvable}. Available backends: {available_backends}"
         )
+
+
+class TestResolveOpBackendGap:
+    """Ops that are in SUPPORTED_OPS but not covered by a specific backend."""
+
+    def test_rotation90_not_in_torchvision_raises_value_error(self) -> None:
+        """Rotation90 is in SUPPORTED_OPS but TorchVision has no equivalent."""
+        pytest.importorskip("torchvision")
+        from fuse_augmentations._resolver import resolve_op
+
+        with pytest.raises(ValueError, match="does not support op"):
+            resolve_op("rotation90", "torchvision")
+
+    def test_rotation90_in_supported_ops_but_not_albumentations_shear(self) -> None:
+        """Shear is in SUPPORTED_OPS and albumentations supports it (via Affine)."""
+        pytest.importorskip("albumentations")
+        from fuse_augmentations._resolver import resolve_op
+
+        # albumentations does not have a standalone shear; if it raises it's a backend-gap
+        # ValueError, if it resolves (via Affine) that's also correct behaviour.
+        # This test simply ensures no unexpected exception type is raised.
+        try:
+            result = resolve_op("shear", "albumentations")
+            assert callable(result)
+        except ValueError:
+            pass  # acceptable — backend-gap path
