@@ -1,7 +1,8 @@
 """Comprehensive tests for from_params(specs=...) keyword-only overload (Phase C.4 + C.5).
 
-Tests cover the specs path, mutual exclusivity with keyword args,
-per-transform probability, regression for existing callers, and edge cases.
+Tests cover the specs path, mutual exclusivity with keyword args, per-transform probability, regression for existing
+callers, and edge cases.
+
 """
 
 from __future__ import annotations
@@ -123,7 +124,7 @@ class TestFromParamsSpecsNone:
 
 
 class TestFromParamsSpecsMutualExclusion:
-    """specs and keyword geometric args are mutually exclusive."""
+    """Specs and keyword geometric args are mutually exclusive."""
 
     @pytest.mark.parametrize(
         "kwargs",
@@ -138,6 +139,21 @@ class TestFromParamsSpecsMutualExclusion:
         ids=["rotation", "hflip_p", "vflip_p", "scale", "shear_x", "translate_x"],
     )
     def test_specs_with_kwarg_raises_value_error(self, kwargs):
+        from fuse_augmentations import TransformSpec
+
+        specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            Compose.from_params(specs=specs, **kwargs)
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"hflip_p": -0.1},
+            {"vflip_p": -0.1},
+        ],
+        ids=["hflip_p_negative", "vflip_p_negative"],
+    )
+    def test_specs_with_non_default_flip_kwarg_still_raises_value_error(self, kwargs):
         from fuse_augmentations import TransformSpec
 
         specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
@@ -247,24 +263,55 @@ class TestFromParamsSpecsShapeEquivalence:
         from fuse_augmentations import TransformSpec
 
         pipe_kw = Compose.from_params(rotation=(-30.0, 30.0))
-        pipe_spec = Compose.from_params(
-            specs=[TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=1.0)]
-        )
+        pipe_spec = Compose.from_params(specs=[TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=1.0)])
         x = torch.rand(2, 3, 32, 32)
         out_kw = pipe_kw(x)
         out_spec = pipe_spec(x)
-        assert out_kw.shape == out_spec.shape, (
-            f"Shape mismatch: keyword={out_kw.shape}, specs={out_spec.shape}"
-        )
+        assert out_kw.shape == out_spec.shape, f"Shape mismatch: keyword={out_kw.shape}, specs={out_spec.shape}"
 
     def test_hflip_shape_matches(self):
         from fuse_augmentations import TransformSpec
 
         pipe_kw = Compose.from_params(hflip_p=0.5)
-        pipe_spec = Compose.from_params(
-            specs=[TransformSpec(op="hflip", params={}, p=0.5)]
-        )
+        pipe_spec = Compose.from_params(specs=[TransformSpec(op="hflip", params={}, p=0.5)])
         x = torch.rand(2, 3, 32, 32)
         out_kw = pipe_kw(x)
         out_spec = pipe_spec(x)
         assert out_kw.shape == out_spec.shape
+
+
+class TestFromParamsSpecsValidation:
+    """Input validation for specs-based parameter extraction."""
+
+    def test_missing_rotation_range_raises_value_error(self):
+        from fuse_augmentations import TransformSpec
+
+        with pytest.raises(ValueError, match="Missing required range"):
+            Compose.from_params(specs=[TransformSpec(op="rotation", params={})])
+
+    def test_invalid_rotation_range_type_raises_value_error(self):
+        from fuse_augmentations import TransformSpec
+
+        with pytest.raises(ValueError, match="Invalid range"):
+            Compose.from_params(specs=[TransformSpec(op="rotation", params={"degrees": [-30.0, 30.0]})])
+
+
+class TestFromParamsSpecsUnsupportedOp:
+    """from_params(specs=...) with ops not in the backend-free op set."""
+
+    def test_unsupported_op_raises_value_error(self) -> None:
+        """Perspective is valid in from_config but not in backend-free from_params."""
+
+        from fuse_augmentations import Compose, TransformSpec
+
+        specs = [TransformSpec(op="perspective", params={"distortion_scale": 0.5}, p=1.0)]
+        with pytest.raises(ValueError, match="Unsupported op for from_params"):
+            Compose.from_params(specs=specs)
+
+    def test_affine_not_supported_in_backend_free_raises(self) -> None:
+        """Affine op is not directly supported in backend-free mode."""
+        from fuse_augmentations import Compose, TransformSpec
+
+        specs = [TransformSpec(op="affine", params={}, p=1.0)]
+        with pytest.raises(ValueError, match="Unsupported op for from_params"):
+            Compose.from_params(specs=specs)

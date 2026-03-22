@@ -1,7 +1,8 @@
 """Comprehensive unit tests for TransformSpec frozen dataclass (Phase C.1).
 
-Tests cover construction, defaults, immutability, serialization round-trips,
-equality, export visibility, edge cases with nested params and boundary p values.
+Tests cover construction, defaults, immutability, serialization round-trips, equality, export visibility, edge cases
+with nested params and boundary p values.
+
 """
 
 from __future__ import annotations
@@ -73,6 +74,13 @@ class TestTransformSpecFrozen:
         with pytest.raises((TypeError, AttributeError)):
             setattr(spec, field, value)
 
+    def test_params_mapping_is_read_only(self):
+        from fuse_augmentations import TransformSpec
+
+        spec = TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.8)
+        with pytest.raises(TypeError):
+            spec.params["degrees"] = (-10.0, 10.0)  # type: ignore[index]
+
 
 class TestTransformSpecSerialization:
     """to_dict() / from_dict() serialization and round-trips."""
@@ -143,6 +151,19 @@ class TestTransformSpecSerialization:
         restored = TransformSpec.from_dict(json.loads(json_str))
         # After JSON round-trip, tuples become lists — compare via to_dict()
         assert restored.to_dict() == json.loads(json_str)
+
+    def test_from_dict_preserves_non_range_lists(self):
+        from fuse_augmentations import TransformSpec
+
+        spec = TransformSpec.from_dict(
+            {
+                "op": "affine",
+                "params": {"padding": [1, 2, 3], "degrees": [-10.0, 10.0]},
+                "p": 0.5,
+            },
+        )
+        assert spec.params["padding"] == [1, 2, 3]
+        assert spec.params["degrees"] == (-10.0, 10.0)
 
     def test_from_dict_extra_keys_behavior(self):
         """from_dict with extra unknown keys should raise TypeError (frozen dataclass rejects unknowns)."""
@@ -218,3 +239,32 @@ class TestTransformSpecExport:
         import fuse_augmentations
 
         assert fuse_augmentations.TransformSpec is fuse_aug.TransformSpec
+
+
+class TestTransformSpecFromDictValidation:
+    """from_dict() validates p bounds and type errors."""
+
+    def test_from_dict_invalid_p_type_raises(self) -> None:
+        from fuse_augmentations import TransformSpec
+
+        with pytest.raises((ValueError, TypeError)):
+            TransformSpec.from_dict({"op": "rotation", "params": {}, "p": "not_a_float"})
+
+    def test_from_dict_p_out_of_range_raises(self) -> None:
+        from fuse_augmentations import TransformSpec
+
+        with pytest.raises(ValueError, match="p must be in"):
+            TransformSpec.from_dict({"op": "rotation", "params": {}, "p": -0.1})
+
+        with pytest.raises(ValueError, match="p must be in"):
+            TransformSpec.from_dict({"op": "rotation", "params": {}, "p": 1.5})
+
+    def test_from_dict_missing_op_key_raises(self) -> None:
+        """Missing 'op' key raises KeyError — 'op' is the only required field."""
+        from fuse_augmentations import TransformSpec
+
+        with pytest.raises(KeyError):
+            TransformSpec.from_dict({})
+
+        with pytest.raises(KeyError):
+            TransformSpec.from_dict({"params": {"degrees": (-10.0, 10.0)}, "p": 1.0})

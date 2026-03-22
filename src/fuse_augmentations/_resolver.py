@@ -21,6 +21,7 @@ Example:
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import lru_cache
 
 SUPPORTED_OPS: frozenset[str] = frozenset({
     "rotation",
@@ -41,6 +42,7 @@ SUPPORTED_BACKENDS: frozenset[str] = frozenset({
 })
 
 
+@lru_cache(maxsize=1)
 def _kornia_registry() -> dict[str, type]:
     """Build op -> class map for the Kornia backend (lazy import)."""
     from kornia.augmentation import RandomAffine as _RandomAffine
@@ -65,6 +67,7 @@ def _kornia_registry() -> dict[str, type]:
     }
 
 
+@lru_cache(maxsize=1)
 def _torchvision_registry() -> dict[str, type]:
     """Build op -> class map for the TorchVision backend (lazy import)."""
     # Prefer v2 when available, fall back to v1
@@ -95,6 +98,7 @@ def _torchvision_registry() -> dict[str, type]:
     }
 
 
+@lru_cache(maxsize=1)
 def _albumentations_registry() -> dict[str, type]:
     """Build op -> class map for the Albumentations backend (lazy import)."""
     from albumentations import Affine as _Affine
@@ -152,11 +156,15 @@ def resolve_op(op: str, backend: str) -> type:
         raise ValueError(msg)
 
     builder = _BACKEND_REGISTRY_BUILDERS[backend]
-    registry = builder()
-    if op not in registry:
+    try:
+        registry = builder()
+    except (ImportError, ModuleNotFoundError) as exc:
         msg = (
-            f"backend {backend!r} does not support op {op!r}; "
-            f"supported ops for {backend}: {sorted(registry)}"
+            f"backend {backend!r} is not available because its optional dependency is "
+            f"not installed. Install it with e.g. `pip install fuse-augmentations[{backend}]`."
         )
+        raise ValueError(msg) from exc
+    if op not in registry:
+        msg = f"backend {backend!r} does not support op {op!r}; supported ops for {backend}: {sorted(registry)}"
         raise ValueError(msg)
     return registry[op]
