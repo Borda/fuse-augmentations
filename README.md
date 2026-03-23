@@ -24,7 +24,7 @@
 - [🎯 Auxiliary Targets](#-auxiliary-targets)
 - [🔌 Backend-Free Pipelines](#-backend-free-pipelines)
 - [🔄 NumPy I/O](#-numpy-io)
-- [🎨 Color Fusion (POINTWISE\_LINEAR)](#-color-fusion-pointwise_linear)
+- [🎨 Color Fusion (POINTWISE_LINEAR)](#-color-fusion-pointwise_linear)
 - [🔧 Backend-Agnostic Meta-Config](#-backend-agnostic-meta-config)
 - [🔗 Multi-Backend Pipelines](#-multi-backend-pipelines)
 - [🔀 Reorder Policy](#-reorder-policy)
@@ -146,11 +146,11 @@ For flip-only chains, `fuse-augmentations` uses an `ExactAffineSegment` that app
 
 ### Enums
 
-| Enum                | Values                                                                                                                                                                       |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ReorderPolicy`     | `NONE` (default for `Compose()`), `POINTWISE` (default for `from_params`/`from_config`; bubble color ops after geometric runs), `AGGRESSIVE` (currently same as `POINTWISE`) |
-| `InterpolationMode` | `NEAREST`, `BILINEAR`, `BICUBIC` -- ordered by quality; useful for programmatic comparison (`BICUBIC > BILINEAR > NEAREST`)                                                  |
-| `PaddingMode`       | `ZEROS`, `BORDER`, `REFLECTION` -- ordered by quality                                                                                                                        |
+| Enum                | Values                                                                                                                                                                                              |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ReorderPolicy`     | `NONE` (default for `Compose()`), `POINTWISE` (default for `from_params`/`from_config`; bubble color ops after geometric runs), `AGGRESSIVE` (currently same as `POINTWISE`)                        |
+| `InterpolationMode` | `NEAREST`, `BILINEAR`, `BICUBIC` -- ordered by quality; useful for programmatic comparison (`BICUBIC > BILINEAR > NEAREST`)                                                                         |
+| `PaddingMode`       | `ZEROS`, `BORDER`, `REFLECTION` -- ordered by quality                                                                                                                                               |
 | `TransformCategory` | `GEOMETRIC_INTERP`, `GEOMETRIC_EXACT`, `POINTWISE`, `SPATIAL_KERNEL`, `PROJECTIVE`, `POINTWISE_LINEAR` (fused by `FusedColorSegment`; supported ops per backend listed in the Color Fusion section) |
 
 ### Auxiliary Target Functions
@@ -270,22 +270,24 @@ Consecutive color transforms registered as `POINTWISE_LINEAR` are fused into a s
 import kornia.augmentation as K
 from fuse_augmentations import Compose
 
-pipe = Compose([
-    K.RandomRotation(degrees=30),
-    K.RandomBrightness(brightness=(0.8, 1.2), p=1.0),
-    K.RandomContrast(contrast=(0.9, 1.1), p=1.0),
-])
+pipe = Compose(
+    [
+        K.RandomRotation(degrees=30),
+        K.RandomBrightness(brightness=(0.8, 1.2), p=1.0),
+        K.RandomContrast(contrast=(0.9, 1.1), p=1.0),
+    ]
+)
 # → fused(RandomRotation) → color(RandomBrightness, RandomContrast)
 print(pipe.fusion_plan)
 ```
 
 Supported color operations per backend:
 
-| Backend | Supported |
-|---------|-----------|
-| Kornia | `RandomBrightness`, `RandomContrast`, `ColorJitter` (brightness+contrast only) |
-| TorchVision | `ColorJitter` (brightness+contrast only; saturation/hue fall back to passthrough) |
-| Albumentations | `RandomBrightnessContrast` |
+| Backend        | Supported                                                                         |
+| -------------- | --------------------------------------------------------------------------------- |
+| Kornia         | `RandomBrightness`, `RandomContrast`, `ColorJitter` (brightness+contrast only)    |
+| TorchVision    | `ColorJitter` (brightness+contrast only; saturation/hue fall back to passthrough) |
+| Albumentations | `RandomBrightnessContrast`                                                        |
 
 See `docs/math/fusible-categories-proofs.md` for the mathematical proof of the 4×4 homogeneous color-space affine composition law.
 

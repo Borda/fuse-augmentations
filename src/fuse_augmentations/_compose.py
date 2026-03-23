@@ -492,6 +492,8 @@ class FusedCompose(nn.Module):
         For affine fused segments with *n* transforms, *n - 1* warp passes
         are saved. For exact (flip-only) segments with *n* transforms, *n*
         passes are saved because no interpolation is performed at all.
+        For color fused segments with *n* transforms, *n - 1* matrix-multiply
+        passes are saved (all ops collapse to one ``torch.bmm`` call).
         Single-transform fused segments contribute zero savings.
 
         Returns:
@@ -874,8 +876,7 @@ class FusedCompose(nn.Module):
             A configured ``FusedCompose`` instance ready for inference or training.
 
         Raises:
-            NotImplementedError: If ``brightness`` or ``contrast`` is not ``None``
-                and ``backend`` is ``None``.
+            NotImplementedError: If ``brightness`` or ``contrast`` is not ``None``.
             ValueError: If ``specs`` is provided together with any geometric keyword
                 argument (they are mutually exclusive).
             ValueError: If ``specs`` contains an op that is not supported in
@@ -902,7 +903,7 @@ class FusedCompose(nn.Module):
             msg = "contrast not yet supported, planned v0.4"
             raise NotImplementedError(msg)
 
-        # --- specs= overload path (C.4) ---
+        # --- specs= overload path ---
         # Note: specs= is a convenience alias for declarative pipeline construction.
         # In a future minor version this dual-path may be split into a from_specs()
         # classmethod; for now mutual exclusivity of specs and geometric kwargs enforces intent.
@@ -927,7 +928,6 @@ class FusedCompose(nn.Module):
                 msg = "specs and keyword params are mutually exclusive"
                 raise ValueError(msg)
 
-            # --- E.1: backend-delegated specs path ---
             if backend is not None:
                 return cls.from_config(
                     specs,
@@ -948,7 +948,6 @@ class FusedCompose(nn.Module):
                 output_backend=output_backend,
             )
 
-        # --- E.1: backend-delegated geometric kwargs path ---
         # When backend is set and geometric kwargs are provided (no specs),
         # convert the kwargs to TransformSpec objects and delegate to from_config.
         if backend is not None:
@@ -1164,30 +1163,32 @@ class FusedCompose(nn.Module):
         geometric kwargs (rather than ``specs``) are provided.
 
         """
+        if scale_x is not None or scale_y is not None:
+            msg = (
+                "scale_x and scale_y are not supported when backend= is set. "
+                "Use from_config() with an explicit RandomAffine spec for anisotropic scale."
+            )
+            raise ValueError(msg)
+
+        if any(param is not None for param in (shear_x, shear_y, translate_x, translate_y)):
+            msg = (
+                "shear_x/shear_y and translate_x/translate_y are not supported when backend= is set. "
+                "Use from_config() with an explicit affine spec for per-axis shear/translation."
+            )
+            raise ValueError(msg)
+
         specs: list[TransformSpec] = []
 
         # Map geometric tuple params to their canonical op and param key
         _kwarg_to_op: dict[str, tuple[str, str]] = {
             "rotation": ("rotation", "degrees"),
             "scale": ("scale", "factor"),
-            "scale_x": ("scale", "factor"),
-            "scale_y": ("scale", "factor"),
-            "shear_x": ("shear", "degrees"),
-            "shear_y": ("shear", "degrees"),
-            "translate_x": ("translate", "pixels"),
-            "translate_y": ("translate", "pixels"),
         }
 
         # Geometric tuple params
         for kwarg_name, value in [
             ("rotation", rotation),
             ("scale", scale),
-            ("scale_x", scale_x),
-            ("scale_y", scale_y),
-            ("shear_x", shear_x),
-            ("shear_y", shear_y),
-            ("translate_x", translate_x),
-            ("translate_y", translate_y),
         ]:
             if value is not None:
                 op, param_key = _kwarg_to_op[kwarg_name]
@@ -1573,6 +1574,15 @@ class _DirectParamAdapter:
             "was constructed with an unknown op name."
         )
         raise RuntimeError(msg)
+
+    @staticmethod
+    def build_color_matrix(
+        transform: object,
+        params: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """_DirectParamAdapter only handles geometric ops — color matrix not supported."""
+        msg = f"build_color_matrix not supported for {type(transform).__name__!r}"
+        raise NotImplementedError(msg)
 
     @staticmethod
     def exact_flip_dims(transform: object) -> list[int]:

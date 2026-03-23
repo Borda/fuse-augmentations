@@ -1,4 +1,4 @@
-"""Comprehensive tests for from_params(specs=...) keyword-only overload (Phase C.4 + C.5).
+"""Comprehensive tests for from_params(specs=...) keyword-only overload.
 
 Tests cover the specs path, mutual exclusivity with keyword args, per-transform probability, regression for existing
 callers, and edge cases.
@@ -162,7 +162,7 @@ class TestFromParamsSpecsMutualExclusion:
 
 
 class TestFromParamsSpecsProbability:
-    """Per-transform probability in specs path (Phase C.5)."""
+    """Per-transform probability in specs path."""
 
     def test_p_zero_never_applied(self):
         from fuse_augmentations import TransformSpec
@@ -211,7 +211,7 @@ class TestFromParamsSpecsProbability:
 
 
 class TestFromParamsSpecsRegression:
-    """Existing from_params keyword-only API still works after C.4 (regression guard)."""
+    """Existing from_params keyword-only API still works (regression guard)."""
 
     def test_rotation_keyword(self):
         pipe = Compose.from_params(rotation=(-30.0, 30.0))

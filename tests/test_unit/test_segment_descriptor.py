@@ -1,4 +1,4 @@
-"""Unit tests for SegmentDescriptor dataclass (Phase B.1)."""
+"""Unit tests for SegmentDescriptor dataclass."""
 
 from __future__ import annotations
 

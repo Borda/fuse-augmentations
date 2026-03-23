@@ -1,4 +1,4 @@
-"""Comprehensive unit tests for TransformSpec frozen dataclass (Phase C.1).
+"""Comprehensive unit tests for TransformSpec frozen dataclass.
 
 Tests cover construction, defaults, immutability, serialization round-trips, equality, export visibility, edge cases
 with nested params and boundary p values.
