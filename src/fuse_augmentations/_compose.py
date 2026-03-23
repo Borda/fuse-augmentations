@@ -778,12 +778,18 @@ class FusedCompose(nn.Module):
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
         *,
         specs: list[TransformSpec] | None = None,
+        backend: BackendStr | None = None,
     ) -> FusedCompose:
         """Create a ``FusedCompose`` pipeline directly from parameter ranges.
 
         This factory bypasses backend transform objects entirely and samples
         parameters directly using ``_matrix.py`` primitives. Useful for
         backend-agnostic pipelines or when no backend is installed.
+
+        When ``backend`` is provided, the factory delegates to
+        :meth:`from_config` semantics instead, using real backend transform
+        objects. This allows ``from_params`` to serve as a single entry
+        point that works both with and without a backend.
 
         All geometric parameters are sampled independently per batch item on
         every :meth:`forward` call (i.e. ``same_on_batch=False`` semantics).
@@ -826,18 +832,25 @@ class FusedCompose(nn.Module):
             specs: List of :class:`TransformSpec` objects. When provided,
                 all other geometric keyword arguments must be at their
                 defaults (mutually exclusive). Keyword-only.
+            backend: Backend name (``"kornia"``, ``"torchvision"``,
+                ``"albumentations"``), or ``None`` for backend-free mode.
+                When set, delegates to :meth:`from_config` semantics.
+                Keyword-only.
 
         Returns:
             A configured ``FusedCompose`` instance ready for inference or training.
 
         Raises:
-            NotImplementedError: If ``brightness`` or ``contrast`` is not ``None``.
+            NotImplementedError: If ``brightness`` or ``contrast`` is not ``None``
+                and ``backend`` is ``None``.
             ValueError: If ``specs`` is provided together with any geometric keyword
                 argument (they are mutually exclusive).
             ValueError: If ``specs`` contains an op that is not supported in
                 backend-free mode (i.e. not one of ``"rotation"``, ``"scale"``,
                 ``"scale_x"``, ``"scale_y"``, ``"shear_x"``, ``"shear_y"``,
                 ``"translate_x"``, ``"translate_y"``, ``"hflip"``, ``"vflip"``).
+            ValueError: If a backend-native kwarg in ``TransformSpec.params``
+                is not accepted by the backend constructor.
 
         Example:
             >>> import torch
@@ -880,8 +893,47 @@ class FusedCompose(nn.Module):
             if has_keyword_params:
                 msg = "specs and keyword params are mutually exclusive"
                 raise ValueError(msg)
+
+            # --- E.1: backend-delegated specs path ---
+            if backend is not None:
+                return cls.from_config(
+                    specs,
+                    backend=backend,
+                    interpolation=interpolation,
+                    padding_mode=padding_mode,
+                    reorder=reorder,
+                    data_keys=data_keys,
+                    output_backend=output_backend,
+                )
+
             return cls._from_param_specs(
                 specs=specs,
+                interpolation=interpolation,
+                padding_mode=padding_mode,
+                reorder=reorder,
+                data_keys=data_keys,
+                output_backend=output_backend,
+            )
+
+        # --- E.1: backend-delegated geometric kwargs path ---
+        # When backend is set and geometric kwargs are provided (no specs),
+        # convert the kwargs to TransformSpec objects and delegate to from_config.
+        if backend is not None:
+            config_specs = cls._geometric_kwargs_to_specs(
+                rotation=rotation,
+                scale=scale,
+                scale_x=scale_x,
+                scale_y=scale_y,
+                shear_x=shear_x,
+                shear_y=shear_y,
+                translate_x=translate_x,
+                translate_y=translate_y,
+                hflip_p=hflip_p,
+                vflip_p=vflip_p,
+            )
+            return cls.from_config(
+                config_specs,
+                backend=backend,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 reorder=reorder,
@@ -1059,6 +1111,62 @@ class FusedCompose(nn.Module):
 
         msg = f"Missing required range for {spec.op!r}; expected one of keys: {allowed_keys}"
         raise ValueError(msg)
+
+    @staticmethod
+    def _geometric_kwargs_to_specs(
+        rotation: tuple[float, float] | None = None,
+        scale: tuple[float, float] | None = None,
+        scale_x: tuple[float, float] | None = None,
+        scale_y: tuple[float, float] | None = None,
+        shear_x: tuple[float, float] | None = None,
+        shear_y: tuple[float, float] | None = None,
+        translate_x: tuple[float, float] | None = None,
+        translate_y: tuple[float, float] | None = None,
+        hflip_p: float = 0.0,
+        vflip_p: float = 0.0,
+    ) -> list[TransformSpec]:
+        """Convert geometric keyword arguments to a list of TransformSpec objects.
+
+        Used internally by :meth:`from_params` when ``backend`` is set and
+        geometric kwargs (rather than ``specs``) are provided.
+
+        """
+        specs: list[TransformSpec] = []
+
+        # Map geometric tuple params to their canonical op and param key
+        _kwarg_to_op: dict[str, tuple[str, str]] = {
+            "rotation": ("rotation", "degrees"),
+            "scale": ("scale", "factor"),
+            "scale_x": ("scale", "factor"),
+            "scale_y": ("scale", "factor"),
+            "shear_x": ("shear", "degrees"),
+            "shear_y": ("shear", "degrees"),
+            "translate_x": ("translate", "pixels"),
+            "translate_y": ("translate", "pixels"),
+        }
+
+        # Geometric tuple params
+        for kwarg_name, value in [
+            ("rotation", rotation),
+            ("scale", scale),
+            ("scale_x", scale_x),
+            ("scale_y", scale_y),
+            ("shear_x", shear_x),
+            ("shear_y", shear_y),
+            ("translate_x", translate_x),
+            ("translate_y", translate_y),
+        ]:
+            if value is not None:
+                op, param_key = _kwarg_to_op[kwarg_name]
+                specs.append(TransformSpec(op=op, params={param_key: value}, p=1.0))
+
+        # Flip params
+        if hflip_p > 0.0:
+            specs.append(TransformSpec(op="hflip", params={}, p=hflip_p))
+        if vflip_p > 0.0:
+            specs.append(TransformSpec(op="vflip", params={}, p=vflip_p))
+
+        return specs
 
 
 # ---------------------------------------------------------------------------
