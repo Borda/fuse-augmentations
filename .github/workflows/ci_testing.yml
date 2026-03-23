@@ -15,7 +15,36 @@ defaults:
     shell: bash
 
 jobs:
+  doctests-only:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    env:
+      UV_TORCH_BACKEND: cpu
+      PYTHON_VERSION: "3.10"
+    timeout-minutes: 5
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+      - name: 🐍 Install uv
+        uses: astral-sh/setup-uv@v7.2.0
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+          activate-environment: true
+      - name: 📦 Install base package (no extras)
+        timeout-minutes: 5
+        run: |
+          uv pip install -e "." --group dev
+          uv pip list
+      - name: 🧪 Run doctests
+        run: pytest src/ -v
+
   pytester:
+    needs: doctests-only
     permissions:
       contents: read
     runs-on: ${{ matrix.os }}

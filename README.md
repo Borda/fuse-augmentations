@@ -23,10 +23,12 @@
 - [📖 API Reference](#-api-reference)
 - [🎯 Auxiliary Targets](#-auxiliary-targets)
 - [🔌 Backend-Free Pipelines](#-backend-free-pipelines)
+- [🔄 NumPy I/O](#-numpy-io)
 - [🔧 Backend-Agnostic Meta-Config](#-backend-agnostic-meta-config)
 - [🔗 Multi-Backend Pipelines](#-multi-backend-pipelines)
 - [🔀 Reorder Policy](#-reorder-policy)
 - [🔬 Fusion Introspection](#-fusion-introspection)
+- [🏋️ Training Loop](#%EF%B8%8F-training-loop)
 - [⚠️ Limitations](#%EF%B8%8F-limitations)
 - [🤝 Contributing](#-contributing)
 - [📄 License](#-license)
@@ -54,17 +56,19 @@ A pipeline of three affine transforms saves two interpolation passes. At trainin
 
 ## ✨ Features
 
-- Automatic fusion of (consecutive) geometric transforms -- no manual configuration needed. Reordering with quality preservation is coming soon, so non-consecutive runs will also be fusible.
+- Automatic fusion of consecutive geometric transforms -- no manual configuration needed.
+- Use `ReorderPolicy.POINTWISE` to bubble color ops past geometric chains, enabling fusion across non-consecutive geometric runs.
 - All affine transforms from each supported backend (Kornia, TorchVision, Albumentations) are mapped and fusible -- not just a subset.
 - Per-sample randomness: independent probability draws per image in the batch.
 - Auxiliary target support: masks, bounding boxes (`xyxy` and `xywh`), and keypoints warped by the same composed matrix.
 - Multi-backend: Kornia, TorchVision, and Albumentations transforms in the same pipeline.
 - Backend-free mode: construct a pipeline from numeric parameter ranges with no framework imports.
-- Meta-config mode: describe a pipeline as a list of `TransformSpec` objects and resolve it to any supported backend at construction time — swap backends without rewriting the pipeline.
+- Meta-config mode: describe a pipeline as a list of `TransformSpec` objects and resolve it to any supported backend at construction time -- swap backends without rewriting the pipeline.
+- NumPy I/O: `NumpyToTorchConverter` and `TorchToNumpyConverter` bridge OpenCV/PIL/Albumentations workflows; `output_backend="numpy"` returns NumPy arrays directly from the pipeline.
 - Reorder policy: `NONE` (default), `POINTWISE` (bubble color ops after geometric runs), or `AGGRESSIVE` (currently an alias of `POINTWISE`).
 - Fusion introspection: inspect `fusion_plan`, `n_warps_saved`, and `transform_matrix` after each forward pass.
 - Projective (perspective) transform fusion via full 3x3 homography matrices.
-- **Roadmap**: future versions will allow passing transforms as meta-configuration and receiving output in any supported backend -- e.g. build a pipeline with Albumentations ops and switch to Kornia output when changing accelerator, without rewriting the pipeline.
+- Pickle-safe: pipelines survive `pickle.dumps`/`pickle.loads` for use with `DataParallel` and multiprocess `DataLoader` workers.
 
 ## 📦 Installation
 
@@ -87,14 +91,14 @@ pip install "fuse-augmentations[all]"          # All backends
 
 ```python
 import torch
-import kornia.augmentation as K
+import albumentations as aug_a
 from fuse_aug import Compose  # or: from fuse_augmentations import Compose
 
 pipe = Compose(
     [
-        K.RandomRotation(degrees=30, p=0.8),
-        K.RandomHorizontalFlip(p=0.5),
-        K.RandomAffine(degrees=0, scale=(0.8, 1.2), p=0.7),
+        aug_a.Rotate(limit=30, p=0.8),
+        aug_a.HorizontalFlip(p=0.5),
+        aug_a.Affine(scale=(0.8, 1.2), p=0.7),
     ]
 )
 
@@ -102,7 +106,7 @@ image = torch.rand(4, 3, 256, 256)  # (B, C, H, W)
 out = pipe(image)  # one interpolation pass instead of three
 
 print(pipe.fusion_plan)
-# fused(RandomRotation, RandomHorizontalFlip, RandomAffine)
+# fused(Rotate, HorizontalFlip, Affine)
 
 print(pipe.n_warps_saved)
 # 2
@@ -125,46 +129,53 @@ For flip-only chains, `fuse-augmentations` uses an `ExactAffineSegment` that app
 
 ### Core
 
-| Class / Function                      | Description                                                                                                                                                          |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Compose`                             | Main entry point. Wraps a list of transforms, groups them into fusible runs, and fuses each group on `forward()`. Aliases: `FusedCompose`, `AugmentationSequential`. |
-| `Compose.from_params(...)`            | Classmethod. Build a backend-free pipeline from numeric parameter ranges, or from a `specs` list of `TransformSpec` objects in backend-free mode.                    |
-| `Compose.from_config(specs, backend)` | Classmethod. Resolve a list of `TransformSpec` objects to a specific backend and build the pipeline -- no backend imports needed at spec time.                       |
-| `TransformSpec`                       | Frozen dataclass for declarative, backend-agnostic pipeline configuration: `op`, `params`, `p`. JSON-serialisable via `to_dict()` / `from_dict()`.                   |
-| `FusedAffineSegment`                  | Handles one fusible run: samples random params, composes matrices, applies a single interpolation pass.                                                              |
-| `ExactAffineSegment`                  | Lossless segment for flip-only chains. Uses `tensor.flip` -- no interpolation.                                                                                       |
-| `ProjectiveSegment`                   | Fuses projective transforms using 3x3 homography matrices.                                                                                                           |
-| `build_segments()`                    | Internal. Partitions a transform list into fusible segments and passthrough barriers.                                                                                |
-| `SegmentDescriptor`                   | Frozen dataclass describing one pipeline segment: `kind`, `transforms`, `n_warps_saved`, `backend`. Returned by `FusedCompose.fusion_plan_descriptors`.              |
+| Class / Function                      | Description                                                                                                                                                                                                                   |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Compose`                             | Main entry point. Wraps a list of transforms, groups them into fusible runs, and fuses each group on `forward()`. Accepts `output_backend="numpy"` to return NumPy arrays. Aliases: `FusedCompose`, `AugmentationSequential`. |
+| `Compose.from_params(...)`            | Classmethod. Build a backend-free pipeline from numeric parameter ranges, or from a `specs` list of `TransformSpec` objects. Defaults to `ReorderPolicy.POINTWISE`.                                                           |
+| `Compose.from_config(specs, backend)` | Classmethod. Resolve a list of `TransformSpec` objects to a specific backend and build the pipeline -- no backend imports needed at spec time. Defaults to `ReorderPolicy.POINTWISE`.                                         |
+| `TransformSpec`                       | Frozen dataclass for declarative, backend-agnostic pipeline configuration: `op`, `params`, `p`. JSON-serialisable via `to_dict()` / `from_dict()`.                                                                            |
+| `NumpyToTorchConverter`               | Converts NumPy `(H, W, C)` / `(B, H, W, C)` arrays (uint8 or float32) to `(B, C, H, W)` torch tensors. uint8 is normalised to float32 `[0, 1]`.                                                                               |
+| `TorchToNumpyConverter`               | Converts `(B, C, H, W)` torch tensors to NumPy arrays. Single-image batches are squeezed to `(H, W, C)`; multi-image batches produce `(B, H, W, C)`.                                                                          |
+| `FusedAffineSegment`                  | Handles one fusible run: samples random params, composes matrices, applies a single interpolation pass.                                                                                                                       |
+| `ExactAffineSegment`                  | Lossless segment for flip-only chains. Uses `tensor.flip` -- no interpolation.                                                                                                                                                |
+| `ProjectiveSegment`                   | Fuses projective transforms using 3x3 homography matrices.                                                                                                                                                                    |
+| `build_segments()`                    | Internal. Partitions a transform list into fusible segments and passthrough barriers.                                                                                                                                         |
+| `SegmentDescriptor`                   | Frozen dataclass describing one pipeline segment: `kind`, `transforms`, `n_warps_saved`, `backend`. Returned by `FusedCompose.fusion_plan_descriptors`.                                                                       |
 
 ### Enums
 
-| Enum                | Values                                                                                                              |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `ReorderPolicy`     | `NONE` (default), `POINTWISE` (bubble color ops after geometric runs), `AGGRESSIVE` (currently same as `POINTWISE`) |
-| `InterpolationMode` | `NEAREST`, `BILINEAR`, `BICUBIC`                                                                                    |
-| `PaddingMode`       | `ZEROS`, `BORDER`, `REFLECTION`                                                                                     |
-| `TransformCategory` | `GEOMETRIC_INTERP`, `GEOMETRIC_EXACT`, `POINTWISE`, `SPATIAL_KERNEL`, `PROJECTIVE`                                  |
+| Enum                | Values                                                                                                                                                                       |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ReorderPolicy`     | `NONE` (default for `Compose()`), `POINTWISE` (default for `from_params`/`from_config`; bubble color ops after geometric runs), `AGGRESSIVE` (currently same as `POINTWISE`) |
+| `InterpolationMode` | `NEAREST`, `BILINEAR`, `BICUBIC` -- ordered by quality; useful for programmatic comparison (`BICUBIC > BILINEAR > NEAREST`)                                                  |
+| `PaddingMode`       | `ZEROS`, `BORDER`, `REFLECTION` -- ordered by quality                                                                                                                        |
+| `TransformCategory` | `GEOMETRIC_INTERP`, `GEOMETRIC_EXACT`, `POINTWISE`, `SPATIAL_KERNEL`, `PROJECTIVE`, `POINTWISE_LINEAR` (pass-through until color fusion lands in a later version)            |
 
 ### Auxiliary Target Functions
 
-| Function                               | Shape          | Description                                                                 |
-| -------------------------------------- | -------------- | --------------------------------------------------------------------------- |
-| `transform_keypoints(kps, M)`          | `(B, N, 2)`    | Apply affine matrix to keypoint coordinates. Differentiable.                |
-| `transform_bbox_xyxy(bboxes, M, H, W)` | `(B, N, 4)`    | Transform `[x1, y1, x2, y2]` bboxes; AABB-wrap after rotation.              |
-| `transform_bbox_xywh(bboxes, M, H, W)` | `(B, N, 4)`    | Transform `[x, y, w, h]` bboxes; converts to/from xyxy internally.          |
-| `transform_mask(mask, grid)`           | `(B, C, H, W)` | Apply sampling grid with `mode='nearest'` to preserve integer class labels. |
+| Function                                | Shape          | Description                                                                         |
+| --------------------------------------- | -------------- | ----------------------------------------------------------------------------------- |
+| `transform_keypoints(kps, M_forward)`   | `(B, N, 2)`    | Apply forward affine matrix to keypoint coordinates. Differentiable.                |
+| `transform_bbox_xyxy(boxes, M_forward)` | `(B, N, 4)`    | Transform `[x1, y1, x2, y2]` boxes by forward homography; AABB-wrap after rotation. |
+| `transform_bbox_xywh(boxes, M_forward)` | `(B, N, 4)`    | Transform `[x, y, w, h]` boxes; converts to/from xyxy internally.                   |
+| `transform_mask(mask, grid)`            | `(B, C, H, W)` | Apply sampling grid with `mode='nearest'` to preserve integer class labels.         |
 
 ## 🎯 Auxiliary Targets
 
 Pass `data_keys` to route masks, boxes, or keypoints through the same fused transform:
 
 ```python
+import torchvision.transforms.v2 as aug_tv
 from fuse_aug import Compose
-import kornia.augmentation as K
+
+image = ...  # (B, C, H, W) float32 tensor
+mask = ...  # (B, C, H, W) integer label tensor
+bboxes = ...  # (B, N, 4) pixel-space boxes
+keypoints = ...  # (B, N, 2) pixel-space keypoints
 
 pipe = Compose(
-    [K.RandomRotation(degrees=30, p=0.8), K.RandomHorizontalFlip(p=0.5)],
+    [aug_tv.RandomRotation(degrees=30), aug_tv.RandomHorizontalFlip(p=0.5)],
     data_keys=["input", "mask", "bbox_xyxy", "keypoints"],
 )
 
@@ -189,21 +200,66 @@ Supported `data_keys` values:
 No Kornia or TorchVision import needed:
 
 ```python
-from fuse_aug import Compose, InterpolationMode, PaddingMode
+from fuse_aug import Compose
+
+image = ...  # your (B, C, H, W) tensor
 
 pipe = Compose.from_params(
     rotation=(-30, 30),
     scale=(0.8, 1.2),
     hflip_p=0.5,
     vflip_p=0.3,
-    interpolation=InterpolationMode.BICUBIC,
-    padding_mode=PaddingMode.REFLECTION,
+    interpolation="bicubic",
+    padding_mode="reflection",
 )
 
 out = pipe(image)
 ```
 
-`from_params` accepts: `rotation`, `scale`, `scale_x`, `scale_y`, `shear_x`, `shear_y`, `translate_x`, `translate_y`, `hflip_p`, `vflip_p`, `interpolation`, `padding_mode`, `reorder`, `data_keys`, `specs`.
+`from_params` accepts: `rotation`, `scale`, `scale_x`, `scale_y`, `shear_x`, `shear_y`, `translate_x`, `translate_y`, `hflip_p`, `vflip_p`, `interpolation` (`"bilinear"`, `"nearest"`, `"bicubic"`), `padding_mode` (`"zeros"`, `"border"`, `"reflection"`), `reorder`, `data_keys`, `output_backend`, `specs`. (`brightness` and `contrast` are reserved for a future version.)
+
+> **Note**: `from_params` and `from_config` default to `ReorderPolicy.POINTWISE`, while `Compose()` defaults to `ReorderPolicy.NONE`. Pass `reorder=ReorderPolicy.NONE` explicitly if you need to preserve the declared order in a `from_params` pipeline.
+
+## 🔄 NumPy I/O
+
+`fuse-augmentations` pipelines operate on `(B, C, H, W)` torch tensors internally. Two converters bridge the gap for OpenCV, PIL, and Albumentations workflows that use NumPy arrays:
+
+```python
+import numpy as np
+from fuse_aug import Compose, NumpyToTorchConverter, TorchToNumpyConverter
+
+# NumPy (H, W, C) uint8 -> torch (B, C, H, W) float32 [0, 1]
+to_torch = NumpyToTorchConverter()
+image_np = np.random.randint(0, 255, (256, 256, 3), dtype=np.uint8)
+image_tensor = to_torch.convert(image_np)  # (1, 3, 256, 256)
+
+pipe = Compose.from_params(rotation=(-15, 15), hflip_p=0.5)
+out_tensor = pipe(image_tensor)
+
+# torch (B, C, H, W) -> NumPy (H, W, C) for B=1, or (B, H, W, C) for B>1
+to_numpy = TorchToNumpyConverter()
+out_np = to_numpy.convert(out_tensor)  # (256, 256, 3)
+```
+
+For pipelines where NumPy output is always wanted, pass `output_backend="numpy"` directly to `Compose`, `from_params`, or `from_config`:
+
+```python
+from fuse_aug import Compose
+
+image_tensor = ...  # your (B, C, H, W) float32 tensor
+
+pipe = Compose.from_params(
+    rotation=(-15, 15),
+    hflip_p=0.5,
+    output_backend="numpy",
+)
+
+out = pipe(image_tensor)  # returns NumPy (H, W, C) array directly
+```
+
+`output_backend` values: `"numpy"` / `"numpy_hwc"` (channel-last NumPy array), `"torch"` or `None` (native tensor, default). Conversion applies to single-tensor output only -- when `data_keys` returns a tuple, set `output_backend=None` and convert manually.
+
+`NumpyToTorchConverter` accepts arrays of shape `(H, W)`, `(H, W, C)`, or `(B, H, W, C)`. `uint8` inputs are normalised to `float32 [0, 1]`; `float32` inputs are passed through unchanged.
 
 ## 🔧 Backend-Agnostic Meta-Config
 
@@ -217,6 +273,7 @@ specs = [
     TransformSpec(op="hflip", params={}, p=0.5),
 ]
 
+image = ...
 # Resolve to a specific backend -- backend imports happen here, not at spec time
 pipe = Compose.from_config(specs, backend="kornia")
 out = pipe(image)
@@ -248,29 +305,83 @@ restored = TransformSpec.from_dict(json.loads(payload))
 assert restored == spec
 ```
 
-Supported ops for `from_config`: all ops in `SUPPORTED_OPS` (`"rotation"`, `"affine"`, `"shear"`, `"translate"`, `"hflip"`, `"vflip"`, `"scale"`, `"perspective"`, `"rotation90"`), subject to each backend's coverage (see `_resolver.py`).
+Supported ops for `from_config`: all ops in `SUPPORTED_OPS` (`"rotation"`, `"affine"`, `"shear"`, `"translate"`, `"hflip"`, `"vflip"`, `"scale"`, `"perspective"`, `"rotation90"`), subject to each backend's coverage:
+
+| Op            | Kornia | TorchVision | Albumentations |
+| ------------- | :----: | :---------: | :------------: |
+| `rotation`    |   ✓    |      ✓      |       ✓        |
+| `affine`      |   ✓    |      ✓      |       ✓        |
+| `shear`       |   ✓    |      –      |       –        |
+| `translate`   |   ✓    |      –      |       –        |
+| `hflip`       |   ✓    |      ✓      |       ✓        |
+| `vflip`       |   ✓    |      ✓      |       ✓        |
+| `scale`       |   ✓    |      ✓      |       ✓        |
+| `perspective` |   ✓    |      ✓      |       ✓        |
+| `rotation90`  |   ✓    |      –      |       ✓        |
 
 Supported ops for `from_params(specs=...)`: `"rotation"`, `"scale"`, `"scale_x"`, `"scale_y"`, `"shear_x"`, `"shear_y"`, `"translate_x"`, `"translate_y"`, `"hflip"`, `"vflip"`.
+
+> **Note**: `from_config` defaults to `ReorderPolicy.POINTWISE`. Pass `reorder=ReorderPolicy.NONE` to preserve the declared order.
+
+### Hydra / OmegaConf integration
+
+`TransformSpec` is designed to round-trip through YAML. A typical Hydra config:
+
+```yaml
+# config/augmentation.yaml
+augmentation:
+  backend: kornia
+  specs:
+    - op: rotation
+      params:
+        degrees: [-30.0, 30.0]
+      p: 0.8
+    - op: hflip
+      params: {}
+      p: 0.5
+    - op: scale
+      params:
+        factor: [0.8, 1.2]
+      p: 0.7
+```
+
+```python
+from omegaconf import OmegaConf
+from fuse_aug import Compose, TransformSpec
+
+
+def build_pipeline(cfg):
+    specs = [
+        TransformSpec.from_dict(s)
+        for s in OmegaConf.to_container(cfg.augmentation.specs)
+    ]
+    return Compose.from_config(specs, backend=cfg.augmentation.backend)
+```
+
+`TransformSpec.from_dict` restores tuple semantics from JSON/YAML lists automatically for canonical range-parameter keys (`degrees`, `factor`, `scale`, etc.).
 
 ## 🔗 Multi-Backend Pipelines
 
 Kornia, TorchVision, and Albumentations transforms can be mixed in the same `Compose`:
 
 ```python
-import torchvision.transforms.v2 as T
-import kornia.augmentation as K
+import albumentations as aug_a
+import torchvision.transforms.v2 as aug_tv
+from kornia import augmentation as aug_k
 from fuse_aug import Compose
+
+image = ...  # your (B, C, H, W) tensor
 
 pipe = Compose(
     [
-        K.RandomRotation(degrees=15),
-        T.RandomHorizontalFlip(),
-        K.ColorJitter(brightness=0.3),
+        aug_a.Rotate(limit=15),  # Albumentations
+        aug_tv.RandomHorizontalFlip(),  # TorchVision
+        aug_k.ColorJitter(brightness=0.3),  # Kornia (passthrough)
     ]
 )
 
 out = pipe(image)
-# fused(RandomRotation, RandomHorizontalFlip) -> passthrough(ColorJitter)
+# fused(Rotate, RandomHorizontalFlip) -> passthrough(ColorJitter)
 ```
 
 Each transform is resolved to the correct adapter at construction time. Framework-specific behavior (parameter sampling, matrix building, passthrough for operations not yet fusible) is handled by `KorniaAdapter`, `TorchVisionAdapter`, or `AlbumentationsAdapter`.
@@ -280,14 +391,14 @@ Each transform is resolved to the correct adapter at construction time. Framewor
 When a color operation sits between two geometric transforms, fusion is broken by default. `ReorderPolicy.POINTWISE` bubbles color ops to the end of each geometric stretch, extending the fusion window:
 
 ```python
+import torchvision.transforms.v2 as aug_tv
 from fuse_aug import Compose, ReorderPolicy
-import kornia.augmentation as K
 
 pipe = Compose(
     [
-        K.RandomRotation(degrees=15, p=0.8),
-        K.ColorJitter(brightness=0.3, p=0.5),  # POINTWISE -- would break fusion
-        K.RandomHorizontalFlip(p=0.5),
+        aug_tv.RandomRotation(degrees=15),
+        aug_tv.ColorJitter(brightness=0.3),  # POINTWISE -- would break fusion
+        aug_tv.RandomHorizontalFlip(p=0.5),
     ],
     reorder=ReorderPolicy.POINTWISE,
 )
@@ -296,7 +407,9 @@ print(pipe.fusion_plan)
 # fused(RandomRotation, RandomHorizontalFlip) -> passthrough(ColorJitter)
 ```
 
-**`ReorderPolicy.NONE`** (default): preserves declared order, merges consecutive fusible transforms.
+**`ReorderPolicy.NONE`** (default for `Compose()`): preserves declared order, merges consecutive fusible transforms.
+
+**`ReorderPolicy.POINTWISE`** (default for `from_params` and `from_config`): moves `POINTWISE` and `POINTWISE_LINEAR` ops out of geometric chains before segmentation.
 
 **`ReorderPolicy.AGGRESSIVE`**: currently behaves the same as `POINTWISE`. It is accepted for forward compatibility, but today it preserves the same pointwise ordering and yields the same fusion plan as `POINTWISE`.
 
@@ -305,6 +418,11 @@ print(pipe.fusion_plan)
 After any forward pass:
 
 ```python
+from fuse_aug import Compose
+
+image = ...  # your (B, C, H, W) tensor
+pipe = Compose(...)  # built in a previous step
+
 out = pipe(image)
 
 print(pipe.fusion_plan)
@@ -321,14 +439,17 @@ M = pipe.transform_matrix  # (B, 3, 3) composed forward matrix
 For machine-readable inspection, use `fusion_plan_descriptors`:
 
 ```python
+from fuse_aug import Compose
+import json
+
+pipe = Compose(...)  # built in a previous step
+
 for desc in pipe.fusion_plan_descriptors:
     print(desc.kind, desc.transforms, desc.n_warps_saved)
 # fused ('RandomRotation', 'RandomAffine') 1
 # passthrough ('RandomGaussianBlur',) 0
 
 # Each descriptor is also JSON-serialisable:
-import json
-
 plan_json = [d.to_dict() for d in pipe.fusion_plan_descriptors]
 print(json.dumps(plan_json, indent=2))
 ```
@@ -342,12 +463,82 @@ print(json.dumps(plan_json, indent=2))
 | `n_warps_saved` | `int`             | Interpolation passes eliminated by this segment                                                                                                                                           |
 | `backend`       | `str \| None`     | Adapter class name (`"KorniaAdapter"`, `"AlbumentationsAdapter"`, `"TorchVisionAdapter"`) for fused/exact/projective segments; `None` for passthrough segments and backend-free pipelines |
 
+## 🏋️ Training Loop
+
+`fuse-augmentations` pipelines are `nn.Module` instances -- construct them once, then call per batch:
+
+```python
+import torch
+import torchvision.transforms.v2 as aug_tv
+from torch.utils.data import DataLoader, Dataset
+from fuse_aug import Compose
+
+
+class ImageDataset(Dataset):
+    def __init__(self, images, labels):
+        self.images = images  # list of (C, H, W) float32 tensors
+        self.labels = labels
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        return self.images[idx], self.labels[idx]
+
+
+# Build pipeline once; it is pickle-safe for multiprocess DataLoader workers
+augment = Compose(
+    [
+        aug_tv.RandomRotation(degrees=15),
+        aug_tv.RandomHorizontalFlip(p=0.5),
+        aug_tv.RandomAffine(degrees=0, scale=(0.8, 1.2)),
+        aug_tv.ColorJitter(brightness=0.2),  # passthrough, not fusible
+    ]
+)
+
+images, labels = ...  # your dataset tensors
+model = ...  # your nn.Module
+optimizer = ...  # your optimizer
+
+loader = DataLoader(
+    ImageDataset(images, labels), batch_size=32, shuffle=True, num_workers=4
+)
+
+for batch_images, batch_labels in loader:
+    augmented = augment(
+        batch_images
+    )  # fused: 1 warp instead of 3 for the geometric chain
+    loss = model(augmented, batch_labels)
+    loss.backward()
+    optimizer.step()
+```
+
+For segmentation and detection tasks, pass `data_keys` to keep auxiliary targets in sync:
+
+```python
+import albumentations as aug_a
+from fuse_aug import Compose
+
+loader = ...  # your DataLoader yielding (imgs, masks, boxes, labels)
+
+augment = Compose(
+    [aug_a.Rotate(limit=15, p=0.8), aug_a.HorizontalFlip(p=0.5)],
+    data_keys=["input", "mask", "bbox_xyxy"],
+)
+
+for imgs, masks, boxes, labels in loader:
+    imgs_out, masks_out, boxes_out = augment(imgs, masks, boxes)
+```
+
+Pipelines survive `pickle` round-trips, so they work transparently with `torch.nn.DataParallel` and multiprocess `DataLoader` workers (the index-keyed adapter map is preserved across deserialisation).
+
 ## ⚠️ Limitations
 
 - **Pixel-wise ops** (ColorJitter, Normalize) are not yet fusible -- they are single-pixel operations and currently act as passthrough.
 - **Spatial-kernel ops** (GaussianBlur, Sharpen) act as fusion barriers; transforms on either side of a barrier form separate segments. These are not yet fusible.
 - **Padding mode** is segment-level: all transforms in a fused run share the same padding mode (the highest-quality setting among them).
 - **Gradients**: image transforms are differentiable; mask sampling (`mode='nearest'`) is not.
+- **`output_backend` with multi-target `data_keys`**: when `data_keys` contains more than one entry the pipeline returns a tuple, and `output_backend` conversion is NOT applied. Convert manually or set `output_backend=None` in that case.
 
 ## 🤝 Contributing
 

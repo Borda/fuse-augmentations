@@ -32,6 +32,7 @@ Example:
 from __future__ import annotations
 
 import warnings
+from typing import Literal, cast
 
 import numpy as np
 import torch
@@ -511,7 +512,7 @@ def _apply_discrete_exact(
     if TRANSFORM_REGISTRY and ttype is _D4:
         if same_on_batch:
             params = transform.get_params()  # type: ignore[attr-defined]
-            elem = str(params["group_element"])
+            elem = _convert_normalize_d4_elem(params["group_element"])
             return _apply_d4_element(image, elem)
 
         if bsz == 0:
@@ -519,7 +520,7 @@ def _apply_discrete_exact(
         out = image.clone()
         for i in range(bsz):
             params = transform.get_params()  # type: ignore[attr-defined]
-            elem = str(params["group_element"])
+            elem = _convert_normalize_d4_elem(params["group_element"])
             out[i : i + 1] = _apply_d4_element(image[i : i + 1], elem)
         return out
 
@@ -604,7 +605,19 @@ def _d4_matrix(
     return out
 
 
-def _apply_d4_element(image: torch.Tensor, elem: str) -> torch.Tensor:
+_D4Elem = Literal["e", "r90", "r180", "r270", "h", "v", "t", "hvt"]
+
+
+def _convert_normalize_d4_elem(elem: object) -> _D4Elem:
+    """Validate and narrow a dynamic D4 group element to the literal type."""
+    elem_str = str(elem)
+    if elem_str not in _D4_ELEM_TO_CODE:
+        msg = f"Unknown D4 group element: {elem_str!r}"
+        raise ValueError(msg)
+    return cast(_D4Elem, elem_str)
+
+
+def _apply_d4_element(image: torch.Tensor, elem: _D4Elem) -> torch.Tensor:
     """Apply a single D4 group element to a (B, C, H, W) tensor.
 
     Args:

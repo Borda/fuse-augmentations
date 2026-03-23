@@ -27,8 +27,15 @@ import torch.nn.functional as F  # noqa: N812
 from numpy.typing import NDArray
 from torch import Tensor, nn
 
-from fuse_augmentations._types import TransformAdapter, TransformCategory
+from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fuse_augmentations._types import InterpolationStr, PaddingModeStr, TransformAdapter, TransformCategory
 from fuse_augmentations.affine._matrix import inv3x3, matmul3x3, normalize_matrix, perspective_grid
+
+__doctest_skip__: list[str] = []
+if not _KORNIA_AVAILABLE:
+    __doctest_skip__ += [".", "ExactAffineSegment"]
+if not _ALBUMENTATIONS_AVAILABLE:
+    __doctest_skip__ += ["AlbuFusedAffineSegment"]
 
 
 def _shares_randomness_across_batch(adapter: TransformAdapter, transform: object) -> bool:
@@ -210,8 +217,8 @@ class FusedAffineSegment(nn.Module):
         self,
         transforms: list[object],
         adapter: TransformAdapter,
-        interpolation: str | None = None,
-        padding_mode: str | None = None,
+        interpolation: InterpolationStr | None = None,
+        padding_mode: PaddingModeStr | None = None,
     ) -> None:
         super().__init__()
         self.transforms = transforms
@@ -430,8 +437,8 @@ class AlbuFusedAffineSegment(nn.Module):
         self,
         transforms: list[object],
         adapter: TransformAdapter,
-        interpolation: str | None = None,
-        padding_mode: str | None = None,
+        interpolation: InterpolationStr | None = None,
+        padding_mode: PaddingModeStr | None = None,
     ) -> None:
         super().__init__()
         self.transforms = transforms
@@ -579,8 +586,8 @@ class ProjectiveSegment(nn.Module):
         self,
         transforms: list[object],
         adapter: TransformAdapter,
-        interpolation: str | None = None,
-        padding_mode: str | None = None,
+        interpolation: InterpolationStr | None = None,
+        padding_mode: PaddingModeStr | None = None,
     ) -> None:
         super().__init__()
         self.transforms = transforms
@@ -749,8 +756,8 @@ class AlbuProjectiveSegment(nn.Module):
         self,
         transforms: list[object],
         adapter: TransformAdapter,
-        interpolation: str | None = None,
-        padding_mode: str | None = None,
+        interpolation: InterpolationStr | None = None,
+        padding_mode: PaddingModeStr | None = None,
     ) -> None:
         super().__init__()
         if _cv2 is None:
@@ -992,8 +999,8 @@ def reorder_aggressive(
 def build_segments(
     transforms: list[object],
     adapter: TransformAdapter,
-    interpolation: str | None = None,
-    padding_mode: str | None = None,
+    interpolation: InterpolationStr | None = None,
+    padding_mode: PaddingModeStr | None = None,
     *,
     use_numpy: bool = False,
 ) -> list[object]:

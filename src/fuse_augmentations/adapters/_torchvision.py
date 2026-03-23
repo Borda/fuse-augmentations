@@ -166,9 +166,8 @@ class TorchVisionAdapter:
     ) -> dict[str, torch.Tensor]:
         """Sample random parameters for a batch of B images.
 
-        TorchVision v1 samples one parameter set per image, while TorchVision
-        v2 samples one parameter set per input tensor. For batched v2 inputs,
-        the returned tensors therefore have shape ``(1,)`` and are expanded
+        TorchVision v1 samples one parameter set per image, while TorchVision v2 samples one parameter set per
+        input tensor. For batched v2 inputs, the returned tensors therefore have shape ``(1,)`` and are expanded
         later by the fused segment.
 
         Flip transforms return a ``{"_batch_size": tensor([B])}`` sentinel.

@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from types import MappingProxyType
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import torch
 from torch import Tensor
@@ -76,6 +76,20 @@ class PaddingMode(IntEnum):
     ZEROS = 0
     BORDER = 1
     REFLECTION = 2
+
+
+#: String literal type for the ``interpolation`` parameter accepted by pipeline
+#: constructors and segment classes. Maps to ``torch.nn.functional.grid_sample``
+#: ``mode`` values; ordered by quality (bicubic > bilinear > nearest).
+InterpolationStr = Literal["bilinear", "nearest", "bicubic"]
+
+#: String literal type for the ``padding_mode`` parameter accepted by pipeline
+#: constructors and segment classes. Maps to ``torch.nn.functional.grid_sample``
+#: ``padding_mode`` values; ordered by quality (reflection > border > zeros).
+PaddingModeStr = Literal["zeros", "border", "reflection"]
+
+#: String literal type for the ``kind`` field of :class:`SegmentDescriptor`.
+SegmentKind = Literal["fused", "exact", "projective", "passthrough"]
 
 
 @runtime_checkable
@@ -424,7 +438,7 @@ class SegmentDescriptor:
 
     """
 
-    kind: str
+    kind: SegmentKind
     transforms: tuple[str, ...]
     n_warps_saved: int
     backend: str | None = None

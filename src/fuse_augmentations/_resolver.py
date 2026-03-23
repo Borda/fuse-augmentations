@@ -22,6 +22,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import cache
+from typing import Literal
+
+from fuse_augmentations._compat import _TORCHVISION_AVAILABLE
+
+if not _TORCHVISION_AVAILABLE:
+    __doctest_skip__ = ["resolve_op"]
 
 SUPPORTED_OPS: frozenset[str] = frozenset({
     "rotation",
@@ -53,6 +59,24 @@ SUPPORTED_BACKENDS: frozenset[str] = frozenset({
     "torchvision",
     "albumentations",
 })
+
+#: String literal type for canonical op names accepted by :func:`translate_params`
+#: and :func:`resolve_op`.
+OpStr = Literal[
+    "rotation",
+    "affine",
+    "shear",
+    "translate",
+    "hflip",
+    "vflip",
+    "scale",
+    "perspective",
+    "rotation90",
+]
+
+#: String literal type for backend names accepted by :func:`translate_params`
+#: and :func:`resolve_op`.
+BackendStr = Literal["kornia", "torchvision", "albumentations"]
 
 
 @cache
@@ -139,7 +163,7 @@ _BACKEND_REGISTRY_BUILDERS: dict[str, Callable[[], dict[str, type]]] = {
 }
 
 
-def translate_params(op: str, backend: str, params: dict[str, object]) -> dict[str, object]:
+def translate_params(op: OpStr, backend: BackendStr, params: dict[str, object]) -> dict[str, object]:
     """Translate canonical ``TransformSpec.params`` into backend ctor kwargs.
 
     Args:
@@ -212,7 +236,7 @@ def translate_params(op: str, backend: str, params: dict[str, object]) -> dict[s
     return kwargs
 
 
-def resolve_op(op: str, backend: str) -> type:
+def resolve_op(op: OpStr, backend: BackendStr) -> type:
     """Resolve a canonical operation name to its backend transform class.
 
     Args:
@@ -230,8 +254,8 @@ def resolve_op(op: str, backend: str) -> type:
             support the requested operation.
 
     Example:
-        >>> resolve_op("hflip", "torchvision")  # doctest: +SKIP
-        <class 'torchvision.transforms.v2.RandomHorizontalFlip'>
+        >>> resolve_op("hflip", "torchvision").__name__
+        'RandomHorizontalFlip'
 
     """
     if backend not in SUPPORTED_BACKENDS:

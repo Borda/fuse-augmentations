@@ -30,13 +30,16 @@ import contextlib
 import math
 import warnings
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import torch
 from torch import nn
 
 from fuse_augmentations._backend import Backend, detect_backends_per_transform
+from fuse_augmentations._compat import _KORNIA_AVAILABLE
 from fuse_augmentations._types import (
+    InterpolationStr,
+    PaddingModeStr,
     ReorderPolicy,
     SegmentDescriptor,
     TransformAdapter,
@@ -64,9 +67,14 @@ from fuse_augmentations.affine._segment import (
     reorder_pointwise,
 )
 
+if not _KORNIA_AVAILABLE:
+    __doctest_skip__ = ["FusedCompose.from_config"]
+
 if TYPE_CHECKING:
     from numpy.typing import NDArray
     from torch import Tensor
+
+    from fuse_augmentations._resolver import BackendStr, OpStr
 
 _KNOWN_DATA_KEYS = {"input", "mask", "bbox_xyxy", "bbox_xywh", "keypoints"}
 
@@ -139,8 +147,8 @@ class FusedCompose(nn.Module):
         self,
         transforms: list[object],
         reorder: ReorderPolicy = ReorderPolicy.NONE,
-        interpolation: str | None = None,
-        padding_mode: str | None = None,
+        interpolation: InterpolationStr | None = None,
+        padding_mode: PaddingModeStr | None = None,
         data_keys: list[str] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
         **backend_kwargs: object,
@@ -209,8 +217,8 @@ class FusedCompose(nn.Module):
         self,
         transforms: list[object],
         reorder: ReorderPolicy,
-        interpolation: str | None,
-        padding_mode: str | None,
+        interpolation: InterpolationStr | None,
+        padding_mode: PaddingModeStr | None,
         data_keys: list[str] | None,
         adapter: TransformAdapter | None,
         segments: list[object],
@@ -224,8 +232,8 @@ class FusedCompose(nn.Module):
         """
         self.original_transforms: list[object] = list(transforms)
         self.reorder: ReorderPolicy = reorder
-        self.interpolation: str | None = interpolation
-        self.padding_mode: str | None = padding_mode
+        self.interpolation: InterpolationStr | None = interpolation
+        self.padding_mode: PaddingModeStr | None = padding_mode
         self.data_keys: list[str] | None = data_keys
         self._adapter: TransformAdapter | None = adapter
         self._segments: list[object] = _wrap_passthrough_segments(
@@ -637,9 +645,9 @@ class FusedCompose(nn.Module):
     def from_config(
         cls,
         specs: list[TransformSpec],
-        backend: str,
-        interpolation: str = "bilinear",
-        padding_mode: str = "zeros",
+        backend: BackendStr,
+        interpolation: InterpolationStr = "bilinear",
+        padding_mode: PaddingModeStr = "zeros",
         reorder: ReorderPolicy = ReorderPolicy.POINTWISE,
         data_keys: list[str] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
@@ -676,12 +684,12 @@ class FusedCompose(nn.Module):
             >>> from fuse_augmentations._compose import FusedCompose
             >>> from fuse_augmentations._types import TransformSpec
             >>> spec = TransformSpec(op="hflip", params={}, p=0.5)
-            >>> pipe = FusedCompose.from_config([spec], backend="kornia")  # doctest: +SKIP
-            >>> pipe(torch.zeros(1, 3, 8, 8)).shape  # doctest: +SKIP
+            >>> pipe = FusedCompose.from_config([spec], backend="kornia")
+            >>> pipe(torch.zeros(1, 3, 8, 8)).shape
             torch.Size([1, 3, 8, 8])
 
         """
-        from fuse_augmentations._resolver import SUPPORTED_BACKENDS, resolve_op, translate_params
+        from fuse_augmentations._resolver import SUPPORTED_BACKENDS, SUPPORTED_OPS, resolve_op, translate_params
 
         if backend not in SUPPORTED_BACKENDS:
             msg = f"unknown backend {backend!r}; supported: {sorted(SUPPORTED_BACKENDS)}"
@@ -702,8 +710,12 @@ class FusedCompose(nn.Module):
             if "p" in spec.params:
                 msg = f"TransformSpec.params must not include 'p'; use TransformSpec.p for op {spec.op!r} instead."
                 raise ValueError(msg)
-            tfm_cls = resolve_op(spec.op, backend)
-            kwargs = translate_params(spec.op, backend, dict(spec.params))
+            if spec.op not in SUPPORTED_OPS:
+                msg = f"unknown op {spec.op!r}; supported: {sorted(SUPPORTED_OPS)}"
+                raise ValueError(msg)
+            op_name = cast("OpStr", spec.op)
+            tfm_cls = resolve_op(op_name, backend)
+            kwargs = translate_params(op_name, backend, dict(spec.params))
             # Most backends accept p= for per-transform probability.
             # Some (e.g. TorchVision rotation) don't; pass it and let
             # the backend ignore it via **kwargs or TypeError fallback.
@@ -759,8 +771,8 @@ class FusedCompose(nn.Module):
         vflip_p: float = 0.0,
         brightness: float | None = None,
         contrast: float | None = None,
-        interpolation: str = "bilinear",
-        padding_mode: str = "zeros",
+        interpolation: InterpolationStr = "bilinear",
+        padding_mode: PaddingModeStr = "zeros",
         reorder: ReorderPolicy = ReorderPolicy.POINTWISE,
         data_keys: list[str] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
@@ -947,8 +959,8 @@ class FusedCompose(nn.Module):
     def _from_param_specs(
         cls,
         specs: list[TransformSpec],
-        interpolation: str,
-        padding_mode: str,
+        interpolation: InterpolationStr,
+        padding_mode: PaddingModeStr,
         reorder: ReorderPolicy,
         data_keys: list[str] | None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
@@ -1087,8 +1099,8 @@ def _build_mixed_segments(
     transforms: list[object],
     per_backends: list[Backend | None],
     reorder: ReorderPolicy,
-    interpolation: str | None,
-    padding_mode: str | None,
+    interpolation: InterpolationStr | None,
+    padding_mode: PaddingModeStr | None,
 ) -> tuple[TransformAdapter, list[object], dict[int, TransformAdapter]]:
     """Build segments for a mixed-backend pipeline.
 
