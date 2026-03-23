@@ -49,9 +49,11 @@ _VFLIP_TYPES: set[type] = set()
 _ROTATION_TYPES: set[type] = set()
 _AFFINE_TYPES: set[type] = set()
 _PERSPECTIVE_TYPES: set[type] = set()
+_COLOR_JITTER_TYPES: set[type] = set()
 
 # v1: torchvision.transforms
 try:
+    from torchvision.transforms import ColorJitter as _V1ColorJitter
     from torchvision.transforms import RandomAffine as _V1RandomAffine
     from torchvision.transforms import RandomHorizontalFlip as _V1RandomHorizontalFlip
     from torchvision.transforms import RandomPerspective as _V1RandomPerspective
@@ -63,17 +65,20 @@ try:
     _TRANSFORM_REGISTRY[_V1RandomHorizontalFlip] = TransformCategory.GEOMETRIC_EXACT
     _TRANSFORM_REGISTRY[_V1RandomVerticalFlip] = TransformCategory.GEOMETRIC_EXACT
     _TRANSFORM_REGISTRY[_V1RandomPerspective] = TransformCategory.PROJECTIVE
+    _TRANSFORM_REGISTRY[_V1ColorJitter] = TransformCategory.POINTWISE_LINEAR
 
     _HFLIP_TYPES.add(_V1RandomHorizontalFlip)
     _VFLIP_TYPES.add(_V1RandomVerticalFlip)
     _ROTATION_TYPES.add(_V1RandomRotation)
     _AFFINE_TYPES.add(_V1RandomAffine)
     _PERSPECTIVE_TYPES.add(_V1RandomPerspective)
+    _COLOR_JITTER_TYPES.add(_V1ColorJitter)
 except ImportError:
     pass
 
 # v2: torchvision.transforms.v2
 try:
+    from torchvision.transforms.v2 import ColorJitter as _V2ColorJitter
     from torchvision.transforms.v2 import RandomAffine as _V2RandomAffine
     from torchvision.transforms.v2 import RandomHorizontalFlip as _V2RandomHorizontalFlip
     from torchvision.transforms.v2 import RandomPerspective as _V2RandomPerspective
@@ -85,12 +90,14 @@ try:
     _TRANSFORM_REGISTRY[_V2RandomHorizontalFlip] = TransformCategory.GEOMETRIC_EXACT
     _TRANSFORM_REGISTRY[_V2RandomVerticalFlip] = TransformCategory.GEOMETRIC_EXACT
     _TRANSFORM_REGISTRY[_V2RandomPerspective] = TransformCategory.PROJECTIVE
+    _TRANSFORM_REGISTRY[_V2ColorJitter] = TransformCategory.POINTWISE_LINEAR
 
     _HFLIP_TYPES.add(_V2RandomHorizontalFlip)
     _VFLIP_TYPES.add(_V2RandomVerticalFlip)
     _ROTATION_TYPES.add(_V2RandomRotation)
     _AFFINE_TYPES.add(_V2RandomAffine)
     _PERSPECTIVE_TYPES.add(_V2RandomPerspective)
+    _COLOR_JITTER_TYPES.add(_V2ColorJitter)
 except ImportError:
     pass
 
@@ -100,6 +107,7 @@ _VFLIP_TYPES_FS: frozenset[type] = frozenset(_VFLIP_TYPES)
 _ROTATION_TYPES_FS: frozenset[type] = frozenset(_ROTATION_TYPES)
 _AFFINE_TYPES_FS: frozenset[type] = frozenset(_AFFINE_TYPES)
 _PERSPECTIVE_TYPES_FS: frozenset[type] = frozenset(_PERSPECTIVE_TYPES)
+_COLOR_JITTER_TYPES_FS: frozenset[type] = frozenset(_COLOR_JITTER_TYPES)
 
 
 def _check_expand(transform: object) -> None:
@@ -223,6 +231,10 @@ class TorchVisionAdapter:
             end_t = torch.tensor(ends, dtype=torch.float32, device=device)
             return {"start_points": start_t.clone(), "end_points": end_t.clone()}
 
+        # ColorJitter
+        if isinstance(transform, tuple(_COLOR_JITTER_TYPES_FS)):
+            return _sample_color_jitter_params(transform, B, device, _is_torchvision_v2_transform(transform))
+
         # Unknown -- return empty
         return {}
 
@@ -324,6 +336,52 @@ class TorchVisionAdapter:
         return _is_torchvision_v2_transform(transform) or bool(getattr(transform, "same_on_batch", False))
 
     @staticmethod
+    def build_color_matrix(
+        transform: object,
+        params: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Build a ``(B, 4, 4)`` homogeneous color-space affine matrix.
+
+        Maps the linear color transform ``c' = M @ c + b`` to the 4x4
+        homogeneous form ``[[M, b], [0^T, 1]]``.
+
+        Supported transforms:
+
+        - ``ColorJitter``: composes brightness (multiplicative ``bf * c``)
+          and contrast (midpoint-0.5 approximation ``cf * c + (1-cf)*0.5``)
+          in the sampled ``order``. Saturation and hue are treated as identity.
+
+        Args:
+            transform: A TorchVision color transform instance.
+            params: Parameter dict from ``sample_params()``.
+
+        Returns:
+            ``(B, 4, 4)`` homogeneous color-space affine matrix.
+
+        Raises:
+            NotImplementedError: If the transform type is not supported.
+
+        """
+        if isinstance(transform, tuple(_COLOR_JITTER_TYPES_FS)):
+            # Saturation and hue are not exactly representable as 4x4 linear.
+            # Fall back to passthrough for ColorJitter instances that use them.
+            sat = getattr(transform, "saturation", None)
+            hue = getattr(transform, "hue", None)
+            _has_sat = sat is not None and sat not in (0.0, (1.0, 1.0))
+            _has_hue = hue is not None and hue not in (0.0, (0.0, 0.0))
+            if _has_sat or _has_hue:
+                msg = (
+                    "ColorJitter with non-trivial saturation or hue is not "
+                    "exactly representable as a 4x4 linear color matrix; "
+                    "use brightness/contrast only for FusedColorSegment support."
+                )
+                raise NotImplementedError(msg)
+            return _build_color_jitter_matrix(params)
+
+        msg = f"build_color_matrix not supported for {type(transform).__name__!r}"
+        raise NotImplementedError(msg)
+
+    @staticmethod
     def call_nonfused(
         transform: object,
         image: torch.Tensor,
@@ -367,25 +425,6 @@ class TorchVisionAdapter:
             results.append(out)
 
         return torch.stack(results).to(device=device, dtype=dtype)
-
-    @staticmethod
-    def build_color_matrix(
-        transform: object,
-        params: dict[str, torch.Tensor],
-    ) -> torch.Tensor:
-        """Build a (B, 4, 4) homogeneous color-space affine matrix from sampled params.
-
-        .. note::
-            Not yet implemented for TorchVisionAdapter. Will be added in a
-            future release when ``FusedColorSegment`` gains TorchVision
-            backend support.
-
-        Raises:
-            NotImplementedError: Always -- TorchVision colour-space matrix
-                fusion is not yet supported.
-
-        """
-        raise NotImplementedError("TorchVisionAdapter does not yet implement build_color_matrix")
 
 
 # ---------------------------------------------------------------------------
@@ -528,3 +567,114 @@ def _build_affine_matrix(
     row1 = torch.stack([c, d, cy * (1 - d) - cx * c + ty], dim=-1)
     row2 = torch.stack([zeros, zeros, ones], dim=-1)
     return torch.stack([row0, row1, row2], dim=-2)
+
+
+# ---------------------------------------------------------------------------
+# Color matrix helpers
+# ---------------------------------------------------------------------------
+
+_MIDPOINT = 0.5  # Fixed midpoint for contrast approximation
+
+
+def _sample_color_jitter_params(
+    transform: object,
+    B: int,  # noqa: N803
+    device: torch.device,
+    shared_across_batch: bool = False,
+) -> dict[str, torch.Tensor]:
+    """Sample parameters for ``ColorJitter`` and return as canonical dict.
+
+    Calls ``get_params()`` to obtain brightness, contrast, saturation, hue
+    factors and the application order. Only brightness and contrast factors
+    are used for the 4x4 matrix; saturation and hue are stored for
+    completeness.
+
+    Args:
+        transform: A TorchVision ``ColorJitter`` instance.
+        B: Batch size.
+        device: Target device for returned tensors.
+        shared_across_batch: Whether to sample a single parameter set for the
+            entire batch (v2 behaviour).
+
+    Returns:
+        Dict with keys ``brightness_factor``, ``contrast_factor``, and ``order``.
+
+    """
+    t = transform
+    sample_count = 1 if shared_across_batch else B
+    bf_list: list[float] = []
+    cf_list: list[float] = []
+    order_tensor: torch.Tensor | None = None
+
+    for _ in range(sample_count):
+        fn_idx, bf, cf, _sf, _hf = type(t).get_params(  # type: ignore[attr-defined]
+            t.brightness,  # type: ignore[attr-defined]
+            t.contrast,  # type: ignore[attr-defined]
+            t.saturation,  # type: ignore[attr-defined]
+            t.hue,  # type: ignore[attr-defined]
+        )
+        bf_list.append(float(bf) if bf is not None else 1.0)
+        cf_list.append(float(cf) if cf is not None else 1.0)
+        if order_tensor is None:
+            order_tensor = fn_idx.to(device=device, dtype=torch.int64)
+
+    return {
+        "brightness_factor": torch.tensor(bf_list, dtype=torch.float32, device=device),
+        "contrast_factor": torch.tensor(cf_list, dtype=torch.float32, device=device),
+        "order": order_tensor if order_tensor is not None else torch.arange(4, device=device, dtype=torch.int64),
+    }
+
+
+def _make_eye4(B: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:  # noqa: N803
+    """Return ``(B, 4, 4)`` identity matrices."""
+    return torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
+
+
+def _build_color_jitter_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:
+    """Build ``(B, 4, 4)`` homogeneous matrix for TorchVision ColorJitter.
+
+    Composes brightness (multiplicative: ``bf * c``) and contrast (midpoint-0.5
+    approximation: ``cf * c + (1-cf)*0.5``) in the sampled ``order``.
+    Saturation and hue steps are treated as identity.
+
+    Args:
+        params: Parameter dict containing ``brightness_factor``, ``contrast_factor``,
+            and ``order`` tensors.
+
+    Returns:
+        ``(B, 4, 4)`` homogeneous color-space affine matrix.
+
+    """
+    bf = params["brightness_factor"]  # (B,)
+    cf = params["contrast_factor"]  # (B,)
+    order = params["order"]  # (N_ops,) — typically (4,)
+    B = bf.shape[0]  # noqa: N806
+    device = bf.device
+    dtype = bf.dtype
+
+    acc = _make_eye4(B, device, dtype)
+
+    for idx_t in order.tolist():
+        idx = int(idx_t)
+        if idx == 0:
+            # Brightness: multiplicative c' = bf * c
+            step = _make_eye4(B, device, dtype)
+            step[:, 0, 0] = bf
+            step[:, 1, 1] = bf
+            step[:, 2, 2] = bf
+        elif idx == 1:
+            # Contrast: midpoint approximation c' = cf * c + (1-cf)*0.5
+            step = _make_eye4(B, device, dtype)
+            step[:, 0, 0] = cf
+            step[:, 1, 1] = cf
+            step[:, 2, 2] = cf
+            bias = (1.0 - cf) * _MIDPOINT
+            step[:, 0, 3] = bias
+            step[:, 1, 3] = bias
+            step[:, 2, 3] = bias
+        else:
+            # Saturation (idx=2) and hue (idx=3) treated as identity
+            continue
+        acc = torch.bmm(step, acc)
+
+    return acc

@@ -35,7 +35,10 @@ from fuse_augmentations.affine._matrix import (
 # ---------------------------------------------------------------------------
 
 try:
+    from kornia.augmentation import ColorJitter as _ColorJitter
     from kornia.augmentation import RandomAffine as _RandomAffine
+    from kornia.augmentation import RandomBrightness as _RandomBrightness
+    from kornia.augmentation import RandomContrast as _RandomContrast
     from kornia.augmentation import RandomHorizontalFlip as _RandomHorizontalFlip
     from kornia.augmentation import RandomPerspective as _RandomPerspective
     from kornia.augmentation import RandomRotation as _RandomRotation
@@ -53,9 +56,15 @@ try:
         _RandomVerticalFlip: TransformCategory.GEOMETRIC_EXACT,
         _RandomRotation90: TransformCategory.GEOMETRIC_EXACT,
         _RandomPerspective: TransformCategory.PROJECTIVE,
+        _RandomBrightness: TransformCategory.POINTWISE_LINEAR,
+        _RandomContrast: TransformCategory.POINTWISE_LINEAR,
+        _ColorJitter: TransformCategory.POINTWISE_LINEAR,
     }
+
+    _COLOR_TYPES: frozenset[type] = frozenset({_RandomBrightness, _RandomContrast, _ColorJitter})
 except ImportError:
     TRANSFORM_REGISTRY = {}
+    _COLOR_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
 
 
 class KorniaAdapter:
@@ -193,6 +202,31 @@ class KorniaAdapter:
             return {
                 "start_points": params["start_points"].to(device=device),
                 "end_points": params["end_points"].to(device=device),
+            }
+
+        # --- Color transforms (POINTWISE_LINEAR) ---
+
+        if TRANSFORM_REGISTRY and ttype is _RandomBrightness:
+            # Kornia: c' = c + (brightness_factor - 1)  (additive brightness)
+            return {
+                "brightness_factor": params["brightness_factor"].to(device=device),
+            }
+
+        if TRANSFORM_REGISTRY and ttype is _RandomContrast:
+            # Kornia: c' = contrast_factor * c  (multiplicative contrast)
+            return {
+                "contrast_factor": params["contrast_factor"].to(device=device),
+            }
+
+        if TRANSFORM_REGISTRY and ttype is _ColorJitter:
+            # ColorJitter applies brightness, contrast, saturation, hue in random order.
+            # Brightness: c' = brightness_factor * c  (multiplicative)
+            # Contrast: c' = contrast_factor * c + mean * (1 - contrast_factor) (data-dependent)
+            # We extract all factors; build_color_matrix handles the linear approximation.
+            return {
+                "brightness_factor": params["brightness_factor"].to(device=device),
+                "contrast_factor": params["contrast_factor"].to(device=device),
+                "order": params["order"].to(device=device),
             }
 
         # Unknown - return empty
@@ -409,6 +443,56 @@ class KorniaAdapter:
         raise TypeError(msg)
 
     @staticmethod
+    def build_color_matrix(
+        transform: object,
+        params: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Build a ``(B, 4, 4)`` homogeneous color-space affine matrix.
+
+        Maps the linear color transform ``c' = M @ c + b`` to the 4x4
+        homogeneous form ``[[M, b], [0^T, 1]]``.
+
+        Supported transforms:
+
+        - ``RandomBrightness``: additive brightness ``c' = c + beta``
+          where ``beta = brightness_factor - 1``.
+          Matrix: ``M = I₃``, ``b = (beta, beta, beta)``.
+        - ``RandomContrast``: multiplicative contrast ``c' = alpha * c``
+          where ``alpha = contrast_factor``.
+          Matrix: ``M = alpha * I₃``, ``b = 0``.
+        - ``ColorJitter``: composes brightness (multiplicative) and contrast
+          (approximated with midpoint 0.5) in the sampled ``order``.
+          Brightness: ``M = bf * I₃``, ``b = 0``.
+          Contrast: ``M = cf * I₃``, ``b = (1-cf) * 0.5``.
+
+        Args:
+            transform: A Kornia color augmentation transform.
+            params: Parameter dict from ``sample_params()``.
+
+        Returns:
+            ``(B, 4, 4)`` homogeneous color-space affine matrix.
+
+        Raises:
+            NotImplementedError: If the transform type is not supported.
+
+        """
+        ttype = type(transform)
+
+        if TRANSFORM_REGISTRY and ttype is _RandomBrightness:
+            bf = params["brightness_factor"]  # (B,)
+            return _brightness_additive_matrix(bf)
+
+        if TRANSFORM_REGISTRY and ttype is _RandomContrast:
+            cf = params["contrast_factor"]  # (B,)
+            return _contrast_multiplicative_matrix(cf)
+
+        if TRANSFORM_REGISTRY and ttype is _ColorJitter:
+            return _color_jitter_matrix(params)
+
+        msg = f"build_color_matrix not supported for {ttype.__name__!r}"
+        raise NotImplementedError(msg)
+
+    @staticmethod
     def call_nonfused(
         transform: object,
         image: torch.Tensor,
@@ -427,20 +511,113 @@ class KorniaAdapter:
         """
         return transform(image)  # type: ignore[operator, no-any-return]
 
-    @staticmethod
-    def build_color_matrix(
-        transform: object,
-        params: dict[str, torch.Tensor],
-    ) -> torch.Tensor:
-        """Build a (B, 4, 4) homogeneous color-space affine matrix from sampled params.
 
-        .. note::
-            Not yet implemented for KorniaAdapter. Will be added in a future
-            release when ``FusedColorSegment`` gains Kornia backend support.
+# ---------------------------------------------------------------------------
+# Private helpers -- color matrix construction
+# ---------------------------------------------------------------------------
 
-        Raises:
-            NotImplementedError: Always -- Kornia colour-space matrix fusion
-                is not yet supported.
+_MIDPOINT = 0.5  # Fixed midpoint for contrast approximation in ColorJitter
 
-        """
-        raise NotImplementedError("KorniaAdapter does not yet implement build_color_matrix")
+
+def _make_eye4(B: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:  # noqa: N803
+    """Return (B, 4, 4) identity matrices."""
+    return torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
+
+
+def _brightness_additive_matrix(brightness_factor: torch.Tensor) -> torch.Tensor:
+    """Build (B, 4, 4) for Kornia RandomBrightness: ``c' = c + (bf - 1)``.
+
+    M = I₃, b = (beta, beta, beta) where beta = brightness_factor - 1.
+
+    Args:
+        brightness_factor: ``(B,)`` brightness factor tensor.
+
+    Returns:
+        ``(B, 4, 4)`` homogeneous color-space affine matrix.
+
+    """
+    B = brightness_factor.shape[0]  # noqa: N806
+    device = brightness_factor.device
+    dtype = brightness_factor.dtype
+    A = _make_eye4(B, device, dtype)
+    beta = brightness_factor - 1.0  # (B,)
+    A[:, 0, 3] = beta
+    A[:, 1, 3] = beta
+    A[:, 2, 3] = beta
+    return A
+
+
+def _contrast_multiplicative_matrix(contrast_factor: torch.Tensor) -> torch.Tensor:
+    """Build (B, 4, 4) for Kornia RandomContrast: ``c' = cf * c``.
+
+    M = cf * I₃, b = 0.
+
+    Args:
+        contrast_factor: ``(B,)`` contrast factor tensor.
+
+    Returns:
+        ``(B, 4, 4)`` homogeneous color-space affine matrix.
+
+    """
+    B = contrast_factor.shape[0]  # noqa: N806
+    device = contrast_factor.device
+    dtype = contrast_factor.dtype
+    A = _make_eye4(B, device, dtype)
+    A[:, 0, 0] = contrast_factor
+    A[:, 1, 1] = contrast_factor
+    A[:, 2, 2] = contrast_factor
+    return A
+
+
+def _color_jitter_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:
+    """Build (B, 4, 4) for Kornia ColorJitter (brightness + contrast).
+
+    ColorJitter applies sub-transforms in a random ``order``. This function
+    composes brightness (multiplicative: ``bf * c``) and contrast (linear
+    approximation around midpoint 0.5: ``cf * c + (1-cf) * 0.5``) in the
+    sampled order. Saturation and hue steps are treated as identity.
+
+    Args:
+        params: Parameter dict containing ``brightness_factor``, ``contrast_factor``,
+            and ``order`` tensors.
+
+    Returns:
+        ``(B, 4, 4)`` homogeneous color-space affine matrix.
+
+    """
+    bf = params["brightness_factor"]  # (B,)
+    cf = params["contrast_factor"]  # (B,)
+    order = params["order"]  # (N_ops,) -- typically (4,) for [b, c, s, h]
+    B = bf.shape[0]  # noqa: N806
+    device = bf.device
+    dtype = bf.dtype
+
+    # Start with identity
+    acc = _make_eye4(B, device, dtype)
+
+    # Apply in sampled order; index 0=brightness, 1=contrast, 2=saturation, 3=hue
+    for idx_t in order.tolist():
+        idx = int(idx_t)
+        if idx == 0:
+            # Brightness (multiplicative in ColorJitter): c' = bf * c
+            step = _make_eye4(B, device, dtype)
+            step[:, 0, 0] = bf
+            step[:, 1, 1] = bf
+            step[:, 2, 2] = bf
+        elif idx == 1:
+            # Contrast (midpoint approximation): c' = cf * c + (1-cf)*midpoint
+            step = _make_eye4(B, device, dtype)
+            step[:, 0, 0] = cf
+            step[:, 1, 1] = cf
+            step[:, 2, 2] = cf
+            bias = (1.0 - cf) * _MIDPOINT
+            step[:, 0, 3] = bias
+            step[:, 1, 3] = bias
+            step[:, 2, 3] = bias
+        else:
+            # Saturation (idx=2) and hue (idx=3) treated as identity
+            continue
+        # Compose: acc = step @ acc (step applied after current accumulation)
+        acc = torch.bmm(step, acc)
+
+    return acc

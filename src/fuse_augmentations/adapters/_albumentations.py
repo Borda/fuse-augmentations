@@ -113,6 +113,7 @@ try:
     from albumentations import Affine as _Affine
     from albumentations import HorizontalFlip as _HorizontalFlip
     from albumentations import Perspective as _Perspective
+    from albumentations import RandomBrightnessContrast as _RandomBrightnessContrast
     from albumentations import RandomRotate90 as _RandomRotate90
     from albumentations import Rotate as _Rotate
     from albumentations import SafeRotate as _SafeRotate
@@ -131,6 +132,7 @@ try:
         _D4: TransformCategory.GEOMETRIC_EXACT,
         _Transpose: TransformCategory.GEOMETRIC_EXACT,
         _Perspective: TransformCategory.PROJECTIVE,
+        _RandomBrightnessContrast: TransformCategory.POINTWISE_LINEAR,
     }
 
     # Canonical base classes for fast isinstance dispatch in the adapter paths below.
@@ -141,6 +143,7 @@ try:
     _VFLIP_TYPES: frozenset[type] = frozenset({_VerticalFlip})
     _EXACT_DISCRETE_TYPES: frozenset[type] = frozenset({_RandomRotate90, _D4, _Transpose})
     _INTERP_TYPES: frozenset[type] = frozenset({_Affine, _Rotate, _SafeRotate, _ShiftScaleRotate})
+    _COLOR_TYPES: frozenset[type] = frozenset({_RandomBrightnessContrast})
     _ALL_REGISTRY_TYPES: frozenset[type] = frozenset(TRANSFORM_REGISTRY)
 
 except ImportError:
@@ -149,6 +152,7 @@ except ImportError:
     _VFLIP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _EXACT_DISCRETE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _INTERP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _COLOR_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _ALL_REGISTRY_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
 
 
@@ -264,6 +268,10 @@ class AlbumentationsAdapter:
                 return result
 
             return result
+
+        # POINTWISE_LINEAR (color transforms): sample alpha/beta per batch element
+        if _is_albu_instance(transform, _COLOR_TYPES):
+            return _sample_color_params(transform, B, device)
 
         # GEOMETRIC_INTERP: extract the pre-built matrix B times (once per sample)
         if _is_albu_instance(transform, _INTERP_TYPES) or _is_albu_instance(transform, _ALL_REGISTRY_TYPES):
@@ -399,6 +407,38 @@ class AlbumentationsAdapter:
         raise TypeError(msg)
 
     @staticmethod
+    def build_color_matrix(
+        transform: object,
+        params: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Build a ``(B, 4, 4)`` homogeneous color-space affine matrix.
+
+        Maps the linear color transform ``c' = alpha * c + beta`` to the 4x4
+        homogeneous form ``[[M, b], [0^T, 1]]``.
+
+        Supported transforms:
+
+        - ``RandomBrightnessContrast``: ``c' = alpha * c + beta``
+          Matrix: ``M = alpha * I₃``, ``b = (beta, beta, beta)``.
+
+        Args:
+            transform: An Albumentations color transform instance.
+            params: Parameter dict from ``sample_params()``.
+
+        Returns:
+            ``(B, 4, 4)`` homogeneous color-space affine matrix.
+
+        Raises:
+            NotImplementedError: If the transform type is not supported.
+
+        """
+        if _is_albu_instance(transform, _COLOR_TYPES):
+            return _build_brightness_contrast_matrix(params)
+
+        msg = f"build_color_matrix not supported for {type(transform).__name__!r}"
+        raise NotImplementedError(msg)
+
+    @staticmethod
     def call_nonfused(
         transform: object,
         image: torch.Tensor,
@@ -431,25 +471,6 @@ class AlbumentationsAdapter:
             results.append(torch.as_tensor(np.ascontiguousarray(out_np).copy()).permute(2, 0, 1))
 
         return torch.stack(results).to(device=device, dtype=dtype)
-
-    @staticmethod
-    def build_color_matrix(
-        transform: object,
-        params: dict[str, torch.Tensor],
-    ) -> torch.Tensor:
-        """Build a (B, 4, 4) homogeneous color-space affine matrix from sampled params.
-
-        .. note::
-            Not yet implemented for AlbumentationsAdapter. Will be added in a
-            future release when ``FusedColorSegment`` gains Albumentations
-            backend support.
-
-        Raises:
-            NotImplementedError: Always -- Albumentations colour-space matrix
-                fusion is not yet supported.
-
-        """
-        raise NotImplementedError("AlbumentationsAdapter does not yet implement build_color_matrix")
 
 
 # ---------------------------------------------------------------------------
@@ -699,3 +720,72 @@ def _sample_matrices(transform: object, B: int, H: int, W: int) -> NDArray[np.fl
         full = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]
         matrices[i] = full["matrix"]
     return matrices
+
+
+# ---------------------------------------------------------------------------
+# Color matrix helpers
+# ---------------------------------------------------------------------------
+
+
+def _sample_color_params(
+    transform: object,
+    B: int,  # noqa: N803
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    """Sample alpha/beta from ``RandomBrightnessContrast`` for B images.
+
+    Albumentations ``RandomBrightnessContrast.get_params_dependent_on_data``
+    returns ``alpha`` (contrast factor) and ``beta`` (brightness offset)
+    such that ``c' = alpha * c + beta``.
+
+    Args:
+        transform: An Albumentations ``RandomBrightnessContrast`` instance.
+        B: Batch size.
+        device: Target device for returned tensors.
+
+    Returns:
+        Dict with ``"alpha"`` and ``"beta"`` tensors of shape ``(B,)``.
+
+    """
+    dummy = np.zeros((4, 4, 1), dtype=np.float32)
+    data = {"image": dummy}
+    alphas: list[float] = []
+    betas: list[float] = []
+    for _ in range(B):
+        base = transform.get_params()  # type: ignore[attr-defined]
+        base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
+        full = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]
+        alphas.append(float(full["alpha"]))
+        betas.append(float(full["beta"]))
+    return {
+        "alpha": torch.tensor(alphas, dtype=torch.float32, device=device),
+        "beta": torch.tensor(betas, dtype=torch.float32, device=device),
+    }
+
+
+def _build_brightness_contrast_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:
+    """Build ``(B, 4, 4)`` for Albumentations ``RandomBrightnessContrast``.
+
+    The transform applies ``c' = alpha * c + beta`` per channel.
+    Matrix: ``M = alpha * I₃``, ``b = (beta, beta, beta)``.
+
+    Args:
+        params: Dict with ``"alpha"`` (B,) and ``"beta"`` (B,) tensors.
+
+    Returns:
+        ``(B, 4, 4)`` homogeneous color-space affine matrix.
+
+    """
+    alpha = params["alpha"]  # (B,)
+    beta = params["beta"]  # (B,)
+    B = alpha.shape[0]  # noqa: N806
+    device = alpha.device
+    dtype = alpha.dtype
+    A = torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
+    A[:, 0, 0] = alpha
+    A[:, 1, 1] = alpha
+    A[:, 2, 2] = alpha
+    A[:, 0, 3] = beta
+    A[:, 1, 3] = beta
+    A[:, 2, 3] = beta
+    return A

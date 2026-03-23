@@ -32,6 +32,7 @@ _CONSTRUCTOR_KWARGS: dict[str, dict] = {
     "RandomHorizontalFlip": {"p": 1.0},
     "RandomVerticalFlip": {"p": 1.0},
     "RandomPerspective": {"distortion_scale": 0.3, "p": 1.0},
+    "ColorJitter": {"brightness": 0.2},
 }
 
 BSZ, C, H, W = 2, 3, 32, 32
