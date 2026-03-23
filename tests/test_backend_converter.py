@@ -1,4 +1,4 @@
-"""Tests for the BackendConverter protocol (D.1)."""
+"""Tests for the BackendConverter protocol."""
 
 from __future__ import annotations
 

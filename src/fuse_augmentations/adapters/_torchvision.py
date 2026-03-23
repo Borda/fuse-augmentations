@@ -604,7 +604,7 @@ def _sample_color_jitter_params(
     sample_count = 1 if shared_across_batch else B
     bf_list: list[float] = []
     cf_list: list[float] = []
-    order_tensor: torch.Tensor | None = None
+    orders_list: list[torch.Tensor] = []
 
     for _ in range(sample_count):
         fn_idx, bf, cf, _sf, _hf = type(t).get_params(  # type: ignore[attr-defined]
@@ -615,13 +615,14 @@ def _sample_color_jitter_params(
         )
         bf_list.append(float(bf) if bf is not None else 1.0)
         cf_list.append(float(cf) if cf is not None else 1.0)
-        if order_tensor is None:
-            order_tensor = fn_idx.to(device=device, dtype=torch.int64)
+        orders_list.append(fn_idx.to(device=device, dtype=torch.int64))
 
     return {
         "brightness_factor": torch.tensor(bf_list, dtype=torch.float32, device=device),
         "contrast_factor": torch.tensor(cf_list, dtype=torch.float32, device=device),
-        "order": order_tensor if order_tensor is not None else torch.arange(4, device=device, dtype=torch.int64),
+        # shared_across_batch=True  → single order (N_ops,)
+        # shared_across_batch=False → per-sample order (B, N_ops)
+        "order": orders_list[0] if shared_across_batch else torch.stack(orders_list),
     }
 
 
@@ -647,34 +648,60 @@ def _build_color_jitter_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:
     """
     bf = params["brightness_factor"]  # (B,)
     cf = params["contrast_factor"]  # (B,)
-    order = params["order"]  # (N_ops,) — typically (4,)
+    order = params["order"]  # (N_ops,) shared or (B, N_ops) per-sample
     B = bf.shape[0]  # noqa: N806
     device = bf.device
     dtype = bf.dtype
 
     acc = _make_eye4(B, device, dtype)
 
-    for idx_t in order.tolist():
-        idx = int(idx_t)
-        if idx == 0:
-            # Brightness: multiplicative c' = bf * c
-            step = _make_eye4(B, device, dtype)
-            step[:, 0, 0] = bf
-            step[:, 1, 1] = bf
-            step[:, 2, 2] = bf
-        elif idx == 1:
-            # Contrast: midpoint approximation c' = cf * c + (1-cf)*0.5
-            step = _make_eye4(B, device, dtype)
-            step[:, 0, 0] = cf
-            step[:, 1, 1] = cf
-            step[:, 2, 2] = cf
-            bias = (1.0 - cf) * _MIDPOINT
-            step[:, 0, 3] = bias
-            step[:, 1, 3] = bias
-            step[:, 2, 3] = bias
-        else:
-            # Saturation (idx=2) and hue (idx=3) treated as identity
-            continue
-        acc = torch.bmm(step, acc)
+    if order.dim() == 1:
+        # Shared order across the batch — original fast path.
+        for idx_t in order.tolist():
+            idx = int(idx_t)
+            if idx == 0:
+                # Brightness: multiplicative c' = bf * c
+                step = _make_eye4(B, device, dtype)
+                step[:, 0, 0] = bf
+                step[:, 1, 1] = bf
+                step[:, 2, 2] = bf
+            elif idx == 1:
+                # Contrast: midpoint approximation c' = cf * c + (1-cf)*0.5
+                step = _make_eye4(B, device, dtype)
+                step[:, 0, 0] = cf
+                step[:, 1, 1] = cf
+                step[:, 2, 2] = cf
+                bias = (1.0 - cf) * _MIDPOINT
+                step[:, 0, 3] = bias
+                step[:, 1, 3] = bias
+                step[:, 2, 3] = bias
+            else:
+                # Saturation (idx=2) and hue (idx=3) treated as identity
+                continue
+            acc = torch.bmm(step, acc)
+    else:
+        # Per-sample order (B, N_ops) — v1 ColorJitter samples order per image.
+        for b in range(B):
+            mat_b = _make_eye4(1, device, dtype)
+            for idx_t in order[b].tolist():
+                idx = int(idx_t)
+                if idx == 0:
+                    step_b = _make_eye4(1, device, dtype)
+                    step_b[:, 0, 0] = bf[b]
+                    step_b[:, 1, 1] = bf[b]
+                    step_b[:, 2, 2] = bf[b]
+                elif idx == 1:
+                    step_b = _make_eye4(1, device, dtype)
+                    step_b[:, 0, 0] = cf[b]
+                    step_b[:, 1, 1] = cf[b]
+                    step_b[:, 2, 2] = cf[b]
+                    bias_b = (1.0 - cf[b]) * _MIDPOINT
+                    step_b[:, 0, 3] = bias_b
+                    step_b[:, 1, 3] = bias_b
+                    step_b[:, 2, 3] = bias_b
+                else:
+                    continue
+                mat_b = torch.bmm(step_b, mat_b)
+            acc[b] = mat_b[0]
 
     return acc

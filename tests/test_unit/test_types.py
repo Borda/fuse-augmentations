@@ -204,8 +204,13 @@ class TestTransformAdapterProtocol:
     @pytest.mark.parametrize(
         "missing_method",
         [
-            "category", "sample_params", "build_matrix", "exact_flip_dims",
-            "exact_apply", "call_nonfused", "build_color_matrix",
+            "category",
+            "sample_params",
+            "build_matrix",
+            "exact_flip_dims",
+            "exact_apply",
+            "call_nonfused",
+            "build_color_matrix",
         ],
     )
     def test_missing_any_one_method_fails_isinstance(self, missing_method):

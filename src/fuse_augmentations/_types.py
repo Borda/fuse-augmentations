@@ -21,9 +21,9 @@ class TransformCategory(Enum):
         SPATIAL_KERNEL: Barrier; not fusible and not reorderable (blur, noise, erase).
         PROJECTIVE: Fusible projective (perspective) op requiring full 3x3 homography.
         POINTWISE_LINEAR: Reorderable per-pixel *linear* op; self-fusible as 4x4 color-space
-            affine matrix (brightness, contrast, channel mix, hue rotation).  Not yet fused by
-            the current engine -- treated as a pass-through like ``POINTWISE`` until
-            ``FusedColorSegment`` is implemented in a later version.
+            affine matrix (brightness, contrast, channel mix).  Consecutive runs are fused into
+            a single ``FusedColorSegment`` via ``build_color_matrix``; adapters that do not
+            support ``build_color_matrix`` for a given transform fall back to passthrough.
 
     """
 
@@ -262,8 +262,7 @@ class TransformAdapter(Protocol):
 
         """
         raise NotImplementedError(
-            "Adapter does not implement build_color_matrix; "
-            "required for FusedColorSegment support"
+            "Adapter does not implement build_color_matrix; required for FusedColorSegment support"
         )
 
 
@@ -441,7 +440,7 @@ class SegmentDescriptor:
 
     Args:
         kind: Segment type. One of ``"fused"``, ``"exact"``, ``"projective"``,
-            or ``"passthrough"``.
+            ``"color"``, or ``"passthrough"``.
         transforms: Class names of the transforms in this segment, in
             execution order.
         n_warps_saved: Number of ``grid_sample`` interpolation passes

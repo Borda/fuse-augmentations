@@ -1,7 +1,6 @@
-"""Demo use-case tests for Phase C: meta-config (TransformSpec, from_config, from_params expansion).
+"""Demo use-case tests for meta-config: TransformSpec, from_config, from_params expansion.
 
-These tests document the intended API contract and MUST FAIL against pre-Phase-C code.
-Once Phase C is implemented they become regression guards.
+These tests document the intended API contract and serve as regression guards.
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ import pytest
 import torch
 
 # ---------------------------------------------------------------------------
-# C.1 — TransformSpec frozen dataclass
+# TransformSpec frozen dataclass
 # ---------------------------------------------------------------------------
 
 
@@ -65,7 +64,7 @@ def test_transform_spec_exported() -> None:
 
 
 # ---------------------------------------------------------------------------
-# C.2 — Backend resolver
+# Backend resolver
 # ---------------------------------------------------------------------------
 
 
@@ -95,7 +94,7 @@ def test_resolver_raises_for_unknown_backend() -> None:
 
 
 # ---------------------------------------------------------------------------
-# C.3 — Compose.from_config() classmethod
+# Compose.from_config() classmethod
 # ---------------------------------------------------------------------------
 
 
@@ -153,7 +152,7 @@ def test_from_config_torchvision() -> None:
 
 
 # ---------------------------------------------------------------------------
-# C.4 — from_params(specs=...) keyword-only overload
+# from_params(specs=...) keyword-only overload
 # ---------------------------------------------------------------------------
 
 
@@ -172,7 +171,7 @@ def test_from_params_specs_overload_backend_free() -> None:
 
 
 def test_from_params_existing_api_unchanged() -> None:
-    """Existing from_params keyword-only API still works after C.4."""
+    """Existing from_params keyword-only API still works."""
     from fuse_augmentations import Compose
 
     pipe = Compose.from_params(rotation=(-30.0, 30.0), hflip_p=0.5)
@@ -191,7 +190,7 @@ def test_from_params_specs_and_kwargs_are_mutually_exclusive() -> None:
 
 
 # ---------------------------------------------------------------------------
-# C.5 — Per-transform probability in from_params(specs=...)
+# Per-transform probability in from_params(specs=...)
 # ---------------------------------------------------------------------------
 
 

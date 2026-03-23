@@ -1,4 +1,4 @@
-"""Tests for output_backend parameter on FusedCompose (D.3)."""
+"""Tests for output_backend parameter on FusedCompose."""
 
 from __future__ import annotations
 

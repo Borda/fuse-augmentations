@@ -902,6 +902,9 @@ class FusedColorSegment(nn.Module):
 
     """
 
+    # Buffer — declared here so mypy resolves self._eye4 as Tensor, not Tensor | Module.
+    _eye4: Tensor
+
     def __init__(
         self,
         transforms: list[object],
@@ -910,6 +913,15 @@ class FusedColorSegment(nn.Module):
         super().__init__()
         self._transforms = transforms
         self._adapter = adapter
+        # Register identity matrix as a buffer so device moves (.to(), .cuda())
+        # propagate automatically — avoids re-allocating every forward pass.
+        self.register_buffer("_eye4", torch.eye(4, dtype=torch.float32))
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore state; back-compat: add _eye4 buffer if missing (pre-buffer pickle)."""
+        super().__setstate__(state)  # type: ignore[no-untyped-call]
+        if "_eye4" not in self._buffers:
+            self.register_buffer("_eye4", torch.eye(4, dtype=torch.float32))
 
     @property
     def transforms(self) -> list[object]:
@@ -933,8 +945,6 @@ class FusedColorSegment(nn.Module):
             ``(image, aux_targets)`` tuple otherwise.
 
         """
-        _has_aux = aux_targets is not None
-
         B, C, H, W = image.shape  # noqa: N806
 
         # The 4x4 color matrix is defined for 3-channel RGB images only.
@@ -942,14 +952,15 @@ class FusedColorSegment(nn.Module):
         if C != 3:
             for tfm in self._transforms:
                 image = self._adapter.call_nonfused(tfm, image)
-            if not _has_aux:
+            if aux_targets is None:
                 return image
             return image, aux_targets
 
         device = image.device
         dtype = image.dtype
 
-        eye = torch.eye(4, device=device, dtype=dtype)
+        # Cast the registered buffer to the current device/dtype (no-op for float32 CPU)
+        eye = self._eye4.to(device=device, dtype=dtype)
         acc = eye.unsqueeze(0).expand(B, -1, -1).clone()  # (B, 4, 4)
 
         input_shape = (B, C, H, W)
@@ -987,9 +998,12 @@ class FusedColorSegment(nn.Module):
 
         transformed = torch.bmm(acc, pixels_hom)  # (B, 4, H*W)
         image_out = transformed[:, :C, :].reshape(B, C, H, W)
-        image_out = image_out.clamp(0.0, 1.0)
 
-        if not _has_aux:
+        # Optionally clamp to [0, 1]. Defaults to True to preserve existing behavior.
+        clip_output = getattr(self, "clip_output", True)
+        if clip_output:
+            image_out = image_out.clamp(0.0, 1.0)
+        if aux_targets is None:
             return image_out
         return image_out, aux_targets
 
@@ -997,19 +1011,27 @@ class FusedColorSegment(nn.Module):
 def _try_build_color_matrix(adapter: TransformAdapter, transform: object) -> bool:
     """Probe whether *adapter* supports ``build_color_matrix`` for *transform*.
 
-    Calls the method with an empty param dict.  ``NotImplementedError`` or
-    ``AttributeError`` means "not supported" (returns ``False``); any other
-    exception (e.g. ``KeyError`` on missing params) means the method exists
-    and would work with real params (returns ``True``).
+    Calls the method with an empty param dict and classifies the outcome:
+
+    - No exception → ``True`` (method succeeds with any params)
+    - ``NotImplementedError`` / ``AttributeError`` → ``False`` (explicitly unsupported)
+    - ``KeyError`` / ``IndexError`` → ``True`` (method exists, needs real params)
+    - Any other exception (``RuntimeError``, etc.) → ``False`` (unexpected error;
+      treat as unsupported to avoid silently mis-fusing a broken adapter)
+
     """
     try:
         adapter.build_color_matrix(transform, {})
         return True
     except (NotImplementedError, AttributeError):
         return False
-    except Exception:
-        # Method exists but needs real params to succeed.
+    except (KeyError, IndexError):
+        # Method exists but needs real params to succeed (missing param key).
         return True
+    except Exception:
+        # Unexpected error (e.g. RuntimeError from GPU OOM, device mismatch).
+        # Treat as "not supported" to avoid silently mis-fusing a broken adapter.
+        return False
 
 
 def _flush_color(
@@ -1022,6 +1044,7 @@ def _flush_color(
     If the adapter supports ``build_color_matrix`` for **every** transform
     in the run, they are folded into a single :class:`FusedColorSegment`.
     Otherwise the transforms fall back to passthrough (appended as-is).
+
     """
     if not transforms:
         return

@@ -1,4 +1,4 @@
-"""Unit tests for FusedCompose.fusion_plan_descriptors property (Phase B.2)."""
+"""Unit tests for FusedCompose.fusion_plan_descriptors property."""
 
 from __future__ import annotations
 

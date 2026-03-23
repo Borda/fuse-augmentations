@@ -1,4 +1,4 @@
-"""Comprehensive unit tests for _resolver.py (Phase C.2).
+"""Comprehensive unit tests for _resolver.py.
 
 Tests cover resolve_op, SUPPORTED_OPS, SUPPORTED_BACKENDS — including error paths, case sensitivity, and cross-backend
 resolution.

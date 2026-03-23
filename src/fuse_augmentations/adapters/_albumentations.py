@@ -781,11 +781,11 @@ def _build_brightness_contrast_matrix(params: dict[str, torch.Tensor]) -> torch.
     B = alpha.shape[0]  # noqa: N806
     device = alpha.device
     dtype = alpha.dtype
-    A = torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
-    A[:, 0, 0] = alpha
-    A[:, 1, 1] = alpha
-    A[:, 2, 2] = alpha
-    A[:, 0, 3] = beta
-    A[:, 1, 3] = beta
-    A[:, 2, 3] = beta
-    return A
+    mat = torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
+    mat[:, 0, 0] = alpha
+    mat[:, 1, 1] = alpha
+    mat[:, 2, 2] = alpha
+    mat[:, 0, 3] = beta
+    mat[:, 1, 3] = beta
+    mat[:, 2, 3] = beta
+    return mat

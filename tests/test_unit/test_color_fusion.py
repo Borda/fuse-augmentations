@@ -1,14 +1,17 @@
-"""Phase E demo tests — crystallise the API contract before implementation.
+"""Contract and regression tests for color fusion: from_params backend= kwarg,
+FusedColorSegment, and adapter build_color_matrix implementations.
 
-Each test demonstrates the intended feature behaviour and MUST FAIL against
-the current codebase (the features do not exist yet).
+Covers:
+- from_params(specs=..., backend=...) delegation to from_config semantics
+- build_segments folding of POINTWISE_LINEAR ops into FusedColorSegment
+- Adapter build_color_matrix returning (B, 4, 4) homogeneous color matrices
+- FusedColorSegment forward edge cases (non-RGB, aux_targets)
+- _try_build_color_matrix probe robustness
+- scale_x/scale_y ValueError guard when backend= is set
 
-E.1: from_params backend= kwarg + backend-native kwargs in TransformSpec.params
-E.2: FusedColorSegment — build_segments folds POINTWISE_LINEAR ops into it
-E.3: Adapter build_color_matrix — returns (B, 4, 4) homogeneous color matrices
+Run to verify behaviour and guard against regressions:
+    pytest tests/test_unit/test_color_fusion.py -v
 
-Run to confirm all fail before implementing:
-    pytest tests/test_unit/test_phase_e_demo.py -v
 """
 
 from __future__ import annotations
@@ -17,11 +20,11 @@ import pytest
 import torch
 
 # ---------------------------------------------------------------------------
-# E.1 — from_params backend= kwarg
+# from_params backend= kwarg
 # ---------------------------------------------------------------------------
 
 
-class TestE1FromParamsBackend:
+class TestFromParamsBackend:
     """from_params(specs=[...], backend=...) delegates to from_config semantics."""
 
     def test_from_params_specs_with_backend_runs(self):
@@ -100,11 +103,11 @@ class TestE1FromParamsBackend:
 
 
 # ---------------------------------------------------------------------------
-# E.2 — FusedColorSegment
+# FusedColorSegment — build_segments integration
 # ---------------------------------------------------------------------------
 
 
-class TestE2FusedColorSegment:
+class TestFusedColorSegment:
     """build_segments folds consecutive POINTWISE_LINEAR ops into FusedColorSegment."""
 
     def test_fused_color_segment_importable(self):
@@ -113,8 +116,8 @@ class TestE2FusedColorSegment:
 
     def test_build_segments_folds_pointwise_linear_run(self):
         """Two consecutive POINTWISE_LINEAR ops → single FusedColorSegment."""
-        from fuse_augmentations.affine._segment import FusedColorSegment, build_segments
         from fuse_augmentations._types import TransformCategory
+        from fuse_augmentations.affine._segment import FusedColorSegment, build_segments
 
         class _PLTransform:
             _category = TransformCategory.POINTWISE_LINEAR
@@ -146,8 +149,8 @@ class TestE2FusedColorSegment:
 
     def test_fused_color_segment_forward_returns_correct_shape(self):
         """FusedColorSegment.forward returns (B, C, H, W) matching input."""
-        from fuse_augmentations.affine._segment import FusedColorSegment
         from fuse_augmentations._types import TransformCategory
+        from fuse_augmentations.affine._segment import FusedColorSegment
 
         class _IdentityPLTransform:
             _category = TransformCategory.POINTWISE_LINEAR
@@ -175,8 +178,8 @@ class TestE2FusedColorSegment:
 
     def test_fused_color_segment_identity_matrix_preserves_image(self):
         """Applying identity color matrices does not alter pixel values."""
-        from fuse_augmentations.affine._segment import FusedColorSegment
         from fuse_augmentations._types import TransformCategory
+        from fuse_augmentations.affine._segment import FusedColorSegment
 
         class _IdentityPLTransform:
             _category = TransformCategory.POINTWISE_LINEAR
@@ -204,8 +207,8 @@ class TestE2FusedColorSegment:
 
     def test_build_segments_fallback_to_passthrough_when_adapter_raises(self):
         """If any adapter in a POINTWISE_LINEAR run raises NotImplementedError, fall back to passthrough."""
-        from fuse_augmentations.affine._segment import FusedColorSegment, build_segments
         from fuse_augmentations._types import TransformCategory
+        from fuse_augmentations.affine._segment import FusedColorSegment, build_segments
 
         class _PLTransform:
             _category = TransformCategory.POINTWISE_LINEAR
@@ -236,11 +239,11 @@ class TestE2FusedColorSegment:
 
 
 # ---------------------------------------------------------------------------
-# E.3 — Adapter build_color_matrix
+# Adapter build_color_matrix
 # ---------------------------------------------------------------------------
 
 
-class TestE3AdapterBuildColorMatrix:
+class TestAdapterBuildColorMatrix:
     """Each adapter exposes build_color_matrix returning (B, 4, 4) tensors."""
 
     def test_kornia_adapter_has_build_color_matrix(self):
@@ -254,6 +257,7 @@ class TestE3AdapterBuildColorMatrix:
         """KorniaAdapter.build_color_matrix for RandomBrightness returns (B, 4, 4)."""
         kornia = pytest.importorskip("kornia")  # noqa: F841
         import kornia.augmentation as K
+
         from fuse_augmentations.adapters._kornia import KorniaAdapter
 
         B = 3
@@ -267,6 +271,7 @@ class TestE3AdapterBuildColorMatrix:
         """KorniaAdapter.build_color_matrix for ColorJitter returns (B, 4, 4)."""
         kornia = pytest.importorskip("kornia")  # noqa: F841
         import kornia.augmentation as K
+
         from fuse_augmentations.adapters._kornia import KorniaAdapter
 
         B = 2
@@ -294,6 +299,7 @@ class TestE3AdapterBuildColorMatrix:
         """build_color_matrix bottom row is [0, 0, 0, 1] for all batch items."""
         kornia = pytest.importorskip("kornia")  # noqa: F841
         import kornia.augmentation as K
+
         from fuse_augmentations.adapters._kornia import KorniaAdapter
 
         B = 4
@@ -305,3 +311,163 @@ class TestE3AdapterBuildColorMatrix:
         expected_last_row = torch.tensor([0.0, 0.0, 0.0, 1.0])
         for b in range(B):
             torch.testing.assert_close(mat[b, 3, :], expected_last_row)
+
+
+# ---------------------------------------------------------------------------
+# FusedColorSegment forward edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestFusedColorSegmentEdgeCases:
+    """Edge-case coverage for FusedColorSegment forward path."""
+
+    def _make_identity_seg(self):
+        from fuse_augmentations._types import TransformCategory
+        from fuse_augmentations.affine._segment import FusedColorSegment
+
+        class _IdentityTransform:
+            _category = TransformCategory.POINTWISE_LINEAR
+            p = 1.0
+
+        class _IdentityAdapter:
+            def category(self, t):
+                return TransformCategory.POINTWISE_LINEAR
+
+            def sample_params(self, t, shape, device):
+                return {"_batch_size": torch.tensor([shape[0]])}
+
+            def build_color_matrix(self, t, params):
+                B = int(params["_batch_size"].item())
+                return torch.eye(4).unsqueeze(0).expand(B, -1, -1).clone()
+
+            def call_nonfused(self, t, image, **kw):
+                return image
+
+        t = _IdentityTransform()
+        return FusedColorSegment([t], _IdentityAdapter())
+
+    def test_forward_non_3channel_falls_back_to_passthrough(self):
+        """FusedColorSegment falls back to sequential passthrough for non-RGB (C != 3) inputs."""
+        seg = self._make_identity_seg()
+        # 1-channel mask input
+        x = torch.rand(2, 1, 16, 16)
+        out = seg(x)
+        assert out.shape == x.shape
+        torch.testing.assert_close(out, x)
+
+    def test_forward_with_aux_targets_returns_tuple(self):
+        """FusedColorSegment returns (image, aux_targets) tuple when aux_targets is provided."""
+        seg = self._make_identity_seg()
+        x = torch.rand(2, 3, 16, 16)
+        mask = torch.rand(2, 1, 16, 16)
+        result = seg(x, aux_targets={"mask": mask})
+        assert isinstance(result, tuple), "Expected (image, aux_targets) tuple"
+        img_out, aux_out = result
+        assert img_out.shape == x.shape
+        assert "mask" in aux_out
+        torch.testing.assert_close(aux_out["mask"], mask)
+
+    def test_forward_aux_targets_none_returns_tensor(self):
+        """FusedColorSegment returns bare Tensor when aux_targets is None."""
+        seg = self._make_identity_seg()
+        x = torch.rand(2, 3, 16, 16)
+        out = seg(x, aux_targets=None)
+        assert isinstance(out, torch.Tensor)
+
+    def test_forward_non_3channel_with_aux_targets_returns_tuple(self):
+        """Non-RGB fallback path also returns (image, aux_targets) when aux_targets is present."""
+        seg = self._make_identity_seg()
+        x = torch.rand(2, 1, 16, 16)  # 1-channel
+        mask = torch.rand(2, 1, 16, 16)
+        result = seg(x, aux_targets={"mask": mask})
+        assert isinstance(result, tuple)
+        img_out, _ = result
+        assert img_out.shape == x.shape
+
+
+# ---------------------------------------------------------------------------
+# _try_build_color_matrix probe robustness
+# ---------------------------------------------------------------------------
+
+
+class TestTryBuildColorMatrixProbe:
+    """_try_build_color_matrix correctly classifies adapter support."""
+
+    def test_not_implemented_returns_false(self):
+        """NotImplementedError from build_color_matrix → False (no support)."""
+        from fuse_augmentations.affine._segment import _try_build_color_matrix
+
+        class _NoSupportAdapter:
+            def build_color_matrix(self, t, params):
+                raise NotImplementedError
+
+        assert _try_build_color_matrix(_NoSupportAdapter(), object()) is False
+
+    def test_attribute_error_returns_false(self):
+        """AttributeError (missing method) → False."""
+        from fuse_augmentations.affine._segment import _try_build_color_matrix
+
+        class _MissingMethodAdapter:
+            pass
+
+        assert _try_build_color_matrix(_MissingMethodAdapter(), object()) is False
+
+    def test_key_error_returns_true(self):
+        """KeyError (method exists but needs real params) → True."""
+        from fuse_augmentations.affine._segment import _try_build_color_matrix
+
+        class _NeedsParamsAdapter:
+            def build_color_matrix(self, t, params):
+                _ = params["brightness_factor"]  # KeyError when called with {}
+                return torch.eye(4).unsqueeze(0)
+
+        assert _try_build_color_matrix(_NeedsParamsAdapter(), object()) is True
+
+    def test_runtime_error_returns_false(self):
+        """RuntimeError from build_color_matrix → False (not classified as supported).
+
+        A RuntimeError (e.g. GPU OOM, device mismatch) must NOT be silently treated as "method exists but needs real
+        params" — it is classified as unsupported.
+
+        """
+        from fuse_augmentations.affine._segment import _try_build_color_matrix
+
+        class _RuntimeErrorAdapter:
+            def build_color_matrix(self, t, params):
+                msg = "simulated GPU OOM or device mismatch"
+                raise RuntimeError(msg)
+
+        assert _try_build_color_matrix(_RuntimeErrorAdapter(), object()) is False
+
+
+# ---------------------------------------------------------------------------
+# scale_x/scale_y ValueError guard when backend= is set
+# ---------------------------------------------------------------------------
+
+
+class TestFromParamsScaleXYWithBackendRaises:
+    """scale_x/scale_y kwargs raise ValueError when backend= is set."""
+
+    def test_scale_x_with_backend_raises(self):
+        """from_params(scale_x=..., backend='kornia') raises ValueError."""
+        pytest.importorskip("kornia")
+        from fuse_augmentations._compose import FusedCompose
+
+        with pytest.raises(ValueError, match="scale_x"):
+            FusedCompose.from_params(scale_x=(0.8, 1.2), backend="kornia")
+
+    def test_scale_y_with_backend_raises(self):
+        """from_params(scale_y=..., backend='kornia') raises ValueError."""
+        pytest.importorskip("kornia")
+        from fuse_augmentations._compose import FusedCompose
+
+        with pytest.raises(ValueError, match="scale_y"):
+            FusedCompose.from_params(scale_y=(0.8, 1.2), backend="kornia")
+
+    def test_scale_x_without_backend_works(self):
+        """from_params(scale_x=...) without backend= is still valid."""
+        from fuse_augmentations._compose import FusedCompose
+
+        pipe = FusedCompose.from_params(scale_x=(0.8, 1.2))
+        x = torch.zeros(2, 3, 32, 32)
+        assert pipe(x).shape == x.shape

@@ -487,6 +487,23 @@ class KorniaAdapter:
             return _contrast_multiplicative_matrix(cf)
 
         if TRANSFORM_REGISTRY and ttype is _ColorJitter:
+            # NOTE: The fused ColorJitter path currently only supports
+            # brightness/contrast. Saturation and hue are treated as identity
+            # in the underlying _color_jitter_matrix. To avoid silently
+            # changing semantics when non-trivial saturation or hue are
+            # requested, detect these cases and force a fallback.
+            sat = params.get("saturation_factor")
+            # Identity saturation corresponds to a factor of 1.0.
+            if sat is not None and not torch.allclose(sat, torch.ones_like(sat)):
+                raise NotImplementedError(
+                    "Fused ColorJitter does not support non-identity saturation; fall back to non-fused execution."
+                )
+            hue = params.get("hue_factor")
+            # Identity hue corresponds to a shift of 0.0.
+            if hue is not None and not torch.allclose(hue, torch.zeros_like(hue)):
+                raise NotImplementedError(
+                    "Fused ColorJitter does not support non-identity hue; fall back to non-fused execution."
+                )
             return _color_jitter_matrix(params)
 
         msg = f"build_color_matrix not supported for {ttype.__name__!r}"
@@ -539,12 +556,12 @@ def _brightness_additive_matrix(brightness_factor: torch.Tensor) -> torch.Tensor
     B = brightness_factor.shape[0]  # noqa: N806
     device = brightness_factor.device
     dtype = brightness_factor.dtype
-    A = _make_eye4(B, device, dtype)
+    mat = _make_eye4(B, device, dtype)
     beta = brightness_factor - 1.0  # (B,)
-    A[:, 0, 3] = beta
-    A[:, 1, 3] = beta
-    A[:, 2, 3] = beta
-    return A
+    mat[:, 0, 3] = beta
+    mat[:, 1, 3] = beta
+    mat[:, 2, 3] = beta
+    return mat
 
 
 def _contrast_multiplicative_matrix(contrast_factor: torch.Tensor) -> torch.Tensor:
@@ -562,11 +579,11 @@ def _contrast_multiplicative_matrix(contrast_factor: torch.Tensor) -> torch.Tens
     B = contrast_factor.shape[0]  # noqa: N806
     device = contrast_factor.device
     dtype = contrast_factor.dtype
-    A = _make_eye4(B, device, dtype)
-    A[:, 0, 0] = contrast_factor
-    A[:, 1, 1] = contrast_factor
-    A[:, 2, 2] = contrast_factor
-    return A
+    mat = _make_eye4(B, device, dtype)
+    mat[:, 0, 0] = contrast_factor
+    mat[:, 1, 1] = contrast_factor
+    mat[:, 2, 2] = contrast_factor
+    return mat
 
 
 def _color_jitter_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:

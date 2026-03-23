@@ -1,4 +1,4 @@
-"""Comprehensive integration tests for Compose.from_config() classmethod (Phase C.3).
+"""Comprehensive integration tests for Compose.from_config() classmethod.
 
 Tests cover pipeline construction from TransformSpec lists, backend dispatch, error handling, probability masking,
 data_keys forwarding, and fusion verification.

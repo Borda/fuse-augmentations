@@ -1,7 +1,7 @@
 """Registry coverage tests for the Albumentations adapter.
 
 Parametrised over the live ``TRANSFORM_REGISTRY`` dict so that new entries
-(e.g. SafeRotate from Phase A.4) are automatically validated.
+are automatically validated.
 
 Each registered transform must satisfy:
 - ``adapter.category(instance)`` returns a ``TransformCategory`` member
@@ -36,7 +36,7 @@ _CONSTRUCTOR_KWARGS: dict[str, dict] = {
     "HorizontalFlip": {"p": 1.0},
     "VerticalFlip": {"p": 1.0},
     "Perspective": {"scale": (0.05, 0.1), "p": 1.0},
-    # Future entries (Phase A.4):
+    # Future entries:
     "SafeRotate": {"limit": (-30, 30), "p": 1.0},
     "RandomRotate90": {"p": 1.0},
     "D4": {"p": 1.0},

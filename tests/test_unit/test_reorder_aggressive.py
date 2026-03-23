@@ -1,4 +1,4 @@
-"""Unit tests for ReorderPolicy.AGGRESSIVE (Phase B.3)."""
+"""Unit tests for ReorderPolicy.AGGRESSIVE."""
 
 from __future__ import annotations
 

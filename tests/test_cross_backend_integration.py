@@ -1,4 +1,4 @@
-"""Integration tests for cross-backend output pairs (D.4).
+"""Integration tests for cross-backend output pairs.
 
 Tests every combination of source backend (Kornia, TorchVision, Albumentations)
 with output_backend ('numpy', 'torch', None). Also tests mixed-backend pipelines

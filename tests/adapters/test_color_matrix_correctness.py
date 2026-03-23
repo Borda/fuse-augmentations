@@ -16,6 +16,7 @@ The core test pattern for each transform:
 Note: transforms that clamp outputs (Kornia, TorchVision) are tested with
 images in the ``[0.2, 0.8]`` range and moderate factors to avoid clamp
 boundaries where the linear matrix model diverges from the clamped output.
+
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from __future__ import annotations
 import pytest
 import torch
 from hypothesis import given, settings
-from hypothesis.strategies import floats, integers
+from hypothesis.strategies import integers
 
 
 def _apply_color_matrix(matrix: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
@@ -290,6 +291,7 @@ class TestAlbumentationsColorMatrixCorrectness:
 
         Albumentations ``RandomBrightnessContrast`` applies ``c' = alpha * c + beta``
         which is exactly representable in 4x4 form.
+
         """
         import numpy as np
 

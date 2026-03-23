@@ -1,4 +1,4 @@
-"""Tests for NumpyToTorchConverter and TorchToNumpyConverter (D.2)."""
+"""Tests for NumpyToTorchConverter and TorchToNumpyConverter."""
 
 from __future__ import annotations
 
