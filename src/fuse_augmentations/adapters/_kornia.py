@@ -426,3 +426,21 @@ class KorniaAdapter:
 
         """
         return transform(image)  # type: ignore[operator, no-any-return]
+
+    @staticmethod
+    def build_color_matrix(
+        transform: object,
+        params: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Build a (B, 4, 4) homogeneous color-space affine matrix from sampled params.
+
+        .. note::
+            Not yet implemented for KorniaAdapter. Will be added in a future
+            release when ``FusedColorSegment`` gains Kornia backend support.
+
+        Raises:
+            NotImplementedError: Always -- Kornia colour-space matrix fusion
+                is not yet supported.
+
+        """
+        raise NotImplementedError("KorniaAdapter does not yet implement build_color_matrix")

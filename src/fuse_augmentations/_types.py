@@ -89,7 +89,7 @@ InterpolationStr = Literal["bilinear", "nearest", "bicubic"]
 PaddingModeStr = Literal["zeros", "border", "reflection"]
 
 #: String literal type for the ``kind`` field of :class:`SegmentDescriptor`.
-SegmentKind = Literal["fused", "exact", "projective", "passthrough"]
+SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color"]
 
 
 @runtime_checkable
@@ -234,6 +234,37 @@ class TransformAdapter(Protocol):
 
         """
         ...
+
+    def build_color_matrix(
+        self,
+        transform: object,
+        params: dict[str, Tensor],
+    ) -> Tensor:
+        """Build a (B, 4, 4) homogeneous color-space affine matrix from sampled params.
+
+        Adapters that support ``POINTWISE_LINEAR`` fusion must override this
+        method to return a ``(B, 4, 4)`` matrix encoding the per-channel linear
+        colour transform (3x3 colour matrix + 3-element bias in homogeneous
+        form).  The default implementation raises ``NotImplementedError`` so
+        that adapters without colour-fusion support fall back to passthrough
+        segmentation automatically.
+
+        Args:
+            transform: The backend transform object (``POINTWISE_LINEAR`` category).
+            params: Canonical parameter dict from :meth:`sample_params`.
+
+        Returns:
+            Tensor of shape ``(B, 4, 4)``.
+
+        Raises:
+            NotImplementedError: If the adapter does not support colour-space
+                matrix fusion for this transform.
+
+        """
+        raise NotImplementedError(
+            "Adapter does not implement build_color_matrix; "
+            "required for FusedColorSegment support"
+        )
 
 
 @dataclass(frozen=True, slots=True)

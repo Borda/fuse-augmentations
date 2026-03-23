@@ -368,6 +368,25 @@ class TorchVisionAdapter:
 
         return torch.stack(results).to(device=device, dtype=dtype)
 
+    @staticmethod
+    def build_color_matrix(
+        transform: object,
+        params: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Build a (B, 4, 4) homogeneous color-space affine matrix from sampled params.
+
+        .. note::
+            Not yet implemented for TorchVisionAdapter. Will be added in a
+            future release when ``FusedColorSegment`` gains TorchVision
+            backend support.
+
+        Raises:
+            NotImplementedError: Always -- TorchVision colour-space matrix
+                fusion is not yet supported.
+
+        """
+        raise NotImplementedError("TorchVisionAdapter does not yet implement build_color_matrix")
+
 
 # ---------------------------------------------------------------------------
 # Private helpers
