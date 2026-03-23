@@ -24,6 +24,7 @@
 - [🎯 Auxiliary Targets](#-auxiliary-targets)
 - [🔌 Backend-Free Pipelines](#-backend-free-pipelines)
 - [🔄 NumPy I/O](#-numpy-io)
+- [🎨 Color Fusion (POINTWISE\_LINEAR)](#-color-fusion-pointwise_linear)
 - [🔧 Backend-Agnostic Meta-Config](#-backend-agnostic-meta-config)
 - [🔗 Multi-Backend Pipelines](#-multi-backend-pipelines)
 - [🔀 Reorder Policy](#-reorder-policy)
@@ -150,7 +151,7 @@ For flip-only chains, `fuse-augmentations` uses an `ExactAffineSegment` that app
 | `ReorderPolicy`     | `NONE` (default for `Compose()`), `POINTWISE` (default for `from_params`/`from_config`; bubble color ops after geometric runs), `AGGRESSIVE` (currently same as `POINTWISE`) |
 | `InterpolationMode` | `NEAREST`, `BILINEAR`, `BICUBIC` -- ordered by quality; useful for programmatic comparison (`BICUBIC > BILINEAR > NEAREST`)                                                  |
 | `PaddingMode`       | `ZEROS`, `BORDER`, `REFLECTION` -- ordered by quality                                                                                                                        |
-| `TransformCategory` | `GEOMETRIC_INTERP`, `GEOMETRIC_EXACT`, `POINTWISE`, `SPATIAL_KERNEL`, `PROJECTIVE`, `POINTWISE_LINEAR` (pass-through until color fusion lands in a later version)            |
+| `TransformCategory` | `GEOMETRIC_INTERP`, `GEOMETRIC_EXACT`, `POINTWISE`, `SPATIAL_KERNEL`, `PROJECTIVE`, `POINTWISE_LINEAR` (fused by `FusedColorSegment`; supported ops per backend listed in the Color Fusion section) |
 
 ### Auxiliary Target Functions
 
@@ -260,6 +261,33 @@ out = pipe(image_tensor)  # returns NumPy (H, W, C) array directly
 `output_backend` values: `"numpy"` / `"numpy_hwc"` (channel-last NumPy array), `"torch"` or `None` (native tensor, default). Conversion applies to single-tensor output only -- when `data_keys` returns a tuple, set `output_backend=None` and convert manually.
 
 `NumpyToTorchConverter` accepts arrays of shape `(H, W)`, `(H, W, C)`, or `(B, H, W, C)`. `uint8` inputs are normalised to `float32 [0, 1]`; `float32` inputs are passed through unchanged.
+
+## 🎨 Color Fusion (POINTWISE_LINEAR)
+
+Consecutive color transforms registered as `POINTWISE_LINEAR` are fused into a single `FusedColorSegment` that applies one matrix multiply instead of N sequential operations:
+
+```python
+import kornia.augmentation as K
+from fuse_augmentations import Compose
+
+pipe = Compose([
+    K.RandomRotation(degrees=30),
+    K.RandomBrightness(brightness=(0.8, 1.2), p=1.0),
+    K.RandomContrast(contrast=(0.9, 1.1), p=1.0),
+])
+# → fused(RandomRotation) → color(RandomBrightness, RandomContrast)
+print(pipe.fusion_plan)
+```
+
+Supported color operations per backend:
+
+| Backend | Supported |
+|---------|-----------|
+| Kornia | `RandomBrightness`, `RandomContrast`, `ColorJitter` (brightness+contrast only) |
+| TorchVision | `ColorJitter` (brightness+contrast only; saturation/hue fall back to passthrough) |
+| Albumentations | `RandomBrightnessContrast` |
+
+See `docs/math/fusible-categories-proofs.md` for the mathematical proof of the 4×4 homogeneous color-space affine composition law.
 
 ## 🔧 Backend-Agnostic Meta-Config
 
@@ -376,12 +404,12 @@ pipe = Compose(
     [
         aug_a.Rotate(limit=15),  # Albumentations
         aug_tv.RandomHorizontalFlip(),  # TorchVision
-        aug_k.ColorJitter(brightness=0.3),  # Kornia (passthrough)
+        aug_k.ColorJitter(brightness=0.3),  # Kornia (POINTWISE_LINEAR — color-fused)
     ]
 )
 
 out = pipe(image)
-# fused(Rotate, RandomHorizontalFlip) -> passthrough(ColorJitter)
+# fused(Rotate, RandomHorizontalFlip) -> color(ColorJitter)
 ```
 
 Each transform is resolved to the correct adapter at construction time. Framework-specific behavior (parameter sampling, matrix building, passthrough for operations not yet fusible) is handled by `KorniaAdapter`, `TorchVisionAdapter`, or `AlbumentationsAdapter`.
@@ -492,7 +520,7 @@ augment = Compose(
         aug_tv.RandomRotation(degrees=15),
         aug_tv.RandomHorizontalFlip(p=0.5),
         aug_tv.RandomAffine(degrees=0, scale=(0.8, 1.2)),
-        aug_tv.ColorJitter(brightness=0.2),  # passthrough, not fusible
+        aug_tv.ColorJitter(brightness=0.2),  # POINTWISE_LINEAR — color-fused
     ]
 )
 
@@ -534,7 +562,7 @@ Pipelines survive `pickle` round-trips, so they work transparently with `torch.n
 
 ## ⚠️ Limitations
 
-- **Pixel-wise ops** (ColorJitter, Normalize) are not yet fusible -- they are single-pixel operations and currently act as passthrough.
+- **Pixel-wise ops** (Normalize, gamma, equalize) are not yet fusible -- they are single-pixel non-linear operations and currently act as passthrough. Linear color ops (brightness, contrast) are fusible via `FusedColorSegment`; see the Color Fusion section.
 - **Spatial-kernel ops** (GaussianBlur, Sharpen) act as fusion barriers; transforms on either side of a barrier form separate segments. These are not yet fusible.
 - **Padding mode** is segment-level: all transforms in a fused run share the same padding mode (the highest-quality setting among them).
 - **Gradients**: image transforms are differentiable; mask sampling (`mode='nearest'`) is not.
