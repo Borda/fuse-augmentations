@@ -884,6 +884,147 @@ class AlbuProjectiveSegment(nn.Module):
         return stacked
 
 
+class FusedColorSegment(nn.Module):
+    """Fused colour-space segment that composes POINTWISE_LINEAR transforms into one matrix multiply.
+
+    Accumulates per-sample ``(B, 4, 4)`` homogeneous colour-space affine
+    matrices for every transform in the segment, multiplies all pixels by
+    the composed matrix, and clamps the result to ``[0, 1]``.  All operations
+    are vectorised over the batch dimension.
+
+    Colour transforms do **not** affect spatial layout, so auxiliary targets
+    (masks, bounding boxes, keypoints) are returned unchanged.
+
+    Args:
+        transforms: List of ``POINTWISE_LINEAR`` transform objects to fuse.
+        adapter: A ``TransformAdapter`` providing ``sample_params`` and
+            ``build_color_matrix`` for each transform.
+
+    """
+
+    def __init__(
+        self,
+        transforms: list[object],
+        adapter: TransformAdapter,
+    ) -> None:
+        super().__init__()
+        self._transforms = transforms
+        self._adapter = adapter
+
+    @property
+    def transforms(self) -> list[object]:
+        """Return the list of transforms in this segment."""
+        return list(self._transforms)
+
+    def forward(
+        self,
+        image: Tensor,
+        aux_targets: dict[str, Any] | None = None,
+    ) -> Tensor | tuple[Tensor, dict[str, Any]]:
+        """Apply the fused colour matrix to the image batch.
+
+        Args:
+            image: ``(B, C, H, W)`` float input tensor with values in ``[0, 1]``.
+            aux_targets: Optional dict of auxiliary targets. Colour transforms
+                do not affect spatial layout, so these are returned unchanged.
+
+        Returns:
+            Bare ``image`` tensor when ``aux_targets`` is ``None``;
+            ``(image, aux_targets)`` tuple otherwise.
+
+        """
+        _has_aux = aux_targets is not None
+
+        B, C, H, W = image.shape  # noqa: N806
+        device = image.device
+        dtype = image.dtype
+
+        eye = torch.eye(4, device=device, dtype=dtype)
+        acc = eye.unsqueeze(0).expand(B, -1, -1).clone()  # (B, 4, 4)
+
+        input_shape = (B, C, H, W)
+
+        for tfm in self._transforms:
+            prob = getattr(tfm, "p", 1.0)
+            same_on_batch = _shares_randomness_across_batch(self._adapter, tfm)
+            if same_on_batch:
+                active_scalar = torch.rand((), device=device) < prob
+                active = active_scalar.expand(B)
+            else:
+                active = torch.rand(B, device=device) < prob
+
+            params = self._adapter.sample_params(tfm, input_shape, device)
+            mat = self._adapter.build_color_matrix(tfm, params)  # (B, 4, 4)
+
+            # Expand to batch if adapter returned (1, 4, 4)
+            if mat.shape[0] == 1 and B > 1:
+                mat = mat.expand(B, -1, -1)
+
+            mat = mat.to(device=device, dtype=dtype)
+
+            mat = torch.where(
+                active[:, None, None],
+                mat,
+                eye.unsqueeze(0).expand(B, -1, -1),
+            )
+            acc = torch.bmm(mat, acc)
+
+        # Apply fused matrix to image pixels:
+        # image (B, C, H*W) -> extend with ones -> (B, 4, H*W) -> matmul -> take first 3 rows
+        pixels = image.reshape(B, C, H * W)  # (B, C, H*W)
+        ones = torch.ones(B, 1, H * W, device=device, dtype=dtype)
+        pixels_hom = torch.cat([pixels, ones], dim=1)  # (B, 4, H*W)
+
+        transformed = torch.bmm(acc, pixels_hom)  # (B, 4, H*W)
+        image_out = transformed[:, :C, :].reshape(B, C, H, W)
+        image_out = image_out.clamp(0.0, 1.0)
+
+        if not _has_aux:
+            return image_out
+        return image_out, aux_targets
+
+
+def _try_build_color_matrix(adapter: TransformAdapter, transform: object) -> bool:
+    """Probe whether *adapter* supports ``build_color_matrix`` for *transform*.
+
+    Calls the method with an empty param dict.  ``NotImplementedError`` or
+    ``AttributeError`` means "not supported" (returns ``False``); any other
+    exception (e.g. ``KeyError`` on missing params) means the method exists
+    and would work with real params (returns ``True``).
+    """
+    try:
+        adapter.build_color_matrix(transform, {})
+        return True
+    except (NotImplementedError, AttributeError):
+        return False
+    except Exception:
+        # Method exists but needs real params to succeed.
+        return True
+
+
+def _flush_color(
+    transforms: list[object],
+    adapter: TransformAdapter,
+    segments: list[object],
+) -> None:
+    """Flush a run of ``POINTWISE_LINEAR`` transforms into segments.
+
+    If the adapter supports ``build_color_matrix`` for **every** transform
+    in the run, they are folded into a single :class:`FusedColorSegment`.
+    Otherwise the transforms fall back to passthrough (appended as-is).
+    """
+    if not transforms:
+        return
+    # Probe each transform in the run; any failure means full passthrough.
+    for tfm in transforms:
+        if not _try_build_color_matrix(adapter, tfm):
+            segments.extend(transforms)
+            transforms.clear()
+            return
+    segments.append(FusedColorSegment(list(transforms), adapter))
+    transforms.clear()
+
+
 def reorder_pointwise(
     transforms: list[object],
     adapter: TransformAdapter,
@@ -1040,17 +1181,21 @@ def build_segments(
     Returns:
         Flat list where each element is a :class:`FusedAffineSegment`
         (mixed/INTERP geometric run), an :class:`ExactAffineSegment`
-        (EXACT-only geometric run; auxiliary targets remain flip-only), or the
-        original transform object (passthrough for ``SPATIAL_KERNEL``,
-        ``POINTWISE``, and ``POINTWISE_LINEAR`` transforms).
+        (EXACT-only geometric run; auxiliary targets remain flip-only),
+        a :class:`FusedColorSegment` (``POINTWISE_LINEAR`` run where the
+        adapter supports ``build_color_matrix``), or the original transform
+        object (passthrough for ``SPATIAL_KERNEL``, ``POINTWISE``, and
+        unsupported ``POINTWISE_LINEAR`` transforms).
 
     """
     fusible = {TransformCategory.GEOMETRIC_INTERP, TransformCategory.GEOMETRIC_EXACT}
     projective_cat = TransformCategory.PROJECTIVE
+    pointwise_linear_cat = TransformCategory.POINTWISE_LINEAR
 
     segments: list[object] = []
     current_geo: list[object] = []
     current_proj: list[object] = []
+    current_color: list[object] = []
 
     def _flush_geo() -> None:
         if not current_geo:
@@ -1119,19 +1264,28 @@ def build_segments(
         cat = adapter.category(tfm)
         if cat in fusible:
             _flush_proj()  # flush any pending projective
+            _flush_color(current_color, adapter, segments)
             current_geo.append(tfm)
             continue
         if cat == projective_cat:
             _flush_geo()  # flush any pending affine
+            _flush_color(current_color, adapter, segments)
             current_proj.append(tfm)
             continue
-        # SPATIAL_KERNEL / POINTWISE / POINTWISE_LINEAR barrier: flush both
+        if cat == pointwise_linear_cat:
+            _flush_geo()
+            _flush_proj()
+            current_color.append(tfm)
+            continue
+        # SPATIAL_KERNEL / POINTWISE barrier: flush all
         _flush_geo()
         _flush_proj()
+        _flush_color(current_color, adapter, segments)
         segments.append(tfm)
 
     _flush_geo()
     _flush_proj()
+    _flush_color(current_color, adapter, segments)
     return segments
 
 

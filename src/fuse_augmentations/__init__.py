@@ -41,6 +41,7 @@ from fuse_augmentations._types import (
 from fuse_augmentations.affine._segment import (
     ExactAffineSegment,
     FusedAffineSegment,
+    FusedColorSegment,
     ProjectiveSegment,
     build_segments,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "Compose",
     "ExactAffineSegment",
     "FusedAffineSegment",
+    "FusedColorSegment",
     "FusedCompose",
     "InterpolationMode",
     "NumpyToTorchConverter",

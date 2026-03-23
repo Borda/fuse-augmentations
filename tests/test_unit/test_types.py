@@ -13,7 +13,7 @@ from fuse_augmentations._types import (
 
 
 def _full_adapter_methods():
-    """Return a dict of all six TransformAdapter method implementations."""
+    """Return a dict of all seven TransformAdapter method implementations."""
     return {
         "category": lambda self, transform: TransformCategory.SPATIAL_KERNEL,
         "sample_params": lambda self, transform, input_shape, device: {},
@@ -21,6 +21,7 @@ def _full_adapter_methods():
         "exact_flip_dims": lambda self, transform: [],
         "exact_apply": lambda self, transform, image: image,
         "call_nonfused": lambda self, transform, image, **kwargs: image,
+        "build_color_matrix": lambda self, transform, params: torch.eye(4).unsqueeze(0),
     }
 
 
@@ -193,16 +194,19 @@ class TestTransformAdapterProtocol:
     """TransformAdapter @runtime_checkable Protocol -- isinstance contract."""
 
     def test_conforming_class_passes_isinstance(self):
-        """A class implementing all six methods satisfies TransformAdapter."""
+        """A class implementing all seven methods satisfies TransformAdapter."""
         methods = _full_adapter_methods()
         _DummyAdapter = type("_DummyAdapter", (), methods)
         assert isinstance(_DummyAdapter(), TransformAdapter), (
-            "An object with all six required methods should be an instance of TransformAdapter"
+            "An object with all seven required methods should be an instance of TransformAdapter"
         )
 
     @pytest.mark.parametrize(
         "missing_method",
-        ["category", "sample_params", "build_matrix", "exact_flip_dims", "exact_apply", "call_nonfused"],
+        [
+            "category", "sample_params", "build_matrix", "exact_flip_dims",
+            "exact_apply", "call_nonfused", "build_color_matrix",
+        ],
     )
     def test_missing_any_one_method_fails_isinstance(self, missing_method):
         """Dropping any single required method makes the object fail the Protocol check."""
