@@ -61,6 +61,7 @@ from fuse_augmentations.affine._segment import (
     AlbuProjectiveSegment,
     ExactAffineSegment,
     FusedAffineSegment,
+    FusedColorSegment,
     ProjectiveSegment,
     build_segments,
     reorder_aggressive,
@@ -420,6 +421,14 @@ class FusedCompose(nn.Module):
                     image = result
                 continue
 
+            if isinstance(seg, FusedColorSegment):
+                result = seg(image, aux_targets)
+                if aux_targets is not None:
+                    image, aux_targets = result
+                else:
+                    image = result
+                continue
+
             if isinstance(seg, _PassthroughSegment):
                 image = seg.adapter.call_nonfused(seg.transform, image)
                 continue
@@ -504,6 +513,13 @@ class FusedCompose(nn.Module):
                 # This is why ExactAffineSegment contributes n rather than n-1:
                 # even a single flip is lossless and free of grid_sample cost.
                 total += len(seg.transforms)
+                continue
+
+            if isinstance(seg, FusedColorSegment):
+                # n color ops fused → 1 matrix multiply, saving n-1 passes.
+                n = len(seg.transforms)
+                if n > 1:
+                    total += n - 1
         return total
 
     @property
@@ -531,6 +547,11 @@ class FusedCompose(nn.Module):
             if isinstance(seg, ExactAffineSegment):
                 names = [type(t).__name__ for t in seg.transforms]
                 parts.append(f"exact({', '.join(names)})")
+                continue
+
+            if isinstance(seg, FusedColorSegment):
+                names = [type(t).__name__ for t in seg.transforms]
+                parts.append(f"color({', '.join(names)})")
                 continue
 
             if isinstance(seg, _PassthroughSegment):
@@ -622,6 +643,18 @@ class FusedCompose(nn.Module):
                 descriptors.append(
                     SegmentDescriptor(
                         kind="exact",
+                        transforms=names,
+                        n_warps_saved=n,
+                        backend=_resolve_backend(seg),
+                    )
+                )
+                continue
+            if isinstance(seg, FusedColorSegment):
+                names = tuple(type(t).__name__ for t in seg.transforms)
+                n = len(names) - 1 if len(names) > 1 else 0
+                descriptors.append(
+                    SegmentDescriptor(
+                        kind="color",
                         transforms=names,
                         n_warps_saved=n,
                         backend=_resolve_backend(seg),
@@ -1322,6 +1355,7 @@ def _wrap_passthrough_segments(
         ExactAffineSegment,
         ProjectiveSegment,
         AlbuProjectiveSegment,
+        FusedColorSegment,
     )
 
     # Build a reverse lookup: transform object id -> index in original_transforms.

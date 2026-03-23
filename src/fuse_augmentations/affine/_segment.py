@@ -936,6 +936,16 @@ class FusedColorSegment(nn.Module):
         _has_aux = aux_targets is not None
 
         B, C, H, W = image.shape  # noqa: N806
+
+        # The 4x4 color matrix is defined for 3-channel RGB images only.
+        # For non-RGB inputs, fall back to sequential passthrough application.
+        if C != 3:
+            for tfm in self._transforms:
+                image = self._adapter.call_nonfused(tfm, image)
+            if not _has_aux:
+                return image
+            return image, aux_targets
+
         device = image.device
         dtype = image.dtype
 
