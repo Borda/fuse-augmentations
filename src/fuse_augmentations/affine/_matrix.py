@@ -414,8 +414,8 @@ def crop_resize_matrix(
 
     Maps input pixel ``(x_in, y_in)`` to output pixel ``(x_out, y_out)`` via::
 
-        x_out = (x_in - left) * target_w / crop_w
-        y_out = (y_in - top)  * target_h / crop_h
+        x_out = (x_in - left) * (target_w - 1) / (crop_w - 1)
+        y_out = (y_in - top)  * (target_h - 1) / (crop_h - 1)
 
     All inputs are per-sample ``(B,)`` tensors.  ``target_h``/``target_w`` are
     typically constant across the batch (fixed output size) but are accepted as
@@ -432,6 +432,11 @@ def crop_resize_matrix(
     Returns:
         ``(B, 3, 3)`` forward affine matrix in pixel coordinates.
 
+    Raises:
+        ValueError: If any ``crop_h``, ``crop_w``, ``target_h``, or
+            ``target_w`` element is ``<= 1`` (align-corners endpoint mapping
+            would become singular).
+
     Example:
         >>> import torch
         >>> top = torch.zeros(1)
@@ -441,8 +446,12 @@ def crop_resize_matrix(
         True
 
     """
-    sx = target_w / crop_w
-    sy = target_h / crop_h
+    if bool((crop_h <= 1).any() or (crop_w <= 1).any() or (target_h <= 1).any() or (target_w <= 1).any()):
+        msg = "crop_resize_matrix requires crop and target sizes > 1 for align_corners endpoint mapping"
+        raise ValueError(msg)
+
+    sx = (target_w - 1.0) / (crop_w - 1.0)
+    sy = (target_h - 1.0) / (crop_h - 1.0)
     tx = -left * sx
     ty = -top * sy
     zeros = torch.zeros_like(top)
@@ -462,10 +471,10 @@ def normalize_matrix_io(
 ) -> torch.Tensor:
     """Normalize a pixel-space inverse matrix for ``affine_grid`` when input and output sizes differ.
 
-    Applies the normalization sandwich ``N_out @ M @ N_in_inv`` where:
+    Applies the normalization sandwich ``N_in @ M @ N_out_inv`` where:
 
-    - ``N_out`` maps output pixel coords → output normalized ``[-1, 1]`` (uses ``H_out``, ``W_out``).
-    - ``N_in_inv`` maps input normalized ``[-1, 1]`` → input pixel coords (uses ``H_in``, ``W_in``).
+    - ``N_in`` maps input pixel coords → input normalized ``[-1, 1]`` (uses ``H_in``, ``W_in``).
+    - ``N_out_inv`` maps output normalized ``[-1, 1]`` → output pixel coords (uses ``H_out``, ``W_out``).
 
     Use this instead of :func:`normalize_matrix` when the segment output size differs from the input
     size (e.g. for :class:`~fuse_augmentations.affine._segment.CropResizeSegment`).
@@ -501,23 +510,23 @@ def normalize_matrix_io(
     device = M.device
     dtype = M.dtype
 
-    # N_out: output pixel → output normalized [-1, 1]
+    # N_in: input pixel → input normalized [-1, 1]
     N = torch.zeros(B, 3, 3, device=device, dtype=dtype)  # noqa: N806
-    N[:, 0, 0] = 2.0 / (W_out - 1)
+    N[:, 0, 0] = 2.0 / (W_in - 1)
     N[:, 0, 2] = -1.0
-    N[:, 1, 1] = 2.0 / (H_out - 1)
+    N[:, 1, 1] = 2.0 / (H_in - 1)
     N[:, 1, 2] = -1.0
     N[:, 2, 2] = 1.0
 
-    # N_in_inv: input normalized → input pixel
+    # N_out_inv: output normalized → output pixel
     N_inv = torch.zeros(B, 3, 3, device=device, dtype=dtype)  # noqa: N806
-    N_inv[:, 0, 0] = (W_in - 1) / 2.0
-    N_inv[:, 0, 2] = (W_in - 1) / 2.0
-    N_inv[:, 1, 1] = (H_in - 1) / 2.0
-    N_inv[:, 1, 2] = (H_in - 1) / 2.0
+    N_inv[:, 0, 0] = (W_out - 1) / 2.0
+    N_inv[:, 0, 2] = (W_out - 1) / 2.0
+    N_inv[:, 1, 1] = (H_out - 1) / 2.0
+    N_inv[:, 1, 2] = (H_out - 1) / 2.0
     N_inv[:, 2, 2] = 1.0
 
-    # Sandwich: N_out @ M @ N_in_inv
+    # Sandwich: N_in @ M @ N_out_inv
     return matmul3x3(matmul3x3(N, M), N_inv)
 
 

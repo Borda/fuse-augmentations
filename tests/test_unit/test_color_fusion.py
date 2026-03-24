@@ -237,6 +237,19 @@ class TestFusedColorSegment:
         # Fallback: no FusedColorSegment, transforms left as passthrough
         assert len(color_segs) == 0
 
+    def test_build_segments_kornia_color_jitter_sat_hue_passthrough(self):
+        """Kornia ColorJitter with active saturation/hue must not be fused."""
+        pytest.importorskip("kornia")
+        import kornia.augmentation as K
+
+        from fuse_augmentations.adapters._kornia import KorniaAdapter
+        from fuse_augmentations.affine._segment import FusedColorSegment, build_segments
+
+        t = K.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=1.0)
+        segs = build_segments([t], KorniaAdapter(), "bilinear", "zeros")
+        assert not any(isinstance(seg, FusedColorSegment) for seg in segs)
+        assert segs == [t]
+
 
 # ---------------------------------------------------------------------------
 # Adapter build_color_matrix
@@ -280,6 +293,21 @@ class TestAdapterBuildColorMatrix:
         params = adapter.sample_params(transform, (B, 3, 32, 32), torch.device("cpu"))
         mat = adapter.build_color_matrix(transform, params)
         assert mat.shape == (B, 4, 4)
+
+    def test_kornia_color_jitter_with_sat_hue_raises_not_implemented(self):
+        """ColorJitter with active saturation/hue is intentionally not fused."""
+        pytest.importorskip("kornia")
+        import kornia.augmentation as K
+
+        from fuse_augmentations.adapters._kornia import KorniaAdapter
+
+        B = 2
+        transform = K.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=1.0)
+        adapter = KorniaAdapter()
+        params = adapter.sample_params(transform, (B, 3, 32, 32), torch.device("cpu"))
+
+        with pytest.raises(NotImplementedError, match="saturation/hue"):
+            adapter.build_color_matrix(transform, params)
 
     def test_torchvision_adapter_has_build_color_matrix(self):
         """TorchVisionAdapter.build_color_matrix exists as a callable."""

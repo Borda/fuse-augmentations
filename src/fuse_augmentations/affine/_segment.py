@@ -874,7 +874,7 @@ class AlbuProjectiveSegment(nn.Module):
                 (width, height),  # dsize = (W, H)
                 flags=cv2_interp | _CV2_WARP_INVERSE_MAP,
                 borderMode=cv2_border,
-                borderValue=0,
+                borderValue=(0,),
             )
             if warped.ndim == 2:
                 warped = warped[..., None]
@@ -1159,7 +1159,7 @@ class CropResizeSegment(nn.Module):
 
         if not _has_aux:
             return out
-        assert aux_targets is not None
+        assert aux_targets is not None  # noqa: S101
         return out, aux_targets
 
 

@@ -70,8 +70,10 @@ class TestCropResizeMatrix:
         target_w = torch.full((1,), float(W) / 2)
 
         M = crop_resize_matrix(top, left, crop_h, crop_w, target_h, target_w)
-        # sx = (W/2) / W = 0.5, tx = 0; sy = (H/2) / H = 0.5, ty = 0
-        expected = torch.tensor([[0.5, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 1.0]]).unsqueeze(0)
+        # align_corners=True endpoint mapping:
+        # sx = (W_out-1)/(W_in-1) = 31/63, sy = 31/63
+        s = 31.0 / 63.0
+        expected = torch.tensor([[s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, 1.0]]).unsqueeze(0)
         assert torch.allclose(M, expected)
 
     def test_top_left_offset_translates(self):
@@ -104,6 +106,20 @@ class TestCropResizeMatrix:
 
         M = crop_resize_matrix(top, left, crop_h, crop_w, target_h, target_w)
         assert M.shape == (B, 3, 3)
+
+    def test_rejects_degenerate_crop_or_target_sizes(self):
+        """crop_resize_matrix rejects sizes <= 1 (singular endpoint mapping)."""
+        from fuse_augmentations.affine._matrix import crop_resize_matrix
+
+        with pytest.raises(ValueError, match="requires crop and target sizes > 1"):
+            crop_resize_matrix(
+                top=torch.tensor([0.0]),
+                left=torch.tensor([0.0]),
+                crop_h=torch.tensor([1.0]),
+                crop_w=torch.tensor([16.0]),
+                target_h=torch.tensor([8.0]),
+                target_w=torch.tensor([8.0]),
+            )
 
 
 class TestNormalizeMatrixIO:
@@ -141,6 +157,40 @@ class TestNormalizeMatrixIO:
         assert M_norm.shape == (1, 3, 3)
         # The normalized matrix should have finite values
         assert torch.all(torch.isfinite(M_norm))
+
+    def test_crop_resize_matches_explicit_crop_then_interpolate(self):
+        """normalize_matrix_io + grid_sample matches explicit crop + interpolate."""
+        import torch.nn.functional as F
+
+        from fuse_augmentations.affine._matrix import crop_resize_matrix, inv3x3, normalize_matrix_io
+
+        H_in, W_in = 64, 80
+        H_out, W_out = 32, 32
+        top, left = 7, 11
+        crop_h, crop_w = 40, 50
+
+        x = torch.linspace(0.0, 1.0, H_in * W_in).reshape(1, 1, H_in, W_in).repeat(1, 3, 1, 1)
+        ref = F.interpolate(
+            x[:, :, top : top + crop_h, left : left + crop_w],
+            size=(H_out, W_out),
+            mode="bilinear",
+            align_corners=True,
+        )
+
+        M_fwd = crop_resize_matrix(
+            top=torch.tensor([float(top)]),
+            left=torch.tensor([float(left)]),
+            crop_h=torch.tensor([float(crop_h)]),
+            crop_w=torch.tensor([float(crop_w)]),
+            target_h=torch.tensor([float(H_out)]),
+            target_w=torch.tensor([float(W_out)]),
+        )
+        M_inv = inv3x3(M_fwd)
+        M_norm = normalize_matrix_io(M_inv, H_in=H_in, W_in=W_in, H_out=H_out, W_out=W_out)
+        grid = F.affine_grid(M_norm[:, :2, :], [1, 3, H_out, W_out], align_corners=True)
+        out = F.grid_sample(x, grid, mode="bilinear", padding_mode="zeros", align_corners=True)
+
+        torch.testing.assert_close(out, ref, rtol=1e-6, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------
