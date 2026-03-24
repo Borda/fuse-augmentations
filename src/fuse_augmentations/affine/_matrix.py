@@ -402,6 +402,125 @@ def normalize_matrix(M: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: 
     return matmul3x3(matmul3x3(N, M), N_inv)
 
 
+def crop_resize_matrix(
+    top: torch.Tensor,
+    left: torch.Tensor,
+    crop_h: torch.Tensor,
+    crop_w: torch.Tensor,
+    target_h: torch.Tensor,
+    target_w: torch.Tensor,
+) -> torch.Tensor:
+    """Build ``(B, 3, 3)`` pixel-space forward matrix for a crop-then-resize operation.
+
+    Maps input pixel ``(x_in, y_in)`` to output pixel ``(x_out, y_out)`` via::
+
+        x_out = (x_in - left) * target_w / crop_w
+        y_out = (y_in - top)  * target_h / crop_h
+
+    All inputs are per-sample ``(B,)`` tensors.  ``target_h``/``target_w`` are
+    typically constant across the batch (fixed output size) but are accepted as
+    tensors for API uniformity.
+
+    Args:
+        top: Crop top coordinate in pixels, shape ``(B,)``.
+        left: Crop left coordinate in pixels, shape ``(B,)``.
+        crop_h: Crop height in pixels, shape ``(B,)``.
+        crop_w: Crop width in pixels, shape ``(B,)``.
+        target_h: Output height in pixels, shape ``(B,)``.
+        target_w: Output width in pixels, shape ``(B,)``.
+
+    Returns:
+        ``(B, 3, 3)`` forward affine matrix in pixel coordinates.
+
+    Example:
+        >>> import torch
+        >>> top = torch.zeros(1)
+        >>> M = crop_resize_matrix(top, top, torch.full((1,), 32.0), torch.full((1,), 32.0),
+        ...                        torch.full((1,), 32.0), torch.full((1,), 32.0))
+        >>> torch.allclose(M, torch.eye(3).unsqueeze(0))
+        True
+
+    """
+    sx = target_w / crop_w
+    sy = target_h / crop_h
+    tx = -left * sx
+    ty = -top * sy
+    zeros = torch.zeros_like(top)
+    ones = torch.ones_like(top)
+    row0 = torch.stack([sx, zeros, tx], dim=-1)
+    row1 = torch.stack([zeros, sy, ty], dim=-1)
+    row2 = torch.stack([zeros, zeros, ones], dim=-1)
+    return torch.stack([row0, row1, row2], dim=-2)
+
+
+def normalize_matrix_io(
+    M: torch.Tensor,  # noqa: N803
+    H_in: int,  # noqa: N803
+    W_in: int,  # noqa: N803
+    H_out: int,  # noqa: N803
+    W_out: int,  # noqa: N803
+) -> torch.Tensor:
+    """Normalize a pixel-space inverse matrix for ``affine_grid`` when input and output sizes differ.
+
+    Applies the normalization sandwich ``N_out @ M @ N_in_inv`` where:
+
+    - ``N_out`` maps output pixel coords → output normalized ``[-1, 1]`` (uses ``H_out``, ``W_out``).
+    - ``N_in_inv`` maps input normalized ``[-1, 1]`` → input pixel coords (uses ``H_in``, ``W_in``).
+
+    Use this instead of :func:`normalize_matrix` when the segment output size differs from the input
+    size (e.g. for :class:`~fuse_augmentations.affine._segment.CropResizeSegment`).
+
+    Args:
+        M: ``(B, 3, 3)`` pixel-space *inverse* matrix (output pixel → input pixel).
+        H_in: Input image height in pixels.  Must be >= 2.
+        W_in: Input image width in pixels.  Must be >= 2.
+        H_out: Output image height in pixels.  Must be >= 2.
+        W_out: Output image width in pixels.  Must be >= 2.
+
+    Returns:
+        ``(B, 3, 3)`` normalized matrix suitable for ``F.affine_grid`` with output size
+        ``[B, C, H_out, W_out]``.
+
+    Raises:
+        ValueError: If any dimension is < 2.
+
+    Example:
+        >>> import torch
+        >>> M_inv = torch.eye(3).unsqueeze(0)
+        >>> M_norm = normalize_matrix_io(M_inv, H_in=64, W_in=64, H_out=32, W_out=32)
+        >>> M_norm.shape
+        torch.Size([1, 3, 3])
+
+    """
+    for name, val in (("H_in", H_in), ("W_in", W_in), ("H_out", H_out), ("W_out", W_out)):
+        if val < 2:
+            msg = f"{name} must be >= 2 for normalization ({name}={val} causes division by zero)"
+            raise ValueError(msg)
+
+    B = M.shape[0]  # noqa: N806
+    device = M.device
+    dtype = M.dtype
+
+    # N_out: output pixel → output normalized [-1, 1]
+    N = torch.zeros(B, 3, 3, device=device, dtype=dtype)  # noqa: N806
+    N[:, 0, 0] = 2.0 / (W_out - 1)
+    N[:, 0, 2] = -1.0
+    N[:, 1, 1] = 2.0 / (H_out - 1)
+    N[:, 1, 2] = -1.0
+    N[:, 2, 2] = 1.0
+
+    # N_in_inv: input normalized → input pixel
+    N_inv = torch.zeros(B, 3, 3, device=device, dtype=dtype)  # noqa: N806
+    N_inv[:, 0, 0] = (W_in - 1) / 2.0
+    N_inv[:, 0, 2] = (W_in - 1) / 2.0
+    N_inv[:, 1, 1] = (H_in - 1) / 2.0
+    N_inv[:, 1, 2] = (H_in - 1) / 2.0
+    N_inv[:, 2, 2] = 1.0
+
+    # Sandwich: N_out @ M @ N_in_inv
+    return matmul3x3(matmul3x3(N, M), N_inv)
+
+
 def perspective_from_points(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
     """Build ``(B, 3, 3)`` homography from 4 point correspondences using DLT.
 

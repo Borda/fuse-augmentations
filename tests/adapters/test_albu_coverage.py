@@ -41,6 +41,7 @@ _CONSTRUCTOR_KWARGS: dict[str, dict] = {
     "RandomRotate90": {"p": 1.0},
     "D4": {"p": 1.0},
     "Transpose": {"p": 1.0},
+    "RandomResizedCrop": {"size": (32, 32), "p": 1.0},
 }
 
 BSZ, C, H, W = 2, 3, 32, 32

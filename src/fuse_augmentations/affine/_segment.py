@@ -29,7 +29,13 @@ from torch import Tensor, nn
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
 from fuse_augmentations._types import InterpolationStr, PaddingModeStr, TransformAdapter, TransformCategory
-from fuse_augmentations.affine._matrix import inv3x3, matmul3x3, normalize_matrix, perspective_grid
+from fuse_augmentations.affine._matrix import (
+    inv3x3,
+    matmul3x3,
+    normalize_matrix,
+    normalize_matrix_io,
+    perspective_grid,
+)
 
 __doctest_skip__: list[str] = []
 if not _KORNIA_AVAILABLE:
@@ -1058,6 +1064,110 @@ def _flush_color(
     transforms.clear()
 
 
+class CropResizeSegment(nn.Module):
+    """Segment for a single ``CROP_RESIZE_FIXED`` transform.
+
+    Samples the random crop region, builds the forward affine matrix, normalizes it
+    via :func:`~fuse_augmentations.affine._matrix.normalize_matrix_io` (which accounts
+    for different input and output spatial dimensions), and applies exactly one
+    ``grid_sample`` call at the target ``(H_out, W_out)`` dimensions.
+
+    Unlike :class:`FusedAffineSegment`, the output shape is ``(B, C, H_out, W_out)``
+    which generally differs from the input shape ``(B, C, H_in, W_in)``.
+
+    .. note::
+        Per-sample probability ``p`` is **not** applied: shape-changing transforms
+        must produce a consistent output size for all batch elements, so the crop is
+        always applied.  Use ``p=1.0`` (the standard default) when constructing
+        ``RandomResizedCrop`` transforms.
+
+    .. note::
+        Auxiliary targets (``"mask"``, ``"bbox_xyxy"``, etc.) are **passed through
+        unchanged** in this release.  Full aux-target routing for crop-resize is
+        deferred to a future phase.
+
+    Args:
+        transform: A single ``CROP_RESIZE_FIXED`` transform object.
+        adapter: A ``TransformAdapter`` providing ``sample_params`` and ``build_matrix``
+            for the transform.
+        interpolation: Interpolation mode (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
+            Defaults to ``"bilinear"`` when ``None``.
+        padding_mode: Padding mode (``"zeros"``, ``"border"``, ``"reflection"``).
+            Defaults to ``"zeros"`` when ``None``.
+
+    """
+
+    def __init__(
+        self,
+        transform: object,
+        adapter: TransformAdapter,
+        interpolation: InterpolationStr | None = None,
+        padding_mode: PaddingModeStr | None = None,
+    ) -> None:
+        super().__init__()
+        self.transform = transform
+        self.transforms: list[object] = [transform]
+        self.adapter = adapter
+        self.interpolation = interpolation
+        self.padding_mode = padding_mode
+
+    def forward(
+        self,
+        image: Tensor,
+        aux_targets: dict[str, Tensor] | None = None,
+    ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
+        """Apply the crop-resize via a single ``grid_sample`` call at target output size.
+
+        Args:
+            image: ``(B, C, H_in, W_in)`` float input tensor.
+            aux_targets: Passed through unchanged (not transformed in this release).
+
+        Returns:
+            ``(B, C, H_out, W_out)`` tensor when ``aux_targets`` is ``None``;
+            ``(tensor, aux_targets)`` tuple otherwise.
+
+        """
+        _has_aux = aux_targets is not None
+        bsz, n_ch, height, width = image.shape
+        device = image.device
+        dtype = image.dtype
+
+        params = self.adapter.sample_params(self.transform, (bsz, n_ch, height, width), device)
+        target_h = int(params["target_h"][0].item())
+        target_w = int(params["target_w"][0].item())
+
+        mtx = self.adapter.build_matrix(self.transform, params, height, width)
+        if mtx.shape[0] == 1 and bsz > 1:
+            mtx = mtx.expand(bsz, -1, -1)
+        mtx = mtx.to(device=device, dtype=dtype)
+
+        mtx_inv = inv3x3(mtx)
+        mtx_norm = normalize_matrix_io(mtx_inv, height, width, target_h, target_w)
+
+        grid = F.affine_grid(
+            mtx_norm[:, :2, :],
+            [bsz, n_ch, target_h, target_w],
+            align_corners=True,
+        )
+        out = F.grid_sample(
+            image,
+            grid,
+            mode=self.interpolation or "bilinear",
+            padding_mode=self.padding_mode or "zeros",
+            align_corners=True,
+        )
+
+        if not _has_aux:
+            return out
+        assert aux_targets is not None
+        return out, aux_targets
+
+
+# ---------------------------------------------------------------------------
+# Reorder helpers
+# ---------------------------------------------------------------------------
+
+
 def reorder_pointwise(
     transforms: list[object],
     adapter: TransformAdapter,
@@ -1224,6 +1334,7 @@ def build_segments(
     fusible = {TransformCategory.GEOMETRIC_INTERP, TransformCategory.GEOMETRIC_EXACT}
     projective_cat = TransformCategory.PROJECTIVE
     pointwise_linear_cat = TransformCategory.POINTWISE_LINEAR
+    crop_resize_cat = TransformCategory.CROP_RESIZE_FIXED
 
     segments: list[object] = []
     current_geo: list[object] = []
@@ -1309,6 +1420,25 @@ def build_segments(
             _flush_geo()
             _flush_proj()
             current_color.append(tfm)
+            continue
+        if cat == crop_resize_cat:
+            # CROP_RESIZE_FIXED: flush all pending runs, then emit a standalone segment.
+            # For the torch path this produces a CropResizeSegment (one grid_sample at target size).
+            # For the numpy/albumentations path the transform is emitted as a passthrough.
+            _flush_geo()
+            _flush_proj()
+            _flush_color(current_color, adapter, segments)
+            if not use_numpy:
+                segments.append(
+                    CropResizeSegment(
+                        tfm,
+                        adapter,
+                        interpolation=interpolation,
+                        padding_mode=padding_mode,
+                    )
+                )
+            else:
+                segments.append(tfm)
             continue
         # SPATIAL_KERNEL / POINTWISE barrier: flush all
         _flush_geo()

@@ -39,7 +39,7 @@ import torch
 from numpy.typing import NDArray
 
 from fuse_augmentations._types import TransformCategory
-from fuse_augmentations.affine._matrix import hflip_matrix, matmul3x3, rotation_matrix, vflip_matrix
+from fuse_augmentations.affine._matrix import crop_resize_matrix, hflip_matrix, matmul3x3, rotation_matrix, vflip_matrix
 
 # ---------------------------------------------------------------------------
 # Inline NumPy matrix helpers (moved from _np_matrix.py)
@@ -114,6 +114,7 @@ try:
     from albumentations import HorizontalFlip as _HorizontalFlip
     from albumentations import Perspective as _Perspective
     from albumentations import RandomBrightnessContrast as _RandomBrightnessContrast
+    from albumentations import RandomResizedCrop as _RandomResizedCrop
     from albumentations import RandomRotate90 as _RandomRotate90
     from albumentations import Rotate as _Rotate
     from albumentations import SafeRotate as _SafeRotate
@@ -133,6 +134,7 @@ try:
         _Transpose: TransformCategory.GEOMETRIC_EXACT,
         _Perspective: TransformCategory.PROJECTIVE,
         _RandomBrightnessContrast: TransformCategory.POINTWISE_LINEAR,
+        _RandomResizedCrop: TransformCategory.CROP_RESIZE_FIXED,
     }
 
     # Canonical base classes for fast isinstance dispatch in the adapter paths below.
@@ -144,6 +146,7 @@ try:
     _EXACT_DISCRETE_TYPES: frozenset[type] = frozenset({_RandomRotate90, _D4, _Transpose})
     _INTERP_TYPES: frozenset[type] = frozenset({_Affine, _Rotate, _SafeRotate, _ShiftScaleRotate})
     _COLOR_TYPES: frozenset[type] = frozenset({_RandomBrightnessContrast})
+    _CROP_RESIZE_TYPES: frozenset[type] = frozenset({_RandomResizedCrop})
     _ALL_REGISTRY_TYPES: frozenset[type] = frozenset(TRANSFORM_REGISTRY)
 
 except ImportError:
@@ -153,6 +156,7 @@ except ImportError:
     _EXACT_DISCRETE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _INTERP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _COLOR_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _CROP_RESIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _ALL_REGISTRY_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
 
 
@@ -273,6 +277,10 @@ class AlbumentationsAdapter:
         if _is_albu_instance(transform, _COLOR_TYPES):
             return _sample_color_params(transform, B, device)
 
+        # CROP_RESIZE_FIXED: extract crop_coords from get_params_dependent_on_data
+        if _is_albu_instance(transform, _CROP_RESIZE_TYPES):
+            return _sample_crop_resize_params(transform, B, H, W, device)
+
         # GEOMETRIC_INTERP: extract the pre-built matrix B times (once per sample)
         if _is_albu_instance(transform, _INTERP_TYPES) or _is_albu_instance(transform, _ALL_REGISTRY_TYPES):
             matrices = _sample_matrices(transform, B, H, W)  # (B, 3, 3) float64 ndarray
@@ -348,6 +356,16 @@ class AlbumentationsAdapter:
                 if d4_code is None:
                     d4_code = torch.zeros(B, device=device, dtype=torch.int64)
                 return _d4_matrix(d4_code, H=H, W=W, device=device, dtype=dtype)
+
+        if _is_albu_instance(transform, _CROP_RESIZE_TYPES):
+            return crop_resize_matrix(
+                top=params["crop_top"],
+                left=params["crop_left"],
+                crop_h=params["crop_h"],
+                crop_w=params["crop_w"],
+                target_h=params["target_h"],
+                target_w=params["target_w"],
+            )
 
         if "matrix" in params:
             # Already (B, 3, 3) float32 from sample_params
@@ -691,6 +709,57 @@ def _apply_d4_element(image: torch.Tensor, elem: _D4Elem) -> torch.Tensor:
         return image.flip(dims=[2, 3]).permute(0, 1, 3, 2).contiguous()
     msg = f"Unknown D4 group element: {elem!r}"
     raise ValueError(msg)
+
+
+def _sample_crop_resize_params(
+    transform: object,
+    B: int,  # noqa: N803
+    H: int,  # noqa: N803
+    W: int,  # noqa: N803
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    """Sample crop coordinates from ``RandomResizedCrop`` for B images.
+
+    Albumentations ``RandomResizedCrop.get_params_dependent_on_data`` returns
+    ``crop_coords = (x_min, y_min, x_max, y_max)`` where the endpoints are
+    exclusive (i.e. ``crop_w = x_max - x_min`` pixels).
+
+    Args:
+        transform: An Albumentations ``RandomResizedCrop`` instance.
+        B: Batch size.
+        H: Image height in pixels (used to bound crop coordinates).
+        W: Image width in pixels (used to bound crop coordinates).
+        device: Target device for returned tensors.
+
+    Returns:
+        Dict with canonical keys ``crop_top``, ``crop_left``, ``crop_h``,
+        ``crop_w``, ``target_h``, ``target_w`` as ``(B,)`` float32 tensors.
+
+    """
+    dummy = np.zeros((H, W, 1), dtype=np.float32)
+    data = {"image": dummy}
+    tops: list[float] = []
+    lefts: list[float] = []
+    crop_hs: list[float] = []
+    crop_ws: list[float] = []
+    for _ in range(B):
+        base = transform.get_params()  # type: ignore[attr-defined]
+        base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
+        full = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]
+        x_min, y_min, x_max, y_max = full["crop_coords"]
+        tops.append(float(y_min))
+        lefts.append(float(x_min))
+        crop_hs.append(float(y_max - y_min))
+        crop_ws.append(float(x_max - x_min))
+    target_h, target_w = transform.size  # type: ignore[attr-defined]
+    return {
+        "crop_top": torch.tensor(tops, dtype=torch.float32, device=device),
+        "crop_left": torch.tensor(lefts, dtype=torch.float32, device=device),
+        "crop_h": torch.tensor(crop_hs, dtype=torch.float32, device=device),
+        "crop_w": torch.tensor(crop_ws, dtype=torch.float32, device=device),
+        "target_h": torch.full((B,), float(target_h), dtype=torch.float32, device=device),
+        "target_w": torch.full((B,), float(target_w), dtype=torch.float32, device=device),
+    }
 
 
 def _sample_matrices(transform: object, B: int, H: int, W: int) -> NDArray[np.float64]:  # noqa: N803
