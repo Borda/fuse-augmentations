@@ -132,6 +132,9 @@ class FusedCompose(nn.Module):
             alongside the image. Unknown keys are passed through unchanged
             with a ``UserWarning``. ``None`` preserves backward-compatible
             single-tensor input/output.
+            In this release, Albumentations fused affine segments do not
+            support ``aux_targets``. If such a segment exists and ``data_keys``
+            is set, construction raises ``ValueError``.
         output_backend: Target output format. ``"numpy"`` (or its alias
             ``"numpy_hwc"``) converts the primary image output to a NumPy
             ``ndarray`` with channel-last layout: batched inputs of shape
@@ -306,6 +309,18 @@ class FusedCompose(nn.Module):
                 stacklevel=3,
             )
 
+        # Albumentations fused segments only reject aux_targets (len > 1); single-key
+        # data_keys (image only) is fine because no aux dict is passed through.
+        if (
+            data_keys is not None
+            and len(data_keys) > 1
+            and any(isinstance(seg, (AlbuFusedAffineSegment, AlbuProjectiveSegment)) for seg in self._segments)
+        ):
+            raise ValueError(
+                "Albumentations fused segments (AlbuFusedAffineSegment, AlbuProjectiveSegment) do not "
+                "support aux_targets in this release. Remove extra data_keys or use a non-Albumentations pipeline."
+            )
+
     def _convert_primary_output(self, image: torch.Tensor) -> torch.Tensor | NDArray[Any]:
         """Convert the primary image output to the requested backend."""
         if self._output_converter is None:
@@ -447,12 +462,10 @@ class FusedCompose(nn.Module):
             pt_adapter = None
             for idx, orig_tfm in enumerate(self.original_transforms):
                 if orig_tfm is seg:
-                    pt_adapter = self._transform_adapters.get(idx)
+                    pt_adapter = self._transform_adapters.get(idx, self._adapter)
                     break
             if pt_adapter is None:
-                pt_adapter = self._adapter
-            if pt_adapter is None:
-                msg = "Passthrough transform encountered but no adapter found; this is a bug in build_segments"
+                msg = f"Unknown segment type {type(seg).__name__!r} — update FusedCompose.forward dispatch"
                 raise RuntimeError(msg)
             image = pt_adapter.call_nonfused(seg, image)
 
@@ -563,6 +576,10 @@ class FusedCompose(nn.Module):
             if isinstance(seg, FusedColorSegment):
                 names = [type(t).__name__ for t in seg.transforms]
                 parts.append(f"color({', '.join(names)})")
+                continue
+
+            if isinstance(seg, CropResizeSegment):
+                parts.append(f"crop_resize({type(seg.transform).__name__})")
                 continue
 
             if isinstance(seg, _PassthroughSegment):

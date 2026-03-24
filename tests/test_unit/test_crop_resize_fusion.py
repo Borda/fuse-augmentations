@@ -42,7 +42,7 @@ class TestCropResizeMatrix:
     """crop_resize_matrix: pixel-space forward affine for crop+resize."""
 
     def test_identity_full_image(self):
-        """crop covering the full image with the same target size gives identity."""
+        """Crop covering the full image with the same target size gives identity."""
         from fuse_augmentations.affine._matrix import crop_resize_matrix
 
         H, W = 32, 32
@@ -384,6 +384,19 @@ class TestCropResizeSegmentForward:
         x = torch.rand(1, 3, 128, 128)
         out = seg(x)
         assert out.shape == torch.Size([1, 3, 64, 64])
+
+    def test_p_zero_is_ignored(self):
+        """CropResizeSegment always applies regardless of p; p=0.0 still crops."""
+        kornia = pytest.importorskip("kornia")
+        from fuse_augmentations.adapters._kornia import KorniaAdapter
+        from fuse_augmentations.affine._segment import CropResizeSegment
+
+        t = kornia.augmentation.RandomResizedCrop(size=(32, 32), scale=(0.5, 1.0), p=0.0)
+        seg = CropResizeSegment(t, KorniaAdapter())
+        x = torch.rand(2, 3, 64, 64)
+        out = seg(x)
+        # Shape must be target size even though p=0.0
+        assert out.shape == torch.Size([2, 3, 32, 32])
 
 
 # ---------------------------------------------------------------------------

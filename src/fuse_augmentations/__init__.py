@@ -39,6 +39,7 @@ from fuse_augmentations._types import (
     TransformSpec,
 )
 from fuse_augmentations.affine._segment import (
+    CropResizeSegment,
     ExactAffineSegment,
     FusedAffineSegment,
     FusedColorSegment,
@@ -50,6 +51,7 @@ __all__ = [
     "AugmentationSequential",
     "BackendConverter",
     "Compose",
+    "CropResizeSegment",
     "ExactAffineSegment",
     "FusedAffineSegment",
     "FusedColorSegment",

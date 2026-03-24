@@ -143,7 +143,7 @@ class ExactAffineSegment(nn.Module):
             else:
                 # Single Bernoulli draw shared across the entire batch.
                 active_scalar = torch.rand((), device=device) < prob
-                active = active_scalar.expand(bsz)
+                active = active_scalar.repeat(bsz)
 
             # Skip this transform entirely if no samples are active.
             if not bool(active.any().item()):
@@ -281,7 +281,7 @@ class FusedAffineSegment(nn.Module):
             same_on_batch = _shares_randomness_across_batch(self.adapter, tfm)
             if same_on_batch:
                 active_scalar = torch.rand((), device=device) < prob
-                active = active_scalar.expand(bsz)
+                active = active_scalar.repeat(bsz)
             else:
                 active = torch.rand(bsz, device=device) < prob
 
@@ -650,7 +650,7 @@ class ProjectiveSegment(nn.Module):
             same_on_batch = _shares_randomness_across_batch(self.adapter, tfm)
             if same_on_batch:
                 active_scalar = torch.rand((), device=device) < prob
-                active = active_scalar.expand(bsz)
+                active = active_scalar.repeat(bsz)
             else:
                 active = torch.rand(bsz, device=device) < prob
 
@@ -905,6 +905,12 @@ class FusedColorSegment(nn.Module):
         transforms: List of ``POINTWISE_LINEAR`` transform objects to fuse.
         adapter: A ``TransformAdapter`` providing ``sample_params`` and
             ``build_color_matrix`` for each transform.
+        clip_output: When ``True`` (default), the fused output is clamped to
+            ``[0, 1]`` after the matrix multiply, matching the typical behaviour
+            of individual colour transforms.  Set to ``False`` only when the
+            pipeline intentionally produces values outside this range (e.g.
+            transforms configured with ``clip_output=False`` in the underlying
+            library).
 
     """
 
@@ -915,19 +921,24 @@ class FusedColorSegment(nn.Module):
         self,
         transforms: list[object],
         adapter: TransformAdapter,
+        clip_output: bool = True,
     ) -> None:
         super().__init__()
         self._transforms = transforms
         self._adapter = adapter
+        self.clip_output = clip_output
         # Register identity matrix as a buffer so device moves (.to(), .cuda())
         # propagate automatically — avoids re-allocating every forward pass.
         self.register_buffer("_eye4", torch.eye(4, dtype=torch.float32))
 
     def __setstate__(self, state: dict[str, Any]) -> None:
-        """Restore state; back-compat: add _eye4 buffer if missing (pre-buffer pickle)."""
+        """Restore state; back-compat: add missing fields from older pickles."""
         super().__setstate__(state)  # type: ignore[no-untyped-call]
         if "_eye4" not in self._buffers:
             self.register_buffer("_eye4", torch.eye(4, dtype=torch.float32))
+        # clip_output added in v0.7; default True preserves pre-existing behaviour.
+        if not hasattr(self, "clip_output"):
+            self.clip_output = True
 
     @property
     def transforms(self) -> list[object]:
@@ -964,6 +975,7 @@ class FusedColorSegment(nn.Module):
 
         device = image.device
         dtype = image.dtype
+        image_in = image
 
         # Cast the registered buffer to the current device/dtype (no-op for float32 CPU)
         eye = self._eye4.to(device=device, dtype=dtype)
@@ -981,7 +993,18 @@ class FusedColorSegment(nn.Module):
                 active = torch.rand(B, device=device) < prob
 
             params = self._adapter.sample_params(tfm, input_shape, device)
-            mat = self._adapter.build_color_matrix(tfm, params)  # (B, 4, 4)
+            try:
+                mat = self._adapter.build_color_matrix(tfm, params)  # (B, 4, 4)
+            except NotImplementedError:
+                # If a transform that passed the build-time probe raises NotImplementedError
+                # at forward time (e.g. probe used empty params), abort fusion entirely and
+                # restart from the original image so no partial fused state is applied.
+                image_fallback = image_in
+                for tfm_nonfused in self._transforms:
+                    image_fallback = self._adapter.call_nonfused(tfm_nonfused, image_fallback)
+                if aux_targets is None:
+                    return image_fallback
+                return image_fallback, aux_targets
 
             # Expand to batch if adapter returned (1, 4, 4)
             if mat.shape[0] == 1 and B > 1:
@@ -1005,9 +1028,7 @@ class FusedColorSegment(nn.Module):
         transformed = torch.bmm(acc, pixels_hom)  # (B, 4, H*W)
         image_out = transformed[:, :C, :].reshape(B, C, H, W)
 
-        # Optionally clamp to [0, 1]. Defaults to True to preserve existing behavior.
-        clip_output = getattr(self, "clip_output", True)
-        if clip_output:
+        if self.clip_output:
             image_out = image_out.clamp(0.0, 1.0)
         if aux_targets is None:
             return image_out
@@ -1050,6 +1071,7 @@ def _flush_color(
     If the adapter supports ``build_color_matrix`` for **every** transform
     in the run, they are folded into a single :class:`FusedColorSegment`.
     Otherwise the transforms fall back to passthrough (appended as-is).
+    This helper intentionally mutates ``transforms`` in-place (clears it).
 
     """
     if not transforms:
@@ -1058,9 +1080,11 @@ def _flush_color(
     for tfm in transforms:
         if not _try_build_color_matrix(adapter, tfm):
             segments.extend(transforms)
+            # Intentionally clears the caller-owned run buffer.
             transforms.clear()
             return
     segments.append(FusedColorSegment(list(transforms), adapter))
+    # Intentionally clears the caller-owned run buffer.
     transforms.clear()
 
 
@@ -1133,6 +1157,14 @@ class CropResizeSegment(nn.Module):
         dtype = image.dtype
 
         params = self.adapter.sample_params(self.transform, (bsz, n_ch, height, width), device)
+        if not (
+            torch.all(params["target_h"] == params["target_h"][0])
+            and torch.all(params["target_w"] == params["target_w"][0])
+        ):
+            raise ValueError(
+                "CropResizeSegment requires a uniform target size across the batch "
+                f"(got target_h={params['target_h'].tolist()}, target_w={params['target_w'].tolist()})"
+            )
         target_h = int(params["target_h"][0].item())
         target_w = int(params["target_w"][0].item())
 
@@ -1159,7 +1191,8 @@ class CropResizeSegment(nn.Module):
 
         if not _has_aux:
             return out
-        assert aux_targets is not None  # noqa: S101
+        if aux_targets is None:
+            raise RuntimeError("internal error: aux_targets is None in return branch")
         return out, aux_targets
 
 
@@ -1325,9 +1358,11 @@ def build_segments(
         Flat list where each element is a :class:`FusedAffineSegment`
         (mixed/INTERP geometric run), an :class:`ExactAffineSegment`
         (EXACT-only geometric run; auxiliary targets remain flip-only),
-        a :class:`FusedColorSegment` (``POINTWISE_LINEAR`` run where the
-        adapter supports ``build_color_matrix``), or the original transform
-        object (passthrough for ``SPATIAL_KERNEL``, ``POINTWISE``, and
+        a :class:`CropResizeSegment` (``CROP_RESIZE_FIXED`` op on the
+        PyTorch path), a :class:`FusedColorSegment` (``POINTWISE_LINEAR``
+        run where the adapter supports ``build_color_matrix``), or the
+        original transform object (passthrough for ``SPATIAL_KERNEL``,
+        ``POINTWISE``, ``CROP_RESIZE_FIXED`` on the numpy path, and
         unsupported ``POINTWISE_LINEAR`` transforms).
 
     """
@@ -1408,12 +1443,12 @@ def build_segments(
         cat = adapter.category(tfm)
         if cat in fusible:
             _flush_proj()  # flush any pending projective
-            _flush_color(current_color, adapter, segments)
+            _flush_color(current_color, adapter, segments)  # mutates current_color in-place
             current_geo.append(tfm)
             continue
         if cat == projective_cat:
             _flush_geo()  # flush any pending affine
-            _flush_color(current_color, adapter, segments)
+            _flush_color(current_color, adapter, segments)  # mutates current_color in-place
             current_proj.append(tfm)
             continue
         if cat == pointwise_linear_cat:
@@ -1427,7 +1462,7 @@ def build_segments(
             # For the numpy/albumentations path the transform is emitted as a passthrough.
             _flush_geo()
             _flush_proj()
-            _flush_color(current_color, adapter, segments)
+            _flush_color(current_color, adapter, segments)  # mutates current_color in-place
             if not use_numpy:
                 segments.append(
                     CropResizeSegment(
@@ -1443,12 +1478,12 @@ def build_segments(
         # SPATIAL_KERNEL / POINTWISE barrier: flush all
         _flush_geo()
         _flush_proj()
-        _flush_color(current_color, adapter, segments)
+        _flush_color(current_color, adapter, segments)  # mutates current_color in-place
         segments.append(tfm)
 
     _flush_geo()
     _flush_proj()
-    _flush_color(current_color, adapter, segments)
+    _flush_color(current_color, adapter, segments)  # mutates current_color in-place
     return segments
 
 
