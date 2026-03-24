@@ -85,14 +85,15 @@ class TestMixedGeometricColor:
 class TestMixedFusionPlan:
     def test_mixed_backend_fusion_plan(self):
         """Fusion plan shows geometric segment fused + color segment fused."""
+        # brightness + contrast are the linearly-fusible subset; saturation/hue are not
         pipe = Compose([
             T.RandomRotation(degrees=30),
-            KColorJitter(brightness=0.2, contrast=0.3, saturation=0.2, hue=0.3, p=1.0),
+            KColorJitter(brightness=0.2, contrast=0.3, p=1.0),
         ])
         plan = pipe.fusion_plan
         # Geometric transform should be in a fused segment
         assert "fused" in plan or "exact" in plan, f"Expected fused/exact segment in plan: {plan}"
-        # Color jitter should be a color-fused segment
+        # Color jitter (brightness+contrast only) should be a color-fused segment
         assert "color" in plan, f"Expected color segment in plan: {plan}"
 
     def test_mixed_backend_n_warps_saved(self):

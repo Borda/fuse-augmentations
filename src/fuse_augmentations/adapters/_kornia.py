@@ -245,11 +245,16 @@ class KorniaAdapter:
             # Brightness: c' = brightness_factor * c  (multiplicative)
             # Contrast: c' = contrast_factor * c + mean * (1 - contrast_factor) (data-dependent)
             # We extract all factors; build_color_matrix handles the linear approximation.
-            return {
+            out = {
                 "brightness_factor": params["brightness_factor"].to(device=device),
                 "contrast_factor": params["contrast_factor"].to(device=device),
                 "order": params["order"].to(device=device),
             }
+            if "saturation_factor" in params:
+                out["saturation_factor"] = params["saturation_factor"].to(device=device)
+            if "hue_factor" in params:
+                out["hue_factor"] = params["hue_factor"].to(device=device)
+            return out
 
         # Unknown - return empty
         return {}
@@ -524,6 +529,14 @@ class KorniaAdapter:
             # in the underlying _color_jitter_matrix. To avoid silently
             # changing semantics when non-trivial saturation or hue are
             # requested, detect these cases and force a fallback.
+            sat_cfg = getattr(transform, "saturation", 0.0)
+            hue_cfg = getattr(transform, "hue", 0.0)
+            has_sat_cfg = sat_cfg not in (0.0, (1.0, 1.0))
+            has_hue_cfg = hue_cfg not in (0.0, (0.0, 0.0))
+            if has_sat_cfg or has_hue_cfg:
+                raise NotImplementedError(
+                    "Fused ColorJitter does not support non-identity saturation/hue; fall back to non-fused execution."
+                )
             sat = params.get("saturation_factor")
             # Identity saturation corresponds to a factor of 1.0.
             if sat is not None and not torch.allclose(sat, torch.ones_like(sat)):

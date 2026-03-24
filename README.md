@@ -25,6 +25,7 @@
 - [🔌 Backend-Free Pipelines](#-backend-free-pipelines)
 - [🔄 NumPy I/O](#-numpy-io)
 - [🎨 Color Fusion (POINTWISE_LINEAR)](#-color-fusion-pointwise_linear)
+- [✂️ Crop+Resize (CROP_RESIZE_FIXED)](#%EF%B8%8F-cropresize-crop_resize_fixed)
 - [🔧 Backend-Agnostic Meta-Config](#-backend-agnostic-meta-config)
 - [🔗 Multi-Backend Pipelines](#-multi-backend-pipelines)
 - [🔀 Reorder Policy](#-reorder-policy)
@@ -141,6 +142,7 @@ For flip-only chains, `fuse-augmentations` uses an `ExactAffineSegment` that app
 | `FusedAffineSegment`                  | Handles one fusible run: samples random params, composes matrices, applies a single interpolation pass.                                                                                                                       |
 | `ExactAffineSegment`                  | Lossless segment for flip-only chains. Uses `tensor.flip` -- no interpolation.                                                                                                                                                |
 | `ProjectiveSegment`                   | Fuses projective transforms using 3x3 homography matrices.                                                                                                                                                                    |
+| `CropResizeSegment`                   | Handles a single crop+resize operation (`RandomResizedCrop`). Samples crop coordinates, builds the crop-to-output affine matrix, applies one interpolation pass at the target output size. Output spatial size differs from input. |
 | `build_segments()`                    | Internal. Partitions a transform list into fusible segments and passthrough barriers.                                                                                                                                         |
 | `SegmentDescriptor`                   | Frozen dataclass describing one pipeline segment: `kind`, `transforms`, `n_warps_saved`, `backend`. Returned by `FusedCompose.fusion_plan_descriptors`.                                                                       |
 
@@ -151,7 +153,7 @@ For flip-only chains, `fuse-augmentations` uses an `ExactAffineSegment` that app
 | `ReorderPolicy`     | `NONE` (default for `Compose()`), `POINTWISE` (default for `from_params`/`from_config`; bubble color ops after geometric runs), `AGGRESSIVE` (currently same as `POINTWISE`)                        |
 | `InterpolationMode` | `NEAREST`, `BILINEAR`, `BICUBIC` -- ordered by quality; useful for programmatic comparison (`BICUBIC > BILINEAR > NEAREST`)                                                                         |
 | `PaddingMode`       | `ZEROS`, `BORDER`, `REFLECTION` -- ordered by quality                                                                                                                                               |
-| `TransformCategory` | `GEOMETRIC_INTERP`, `GEOMETRIC_EXACT`, `POINTWISE`, `SPATIAL_KERNEL`, `PROJECTIVE`, `POINTWISE_LINEAR` (fused by `FusedColorSegment`; supported ops per backend listed in the Color Fusion section) |
+| `TransformCategory` | `GEOMETRIC_INTERP`, `GEOMETRIC_EXACT`, `POINTWISE`, `SPATIAL_KERNEL`, `PROJECTIVE`, `POINTWISE_LINEAR` (fused by `FusedColorSegment`; supported ops per backend listed in the Color Fusion section), `CROP_RESIZE_FIXED` (handled by `CropResizeSegment`; changes output spatial size) |
 
 ### Auxiliary Target Functions
 
@@ -285,11 +287,34 @@ Supported color operations per backend:
 
 | Backend        | Supported                                                                         |
 | -------------- | --------------------------------------------------------------------------------- |
-| Kornia         | `RandomBrightness`, `RandomContrast`, `ColorJitter` (brightness+contrast only)    |
+| Kornia         | `RandomBrightness`, `RandomContrast`, `ColorJitter` (brightness+contrast only; saturation/hue fall back to passthrough) |
 | TorchVision    | `ColorJitter` (brightness+contrast only; saturation/hue fall back to passthrough) |
 | Albumentations | `RandomBrightnessContrast`                                                        |
 
 See `docs/math/fusible-categories-proofs.md` for the mathematical proof of the 4×4 homogeneous color-space affine composition law.
+
+## ✂️ Crop+Resize (`CROP_RESIZE_FIXED`)
+
+`RandomResizedCrop` from any supported backend is registered as `CROP_RESIZE_FIXED` and handled by `CropResizeSegment`. Unlike `FusedAffineSegment`, it is not fused with adjacent geometric transforms -- it acts as a segment boundary and applies exactly one interpolation pass at the configured output size:
+
+```python
+import torchvision.transforms.v2 as aug_tv
+from fuse_aug import Compose
+
+pipe = Compose(
+    [
+        aug_tv.RandomRotation(degrees=15),
+        aug_tv.RandomResizedCrop(size=(224, 224)),  # CROP_RESIZE_FIXED — segment boundary
+        aug_tv.RandomHorizontalFlip(p=0.5),
+    ]
+)
+
+out = pipe(image)  # (B, C, 224, 224)
+print(pipe.fusion_plan)
+# fused(RandomRotation) -> crop_resize(RandomResizedCrop) -> fused(RandomHorizontalFlip)
+```
+
+The output tensor has the target spatial size specified in the `RandomResizedCrop` constructor. Supported in all three backends: Kornia, TorchVision (v1 and v2), and Albumentations.
 
 ## 🔧 Backend-Agnostic Meta-Config
 
@@ -427,14 +452,14 @@ from fuse_aug import Compose, ReorderPolicy
 pipe = Compose(
     [
         aug_tv.RandomRotation(degrees=15),
-        aug_tv.ColorJitter(brightness=0.3),  # POINTWISE -- would break fusion
+        aug_tv.ColorJitter(brightness=0.3),  # POINTWISE_LINEAR — would break fusion
         aug_tv.RandomHorizontalFlip(p=0.5),
     ],
     reorder=ReorderPolicy.POINTWISE,
 )
 
 print(pipe.fusion_plan)
-# fused(RandomRotation, RandomHorizontalFlip) -> passthrough(ColorJitter)
+# fused(RandomRotation, RandomHorizontalFlip) -> color(ColorJitter)
 ```
 
 **`ReorderPolicy.NONE`** (default for `Compose()`): preserves declared order, merges consecutive fusible transforms.
@@ -488,7 +513,7 @@ print(json.dumps(plan_json, indent=2))
 
 | Field           | Type              | Description                                                                                                                                                                               |
 | --------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kind`          | `str`             | Segment type: `"fused"`, `"exact"`, `"projective"`, or `"passthrough"`                                                                                                                    |
+| `kind`          | `str`             | Segment type: `"fused"`, `"exact"`, `"projective"`, `"crop_resize"`, or `"passthrough"`                                                                                                   |
 | `transforms`    | `tuple[str, ...]` | Class names of transforms in this segment (`list` in `to_dict()` output)                                                                                                                  |
 | `n_warps_saved` | `int`             | Interpolation passes eliminated by this segment                                                                                                                                           |
 | `backend`       | `str \| None`     | Adapter class name (`"KorniaAdapter"`, `"AlbumentationsAdapter"`, `"TorchVisionAdapter"`) for fused/exact/projective segments; `None` for passthrough segments and backend-free pipelines |
@@ -567,6 +592,7 @@ Pipelines survive `pickle` round-trips, so they work transparently with `torch.n
 - **Pixel-wise ops** (Normalize, gamma, equalize) are not yet fusible -- they are single-pixel non-linear operations and currently act as passthrough. Linear color ops (brightness, contrast) are fusible via `FusedColorSegment`; see the Color Fusion section.
 - **Spatial-kernel ops** (GaussianBlur, Sharpen) act as fusion barriers; transforms on either side of a barrier form separate segments. These are not yet fusible.
 - **Padding mode** is segment-level: all transforms in a fused run share the same padding mode (the highest-quality setting among them).
+- **Crop+resize ops** (`RandomResizedCrop`): `CropResizeSegment` applies one interpolation pass at the target output size, but the output spatial dimensions differ from the input. `data_keys` auxiliary targets (masks, bounding boxes, keypoints) are not warped through `CropResizeSegment` -- they pass through unchanged.
 - **Gradients**: image transforms are differentiable; mask sampling (`mode='nearest'`) is not.
 - **`output_backend` with multi-target `data_keys`**: when `data_keys` contains more than one entry the pipeline returns a tuple, and `output_backend` conversion is NOT applied. Convert manually or set `output_backend=None` in that case.
 
