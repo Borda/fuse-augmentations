@@ -19,6 +19,7 @@ import torch
 
 from fuse_augmentations._types import TransformCategory
 from fuse_augmentations.affine._matrix import (
+    crop_resize_matrix,
     hflip_matrix,
     matmul3x3,
     perspective_from_points,
@@ -41,6 +42,7 @@ try:
     from kornia.augmentation import RandomContrast as _RandomContrast
     from kornia.augmentation import RandomHorizontalFlip as _RandomHorizontalFlip
     from kornia.augmentation import RandomPerspective as _RandomPerspective
+    from kornia.augmentation import RandomResizedCrop as _RandomResizedCrop
     from kornia.augmentation import RandomRotation as _RandomRotation
     from kornia.augmentation import RandomRotation90 as _RandomRotation90
     from kornia.augmentation import RandomShear as _RandomShear
@@ -59,6 +61,7 @@ try:
         _RandomBrightness: TransformCategory.POINTWISE_LINEAR,
         _RandomContrast: TransformCategory.POINTWISE_LINEAR,
         _ColorJitter: TransformCategory.POINTWISE_LINEAR,
+        _RandomResizedCrop: TransformCategory.CROP_RESIZE_FIXED,
     }
 
     _COLOR_TYPES: frozenset[type] = frozenset({_RandomBrightness, _RandomContrast, _ColorJitter})
@@ -204,6 +207,25 @@ class KorniaAdapter:
                 "end_points": params["end_points"].to(device=device),
             }
 
+        if TRANSFORM_REGISTRY and ttype is _RandomResizedCrop:
+            # src: (B, 4, 2) corners (x, y) in order:
+            #   [0]=top-left, [1]=top-right, [2]=bottom-right, [3]=bottom-left
+            # output_size: (B, 2) as (H, W)
+            src = params["src"].to(device=device)  # (B, 4, 2)
+            output_size = params["output_size"].to(device=device)  # (B, 2)
+            left = src[:, 0, 0].float()
+            top = src[:, 0, 1].float()
+            right = src[:, 1, 0].float()
+            bottom = src[:, 3, 1].float()
+            return {
+                "crop_top": top,
+                "crop_left": left,
+                "crop_h": (bottom - top + 1.0),
+                "crop_w": (right - left + 1.0),
+                "target_h": output_size[:, 0].float(),
+                "target_w": output_size[:, 1].float(),
+            }
+
         # --- Color transforms (POINTWISE_LINEAR) ---
 
         if TRANSFORM_REGISTRY and ttype is _RandomBrightness:
@@ -292,6 +314,16 @@ class KorniaAdapter:
 
         if TRANSFORM_REGISTRY and ttype is _RandomPerspective:
             return perspective_from_points(params["start_points"], params["end_points"])
+
+        if TRANSFORM_REGISTRY and ttype is _RandomResizedCrop:
+            return crop_resize_matrix(
+                top=params["crop_top"],
+                left=params["crop_left"],
+                crop_h=params["crop_h"],
+                crop_w=params["crop_w"],
+                target_h=params["target_h"],
+                target_w=params["target_w"],
+            )
 
         # Fallback: identity
         return torch.eye(3).unsqueeze(0)

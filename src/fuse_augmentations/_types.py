@@ -24,6 +24,9 @@ class TransformCategory(Enum):
             affine matrix (brightness, contrast, channel mix).  Consecutive runs are fused into
             a single ``FusedColorSegment`` via ``build_color_matrix``; adapters that do not
             support ``build_color_matrix`` for a given transform fall back to passthrough.
+        CROP_RESIZE_FIXED: Fixed-output-size crop followed by resize.  Each op produces a
+            ``CropResizeSegment`` with a single ``grid_sample`` call at the target ``(H, W)``
+            dimensions.  The output shape differs from the input shape.
 
     """
 
@@ -33,6 +36,7 @@ class TransformCategory(Enum):
     SPATIAL_KERNEL = "spatial_kernel"
     PROJECTIVE = "projective"
     POINTWISE_LINEAR = "pointwise_linear"
+    CROP_RESIZE_FIXED = "crop_resize_fixed"
 
 
 class ReorderPolicy(Enum):
@@ -89,7 +93,7 @@ InterpolationStr = Literal["bilinear", "nearest", "bicubic"]
 PaddingModeStr = Literal["zeros", "border", "reflection"]
 
 #: String literal type for the ``kind`` field of :class:`SegmentDescriptor`.
-SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color"]
+SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color", "crop_resize"]
 
 
 @runtime_checkable

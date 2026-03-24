@@ -33,6 +33,7 @@ import torch
 
 from fuse_augmentations._types import TransformCategory
 from fuse_augmentations.affine._matrix import (
+    crop_resize_matrix,
     hflip_matrix,
     perspective_from_points,
     rotation_matrix,
@@ -50,6 +51,7 @@ _ROTATION_TYPES: set[type] = set()
 _AFFINE_TYPES: set[type] = set()
 _PERSPECTIVE_TYPES: set[type] = set()
 _COLOR_JITTER_TYPES: set[type] = set()
+_CROP_RESIZE_TYPES: set[type] = set()
 
 # v1: torchvision.transforms
 try:
@@ -57,6 +59,7 @@ try:
     from torchvision.transforms import RandomAffine as _V1RandomAffine
     from torchvision.transforms import RandomHorizontalFlip as _V1RandomHorizontalFlip
     from torchvision.transforms import RandomPerspective as _V1RandomPerspective
+    from torchvision.transforms import RandomResizedCrop as _V1RandomResizedCrop
     from torchvision.transforms import RandomRotation as _V1RandomRotation
     from torchvision.transforms import RandomVerticalFlip as _V1RandomVerticalFlip
 
@@ -66,6 +69,7 @@ try:
     _TRANSFORM_REGISTRY[_V1RandomVerticalFlip] = TransformCategory.GEOMETRIC_EXACT
     _TRANSFORM_REGISTRY[_V1RandomPerspective] = TransformCategory.PROJECTIVE
     _TRANSFORM_REGISTRY[_V1ColorJitter] = TransformCategory.POINTWISE_LINEAR
+    _TRANSFORM_REGISTRY[_V1RandomResizedCrop] = TransformCategory.CROP_RESIZE_FIXED
 
     _HFLIP_TYPES.add(_V1RandomHorizontalFlip)
     _VFLIP_TYPES.add(_V1RandomVerticalFlip)
@@ -73,6 +77,7 @@ try:
     _AFFINE_TYPES.add(_V1RandomAffine)
     _PERSPECTIVE_TYPES.add(_V1RandomPerspective)
     _COLOR_JITTER_TYPES.add(_V1ColorJitter)
+    _CROP_RESIZE_TYPES.add(_V1RandomResizedCrop)
 except ImportError:
     pass
 
@@ -82,6 +87,7 @@ try:
     from torchvision.transforms.v2 import RandomAffine as _V2RandomAffine
     from torchvision.transforms.v2 import RandomHorizontalFlip as _V2RandomHorizontalFlip
     from torchvision.transforms.v2 import RandomPerspective as _V2RandomPerspective
+    from torchvision.transforms.v2 import RandomResizedCrop as _V2RandomResizedCrop
     from torchvision.transforms.v2 import RandomRotation as _V2RandomRotation
     from torchvision.transforms.v2 import RandomVerticalFlip as _V2RandomVerticalFlip
 
@@ -91,6 +97,7 @@ try:
     _TRANSFORM_REGISTRY[_V2RandomVerticalFlip] = TransformCategory.GEOMETRIC_EXACT
     _TRANSFORM_REGISTRY[_V2RandomPerspective] = TransformCategory.PROJECTIVE
     _TRANSFORM_REGISTRY[_V2ColorJitter] = TransformCategory.POINTWISE_LINEAR
+    _TRANSFORM_REGISTRY[_V2RandomResizedCrop] = TransformCategory.CROP_RESIZE_FIXED
 
     _HFLIP_TYPES.add(_V2RandomHorizontalFlip)
     _VFLIP_TYPES.add(_V2RandomVerticalFlip)
@@ -98,6 +105,7 @@ try:
     _AFFINE_TYPES.add(_V2RandomAffine)
     _PERSPECTIVE_TYPES.add(_V2RandomPerspective)
     _COLOR_JITTER_TYPES.add(_V2ColorJitter)
+    _CROP_RESIZE_TYPES.add(_V2RandomResizedCrop)
 except ImportError:
     pass
 
@@ -108,6 +116,7 @@ _ROTATION_TYPES_FS: frozenset[type] = frozenset(_ROTATION_TYPES)
 _AFFINE_TYPES_FS: frozenset[type] = frozenset(_AFFINE_TYPES)
 _PERSPECTIVE_TYPES_FS: frozenset[type] = frozenset(_PERSPECTIVE_TYPES)
 _COLOR_JITTER_TYPES_FS: frozenset[type] = frozenset(_COLOR_JITTER_TYPES)
+_CROP_RESIZE_TYPES_FS: frozenset[type] = frozenset(_CROP_RESIZE_TYPES)
 
 
 def _check_expand(transform: object) -> None:
@@ -235,6 +244,10 @@ class TorchVisionAdapter:
         if isinstance(transform, tuple(_COLOR_JITTER_TYPES_FS)):
             return _sample_color_jitter_params(transform, B, device, _is_torchvision_v2_transform(transform))
 
+        # RandomResizedCrop
+        if isinstance(transform, tuple(_CROP_RESIZE_TYPES_FS)):
+            return _sample_crop_resize_params(transform, B, H, W, device, _is_torchvision_v2_transform(transform))
+
         # Unknown -- return empty
         return {}
 
@@ -284,6 +297,16 @@ class TorchVisionAdapter:
 
         if isinstance(transform, tuple(_PERSPECTIVE_TYPES_FS)):
             return perspective_from_points(params["start_points"], params["end_points"])
+
+        if isinstance(transform, tuple(_CROP_RESIZE_TYPES_FS)):
+            return crop_resize_matrix(
+                top=params["crop_top"],
+                left=params["crop_left"],
+                crop_h=params["crop_h"],
+                crop_w=params["crop_w"],
+                target_h=params["target_h"],
+                target_w=params["target_w"],
+            )
 
         # Fallback: identity (unreachable for registered transforms)
         return torch.eye(3).unsqueeze(0)
@@ -567,6 +590,67 @@ def _build_affine_matrix(
     row1 = torch.stack([c, d, cy * (1 - d) - cx * c + ty], dim=-1)
     row2 = torch.stack([zeros, zeros, ones], dim=-1)
     return torch.stack([row0, row1, row2], dim=-2)
+
+
+def _sample_crop_resize_params(
+    transform: object,
+    B: int,  # noqa: N803
+    H: int,  # noqa: N803
+    W: int,  # noqa: N803
+    device: torch.device,
+    shared_across_batch: bool = False,
+) -> dict[str, torch.Tensor]:
+    """Call ``RandomResizedCrop.get_params()`` and collect into canonical dict.
+
+    TorchVision's ``get_params(img, scale, ratio)`` returns
+    ``(top, left, height, width)`` where height/width are the crop dimensions.
+
+    Args:
+        transform: A TorchVision ``RandomResizedCrop`` instance.
+        B: Batch size.
+        H: Image height.
+        W: Image width.
+        device: Target device for returned tensors.
+        shared_across_batch: Whether to sample one parameter set for the batch
+            (v2 behaviour).
+
+    Returns:
+        Dict with keys ``crop_top``, ``crop_left``, ``crop_h``, ``crop_w``,
+        ``target_h``, ``target_w`` as ``(B,)`` or ``(1,)`` float32 tensors.
+
+    """
+    t = transform
+    target_h, target_w = t.size  # type: ignore[attr-defined]
+    sample_count = 1 if shared_across_batch else B
+
+    # get_params needs an image-like tensor for dimension extraction.
+    # v2 accepts (B, C, H, W); v1 accepts (C, H, W) -- use (1, H, W) for both.
+    dummy = torch.zeros(1, H, W)
+
+    tops: list[float] = []
+    lefts: list[float] = []
+    crop_hs: list[float] = []
+    crop_ws: list[float] = []
+
+    for _ in range(sample_count):
+        top, left, h, w = type(t).get_params(  # type: ignore[attr-defined]
+            dummy,
+            scale=t.scale,  # type: ignore[attr-defined]
+            ratio=t.ratio,  # type: ignore[attr-defined]
+        )
+        tops.append(float(top))
+        lefts.append(float(left))
+        crop_hs.append(float(h))
+        crop_ws.append(float(w))
+
+    return {
+        "crop_top": torch.tensor(tops, dtype=torch.float32, device=device),
+        "crop_left": torch.tensor(lefts, dtype=torch.float32, device=device),
+        "crop_h": torch.tensor(crop_hs, dtype=torch.float32, device=device),
+        "crop_w": torch.tensor(crop_ws, dtype=torch.float32, device=device),
+        "target_h": torch.full((sample_count,), float(target_h), dtype=torch.float32, device=device),
+        "target_w": torch.full((sample_count,), float(target_w), dtype=torch.float32, device=device),
+    }
 
 
 # ---------------------------------------------------------------------------

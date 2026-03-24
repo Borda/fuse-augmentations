@@ -43,9 +43,9 @@ class TestTransformCategory:
         """Enum member has the expected string value."""
         assert member.value == expected_value, f"{member.name}.value should be {expected_value!r}"
 
-    def test_exactly_six_members(self):
-        """TransformCategory has exactly 6 members."""
-        assert len(TransformCategory) == 6, f"Expected 6 members, got {len(TransformCategory)}"
+    def test_exactly_seven_members(self):
+        """TransformCategory has exactly 7 members."""
+        assert len(TransformCategory) == 7, f"Expected 7 members, got {len(TransformCategory)}"
 
     def test_member_names(self):
         """TransformCategory member names match the spec."""
@@ -56,6 +56,7 @@ class TestTransformCategory:
             "SPATIAL_KERNEL",
             "PROJECTIVE",
             "POINTWISE_LINEAR",
+            "CROP_RESIZE_FIXED",
         }
 
     @pytest.mark.parametrize("member", list(TransformCategory))

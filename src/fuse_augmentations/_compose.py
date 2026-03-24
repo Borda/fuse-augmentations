@@ -59,6 +59,7 @@ from fuse_augmentations.affine._matrix import (
 from fuse_augmentations.affine._segment import (
     AlbuFusedAffineSegment,
     AlbuProjectiveSegment,
+    CropResizeSegment,
     ExactAffineSegment,
     FusedAffineSegment,
     FusedColorSegment,
@@ -429,6 +430,14 @@ class FusedCompose(nn.Module):
                     image = result
                 continue
 
+            if isinstance(seg, CropResizeSegment):
+                result = seg(image, aux_targets)
+                if aux_targets is not None:
+                    image, aux_targets = result
+                else:
+                    image = result
+                continue
+
             if isinstance(seg, _PassthroughSegment):
                 image = seg.adapter.call_nonfused(seg.transform, image)
                 continue
@@ -659,6 +668,16 @@ class FusedCompose(nn.Module):
                         kind="color",
                         transforms=names,
                         n_warps_saved=n,
+                        backend=_resolve_backend(seg),
+                    )
+                )
+                continue
+            if isinstance(seg, CropResizeSegment):
+                descriptors.append(
+                    SegmentDescriptor(
+                        kind="crop_resize",
+                        transforms=(type(seg.transform).__name__,),
+                        n_warps_saved=0,
                         backend=_resolve_backend(seg),
                     )
                 )
@@ -1357,6 +1376,7 @@ def _wrap_passthrough_segments(
         ProjectiveSegment,
         AlbuProjectiveSegment,
         FusedColorSegment,
+        CropResizeSegment,
     )
 
     # Build a reverse lookup: transform object id -> index in original_transforms.
