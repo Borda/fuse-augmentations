@@ -45,10 +45,6 @@ optional-dependencies.all = [
   "kornia>=0.6.12",
   "torchvision>=0.15",
 ]
-optional-dependencies.benchmark = [
-  "matplotlib>=3.7",
-  "tqdm>=4.60",
-]
 optional-dependencies.kornia = [
   "kornia>=0.6.12",
 ]
@@ -67,6 +63,10 @@ dev = [
   "pytest-doctestplus>=1.3",
   # "tomlkit>=0.13",
   "twine>=6.1,<6.3",
+]
+benchmark = [
+  "matplotlib>=3.7",
+  "tqdm>=4.60",
 ]
 
 [tool.setuptools]

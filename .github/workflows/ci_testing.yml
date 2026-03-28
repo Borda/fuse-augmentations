@@ -19,6 +19,10 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        extras: ["none", "all", "albumentations", "kornia", "torchvision"]
     env:
       UV_TORCH_BACKEND: cpu
       PYTHON_VERSION: "3.10"
@@ -38,7 +42,7 @@ jobs:
       - name: 📦 Install base package (no extras)
         timeout-minutes: 5
         run: |
-          uv pip install -e "." --group dev
+          uv pip install -e ".[${{ matrix.extras }}]" --group dev
           uv pip list
       - name: 🧪 Run doctests
         run: pytest src/ -v
@@ -54,10 +58,11 @@ jobs:
         os: ["ubuntu-latest"]
         python-version: ["3.10", "3.12"]
         requires: ["latest"]
+        extras: ["all", "albumentations", "kornia", "torchvision"]
         include:
-          - { os: "windows-latest", python-version: "3.12" }
-          - { os: "macOS-latest", python-version: "3.12" }
-          - { os: "ubuntu-latest", python-version: "3.10", requires: "oldest" }
+          - { os: "windows-latest", extras: "all", python-version: "3.12" }
+          - { os: "macOS-latest", extras: "all", python-version: "3.12" }
+          - { os: "ubuntu-latest", extras: "all", python-version: "3.10", requires: "oldest" }
     env:
       UV_TORCH_BACKEND: cpu
     # Timeout: https://stackoverflow.com/a/59076067/4521646
@@ -83,7 +88,7 @@ jobs:
       - name: 📦 Install dependencies
         timeout-minutes: 5
         run: |
-          uv pip install -e ".[all]" --group dev
+          uv pip install -e ".[${{ matrix.extras }}]" --group dev
           uv pip list
       - name: 🧪 Run tests
         run: pytest . -v --cov=fuse_augmentations
