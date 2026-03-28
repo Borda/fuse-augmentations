@@ -152,11 +152,15 @@ class ExactAffineSegment(nn.Module):
             # Apply the exact transform only to the active subset to avoid
             # failures on inactive samples (e.g. shape constraints).
             active_idx = active.nonzero(as_tuple=True)[0]
-            transformed_active = self.adapter.exact_apply(tfm, image[active_idx])
 
-            # Scatter the transformed subset back into the full batch.
-            image = image.clone()
-            image[active_idx] = transformed_active
+            if bsz == 1 or bool(active.all().item()):
+                # Fast path: all samples active — apply directly, no scatter needed.
+                image = self.adapter.exact_apply(tfm, image)
+            else:
+                # Partial scatter: clone then overwrite only the active rows.
+                transformed_active = self.adapter.exact_apply(tfm, image[active_idx])
+                image = image.clone()
+                image[active_idx] = transformed_active
             # Transform auxiliary targets with the same per-sample active mask.
             # Flip-based aux routing uses exact_flip_dims; non-flip exact ops
             # (rot90, transpose) do not yet support auxiliary targets.
@@ -345,12 +349,28 @@ class FusedAffineSegment(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# AlbuFusedAffineSegment — scipy backend for Albumentations
+# AlbuFusedAffineSegment — cv2 backend for Albumentations
 # ---------------------------------------------------------------------------
 
-# scipy interpolation order and border-mode mappings
-_INTERP_ORDERS: dict[str, int] = {"bilinear": 1, "nearest": 0, "bicubic": 3}
-_BORDER_MODES: dict[str, str] = {"zeros": "constant", "border": "nearest", "reflection": "reflect"}
+try:
+    import cv2 as _cv2
+
+    _CV2_INTERP: dict[str, int] = {
+        "bilinear": _cv2.INTER_LINEAR,
+        "nearest": _cv2.INTER_NEAREST,
+        "bicubic": _cv2.INTER_CUBIC,
+    }
+    _CV2_BORDER: dict[str, int] = {
+        "zeros": _cv2.BORDER_CONSTANT,
+        "border": _cv2.BORDER_REPLICATE,
+        "reflection": _cv2.BORDER_REFLECT,
+    }
+    _CV2_WARP_INVERSE_MAP: int = _cv2.WARP_INVERSE_MAP
+except ImportError:
+    _cv2 = None  # type: ignore[assignment]
+    _CV2_INTERP = {}
+    _CV2_BORDER = {}
+    _CV2_WARP_INVERSE_MAP = 16  # cv2.WARP_INVERSE_MAP = 16
 
 ImageArray = NDArray[np.integer[Any] | np.floating[Any]]
 MatrixArray = NDArray[np.floating[Any]]
@@ -361,62 +381,54 @@ def _warp(
     M_dst2src_3x3: MatrixArray,  # noqa: N803
     width: int,
     height: int,
-    interp_order: int,
-    border_mode: str,
+    interp_flag: int,
+    border_flag: int,
 ) -> ImageArray:
-    """Apply scipy.ndimage.affine_transform with the dst→src 3x3 pixel-space matrix.
+    """Apply cv2.warpAffine with the dst->src 3x3 pixel-space matrix.
 
-    ``M_dst2src_3x3`` maps destination pixel coordinates (x, y) to source pixel
-    coordinates — the same convention as ``cv2.warpAffine`` without
-    ``WARP_INVERSE_MAP``.  The matrix is converted from (x, y) to scipy's
-    (row, col) = (y, x) coordinate order before calling ``affine_transform``.
+    ``M_dst2src_3x3`` maps destination pixel coordinates to source pixel
+    coordinates.  ``cv2.WARP_INVERSE_MAP`` (16) is OR-ed into *interp_flag* so
+    the matrix is used directly without re-inversion.  cv2 handles all channels
+    in a single call, avoiding the per-channel loop previously needed for scipy.
+
+    Args:
+        img: HxW or HxWxC float32 numpy array.
+        M_dst2src_3x3: 3x3 matrix mapping destination pixels to source pixels.
+        width: Output width in pixels.
+        height: Output height in pixels.
+        interp_flag: cv2 interpolation constant (e.g. ``1`` for ``INTER_LINEAR``).
+        border_flag: cv2 border mode constant (e.g. ``0`` for ``BORDER_CONSTANT``).
+
+    Returns:
+        Warped image array with the same dtype and channel count as ``img``.
 
     """
-    from scipy.ndimage import affine_transform
+    import cv2
 
-    # scipy ndimage uses (row, col) = (y, x); our matrix is in (x, y) — swap axes
-    P = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float64)  # noqa: N806
-    M_yx = P @ M_dst2src_3x3[:2, :2] @ P  # noqa: N806
-    offset_yx = P @ M_dst2src_3x3[:2, 2]
-
-    if img.ndim == 2:
-        result: ImageArray = affine_transform(
-            img,
-            M_yx,
-            offset=offset_yx,
-            output_shape=(height, width),
-            order=interp_order,
-            mode=border_mode,
-            cval=0.0,
-        )
-        return result
-    channels = [
-        affine_transform(
-            img[:, :, c],
-            M_yx,
-            offset=offset_yx,
-            output_shape=(height, width),
-            order=interp_order,
-            mode=border_mode,
-            cval=0.0,
-        )
-        for c in range(img.shape[2])
-    ]
-    return np.stack(channels, axis=-1)
+    m_2x3 = M_dst2src_3x3[:2, :].astype(np.float64)
+    return cv2.warpAffine(
+        img,
+        m_2x3,
+        (width, height),
+        flags=interp_flag | _CV2_WARP_INVERSE_MAP,
+        borderMode=border_flag,
+        borderValue=0,
+    )
 
 
 class AlbuFusedAffineSegment(nn.Module):
-    """Fused affine segment for NumPy/scipy backends (Albumentations).
+    """Fused affine segment for the Albumentations cv2 backend.
 
     Loops over B samples, composes per-sample ``(3, 3)`` forward affine
-    matrices, and applies a single ``scipy.ndimage.affine_transform`` per sample.
+    matrices, and applies a single ``cv2.warpAffine`` call per sample.
 
     The input and output are ``(B, C, H, W)`` float32 ``torch.Tensor`` objects.
     Conversion to/from ``(H, W, C)`` NumPy arrays happens inside ``forward()``.
 
-    No ``normalize_matrix`` step is needed — ``scipy.ndimage.affine_transform``
-    operates in pixel coordinates natively. The accumulated forward (src→dst) matrix is
-    inverted once per sample before being passed to :func:`_warp`.
+    No ``normalize_matrix`` step is needed — ``cv2.warpAffine`` operates in
+    pixel coordinates natively. The accumulated forward (src->dst) matrix is
+    inverted once per sample and passed to :func:`_warp` via
+    ``cv2.WARP_INVERSE_MAP``.
 
     Args:
         transforms: List of Albumentations transform objects to fuse.
@@ -469,7 +481,7 @@ class AlbuFusedAffineSegment(nn.Module):
         image: Tensor,
         aux_targets: dict[str, Tensor] | None = None,
     ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
-        """Apply fused affine chain via per-sample scipy.ndimage.affine_transform.
+        """Apply fused affine chain via per-sample cv2.warpAffine.
 
         Args:
             image: ``(B, C, H, W)`` float32 input tensor.
@@ -514,8 +526,8 @@ class AlbuFusedAffineSegment(nn.Module):
             else:
                 active_masks.append(np.random.rand(bsz) < prob)
 
-        interp_order = _INTERP_ORDERS.get(self.interpolation, _INTERP_ORDERS["bilinear"])
-        border_mode = _BORDER_MODES.get(self.padding_mode, _BORDER_MODES["zeros"])
+        interp_flag = _CV2_INTERP.get(self.interpolation, _CV2_INTERP["bilinear"])
+        border_flag = _CV2_BORDER.get(self.padding_mode, _CV2_BORDER["zeros"])
 
         output_np: list[ImageArray] = []
 
@@ -540,15 +552,15 @@ class AlbuFusedAffineSegment(nn.Module):
                 output_np.append(img_np)
                 continue
 
-            # acc is the composed forward (src→dst) matrix; invert to get dst→src for _warp
+            # acc is the composed forward (src->dst) matrix; invert to get dst->src for _warp
             m_dst2src = np.linalg.inv(acc)
 
             if n_ch == 1:
                 img_np = img_np[:, :, 0]
-                warped = _warp(img_np, m_dst2src, width, height, interp_order, border_mode)
+                warped = _warp(img_np, m_dst2src, width, height, interp_flag, border_flag)
                 warped = warped[:, :, np.newaxis]
             else:
-                warped = _warp(img_np, m_dst2src, width, height, interp_order, border_mode)
+                warped = _warp(img_np, m_dst2src, width, height, interp_flag, border_flag)
 
             output_np.append(warped)
 
@@ -716,26 +728,6 @@ class ProjectiveSegment(nn.Module):
 # ---------------------------------------------------------------------------
 # AlbuProjectiveSegment — cv2 backend for Albumentations perspective transforms
 # ---------------------------------------------------------------------------
-
-try:
-    import cv2 as _cv2
-
-    _CV2_INTERP: dict[str, int] = {
-        "bilinear": _cv2.INTER_LINEAR,
-        "nearest": _cv2.INTER_NEAREST,
-        "bicubic": _cv2.INTER_CUBIC,
-    }
-    _CV2_BORDER: dict[str, int] = {
-        "zeros": _cv2.BORDER_CONSTANT,
-        "border": _cv2.BORDER_REPLICATE,
-        "reflection": _cv2.BORDER_REFLECT,
-    }
-    _CV2_WARP_INVERSE_MAP = _cv2.WARP_INVERSE_MAP
-except ImportError:
-    _cv2 = None  # type: ignore[assignment]
-    _CV2_INTERP = {}
-    _CV2_BORDER = {}
-    _CV2_WARP_INVERSE_MAP = 16  # cv2.WARP_INVERSE_MAP = 16
 
 
 class AlbuProjectiveSegment(nn.Module):

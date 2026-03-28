@@ -98,8 +98,8 @@ from tqdm.auto import tqdm
 from fuse_aug import Compose as FuseCompose
 from fuse_aug import ReorderPolicy
 
-NUM_WARMUP: int = 5
-NUM_REPEATS: int = 50
+NUM_WARMUP: int = 20
+NUM_REPEATS: int = 100
 IMAGE_H: int = 256
 IMAGE_W: int = 256
 
@@ -694,7 +694,7 @@ for seq in _SEQS_ORDER:
     print(row)
 
 print(_sep)
-print("Values in ms (mean over 50 repeats, batch_size=1).")
+print(f"Values in ms (mean over {NUM_REPEATS} repeats, batch_size=1).")
 print("Note: alb native runs on HWC uint8 NumPy; all fused/kornia/tv run on BCHW float32 tensor.")
 
 # %% ── 7  Save JSON ───────────────────────────────────────────────────────────

@@ -442,6 +442,12 @@ class TorchVisionAdapter:
             out = transform(image)  # type: ignore[operator]
             return cast(torch.Tensor, out.to(device=device, dtype=dtype))
 
+        # v1 per-sample path: TV v1 transforms accept (C, H, W) input.
+        # For B=1, unsqueeze(0) creates a view — no data copy vs torch.stack.
+        if B == 1:
+            out = transform(image[0])  # type: ignore[operator]
+            return out.unsqueeze(0).to(device=device, dtype=dtype)
+
         results = []
         for i in range(B):
             out = transform(image[i])  # type: ignore[operator]

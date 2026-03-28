@@ -5,9 +5,8 @@ Requires albumentations >= 2.0. Tests are skipped gracefully if not installed.
 Parity contracts:
 - GEOMETRIC_EXACT (flip) transforms: fused ExactAffineSegment vs albumentations cv2 → atol=1e-3
   (tensor.flip is exact; any diff is float32 representation noise)
-- GEOMETRIC_INTERP transforms: fused scipy vs sequential scipy reference → atol=1e-5
-  (same matrix, same scipy call → essentially identical; cv2 and scipy use different
-  interpolation algorithms so comparing against albumentations' cv2 output is not meaningful)
+- GEOMETRIC_INTERP transforms: fused cv2 vs sequential cv2 reference → atol=1e-5
+  (same matrix, same cv2.warpAffine call → results are essentially identical)
 
 """
 
@@ -28,7 +27,7 @@ from fuse_augmentations import Compose  # noqa: E402
 # ---------------------------------------------------------------------------
 
 ATOL_PIXEL = 1e-3  # flip parity: tensor.flip vs albumentations cv2
-ATOL_SCIPY = 1e-5  # INTERP parity: fused scipy vs sequential scipy reference
+ATOL_CV2 = 1e-5  # INTERP parity: fused cv2 vs sequential cv2 reference
 H, W, C = 64, 64, 3
 
 
@@ -49,19 +48,19 @@ def _sequential_albu(transforms: list, img_tensor: torch.Tensor) -> torch.Tensor
     return torch.stack(results)
 
 
-def _sequential_scipy(transforms: list, img_tensor: torch.Tensor) -> torch.Tensor:
-    """Apply GEOMETRIC_INTERP transforms sequentially via scipy, matching the fused backend.
+def _sequential_cv2(transforms: list, img_tensor: torch.Tensor) -> torch.Tensor:
+    """Apply GEOMETRIC_INTERP transforms sequentially via cv2, matching the fused backend.
 
-    Gets each transform's matrix from albumentations' sampler, then applies it using the same scipy affine_transform
-    used by AlbuFusedAffineSegment.  For a single transform this produces output identical to the fused pipeline.
+    Gets each transform's matrix from albumentations' sampler, then applies it using the same cv2.warpAffine call used
+    by AlbuFusedAffineSegment. For a single transform this produces output identical to the fused pipeline.
 
     """
     from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
-    from fuse_augmentations.affine._segment import _BORDER_MODES, _INTERP_ORDERS, _warp
+    from fuse_augmentations.affine._segment import _CV2_BORDER, _CV2_INTERP, _warp
 
     adapter = AlbumentationsAdapter()
-    interp_order = _INTERP_ORDERS["bilinear"]
-    border_mode = _BORDER_MODES["zeros"]
+    interp_flag = _CV2_INTERP["bilinear"]
+    border_flag = _CV2_BORDER["zeros"]
     _B, n_ch, _H, _W = img_tensor.shape
     results = []
     for i in range(_B):
@@ -71,10 +70,10 @@ def _sequential_scipy(transforms: list, img_tensor: torch.Tensor) -> torch.Tenso
             mtx = adapter.build_matrix(tfm, params, _H, _W)[0].double().numpy()
             M_inv = np.linalg.inv(mtx)
             if n_ch == 1:
-                warped = _warp(img_np[:, :, 0], M_inv, _W, _H, interp_order, border_mode)
+                warped = _warp(img_np[:, :, 0], M_inv, _W, _H, interp_flag, border_flag)
                 img_np = warped[:, :, np.newaxis]
             else:
-                img_np = _warp(img_np, M_inv, _W, _H, interp_order, border_mode)
+                img_np = _warp(img_np, M_inv, _W, _H, interp_flag, border_flag)
         results.append(torch.as_tensor(img_np.astype(np.float32)).permute(2, 0, 1))
     return torch.stack(results)
 
@@ -90,17 +89,16 @@ class TestSingleTransformParity:
     def test_rotation_parity(self):
         img = _rand_image()
 
-        # Reference: sequential scipy warp with the same albumentations matrix.
-        # cv2 (albumentations' native backend) and scipy use different interpolation
-        # algorithms, so we compare scipy fused vs scipy sequential instead.
+        # Reference: sequential cv2 warp with the same albumentations matrix.
+        # Both fused and sequential now use cv2.warpAffine, so results are essentially identical.
         np.random.seed(42)
-        seq_out = _sequential_scipy([A.Rotate(limit=(30, 30), p=1.0)], img)
+        seq_out = _sequential_cv2([A.Rotate(limit=(30, 30), p=1.0)], img)
 
         np.random.seed(42)
         fused_out = Compose([A.Rotate(limit=(30, 30), p=1.0)])(img)
 
         assert fused_out.shape == img.shape
-        assert torch.allclose(fused_out, seq_out, atol=ATOL_SCIPY), (
+        assert torch.allclose(fused_out, seq_out, atol=ATOL_CV2), (
             f"Max diff: {(fused_out - seq_out).abs().max().item():.2e}"
         )
 
@@ -108,23 +106,23 @@ class TestSingleTransformParity:
         img = _rand_image()
 
         np.random.seed(42)
-        seq_out = _sequential_scipy([A.Affine(rotate=(20, 20), p=1.0)], img)
+        seq_out = _sequential_cv2([A.Affine(rotate=(20, 20), p=1.0)], img)
 
         np.random.seed(42)
         fused_out = Compose([A.Affine(rotate=(20, 20), p=1.0)])(img)
 
-        assert torch.allclose(fused_out, seq_out, atol=ATOL_SCIPY)
+        assert torch.allclose(fused_out, seq_out, atol=ATOL_CV2)
 
     def test_affine_scale_parity(self):
         img = _rand_image()
 
         np.random.seed(42)
-        seq_out = _sequential_scipy([A.Affine(scale=(0.9, 0.9), p=1.0)], img)
+        seq_out = _sequential_cv2([A.Affine(scale=(0.9, 0.9), p=1.0)], img)
 
         np.random.seed(42)
         fused_out = Compose([A.Affine(scale=(0.9, 0.9), p=1.0)])(img)
 
-        assert torch.allclose(fused_out, seq_out, atol=ATOL_SCIPY)
+        assert torch.allclose(fused_out, seq_out, atol=ATOL_CV2)
 
     def test_hflip_parity(self):
         img = _rand_image()
@@ -142,13 +140,13 @@ class TestSingleTransformParity:
         img = _rand_image()
 
         np.random.seed(42)
-        seq_out = _sequential_scipy([A.SafeRotate(limit=(30, 30), p=1.0)], img)
+        seq_out = _sequential_cv2([A.SafeRotate(limit=(30, 30), p=1.0)], img)
 
         np.random.seed(42)
         fused_out = Compose([A.SafeRotate(limit=(30, 30), p=1.0)])(img)
 
         assert fused_out.shape == img.shape
-        assert torch.allclose(fused_out, seq_out, atol=ATOL_SCIPY), (
+        assert torch.allclose(fused_out, seq_out, atol=ATOL_CV2), (
             f"Max diff: {(fused_out - seq_out).abs().max().item():.2e}"
         )
 
@@ -160,14 +158,14 @@ class TestSingleTransformParity:
             t_fus = A.ShiftScaleRotate(rotate_limit=(15, 15), shift_limit=0, scale_limit=0, p=1.0)
 
         np.random.seed(42)
-        seq_out = _sequential_scipy([t_seq], img)
+        seq_out = _sequential_cv2([t_seq], img)
 
         np.random.seed(42)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             fused_out = Compose([t_fus])(img)
 
-        assert torch.allclose(fused_out, seq_out, atol=ATOL_SCIPY)
+        assert torch.allclose(fused_out, seq_out, atol=ATOL_CV2)
 
 
 # ---------------------------------------------------------------------------
