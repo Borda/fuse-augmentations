@@ -1,6 +1,6 @@
 """Package metadata for the fuse_augmentations distribution."""
 
-__version__ = "0.6.0.dev"
+__version__ = "0.7.0.dev"
 __docs__ = "Fuse augmentation transforms into a single interpolation pass."
 __author__ = "Jiri Borovec"
 __author_email__ = "6035284+Borda@users.noreply.github.com"
