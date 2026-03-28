@@ -45,6 +45,10 @@ optional-dependencies.all = [
   "kornia>=0.6.12",
   "torchvision>=0.15",
 ]
+optional-dependencies.benchmark = [
+  "matplotlib>=3.7",
+  "tqdm>=4.60",
+]
 optional-dependencies.kornia = [
   "kornia>=0.6.12",
 ]
@@ -108,6 +112,12 @@ lint.extend-select = [
 ]
 lint.ignore = [
   "E731", # Do not assign a lambda expression, use a def
+]
+lint.per-file-ignores."examples/**/*.py" = [
+  "ANN", # type annotations not required in example scripts
+  "D",   # module docstring covers the script; per-function docs not required
+  "N",   # relaxed naming (N, X, C, etc. are idiomatic in image/math code)
+  "S",   # security rules relaxed for local example scripts
 ]
 lint.per-file-ignores."src/fuse_aug/__init__.py" = [
   "F401", # Star-import re-exports are intentional

@@ -149,12 +149,49 @@ For flip-only chains, `fuse-augmentations` uses an `ExactAffineSegment` that app
 
 ### Enums
 
-| Enum                | Values                                                                                                                                                                                                                                                                                                                                                              |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ReorderPolicy`     | `NONE` (default for `Compose()`), `POINTWISE` (default for `from_params`/`from_config`; bubble color ops after geometric runs), `AGGRESSIVE` (currently same as `POINTWISE`)                                                                                                                                                                                        |
-| `InterpolationMode` | `NEAREST`, `BILINEAR`, `BICUBIC` -- ordered by quality; useful for programmatic comparison (`BICUBIC > BILINEAR > NEAREST`)                                                                                                                                                                                                                                         |
-| `PaddingMode`       | `ZEROS`, `BORDER`, `REFLECTION` -- ordered by quality                                                                                                                                                                                                                                                                                                               |
-| `TransformCategory` | `GEOMETRIC_INTERP` (interpolation-based affine), `GEOMETRIC_EXACT` (lossless discrete ops -- flips, 90° rotations), `POINTWISE`, `SPATIAL_KERNEL`, `PROJECTIVE`, `POINTWISE_LINEAR` (fused by `FusedColorSegment`; supported ops per backend listed in the Color Fusion section), `CROP_RESIZE_FIXED` (handled by `CropResizeSegment`; changes output spatial size) |
+<details>
+<summary><code>ReorderPolicy</code></summary>
+
+- `NONE` — default for `Compose()`; preserves declared order, merges consecutive fusible transforms.
+- `POINTWISE` — default for `from_params`/`from_config`; bubbles `POINTWISE` and `POINTWISE_LINEAR` ops out of geometric chains before segmentation.
+- `AGGRESSIVE` — currently same as `POINTWISE`; accepted for forward compatibility.
+
+</details>
+
+<details>
+<summary><code>InterpolationMode</code></summary>
+
+Ordered by quality (`BICUBIC > BILINEAR > NEAREST`); useful for programmatic comparison:
+
+- `NEAREST`
+- `BILINEAR`
+- `BICUBIC`
+
+</details>
+
+<details>
+<summary><code>PaddingMode</code></summary>
+
+Ordered by quality:
+
+- `ZEROS`
+- `BORDER`
+- `REFLECTION`
+
+</details>
+
+<details>
+<summary><code>TransformCategory</code></summary>
+
+- `GEOMETRIC_INTERP` — interpolation-based affine (rotation, scale, shear, translate).
+- `GEOMETRIC_EXACT` — lossless discrete ops (flips, 90° rotations); fused via `ExactAffineSegment`.
+- `POINTWISE` — pixel-wise ops (normalize, gamma) that are not yet fusible; act as passthrough.
+- `SPATIAL_KERNEL` — kernel-based ops (GaussianBlur, Sharpen); act as fusion barriers.
+- `PROJECTIVE` — perspective transforms; fused via `ProjectiveSegment` using 3×3 homographies.
+- `POINTWISE_LINEAR` — brightness/contrast ops fused by `FusedColorSegment`; see the Color Fusion section for supported ops per backend.
+- `CROP_RESIZE_FIXED` — handled by `CropResizeSegment`; changes output spatial size.
+
+</details>
 
 ### Auxiliary Target Functions
 

@@ -219,3 +219,6 @@ __marimo__/
 .claude/worktrees/
 docs/adr/
 tasks/
+
+# Benchmark results (generated at runtime)
+examples/results/

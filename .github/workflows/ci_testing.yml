@@ -79,7 +79,7 @@ jobs:
         if: matrix.requires == 'oldest'
         run: |
           uv pip install tomlkit
-          python scripts/min_deps.py
+          python .github/scripts/min_deps.py
       - name: 📦 Install dependencies
         timeout-minutes: 5
         run: |
