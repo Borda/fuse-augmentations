@@ -65,7 +65,11 @@ dev = [
   "twine>=6.1,<6.3",
 ]
 benchmark = [
+  "ipython>=8.0",
+  "jupyterlab>=4.0",
   "matplotlib>=3.7",
+  "pandas>=2.0",
+  "rich>=13.0",
   "tqdm>=4.60",
 ]
 

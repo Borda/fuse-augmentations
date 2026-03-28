@@ -127,6 +127,54 @@ All matrices are `(B, 3, 3)` homogeneous in pixel coordinates with `align_corner
 
 For flip-only chains, `fuse-augmentations` uses an `ExactAffineSegment` that applies `tensor.flip` directly -- zero interpolation error.
 
+### Architecture in three scenarios
+
+The backend (Albumentations, Kornia, or TorchVision) is always used for the final execution step — `fuse-augmentations` acts as a meta-proxy that reduces the number of backend calls by composing transform matrices upfront.
+
+**Scenario 1 — consecutive geometric + color ops (`ReorderPolicy.NONE`)**
+
+```text
+WITHOUT fuse-augmentations
+  pipeline:   Rotate     Translate    HFlip      Brightness
+  backend:   [warp 1]   [warp 2]    [warp 3]   [pixel op]    3 warps
+
+WITH fuse-augmentations
+  pipeline:   Rotate     Translate    HFlip      Brightness
+               └─────────────┴──────────┘             │
+                   FusedAffineSegment         FusedColorSegment
+              M = M_hflip @ M_trans @ M_rot     M_brightness
+  backend:        [warp 1]                      [pixel op]    1 warp  ✓
+```
+
+**Scenario 2 — color op interleaved, solved by `ReorderPolicy.POINTWISE`**
+
+```text
+Pipeline:  Rotate, Brightness, Translate, HFlip   (color op splits the geometric chain)
+
+ReorderPolicy.NONE (default):
+  segments:  [Rotate] │ [Brightness] │ [Translate, HFlip]
+  backend:   [warp 1]   [pixel op]    [warp 2]              2 warps
+
+ReorderPolicy.POINTWISE (bubble color past geometric):
+  reordered: Rotate, Translate, HFlip, Brightness
+  segments:  [Rotate, Translate, HFlip] │ [Brightness]
+              FusedAffineSegment            FusedColorSegment
+  backend:         [warp 1]                [pixel op]        1 warp  ✓
+```
+
+**Scenario 3 — consecutive color ops fused by `FusedColorSegment`**
+
+```text
+Pipeline:  Rotate, Translate, HFlip, Brightness, Contrast
+
+  pipeline:   Rotate    Translate    HFlip         Brightness    Contrast
+               └─────────────┴────────┘              └────────────────┘
+                   FusedAffineSegment                FusedColorSegment
+             M = M_hflip @ M_trans @ M_rot    M = M_contrast @ M_brightness
+                                                (4×4 RGBA color matrix)
+  backend:        [warp 1]                          [pixel op]    1 warp + 1 pixel op  ✓
+```
+
 ## 📖 API Reference
 
 ### Core

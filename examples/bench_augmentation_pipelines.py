@@ -8,21 +8,21 @@ dataclass entries — add or remove rows there to change what gets benchmarked.
 Sequences
 ---------
 Keys follow ``<group>_<number>_<name>`` so ``sorted(SEQUENCE_BANK)`` gives the intended
-display order.  Group letters: ``a`` = single-op baselines, ``b`` = multi-op sequences.
+display order.  Group letters: ``a`` = single-op baselines, ``b`` = geometric sequences,
+``c`` = colour sequences, ``d`` = realistic mixed (geo + colour).
 
-b1_geo_3
-    Rotate + HFlip + Affine(scale) — 3-op geometric chain, saves 2 ``grid_sample`` calls.
-b2_color_2
-    RandomBrightness + RandomContrast — colour fusion into one matrix multiply.
-b3_mixed_interleaved
-    Rotate -> ColorJitter -> HFlip — ``POINTWISE`` reorder policy bubbles the colour op
-    after the geometric chain so both geometric ops fuse.
-b4_geo_5
-    Rotate -> HFlip -> Shear -> VFlip -> Rotate — 5-op chain, saves 4 ``grid_sample`` calls.
-b5_realistic
-    Rotate -> HFlip -> GaussianBlur -> BrightnessContrast -> Rotate — blur acts as a fusion
-    barrier; fuse-aug produces two partial segments (partial fusion).
-a1_rotate … a5_shear
+b01_geo_2 … b04_geo_5
+    Pure geometric chains of 2-5 ops (Rotate, HFlip, Shear, VFlip) - each consecutive
+    affine op saves one ``grid_sample`` call when fused.
+c01_color_2 … c03_color_4
+    Colour-only chains of 2-4 ops (Brightness, Contrast, Saturation, Hue) - fuse-aug
+    merges consecutive pointwise ops into a single matrix-multiply pass.
+d01_mixed_5 / d02_mixed_5_reorder
+    5-op interleaved geo+colour pipeline run twice: once without reordering and once with
+    ``POINTWISE`` policy that pulls colour ops after the geo block, enabling stronger fusion.
+d03_mixed_10 / d04_mixed_10_reorder
+    Same experiment at 10 ops (6 geo + 4 colour), repeating the reorder comparison.
+a01_rotate … a05_shear
     Single-op affine baselines (Rotate, HFlip, VFlip, Scale, Shear) — no fusion possible;
     these measure the raw fuse-aug wrapper overhead vs. native compose.
 
@@ -66,7 +66,7 @@ Notes
 #
 # **Sequences** live in `SEQUENCE_BANK` — keys follow `<group>_<number>_<name>` so
 # `sorted()` gives the display order.  Group `a` = single-op baselines,
-# group `b` = multi-op fusion sequences.  Add more groups as needed.
+# `b` = geometric chains, `c` = colour chains, `d` = realistic mixed (geo + colour).
 #
 # **Visual sanity check** (cell 3): native and fused rows use the same RNG seed so
 # they draw identical random parameters.  The `max|native-fused|` annotation in
@@ -80,6 +80,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import platform
 import sys
 import time
@@ -93,10 +94,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torchvision.transforms.v2 as tv
-from tqdm.auto import tqdm
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from fuse_aug import Compose as FuseCompose
 from fuse_aug import ReorderPolicy
+
+log = logging.getLogger(__name__)
 
 NUM_WARMUP: int = 20
 NUM_REPEATS: int = 100
@@ -108,14 +111,18 @@ RESULTS_DIR.mkdir(exist_ok=True)
 
 print(f"Torch {torch.__version__} | image: {IMAGE_H}x{IMAGE_W} | warmup={NUM_WARMUP} repeats={NUM_REPEATS}")
 
-# %% ── 1  Synthetic scene image ───────────────────────────────────────────────
+# %% [markdown]
+# ## 1 — Synthetic scene image
 #
 # White background with a red grid and four coloured shapes (one per quadrant):
-#   top-left    = blue triangle
-#   top-right   = green circle
-#   bottom-left = orange rectangle
-#   bottom-right= purple star
+# - top-left = blue triangle
+# - top-right = green circle
+# - bottom-left = orange rectangle
+# - bottom-right = purple star
+#
 # The scene exercises both colour and spatial augmentations clearly.
+
+# %% ── 1  Synthetic scene image ───────────────────────────────────────────────
 
 
 def _draw_triangle(img: np.ndarray, r0: int, r1: int, c0: int, c1: int, pad: int, color: np.ndarray) -> None:
@@ -211,15 +218,18 @@ print(
     f" [{image_tensor.min():.3f}, {image_tensor.max():.3f}]"
 )
 
-# %% ── 2  Pipeline definitions ────────────────────────────────────────────────
+# %% [markdown]
+# ## 2 — Pipeline definitions
 #
 # For each (sequence, backend) pair we register both a *native* and a *fused* runner.
 # Runners are zero-argument callables that apply the pipeline to the pre-allocated image.
 #
-# Native:  backend's own sequential compose class (K.AugmentationSequential / tv.Compose
-#          / A.Compose) — each transform runs its own grid_sample / pixel op in turn.
-# Fused:   fuse_aug.Compose wrapping the same transforms — consecutive fusible ops are
-#          grouped and their affine matrices composed before a single grid_sample call.
+# - **Native**: backend's own sequential compose class (`K.AugmentationSequential` /
+#   `tv.Compose` / `A.Compose`) — each transform runs its own `grid_sample` / pixel op.
+# - **Fused**: `fuse_aug.Compose` wrapping the same transforms — consecutive fusible ops
+#   are grouped and their affine matrices composed before a single `grid_sample` call.
+
+# %% ── 2  Pipeline definitions ────────────────────────────────────────────────
 
 _ENTRIES: list[dict] = []  # populated by _register() below
 
@@ -291,94 +301,52 @@ class AugSequence:
     label: str = ""
 
 
+# ── d-group ordered pool — interleaved geo/colour, 9 ops ─────────────────────
+# Alternating geo/colour is the worst case for naive fusion: every colour op
+# breaks the consecutive-geo run, so reordering has maximum effect on this group.
+# Strict-prefix slices keep shorter chains comparable to longer ones.
+_D_POOL_ALB: list = [
+    A.Rotate(limit=15, p=1.0),
+    A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.0, p=1.0),
+    A.HorizontalFlip(p=0.5),
+    A.RandomBrightnessContrast(brightness_limit=0.0, contrast_limit=0.2, p=1.0),
+    A.VerticalFlip(p=0.5),
+    A.HueSaturationValue(hue_shift_limit=0, sat_shift_limit=20, val_shift_limit=0, p=1.0),
+    A.Rotate(limit=10, p=1.0),
+    A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=0, val_shift_limit=0, p=1.0),
+    A.Affine(shear={"x": (-5, 5), "y": (-5, 5)}, p=1.0),
+]
+_D_POOL_K: list = [
+    K.RandomRotation(15.0),
+    K.RandomBrightness(brightness=(0.8, 1.2), p=1.0),
+    K.RandomHorizontalFlip(p=0.5),
+    K.RandomContrast(contrast=(0.8, 1.2), p=1.0),
+    K.RandomVerticalFlip(p=0.5),
+    K.RandomSaturation(saturation=(0.8, 1.2), p=1.0),
+    K.RandomRotation(10.0),
+    K.ColorJitter(brightness=0.0, contrast=0.0, saturation=0.0, hue=0.05, p=1.0),
+    K.RandomAffine(degrees=0, shear=(-5.0, 5.0)),
+]
+_D_POOL_TV: list = [
+    tv.RandomRotation(15),
+    tv.ColorJitter(brightness=0.2, contrast=0.0, saturation=0.0, hue=0.0),
+    tv.RandomHorizontalFlip(0.5),
+    tv.ColorJitter(brightness=0.0, contrast=0.2, saturation=0.0, hue=0.0),
+    tv.RandomVerticalFlip(0.5),
+    tv.ColorJitter(brightness=0.0, contrast=0.0, saturation=0.2, hue=0.0),
+    tv.RandomRotation(10),
+    tv.ColorJitter(brightness=0.0, contrast=0.0, saturation=0.0, hue=0.05),
+    tv.RandomAffine(degrees=0, shear=5),
+]
+
 # ── Sequence bank ─────────────────────────────────────────────────────────────
 # Each entry is one benchmark sequence.  Add or remove rows here to change what
 # gets benchmarked — the registration loop below handles the rest.
 
 SEQUENCE_BANK: dict[str, AugSequence] = {
     # Keys follow "<group>_<number>_<name>" so sorted() gives the intended display order.
-    # Group letters: a = single-op baselines, b = multi-op fusion sequences.
-    # Add more groups (c, d, ...) for future categories.
-    # ── b: multi-op fusion sequences ─────────────────────────────────────────
-    "b01_geo_3": AugSequence(
-        aug_albu=[A.Rotate(limit=30), A.HorizontalFlip(p=0.5), A.Affine(scale=(0.8, 1.2))],
-        aug_kornia=[K.RandomRotation(30.0), K.RandomHorizontalFlip(p=0.5), K.RandomAffine(0, scale=(0.8, 1.2))],
-        aug_tv=[tv.RandomRotation(30), tv.RandomHorizontalFlip(0.5), tv.RandomAffine(degrees=0, scale=(0.8, 1.2))],
-        label="Rotate + HFlip + Affine(scale)",
-    ),
-    "b02_color_2": AugSequence(
-        aug_albu=[A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=1.0)],
-        aug_kornia=[K.RandomBrightness(brightness=(0.8, 1.2), p=1.0), K.RandomContrast(contrast=(0.8, 1.2), p=1.0)],
-        aug_tv=[tv.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.0, hue=0.0)],
-        label="RandomBrightness + RandomContrast",
-    ),
-    "b03_mixed_interleaved": AugSequence(
-        aug_albu=[
-            A.Rotate(limit=15),
-            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=1.0),
-            A.HorizontalFlip(p=0.5),
-        ],
-        aug_kornia=[
-            K.RandomRotation(15.0),
-            K.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.0, hue=0.0, p=1.0),
-            K.RandomHorizontalFlip(p=0.5),
-        ],
-        aug_tv=[
-            tv.RandomRotation(15),
-            tv.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.0, hue=0.0),
-            tv.RandomHorizontalFlip(0.5),
-        ],
-        reorder=ReorderPolicy.POINTWISE,
-        label="Rotate -> ColorJitter -> HFlip  [reorder policy]",
-    ),
-    "b04_geo_5": AugSequence(
-        aug_albu=[
-            A.Rotate(limit=10),
-            A.HorizontalFlip(p=0.5),
-            A.Affine(shear={"x": (-5, 5), "y": (-5, 5)}),
-            A.VerticalFlip(p=0.5),
-            A.Rotate(limit=5),
-        ],
-        aug_kornia=[
-            K.RandomRotation(10.0),
-            K.RandomHorizontalFlip(p=0.5),
-            K.RandomAffine(0, shear=(-5.0, 5.0)),
-            K.RandomVerticalFlip(p=0.5),
-            K.RandomRotation(5.0),
-        ],
-        aug_tv=[
-            tv.RandomRotation(10),
-            tv.RandomHorizontalFlip(0.5),
-            tv.RandomAffine(degrees=0, shear=5),
-            tv.RandomVerticalFlip(0.5),
-            tv.RandomRotation(5),
-        ],
-        label="Rotate -> HFlip -> Shear -> VFlip -> Rotate",
-    ),
-    "b05_realistic": AugSequence(
-        aug_albu=[
-            A.Rotate(limit=15),
-            A.HorizontalFlip(p=0.5),
-            A.GaussianBlur(blur_limit=(3, 7)),
-            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.0, p=1.0),
-            A.Rotate(limit=5),
-        ],
-        aug_kornia=[
-            K.RandomRotation(15.0),
-            K.RandomHorizontalFlip(p=0.5),
-            K.RandomGaussianBlur((5, 5), (0.1, 2.0), p=1.0),
-            K.RandomBrightness(brightness=(0.8, 1.2), p=1.0),
-            K.RandomRotation(5.0),
-        ],
-        aug_tv=[
-            tv.RandomRotation(15),
-            tv.RandomHorizontalFlip(0.5),
-            tv.GaussianBlur(kernel_size=5),
-            tv.ColorJitter(brightness=0.2, contrast=0.0, saturation=0.0, hue=0.0),
-            tv.RandomRotation(5),
-        ],
-        label="Rotate -> HFlip -> GaussianBlur -> BrightnessContrast -> Rotate",
-    ),
+    # Group letters: a = single-op baselines,  b = geometric sequences,
+    #                c = colour sequences,      d = realistic mixed (geo + colour).
     # ── a: single-op baselines (no fusion possible; measures wrapper overhead) ──
     "a01_rotate": AugSequence(
         aug_albu=[A.Rotate(limit=30, p=1.0)],
@@ -410,33 +378,185 @@ SEQUENCE_BANK: dict[str, AugSequence] = {
         aug_tv=[tv.RandomAffine(degrees=0, shear=10)],
         label="Affine(shear)  [single op]",
     ),
+    # ── b: geometric sequences (2-5 ops) ──────────────────────────────────────
+    "b01_geo_2": AugSequence(
+        aug_albu=[A.Rotate(limit=30, p=1.0), A.HorizontalFlip(p=0.5)],
+        aug_kornia=[K.RandomRotation(30.0), K.RandomHorizontalFlip(p=0.5)],
+        aug_tv=[tv.RandomRotation(30), tv.RandomHorizontalFlip(0.5)],
+        label="Rotate + HFlip",
+    ),
+    "b02_geo_3": AugSequence(
+        aug_albu=[A.Rotate(limit=30), A.HorizontalFlip(p=0.5), A.Affine(scale=(0.8, 1.2))],
+        aug_kornia=[K.RandomRotation(30.0), K.RandomHorizontalFlip(p=0.5), K.RandomAffine(0, scale=(0.8, 1.2))],
+        aug_tv=[tv.RandomRotation(30), tv.RandomHorizontalFlip(0.5), tv.RandomAffine(degrees=0, scale=(0.8, 1.2))],
+        label="Rotate + HFlip + Scale",
+    ),
+    "b03_geo_4": AugSequence(
+        aug_albu=[
+            A.Rotate(limit=10),
+            A.HorizontalFlip(p=0.5),
+            A.Affine(shear={"x": (-5, 5), "y": (-5, 5)}),
+            A.VerticalFlip(p=0.5),
+        ],
+        aug_kornia=[
+            K.RandomRotation(10.0),
+            K.RandomHorizontalFlip(p=0.5),
+            K.RandomAffine(0, shear=(-5.0, 5.0)),
+            K.RandomVerticalFlip(p=0.5),
+        ],
+        aug_tv=[
+            tv.RandomRotation(10),
+            tv.RandomHorizontalFlip(0.5),
+            tv.RandomAffine(degrees=0, shear=5),
+            tv.RandomVerticalFlip(0.5),
+        ],
+        label="Rotate + HFlip + Shear + VFlip",
+    ),
+    "b04_geo_5": AugSequence(
+        aug_albu=[
+            A.Rotate(limit=10),
+            A.HorizontalFlip(p=0.5),
+            A.Affine(shear={"x": (-5, 5), "y": (-5, 5)}),
+            A.VerticalFlip(p=0.5),
+            A.Rotate(limit=5),
+        ],
+        aug_kornia=[
+            K.RandomRotation(10.0),
+            K.RandomHorizontalFlip(p=0.5),
+            K.RandomAffine(0, shear=(-5.0, 5.0)),
+            K.RandomVerticalFlip(p=0.5),
+            K.RandomRotation(5.0),
+        ],
+        aug_tv=[
+            tv.RandomRotation(10),
+            tv.RandomHorizontalFlip(0.5),
+            tv.RandomAffine(degrees=0, shear=5),
+            tv.RandomVerticalFlip(0.5),
+            tv.RandomRotation(5),
+        ],
+        label="Rotate + HFlip + Shear + VFlip + Rotate",
+    ),
+    # ── c: colour sequences (2-4 ops) ─────────────────────────────────────────
+    "c01_color_2": AugSequence(
+        aug_albu=[
+            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.0, p=1.0),
+            A.RandomBrightnessContrast(brightness_limit=0.0, contrast_limit=0.2, p=1.0),
+        ],
+        aug_kornia=[
+            K.RandomBrightness(brightness=(0.8, 1.2), p=1.0),
+            K.RandomContrast(contrast=(0.8, 1.2), p=1.0),
+        ],
+        aug_tv=[
+            tv.ColorJitter(brightness=0.2, contrast=0.0, saturation=0.0, hue=0.0),
+            tv.ColorJitter(brightness=0.0, contrast=0.2, saturation=0.0, hue=0.0),
+        ],
+        label="Brightness + Contrast",
+    ),
+    "c02_color_3": AugSequence(
+        aug_albu=[
+            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.0, p=1.0),
+            A.RandomBrightnessContrast(brightness_limit=0.0, contrast_limit=0.2, p=1.0),
+            A.HueSaturationValue(hue_shift_limit=0, sat_shift_limit=20, val_shift_limit=0, p=1.0),
+        ],
+        aug_kornia=[
+            K.RandomBrightness(brightness=(0.8, 1.2), p=1.0),
+            K.RandomContrast(contrast=(0.8, 1.2), p=1.0),
+            K.RandomSaturation(saturation=(0.8, 1.2), p=1.0),
+        ],
+        aug_tv=[
+            tv.ColorJitter(brightness=0.2, contrast=0.0, saturation=0.0, hue=0.0),
+            tv.ColorJitter(brightness=0.0, contrast=0.2, saturation=0.0, hue=0.0),
+            tv.ColorJitter(brightness=0.0, contrast=0.0, saturation=0.2, hue=0.0),
+        ],
+        label="Brightness + Contrast + Saturation",
+    ),
+    "c03_color_4": AugSequence(
+        aug_albu=[
+            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.0, p=1.0),
+            A.RandomBrightnessContrast(brightness_limit=0.0, contrast_limit=0.2, p=1.0),
+            A.HueSaturationValue(hue_shift_limit=0, sat_shift_limit=20, val_shift_limit=0, p=1.0),
+            A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=0, val_shift_limit=0, p=1.0),
+        ],
+        aug_kornia=[
+            K.RandomBrightness(brightness=(0.8, 1.2), p=1.0),
+            K.RandomContrast(contrast=(0.8, 1.2), p=1.0),
+            K.RandomSaturation(saturation=(0.8, 1.2), p=1.0),
+            K.ColorJitter(brightness=0.0, contrast=0.0, saturation=0.0, hue=0.05, p=1.0),
+        ],
+        aug_tv=[
+            tv.ColorJitter(brightness=0.2, contrast=0.0, saturation=0.0, hue=0.0),
+            tv.ColorJitter(brightness=0.0, contrast=0.2, saturation=0.0, hue=0.0),
+            tv.ColorJitter(brightness=0.0, contrast=0.0, saturation=0.2, hue=0.0),
+            tv.ColorJitter(brightness=0.0, contrast=0.0, saturation=0.0, hue=0.05),
+        ],
+        label="Brightness + Contrast + Saturation + Hue",
+    ),
+    # ── d: realistic mixed (geo + colour), 5-9 ops ────────────────────────────
+    # Strict-prefix slices of _D_POOL_* so each N-op chain is a sub-sequence of
+    # the (N+1)-op chain — isolating the added op's contribution across lengths.
+    # POINTWISE and AGGRESSIVE reorder variants are registered by the sweep loop
+    # below, keeping SEQUENCE_BANK free of duplicated transform definitions.
+    **{
+        f"d0{i}_mixed_{n}": AugSequence(
+            aug_albu=_D_POOL_ALB[:n],
+            aug_kornia=_D_POOL_K[:n],
+            aug_tv=_D_POOL_TV[:n],
+            label=f"{n}-op geo+colour",
+        )
+        for i, n in enumerate(range(5, 10), start=1)
+    },
 }
 
-# ── Registration loop ─────────────────────────────────────────────────────────
-# For each (sequence, backend) pair: build a native compose and a FuseCompose,
-# then register both as timed runners.  deepcopy ensures native and fused use
-# independent transform instances even though both read from the same bank list.
 
+def _register_seq(seq_name: str, aug_seq: AugSequence, *, reorder: ReorderPolicy | None = None) -> None:
+    """Register all three backend variants for one (sequence, reorder-policy) pair.
 
-for _seq_name, _aug_seq in tqdm(SEQUENCE_BANK.items(), desc="Registering", unit="seq"):
-    for _backend, _transforms, _is_albu in [
-        ("albumentations", _aug_seq.aug_albu, True),
-        ("kornia", _aug_seq.aug_kornia, False),
-        ("torchvision", _aug_seq.aug_tv, False),
+    Args:
+        seq_name: Key stored in every entry; callers append a policy suffix for
+            reorder variants so they appear as separate rows in results.
+        aug_seq: Transform lists and optional base reorder policy.
+        reorder: Explicit policy override; falls back to ``aug_seq.reorder`` when
+            ``None`` so sequences with a built-in policy still use it.
+
+    """
+    effective_reorder = reorder if reorder is not None else aug_seq.reorder
+    for backend, transforms, is_albu in [
+        ("albumentations", aug_seq.aug_albu, True),
+        ("kornia", aug_seq.aug_kornia, False),
+        ("torchvision", aug_seq.aug_tv, False),
     ]:
         try:
-            _tfms_native = copy.deepcopy(_transforms)
-            if _is_albu:
-                _native = A.Compose(_tfms_native)
-            elif _backend == "kornia":
-                _native = K.AugmentationSequential(*_tfms_native)
+            native_tfms = copy.deepcopy(transforms)
+            if is_albu:
+                native = A.Compose(native_tfms)
+            elif backend == "kornia":
+                native = K.AugmentationSequential(*native_tfms)
             else:
-                _native = tv.Compose(_tfms_native)
-            _fused_kwargs = {"reorder": _aug_seq.reorder} if _aug_seq.reorder is not None else {}
-            _fused = FuseCompose(_transforms, **_fused_kwargs)
-            _register(_seq_name, _backend, _native, _fused, albu_native=_is_albu)
+                native = tv.Compose(native_tfms)
+            fused_kwargs = {"reorder": effective_reorder} if effective_reorder is not None else {}
+            fused = FuseCompose(copy.deepcopy(transforms), **fused_kwargs)
+            _register(seq_name, backend, native, fused, albu_native=is_albu)
         except Exception as exc:  # noqa: PERF203
-            print(f"  ⚠ {_seq_name}/{_backend} skipped: {exc}")
+            print(f"  ⚠ {seq_name}/{backend} skipped: {exc}")
+
+
+# ── Registration ─────────────────────────────────────────────────────────────
+# The interleaved geo/colour pattern is the worst case for naive fusion — every
+# colour op breaks a consecutive geo segment.  Sweeping all non-default policies
+# shows how much each reorder strategy recovers, using the same pipeline each time.
+# Keys get a policy suffix so variants sort alongside their NONE baseline.
+_D_REORDER_POLICIES: list[tuple[str, ReorderPolicy]] = [
+    ("pointwise", ReorderPolicy.POINTWISE),
+    ("aggressive", ReorderPolicy.AGGRESSIVE),
+]
+_d_keys = [k for k in SEQUENCE_BANK if k.startswith("d")]
+
+for _seq_name, _aug_seq in SEQUENCE_BANK.items():
+    _register_seq(_seq_name, _aug_seq)
+
+for _policy_name, _policy in _D_REORDER_POLICIES:
+    for _seq_name in _d_keys:
+        _register_seq(f"{_seq_name}__{_policy_name}", SEQUENCE_BANK[_seq_name], reorder=_policy)
 
 
 class SeededRunner:
@@ -452,11 +572,6 @@ class SeededRunner:
         seed: Integer seed applied to both ``torch.manual_seed`` and ``np.random.seed``
             before each invocation.  Must be in ``[0, 2**32 - 1]`` for NumPy
             compatibility.
-
-    Examples:
-        >>> seeded = SeededRunner(lambda: None, seed=42)
-        >>> seeded._seed
-        42
 
     Notes:
         * Albumentations transforms draw from **numpy random**; kornia / torchvision
@@ -484,10 +599,14 @@ for entry in _ENTRIES:
     suffix = f"  →  {plan}  [{warps} warps saved]" if plan else ""
     print(f"  {entry['seq']:25s} {entry['backend']:16s} {entry['mode']:6s}{suffix}")
 
-# %% ── 3  Visual sanity check ─────────────────────────────────────────────────
+# %% [markdown]
+# ## 3 — Visual sanity check
+#
 # One 2x3 figure per augmentation sequence.
 # Top row = native compose output, bottom row = fused output.
 # Columns = albumentations | kornia | torchvision.
+
+# %% ── 3  Visual sanity check ─────────────────────────────────────────────────
 
 _BACKENDS_ORDER = ["albumentations", "kornia", "torchvision"]
 # Sequence display order comes from sorted SEQUENCE_BANK keys (numeric prefix guarantees it).
@@ -636,25 +755,39 @@ def benchmark(runner, num_warmup: int = NUM_WARMUP, num_repeats: int = NUM_REPEA
 print(f"\nRunning {len(_ENTRIES)} benchmarks  (warmup={NUM_WARMUP}, repeats={NUM_REPEATS}) …\n")
 results: list[dict] = []
 
-for entry in tqdm(_ENTRIES, desc="Benchmarking", unit="pipeline"):
-    label = f"{entry['seq']:25s} {entry['backend']:16s} {entry['mode']:6s}"
-    try:
-        stats, raw = benchmark(entry["runner"])
-        tqdm.write(f"  {label}  {stats['mean']:7.3f} +/- {stats['std']:6.3f} ms")
-        results.append({
-            "sequence_name": entry["seq"],
-            "backend": entry["backend"],
-            "mode": entry["mode"],
-            "timing_ms": stats,
-            "raw_times_ms": raw,
-            **entry["meta"],
-        })
-    except Exception as exc:
-        tqdm.write(f"  {label}  ERROR: {exc}")
+with Progress(
+    SpinnerColumn(),
+    TextColumn("[progress.description]{task.description}"),
+    BarColumn(),
+    MofNCompleteColumn(),
+    TimeElapsedColumn(),
+    redirect_stdout=True,
+) as _progress:
+    _bench_task = _progress.add_task("Benchmarking", total=len(_ENTRIES))
+    for entry in _ENTRIES:
+        label = f"{entry['seq']:25s} {entry['backend']:16s} {entry['mode']:6s}"
+        try:
+            stats, raw = benchmark(entry["runner"])
+            log.debug("  %s  %7.3f +/- %6.3f ms", label, stats["mean"], stats["std"])
+            results.append({
+                "sequence_name": entry["seq"],
+                "backend": entry["backend"],
+                "mode": entry["mode"],
+                "timing_ms": stats,
+                "raw_times_ms": raw,
+                **entry["meta"],
+            })
+        except Exception as exc:
+            log.debug("  %s  ERROR: %s", label, exc)
+        _progress.advance(_bench_task)
 
-# %% ── 6  Display results table ───────────────────────────────────────────────
+# %% [markdown]
+# ## 6 — Results table
+#
 # Wide format: rows = sequences, column groups = backend (alb | kornia | tv),
 # each group has two sub-columns: native ms and fused ms.
+
+# %% ── 6  Display results table ───────────────────────────────────────────────
 
 _by_key: dict[tuple, dict] = {(r["sequence_name"], r["backend"], r["mode"]): r for r in results}
 
@@ -662,22 +795,48 @@ _COL_BACKENDS = ["albumentations", "kornia", "torchvision"]
 _COL_ABBREV = {"albumentations": "alb", "kornia": "kornia", "torchvision": "tv"}
 _W_SEQ = 20  # sequence name column width
 _W_VAL = 7  # ms value column width
+_W_BOOST = 7  # fixed boost field: "x1.23 ✔" = 5-char ratio + space + 1-char symbol
+
+
+def _boost_symbol(ratio: float) -> str:
+    """Return a single-width Unicode symbol indicating whether fusion is beneficial.
+
+    Symbols are from the same Unicode "signs" family as ⚠ (U+26A0):
+    ✔ U+2714, ≈ U+2248, ⚠ U+26A0 — all render as single terminal cells.
+
+    Args:
+        ratio: native_ms / fused_ms.  Values >1 mean fused is faster.
+
+    Returns:
+        "✔" when fused is faster (ratio > 1.0),
+        "≈" when roughly equal (0.9 <= ratio <= 1.0),
+        "⚠" when fused is noticeably slower (ratio < 0.9).
+
+    """
+    if ratio > 1.0:
+        return "✔"
+    if ratio >= 0.9:
+        return "≈"
+    return "⚠"
+
+
+# Per-group char width: 1(sep) + W_VAL + 1 + W_VAL + 1 + W_BOOST + 1(trail) = 24
+_GROUP_W = _W_VAL * 2 + _W_BOOST + 4
 
 # ── header ───────────────────────────────────────────────────────────────────
-_sep = "─" * (_W_SEQ + 1 + len(_COL_BACKENDS) * (_W_VAL * 2 + 3))
+_sep = "─" * (_W_SEQ + 1 + len(_COL_BACKENDS) * _GROUP_W)
 print("\n" + _sep)
 
-# row 1: backend group labels, centred over their two sub-columns
+# row 1: backend group labels, centred over their three sub-columns
 header1 = f"{'Sequence':<{_W_SEQ}}"
 for b in _COL_BACKENDS:
-    group_w = _W_VAL * 2 + 3  # "native" + " " + "fused" + spacing
-    header1 += " " + f"{_COL_ABBREV[b]:^{group_w}}"
+    header1 += " " + f"{_COL_ABBREV[b]:^{_GROUP_W}}"
 print(header1)
 
 # row 2: sub-column labels
 header2 = f"{'':^{_W_SEQ}}"
 for _ in _COL_BACKENDS:
-    header2 += f" {'native':>{_W_VAL}} {'fused':>{_W_VAL}}  "
+    header2 += f" {'native':>{_W_VAL}} {'fused':>{_W_VAL}} {'boost':>{_W_BOOST}} "
 print(header2)
 print(_sep)
 
@@ -688,13 +847,17 @@ for seq in _SEQS_ORDER:
         nat = _by_key.get((seq, b, "native"))
         fus = _by_key.get((seq, b, "fused"))
         if nat and fus:
-            row += f" {nat['timing_ms']['mean']:>{_W_VAL}.2f} {fus['timing_ms']['mean']:>{_W_VAL}.2f}  "
+            n_ms = nat["timing_ms"]["mean"]
+            f_ms = fus["timing_ms"]["mean"]
+            ratio = n_ms / f_ms if f_ms > 0 else None
+            boost_str = f"x{ratio:.2f} {_boost_symbol(ratio)}" if ratio is not None else "  N/A "
+            row += f" {n_ms:>{_W_VAL}.2f} {f_ms:>{_W_VAL}.2f} {boost_str:>{_W_BOOST}} "
         else:
-            row += f" {'N/A':>{_W_VAL}} {'N/A':>{_W_VAL}}  "
+            row += f" {'N/A':>{_W_VAL}} {'N/A':>{_W_VAL}} {'---':>{_W_BOOST}} "
     print(row)
 
 print(_sep)
-print(f"Values in ms (mean over {NUM_REPEATS} repeats, batch_size=1).")
+print(f"Values in ms (mean over {NUM_REPEATS} repeats, batch_size=1).  boost = native/fused (>1 = fused faster).")
 print("Note: alb native runs on HWC uint8 NumPy; all fused/kornia/tv run on BCHW float32 tensor.")
 
 # %% ── 7  Save JSON ───────────────────────────────────────────────────────────
