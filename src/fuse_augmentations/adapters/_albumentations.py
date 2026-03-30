@@ -32,7 +32,7 @@ Example:
 from __future__ import annotations
 
 import warnings
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 import torch
@@ -491,7 +491,7 @@ class AlbumentationsAdapter:
         return torch.stack(results).to(device=device, dtype=dtype)
 
     @staticmethod
-    def call_nonfused_numpy(transform: object, img_hwc: NDArray) -> NDArray:
+    def call_nonfused_numpy(transform: object, img_hwc: NDArray[Any]) -> NDArray[Any]:
         """Apply a non-fused Albumentations transform to a single HWC NumPy image.
 
         Calls the transform via its native Albumentations dict API
@@ -516,7 +516,7 @@ class AlbumentationsAdapter:
             (8, 8, 3)
 
         """
-        return transform(image=img_hwc)["image"]  # type: ignore[operator]
+        return transform(image=img_hwc)["image"]  # type: ignore[operator,no-any-return]
 
 
 # ---------------------------------------------------------------------------

@@ -42,10 +42,10 @@ Visual sanity figures are saved to ``examples/results/visual_<seq>.png``.
 
 Notes
 -----
-*  Albumentations **native** benchmarks operate on HWC ``uint8`` NumPy arrays — the format
-   Albumentations expects natively.  All other pipelines (including fuse-aug wrapping
-   Albumentations transforms) use BCHW ``float32`` tensors.  Timing is informative but not
-   strictly apples-to-apples for Albumentations native vs. fused.
+*  Albumentations benchmarks — both native and fused — operate on HWC ``uint8`` NumPy arrays
+   via the Albumentations dict-input API (``pipeline(image=ndarray)``), matching the real
+   PyTorch training workflow where Albumentations runs CPU-side before ``ToTensorV2``.
+   Kornia and TorchVision use BCHW ``float32`` tensors.
 *  ``batch_size=1`` throughout — Albumentations is single-image natively.
 *  Visual figures seed both torch and numpy RNGs identically for native and fused so they
    draw the same random parameters; the ``max|native-fused|`` annotation in each subplot
@@ -256,8 +256,15 @@ def _register(seq: str, backend: str, native_pipe, fused_pipe, *, albu_native: b
         def run_native(_p=native_pipe, _img=image_tensor):
             return _p(_img)
 
-    def run_fused(_p=fused_pipe, _img=image_tensor):
-        return _p(_img)
+    if albu_native:
+
+        def run_fused(_p=fused_pipe):
+            return _p(image=image_np)["image"]
+
+    else:
+
+        def run_fused(_p=fused_pipe, _img=image_tensor):
+            return _p(_img)
 
     # One warm-up call to populate fusion_plan / n_warps_saved.
     try:

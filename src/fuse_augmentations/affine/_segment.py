@@ -573,7 +573,7 @@ class AlbuFusedAffineSegment(nn.Module):
 
         return stacked
 
-    def forward_numpy(self, img_hwc: NDArray) -> NDArray:
+    def forward_numpy(self, img_hwc: NDArray[Any]) -> NDArray[Any]:
         """Apply fused affine chain to a single HWC NumPy image (no tensor conversion).
 
         Reuses the same matrix composition logic as :meth:`forward` but operates
