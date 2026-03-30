@@ -34,7 +34,8 @@
 #
 # ```bash
 # python experiments/bench_primitive_vs_affine.py
-# jupytext --to notebook experiments/bench_primitive_vs_affine.py && jupyter lab experiments/bench_primitive_vs_affine.ipynb
+# jupytext --to notebook experiments/bench_primitive_vs_affine.py
+# jupyter lab experiments/bench_primitive_vs_affine.ipynb
 # ```
 #
 # Results are saved to `experiments/results/bench_primitive_vs_affine.json`.

@@ -112,6 +112,7 @@ try:
     from albumentations import D4 as _D4
     from albumentations import Affine as _Affine
     from albumentations import HorizontalFlip as _HorizontalFlip
+    from albumentations import HueSaturationValue as _HueSaturationValue
     from albumentations import Perspective as _Perspective
     from albumentations import RandomBrightnessContrast as _RandomBrightnessContrast
     from albumentations import RandomResizedCrop as _RandomResizedCrop
@@ -134,6 +135,9 @@ try:
         _Transpose: TransformCategory.GEOMETRIC_EXACT,
         _Perspective: TransformCategory.PROJECTIVE,
         _RandomBrightnessContrast: TransformCategory.POINTWISE_LINEAR,
+        # HueSaturationValue is pixel-wise (non-linear in RGB) — reorderable
+        # but not linearly composable into a FusedColorSegment matrix.
+        _HueSaturationValue: TransformCategory.POINTWISE,
         _RandomResizedCrop: TransformCategory.CROP_RESIZE_FIXED,
     }
 
@@ -147,6 +151,8 @@ try:
     _INTERP_TYPES: frozenset[type] = frozenset({_Affine, _Rotate, _SafeRotate, _ShiftScaleRotate})
     _COLOR_TYPES: frozenset[type] = frozenset({_RandomBrightnessContrast})
     _CROP_RESIZE_TYPES: frozenset[type] = frozenset({_RandomResizedCrop})
+    # POINTWISE (non-linear color): reorderable but no matrix — return identity.
+    _POINTWISE_TYPES: frozenset[type] = frozenset({_HueSaturationValue})
     _ALL_REGISTRY_TYPES: frozenset[type] = frozenset(TRANSFORM_REGISTRY)
 
 except ImportError:
@@ -239,6 +245,9 @@ class AlbumentationsAdapter:
         """
         B, _C, H, W = input_shape  # noqa: N806
 
+        if _is_albu_instance(transform, _POINTWISE_TYPES):
+            # Non-linear color op (e.g. HueSaturationValue): passthrough — no affine matrix.
+            return {"_batch_size": torch.tensor([B], device=device, dtype=torch.int64)}
         if _is_albu_instance(transform, _HFLIP_TYPES | _VFLIP_TYPES):
             return {"_batch_size": torch.tensor([B], device=device, dtype=torch.int64)}
         if _is_albu_instance(transform, _EXACT_DISCRETE_TYPES):
@@ -318,6 +327,12 @@ class AlbumentationsAdapter:
             coordinates, depending on the transform category.
 
         """
+        if _is_albu_instance(transform, _POINTWISE_TYPES):
+            # Non-linear color op: no spatial change → identity matrix.
+            B = int(params["_batch_size"].item())  # noqa: N806
+            device = params["_batch_size"].device
+            return torch.eye(3, dtype=torch.float32, device=device).unsqueeze(0).expand(B, -1, -1).clone()
+
         if _is_albu_instance(transform, _HFLIP_TYPES):
             B = int(params["_batch_size"].item())  # noqa: N806
             device = params["_batch_size"].device

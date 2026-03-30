@@ -45,6 +45,7 @@ try:
     from kornia.augmentation import RandomResizedCrop as _RandomResizedCrop
     from kornia.augmentation import RandomRotation as _RandomRotation
     from kornia.augmentation import RandomRotation90 as _RandomRotation90
+    from kornia.augmentation import RandomSaturation as _RandomSaturation
     from kornia.augmentation import RandomShear as _RandomShear
     from kornia.augmentation import RandomTranslate as _RandomTranslate
     from kornia.augmentation import RandomVerticalFlip as _RandomVerticalFlip
@@ -61,6 +62,9 @@ try:
         _RandomBrightness: TransformCategory.POINTWISE_LINEAR,
         _RandomContrast: TransformCategory.POINTWISE_LINEAR,
         _ColorJitter: TransformCategory.POINTWISE_LINEAR,
+        # Saturation/hue ops are pixel-wise (non-linear in RGB) — reorderable
+        # but not linearly composable into a FusedColorSegment matrix.
+        _RandomSaturation: TransformCategory.POINTWISE,
         _RandomResizedCrop: TransformCategory.CROP_RESIZE_FIXED,
     }
 
@@ -130,6 +134,10 @@ class KorniaAdapter:
         ttype = type(transform)
 
         B, _C, _H, _W = input_shape  # noqa: N806
+
+        # POINTWISE (non-linear color ops): no spatial matrix — return sentinel.
+        if TRANSFORM_REGISTRY and ttype is _RandomSaturation:
+            return {"_batch_size": torch.tensor([B], device=device, dtype=torch.int64)}
 
         # Flip transforms have no sampled params — p-mask handles them.
         # Store batch metadata so build_matrix can construct the right shape.
@@ -279,6 +287,12 @@ class KorniaAdapter:
 
         """
         ttype = type(transform)
+
+        if TRANSFORM_REGISTRY and ttype is _RandomSaturation:
+            # Non-linear color op: no spatial change → identity matrix.
+            B = int(params["_batch_size"].item())  # noqa: N806
+            device = params["_batch_size"].device
+            return torch.eye(3, dtype=torch.float32, device=device).unsqueeze(0).expand(B, -1, -1).clone()
 
         if TRANSFORM_REGISTRY and ttype is _RandomHorizontalFlip:
             B = int(params["_batch_size"].item())  # noqa: N806
