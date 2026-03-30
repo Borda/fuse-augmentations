@@ -30,17 +30,17 @@ Usage
 -----
 Run as a script::
 
-    python examples/bench_augmentation_pipelines.py
+    python experiments/bench_augmentation_pipelines.py
 
 Open as a Jupyter notebook (requires jupytext)::
 
-    jupytext --to notebook examples/bench_augmentation_pipelines.py
-    jupyter lab examples/bench_augmentation_pipelines.ipynb
+    jupytext --to notebook experiments/bench_augmentation_pipelines.py
+    jupyter lab experiments/bench_augmentation_pipelines.ipynb
 
-Results are saved to ``examples/results/benchmark_results.json``.
-Visual sanity figures are saved to ``examples/results/visual_<seq>.png``.
+Results are saved to ``experiments/results/benchmark_results.json``.
+Visual sanity figures are saved to ``experiments/results/visual_<seq>.png``.
 
-Notes
+Notes:
 -----
 *  Albumentations benchmarks — both native and fused — operate on HWC ``uint8`` NumPy arrays
    via the Albumentations dict-input API (``pipeline(image=ndarray)``), matching the real
@@ -827,8 +827,8 @@ def _boost_symbol(ratio: float) -> str:
     return "⚠"
 
 
-# Per-group char width: 1(sep) + W_VAL + 1 + W_VAL + 1 + W_BOOST + 1(trail) = 24
-_GROUP_W = _W_VAL * 2 + _W_BOOST + 4
+# Per-group char width: 1(sep) + W_VAL + 1 + W_VAL + 3(" | ") + W_BOOST + 1(trail)
+_GROUP_W = _W_VAL * 2 + _W_BOOST + 6
 
 # ── header ───────────────────────────────────────────────────────────────────
 _sep = "─" * (_W_SEQ + 1 + len(_COL_BACKENDS) * _GROUP_W)
@@ -843,7 +843,7 @@ print(header1)
 # row 2: sub-column labels
 header2 = f"{'':^{_W_SEQ}}"
 for _ in _COL_BACKENDS:
-    header2 += f" {'native':>{_W_VAL}} {'fused':>{_W_VAL}} {'boost':>{_W_BOOST}} "
+    header2 += f" {'native':>{_W_VAL}} {'fused':>{_W_VAL}} | {'boost':>{_W_BOOST}} "
 print(header2)
 print(_sep)
 
@@ -858,9 +858,9 @@ for seq in _SEQS_ORDER:
             f_ms = fus["timing_ms"]["mean"]
             ratio = n_ms / f_ms if f_ms > 0 else None
             boost_str = f"x{ratio:.2f} {_boost_symbol(ratio)}" if ratio is not None else "  N/A "
-            row += f" {n_ms:>{_W_VAL}.2f} {f_ms:>{_W_VAL}.2f} {boost_str:>{_W_BOOST}} "
+            row += f" {n_ms:>{_W_VAL}.2f} {f_ms:>{_W_VAL}.2f} | {boost_str:>{_W_BOOST}} "
         else:
-            row += f" {'N/A':>{_W_VAL}} {'N/A':>{_W_VAL}} {'---':>{_W_BOOST}} "
+            row += f" {'N/A':>{_W_VAL}} {'N/A':>{_W_VAL}} | {'---':>{_W_BOOST}} "
     print(row)
 
 print(_sep)

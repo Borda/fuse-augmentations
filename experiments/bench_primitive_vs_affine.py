@@ -33,11 +33,11 @@
 # ## Usage
 #
 # ```bash
-# python examples/bench_primitive_vs_affine.py
-# jupytext --to notebook examples/bench_primitive_vs_affine.py && jupyter lab examples/bench_primitive_vs_affine.ipynb
+# python experiments/bench_primitive_vs_affine.py
+# jupytext --to notebook experiments/bench_primitive_vs_affine.py && jupyter lab experiments/bench_primitive_vs_affine.ipynb
 # ```
 #
-# Results are saved to `examples/results/bench_primitive_vs_affine.json`.
+# Results are saved to `experiments/results/bench_primitive_vs_affine.json`.
 
 # %% ── setup  Install dependencies (run once) ────────────────────────────────
 # !pip install -e ".[all,benchmark]"
@@ -570,6 +570,7 @@ def _run_ops(section: str, ops: list[BenchOp]) -> None:
                     "prims_ms": n,
                     "affine_ms": f,
                 })
+
 
 _run_ops("ops", GEO_OPS)
 

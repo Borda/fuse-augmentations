@@ -95,3 +95,15 @@ def test_grayscale_hwc1_dict_input():
     pipe = Compose([A.Rotate(limit=30, p=1.0)])
     out = pipe(image=img)
     assert out["image"].shape == img.shape
+
+
+def test_fused_plus_passthrough_dict_input():
+    """Mixed fused-geometric + passthrough colour op via dict input."""
+    img = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
+    # A.Rotate is fused (AlbuFusedAffineSegment); A.GaussianBlur is a passthrough
+    # (_PassthroughSegment with AlbumentationsAdapter).
+    pipe = Compose([A.Rotate(limit=30, p=1.0), A.GaussianBlur(p=1.0)])
+    out = pipe(image=img)
+    assert isinstance(out, dict)
+    assert isinstance(out["image"], np.ndarray)
+    assert out["image"].shape == img.shape

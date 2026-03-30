@@ -123,6 +123,12 @@ lint.per-file-ignores."examples/**/*.py" = [
   "N",   # relaxed naming (N, X, C, etc. are idiomatic in image/math code)
   "S",   # security rules relaxed for local example scripts
 ]
+lint.per-file-ignores."experiments/**/*.py" = [
+  "ANN", # type annotations not required in experiment scripts
+  "D",   # module docstring covers the script; per-function docs not required
+  "N",   # relaxed naming (N, X, C, etc. are idiomatic in image/math code)
+  "S",   # security rules relaxed for local experiment scripts
+]
 lint.per-file-ignores."src/fuse_aug/__init__.py" = [
   "F401", # Star-import re-exports are intentional
 ]

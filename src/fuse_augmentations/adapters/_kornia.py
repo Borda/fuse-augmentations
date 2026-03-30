@@ -573,6 +573,83 @@ class KorniaAdapter:
         """
         return transform(image)  # type: ignore[operator, no-any-return]
 
+    @staticmethod
+    def convert_native_params(
+        transform: object,
+        device: torch.device,
+    ) -> dict[str, torch.Tensor]:
+        """Convert Kornia's stored ``_params`` to the canonical param dict.
+
+        After a native forward call, Kornia transforms store their sampled
+        parameters in ``transform._params``. This method converts that dict
+        to the same canonical format returned by :meth:`sample_params`,
+        enabling post-hoc matrix reconstruction via :meth:`build_matrix`.
+
+        Args:
+            transform: A Kornia augmentation transform that has been called
+                (i.e. ``transform._params`` is populated).
+            device: Target device for parameter tensors.
+
+        Returns:
+            Canonical parameter dict suitable for :meth:`build_matrix`.
+
+        """
+        ttype = type(transform)
+        params = transform._params  # type: ignore[attr-defined]
+
+        if TRANSFORM_REGISTRY and ttype is _RandomRotation:
+            return {
+                "angle_rad": -torch.deg2rad(params["degrees"].to(device=device)),
+            }
+
+        if TRANSFORM_REGISTRY and ttype is _RandomAffine:
+            result: dict[str, torch.Tensor] = {}
+            if "angle" in params:
+                result["angle_rad"] = -torch.deg2rad(params["angle"].to(device=device))
+            if "translations" in params:
+                trans = params["translations"].to(device=device)
+                result["translate_x"] = trans[:, 0]
+                result["translate_y"] = trans[:, 1]
+            if "scale" in params:
+                sc = params["scale"].to(device=device)
+                result["scale_x"] = sc[:, 0]
+                result["scale_y"] = sc[:, 1]
+            if "shear_x" in params:
+                result["shear_x_rad"] = -torch.deg2rad(params["shear_x"].to(device=device))
+            if "shear_y" in params:
+                result["shear_y_rad"] = -torch.deg2rad(params["shear_y"].to(device=device))
+            return result
+
+        if TRANSFORM_REGISTRY and ttype is _RandomShear:
+            result_shear: dict[str, torch.Tensor] = {}
+            if "shear_x" in params:
+                result_shear["shear_x_rad"] = -torch.deg2rad(params["shear_x"].to(device=device))
+            if "shear_y" in params:
+                result_shear["shear_y_rad"] = -torch.deg2rad(params["shear_y"].to(device=device))
+            return result_shear
+
+        if TRANSFORM_REGISTRY and ttype is _RandomTranslate:
+            return {
+                "translate_x": params["translate_x"].to(device=device),
+                "translate_y": params["translate_y"].to(device=device),
+            }
+
+        if TRANSFORM_REGISTRY and ttype in (_RandomHorizontalFlip, _RandomVerticalFlip):
+            B = int(params["batch_prob"].shape[0])  # noqa: N806
+            return {
+                "_batch_size": torch.tensor([B], device=device, dtype=torch.int64),
+            }
+
+        if TRANSFORM_REGISTRY and ttype is _RandomRotation90:
+            B = int(params["batch_prob"].shape[0])  # noqa: N806
+            return {
+                "_batch_size": torch.tensor([B], device=device, dtype=torch.int64),
+                "k90": params["times"].to(device=device, dtype=torch.int64) % 4,
+            }
+
+        # Unsupported transform type — return empty
+        return {}
+
 
 # ---------------------------------------------------------------------------
 # Private helpers -- color matrix construction

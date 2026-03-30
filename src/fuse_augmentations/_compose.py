@@ -249,6 +249,7 @@ class FusedCompose(nn.Module):
             original_transforms=transforms,
         )
         self._last_transform_matrix: Tensor | None = None
+        self._last_matrix_segment: object | None = None  # deferred resolution
         self._transform_adapters: dict[int, TransformAdapter] = transform_adapters or {}
 
         # Resolve output_backend converter.
@@ -386,7 +387,8 @@ class FusedCompose(nn.Module):
                 supported in the Albumentations native I/O path.
 
         """
-        from fuse_augmentations.affine._segment import ExactAffineSegment
+        from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+        from fuse_augmentations.affine._segment import CropResizeSegment, ExactAffineSegment, FusedColorSegment
 
         for seg in self._segments:
             if isinstance(seg, AlbuFusedAffineSegment):
@@ -401,9 +403,19 @@ class FusedCompose(nn.Module):
                     img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
                 continue
 
-            if isinstance(seg, _PassthroughSegment):
-                from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+            if isinstance(seg, FusedColorSegment):
+                # Apply each POINTWISE_LINEAR colour transform via the native Albu API.
+                for tfm in seg._transforms:
+                    img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
+                continue
 
+            if isinstance(seg, CropResizeSegment):
+                # Single-transform segment — apply via native Albu API.
+                for tfm in seg.transforms:
+                    img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
+                continue
+
+            if isinstance(seg, _PassthroughSegment):
                 if isinstance(seg.adapter, AlbumentationsAdapter):
                     img_hwc = AlbumentationsAdapter.call_nonfused_numpy(seg.transform, img_hwc)
                 else:
