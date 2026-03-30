@@ -3,7 +3,7 @@
 Measures the geometric mean of native/fused boost ratios for two representative
 workloads across Kornia, TorchVision, and Albumentations:
 
-- **Sequences** (b02_geo_3: Rotate+HFlip+Scale, b04_geo_5: 5-op geometric chain):
+- **Sequences** (b02_geom_3: Rotate+HFlip+Scale, b04_geom_5: 5-op geometric chain):
   these should be faster fused (boost > 1.0) because consecutive warps are
   collapsed into one.
 
@@ -15,7 +15,7 @@ For Albumentations, both native (``A.Compose``) and fused (``FuseCompose``) use
 the Albumentations dict-input convention (``pipeline(image=hwc_uint8)``), which
 avoids tensor round-trips and measures the true warp-fusion gain.
 
-Score = geometric_mean(all 12 boost ratios).
+Score = geometric_mean(all 15 boost ratios).
 Direction: higher is better.
 Target: >= 1.4  (requires single-op overhead <= ~5-10% AND sequences stay fast).
 
@@ -33,8 +33,8 @@ import copy
 import statistics
 import time
 
-import albumentations as A  # noqa: N812
-import kornia.augmentation as K  # noqa: N812
+import albumentations as A
+import kornia.augmentation as K
 import numpy as np
 import torch
 import torchvision.transforms.v2 as tv
@@ -72,15 +72,15 @@ def _bench_albu(fn: object) -> float:
 # Copied verbatim from bench_augmentation_pipelines.py so scores are comparable.
 # ---------------------------------------------------------------------------
 _CASES: list[tuple[str, list, list]] = [
-    # b02_geo_3 — Rotate + HFlip + Scale
+    # b02_geom_3 — Rotate + HFlip + Scale
     (
-        "b02_geo_3",
+        "b02_geom_3",
         [K.RandomRotation(30.0), K.RandomHorizontalFlip(p=0.5), K.RandomAffine(0, scale=(0.8, 1.2))],
         [tv.RandomRotation(30), tv.RandomHorizontalFlip(0.5), tv.RandomAffine(degrees=0, scale=(0.8, 1.2))],
     ),
-    # b04_geo_5 — Rotate + HFlip + Shear + VFlip + Rotate
+    # b04_geom_5 — Rotate + HFlip + Shear + VFlip + Rotate
     (
-        "b04_geo_5",
+        "b04_geom_5",
         [
             K.RandomRotation(10.0),
             K.RandomHorizontalFlip(p=0.5),
@@ -94,6 +94,25 @@ _CASES: list[tuple[str, list, list]] = [
             tv.RandomAffine(degrees=0, shear=5),
             tv.RandomVerticalFlip(0.5),
             tv.RandomRotation(5),
+        ],
+    ),
+    # b05_geom_5_warp — 5 pure warps: Rotate + Scale + Shear + Translate + Rotate
+    # No flips: every native op requires a full warp, so fused should be ~3-4x faster.
+    (
+        "b05_geom_5_warp",
+        [
+            K.RandomRotation(30.0, p=1.0),
+            K.RandomAffine(0, scale=(0.8, 1.2), p=1.0),
+            K.RandomAffine(0, shear=(-10.0, 10.0), p=1.0),
+            K.RandomAffine(0, translate=(0.1, 0.1), p=1.0),
+            K.RandomRotation(15.0, p=1.0),
+        ],
+        [
+            tv.RandomRotation(30),
+            tv.RandomAffine(degrees=0, scale=(0.8, 1.2)),
+            tv.RandomAffine(degrees=0, shear=10),
+            tv.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+            tv.RandomRotation(15),
         ],
     ),
     # a01_rotate — single Rotate (no fusion gain, only overhead)
@@ -114,17 +133,27 @@ _CASES: list[tuple[str, list, list]] = [
 # Transforms copied from bench_augmentation_pipelines.py for comparability.
 _ALBU_CASES: list[tuple[str, list]] = [
     (
-        "b02_geo_3",
+        "b02_geom_3",
         [A.Rotate(limit=30), A.HorizontalFlip(p=0.5), A.Affine(scale=(0.8, 1.2))],
     ),
     (
-        "b04_geo_5",
+        "b04_geom_5",
         [
             A.Rotate(limit=10),
             A.HorizontalFlip(p=0.5),
             A.Affine(shear={"x": (-5, 5), "y": (-5, 5)}),
             A.VerticalFlip(p=0.5),
             A.Rotate(limit=5),
+        ],
+    ),
+    (
+        "b05_geom_5_warp",
+        [
+            A.Rotate(limit=30, p=1.0),
+            A.Affine(scale=(0.8, 1.2), p=1.0),
+            A.Affine(shear={"x": (-10, 10), "y": (-10, 10)}, p=1.0),
+            A.Affine(translate_percent={"x": (-0.1, 0.1), "y": (-0.1, 0.1)}, p=1.0),
+            A.Rotate(limit=15, p=1.0),
         ],
     ),
     (

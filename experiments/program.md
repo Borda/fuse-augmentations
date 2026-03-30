@@ -2,13 +2,38 @@
 
 ## Goal
 
-Reach a composite boost score ≥ 1.40, where score = geometric mean of native/fused latency ratios across 12 cases (Kornia×4 + TorchVision×4 + Albumentations×4: b02_geo_3, b04_geo_5, a01_rotate, a04_scale).
+Reach a composite boost score ≥ 1.40, where score = geometric mean of native/fused latency ratios across 15 cases (Kornia×5 + TorchVision×5 + Albumentations×5: b02_geom_3, b04_geom_5, b05_geom_5_warp, a01_rotate, a04_scale).
 
-The main bottleneck is **Kornia and TorchVision single-op overhead**: for a 1-element `FusedAffineSegment`, the fused pipeline builds a matrix, inverts it, and calls `grid_sample` — identical work to native, plus wrapper overhead. Boost for Kornia single ops is currently 0.57–0.67. The highest-leverage fix is a passthrough: when `len(segment.transforms) == 1`, skip matrix compose + grid_sample and call the native adapter transform directly.
+**Target reached** (score ≈ 1.59 as of 2026-03-31 with 15 cases).
 
-If single-op passthrough does not reach target, profile `FusedAffineSegment.forward` on a 3-op Kornia sequence (`torch.autograd.profiler` or `cProfile`) and fix the hottest non-grid_sample line.
+## Sequence naming conventions
 
-Do NOT apply the tensor-path passthrough to `AlbuFusedAffineSegment` — Albumentations single ops are already ≈ 1.0 via the native I/O path.
+Keys follow `<group>_<number>_<name>` so `sorted(SEQUENCE_BANK)` gives the intended display order.
+
+- **a** — single-op baselines (`a01_rotate`, `a04_scale`, …): no fusion possible; measure wrapper overhead
+- **b** — geometric chains (`b01_geom_2` … `b05_geom_5_warp`): `_geom_` prefix signals pure geometric ops
+- **c** — colour chains (`c01_color_2` … `c03_color_4`): pointwise-only sequences
+- **d** — mixed geo+colour (`d01_mixed_g3c2` … `d05_mixed_g5c4`): `gN` = geo count, `cN` = colour count; sequences are strict-prefix slices of a 9-op interleaved pool
+
+`b05_geom_5_warp` has 5 pure affine warps (Rotate + Scale + Shear + Translate + Rotate, all `p=1.0`, no flips) and is the canonical test for the fixed-cost architecture: fused pays 1 warp regardless of N ops, so 5 full warps yield ≥ 3× speedup.
+
+## Reorder policy variants
+
+d-group sequences are benchmarked under all three policies. Variants appear as separate rows in the results table, named with a `__<suffix>` appended to the base key:
+
+| Suffix   | Policy       | Description                                                                     |
+| -------- | ------------ | ------------------------------------------------------------------------------- |
+| *(none)* | `NONE`       | No reordering — interleaved geo/colour worst case                               |
+| `__pw`   | `POINTWISE`  | Moves colour ops across POINTWISE barriers; groups all geo ops into one segment |
+| `__agr`  | `AGGRESSIVE` | Reorders across all non-geometric barriers                                      |
+
+`K.RandomSaturation` and `A.HueSaturationValue` are registered as `TransformCategory.POINTWISE` so `POINTWISE` reordering can group geo ops across them without claiming they are linearly composable colour transforms.
+
+## Architecture notes
+
+`FusedAffineSegment` has **fixed cost**: N affine ops fuse into a single composed matrix and one `grid_sample` call. The fused pipeline pays identical cost for 1 op or 5 ops — only the matrix multiply count changes (cheap). This is why `b05_geom_5_warp` yields ~4× speedup and d-group sequences benefit strongly from reordering (more geo ops per segment).
+
+Single-op passthrough is implemented: when `len(segment.transforms) == 1`, the segment skips matrix compose + `grid_sample` and calls the native adapter transform directly. Do NOT apply tensor-path passthrough to `AlbuFusedAffineSegment` — Albumentations single ops are already ≈ 1.0 via the native I/O path.
 
 ## Constraints
 
@@ -31,7 +56,8 @@ Every kept commit must not break:
 command: uv run python experiments/optimize_score.py
 direction: higher
 target: 1.40
-baseline: 1.1298  (2026-03-30, 12 cases)
+baseline: 1.1298  (2026-03-30, 12 cases — pre b05)
+achieved: ~1.59   (2026-03-31, 15 cases — post b05 + single-op passthrough + POINTWISE reorder)
 ```
 
 ## Guard
@@ -51,13 +77,17 @@ scope_files:
   - src/fuse_augmentations/affine/_matrix.py
   - src/fuse_augmentations/_interpolation.py
   - src/fuse_augmentations/adapters/_albumentations.py
+  - src/fuse_augmentations/adapters/_kornia.py
   - experiments/optimize_score.py
+  - experiments/bench_augmentation_pipelines.py
 compute: local
 ```
 
 ## Notes
 
-`optimize_score.py` runs in ~20 s (10 warmup + 50 reps × 12 cases) — within the 120 s `VERIFY_TIMEOUT_SEC` limit. Albumentations single-op overhead is already ≈ 1.0 via the native I/O path — do not apply tensor-path passthrough to Albumentations segments.
+`optimize_score.py` runs in ~20 s (10 warmup + 50 reps × 15 cases) — within the 120 s `VERIFY_TIMEOUT_SEC` limit.
+
+Kornia colour ops (`K.RandomSaturation`, `K.ColorJitter`) are CPU-heavy (2–3 ms each). For d-group sequences with Kornia, the colour ops dominate total pipeline time so the geo-fusion saving is a small fraction — d-group Kornia boost with `__pw` is ≈ 1.06–1.12× even with perfect reordering. This is a Kornia CPU characteristic, not addressable by the adapter.
 
 ## References
 

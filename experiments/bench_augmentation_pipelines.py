@@ -11,17 +11,15 @@ Keys follow ``<group>_<number>_<name>`` so ``sorted(SEQUENCE_BANK)`` gives the i
 display order.  Group letters: ``a`` = single-op baselines, ``b`` = geometric sequences,
 ``c`` = colour sequences, ``d`` = realistic mixed (geo + colour).
 
-b01_geo_2 … b04_geo_5
+b01_geom_2 … b04_geom_5
     Pure geometric chains of 2-5 ops (Rotate, HFlip, Shear, VFlip) - each consecutive
     affine op saves one ``grid_sample`` call when fused.
 c01_color_2 … c03_color_4
     Colour-only chains of 2-4 ops (Brightness, Contrast, Saturation, Hue) - fuse-aug
     merges consecutive pointwise ops into a single matrix-multiply pass.
-d01_mixed_5 / d02_mixed_5_reorder
-    5-op interleaved geo+colour pipeline run twice: once without reordering and once with
-    ``POINTWISE`` policy that pulls colour ops after the geo block, enabling stronger fusion.
-d03_mixed_10 / d04_mixed_10_reorder
-    Same experiment at 10 ops (6 geo + 4 colour), repeating the reorder comparison.
+d01_mixed_g3c2 … d05_mixed_g5c4
+    Mixed geo+colour chains of 5-9 ops (gN = geo count, cN = colour count).
+    Reorder variants ``__pw`` / ``__agr`` show how policy recovers fusion by regrouping ops.
 a01_rotate … a05_shear
     Single-op affine baselines (Rotate, HFlip, VFlip, Scale, Shear) — no fusion possible;
     these measure the raw fuse-aug wrapper overhead vs. native compose.
@@ -386,19 +384,19 @@ SEQUENCE_BANK: dict[str, AugSequence] = {
         label="Affine(shear)  [single op]",
     ),
     # ── b: geometric sequences (2-5 ops) ──────────────────────────────────────
-    "b01_geo_2": AugSequence(
+    "b01_geom_2": AugSequence(
         aug_albu=[A.Rotate(limit=30, p=1.0), A.HorizontalFlip(p=0.5)],
         aug_kornia=[K.RandomRotation(30.0), K.RandomHorizontalFlip(p=0.5)],
         aug_tv=[tv.RandomRotation(30), tv.RandomHorizontalFlip(0.5)],
         label="Rotate + HFlip",
     ),
-    "b02_geo_3": AugSequence(
+    "b02_geom_3": AugSequence(
         aug_albu=[A.Rotate(limit=30), A.HorizontalFlip(p=0.5), A.Affine(scale=(0.8, 1.2))],
         aug_kornia=[K.RandomRotation(30.0), K.RandomHorizontalFlip(p=0.5), K.RandomAffine(0, scale=(0.8, 1.2))],
         aug_tv=[tv.RandomRotation(30), tv.RandomHorizontalFlip(0.5), tv.RandomAffine(degrees=0, scale=(0.8, 1.2))],
         label="Rotate + HFlip + Scale",
     ),
-    "b03_geo_4": AugSequence(
+    "b03_geom_4": AugSequence(
         aug_albu=[
             A.Rotate(limit=10),
             A.HorizontalFlip(p=0.5),
@@ -419,7 +417,7 @@ SEQUENCE_BANK: dict[str, AugSequence] = {
         ],
         label="Rotate + HFlip + Shear + VFlip",
     ),
-    "b04_geo_5": AugSequence(
+    "b04_geom_5": AugSequence(
         aug_albu=[
             A.Rotate(limit=10),
             A.HorizontalFlip(p=0.5),
@@ -442,6 +440,31 @@ SEQUENCE_BANK: dict[str, AugSequence] = {
             tv.RandomRotation(5),
         ],
         label="Rotate + HFlip + Shear + VFlip + Rotate",
+    ),
+    # ── b05: 5 pure-warp ops (no flips) — demonstrates fixed-cost architecture ─
+    "b05_geom_5_warp": AugSequence(
+        aug_albu=[
+            A.Rotate(limit=30, p=1.0),
+            A.Affine(scale=(0.8, 1.2), p=1.0),
+            A.Affine(shear={"x": (-10, 10), "y": (-10, 10)}, p=1.0),
+            A.Affine(translate_percent={"x": (-0.1, 0.1), "y": (-0.1, 0.1)}, p=1.0),
+            A.Rotate(limit=15, p=1.0),
+        ],
+        aug_kornia=[
+            K.RandomRotation(30.0, p=1.0),
+            K.RandomAffine(0, scale=(0.8, 1.2), p=1.0),
+            K.RandomAffine(0, shear=(-10.0, 10.0), p=1.0),
+            K.RandomAffine(0, translate=(0.1, 0.1), p=1.0),
+            K.RandomRotation(15.0, p=1.0),
+        ],
+        aug_tv=[
+            tv.RandomRotation(30),
+            tv.RandomAffine(degrees=0, scale=(0.8, 1.2)),
+            tv.RandomAffine(degrees=0, shear=10),
+            tv.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+            tv.RandomRotation(15),
+        ],
+        label="Rotate + Scale + Shear + Translate + Rotate [5 warps]",
     ),
     # ── c: colour sequences (2-4 ops) ─────────────────────────────────────────
     "c01_color_2": AugSequence(
@@ -504,11 +527,11 @@ SEQUENCE_BANK: dict[str, AugSequence] = {
     # POINTWISE and AGGRESSIVE reorder variants are registered by the sweep loop
     # below, keeping SEQUENCE_BANK free of duplicated transform definitions.
     **{
-        f"d0{i}_mixed_{n}": AugSequence(
+        f"d0{i}_mixed_g{(n + 1) // 2}c{n // 2}": AugSequence(
             aug_albu=_D_POOL_ALB[:n],
             aug_kornia=_D_POOL_K[:n],
             aug_tv=_D_POOL_TV[:n],
-            label=f"{n}-op geo+colour",
+            label=f"{n}-op geo+colour ({(n + 1) // 2}G/{n // 2}C)",
         )
         for i, n in enumerate(range(5, 10), start=1)
     },
@@ -553,8 +576,8 @@ def _register_seq(seq_name: str, aug_seq: AugSequence, *, reorder: ReorderPolicy
 # shows how much each reorder strategy recovers, using the same pipeline each time.
 # Keys get a policy suffix so variants sort alongside their NONE baseline.
 _D_REORDER_POLICIES: list[tuple[str, ReorderPolicy]] = [
-    ("pointwise", ReorderPolicy.POINTWISE),
-    ("aggressive", ReorderPolicy.AGGRESSIVE),
+    ("pw", ReorderPolicy.POINTWISE),
+    ("agr", ReorderPolicy.AGGRESSIVE),
 ]
 _d_keys = [k for k in SEQUENCE_BANK if k.startswith("d")]
 
@@ -616,7 +639,6 @@ for entry in _ENTRIES:
 # %% ── 3  Visual sanity check ─────────────────────────────────────────────────
 
 _BACKENDS_ORDER = ["albumentations", "kornia", "torchvision"]
-# Sequence display order comes from sorted SEQUENCE_BANK keys (numeric prefix guarantees it).
 _SEQS_ORDER = sorted(SEQUENCE_BANK)
 
 
@@ -797,6 +819,8 @@ with Progress(
 # %% ── 6  Display results table ───────────────────────────────────────────────
 
 _by_key: dict[tuple, dict] = {(r["sequence_name"], r["backend"], r["mode"]): r for r in results}
+# Table order includes __pointwise / __aggressive variants; visual section uses only base sequences.
+_TABLE_SEQS_ORDER = sorted({r["sequence_name"] for r in results})
 
 _COL_BACKENDS = ["albumentations", "kornia", "torchvision"]
 _COL_ABBREV = {"albumentations": "alb", "kornia": "kornia", "torchvision": "tv"}
@@ -848,7 +872,7 @@ print(header2)
 print(_sep)
 
 # ── data rows ─────────────────────────────────────────────────────────────────
-for seq in _SEQS_ORDER:
+for seq in _TABLE_SEQS_ORDER:
     row = f"{seq:<{_W_SEQ}}"
     for b in _COL_BACKENDS:
         nat = _by_key.get((seq, b, "native"))

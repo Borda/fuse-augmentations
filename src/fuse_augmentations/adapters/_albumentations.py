@@ -764,7 +764,7 @@ def _sample_crop_resize_params(
         ``crop_w``, ``target_h``, ``target_w`` as ``(B,)`` float32 tensors.
 
     """
-    dummy = np.zeros((H, W, 1), dtype=np.float32)
+    dummy = np.empty((H, W, 1), dtype=np.float32)  # shape is all that matters; values unused
     data = {"image": dummy}
     tops: list[float] = []
     lefts: list[float] = []
@@ -806,7 +806,7 @@ def _sample_matrices(transform: object, B: int, H: int, W: int) -> NDArray[np.fl
         ``(B, 3, 3)`` float64 array of forward pixel-space matrices.
 
     """
-    dummy = np.zeros((H, W, 1), dtype=np.float32)
+    dummy = np.empty((H, W, 1), dtype=np.float32)  # shape is all that matters; values unused
     data = {"image": dummy}
     matrices = np.empty((B, 3, 3), dtype=np.float64)
     for i in range(B):

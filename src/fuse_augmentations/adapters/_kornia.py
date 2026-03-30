@@ -369,32 +369,40 @@ class KorniaAdapter:
         # Start with identity
         acc = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
 
-        # Rotation
-        if "angle_rad" in params:
+        # Rotation — skip when all angles are zero (e.g. RandomAffine(degrees=0))
+        if "angle_rad" in params and not torch.all(params["angle_rad"] == 0):
             R = rotation_matrix(params["angle_rad"], H=H, W=W)  # noqa: N806
             acc = matmul3x3(R, acc)
 
-        # Scale
-        if "scale_x" in params and "scale_y" in params:
+        # Scale — skip when both factors are 1.0 (e.g. RandomAffine with no scale)
+        if (
+            "scale_x" in params
+            and "scale_y" in params
+            and not (torch.all(params["scale_x"] == 1) and torch.all(params["scale_y"] == 1))
+        ):
             S = scale_matrix(params["scale_x"], params["scale_y"], H=H, W=W)  # noqa: N806
             acc = matmul3x3(S, acc)
 
-        # X-Shear
-        if "shear_x_rad" in params:
+        # X-Shear — skip when all values are zero (e.g. RandomAffine with no shear)
+        if "shear_x_rad" in params and not torch.all(params["shear_x_rad"] == 0):
             # shear_x_rad already carries the Kornia→CCW negation from sample_params.
             # Parity verified by test_kornia_adapter.py::test_shear_sign_parity.
             shear_x_tan = torch.tan(params["shear_x_rad"])
             Sh_x = shear_x_matrix(shear_x_tan, H=H, W=W)  # noqa: N806
             acc = matmul3x3(Sh_x, acc)
 
-        # Y-Shear
-        if "shear_y_rad" in params:
+        # Y-Shear — skip when all values are zero
+        if "shear_y_rad" in params and not torch.all(params["shear_y_rad"] == 0):
             shear_y_tan = torch.tan(params["shear_y_rad"])
             Sh_y = shear_y_matrix(shear_y_tan, H=H, W=W)  # noqa: N806
             acc = matmul3x3(Sh_y, acc)
 
-        # Translation
-        if "translate_x" in params and "translate_y" in params:
+        # Translation — skip when all offsets are zero
+        if (
+            "translate_x" in params
+            and "translate_y" in params
+            and not (torch.all(params["translate_x"] == 0) and torch.all(params["translate_y"] == 0))
+        ):
             T = translate_matrix(params["translate_x"], params["translate_y"])  # noqa: N806
             acc = matmul3x3(T, acc)
 
