@@ -32,6 +32,7 @@ import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+import numpy as np
 import torch
 from torch import nn
 
@@ -320,6 +321,106 @@ class FusedCompose(nn.Module):
                 "Albumentations fused segments (AlbuFusedAffineSegment, AlbuProjectiveSegment) do not "
                 "support aux_targets in this release. Remove extra data_keys or use a non-Albumentations pipeline."
             )
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        """Route to the Albumentations native dict path or the standard tensor path.
+
+        When called with ``image=<numpy.ndarray>`` and the pipeline adapter is an
+        :class:`~fuse_augmentations.adapters._albumentations.AlbumentationsAdapter`,
+        the call is dispatched to :meth:`_forward_albu_native`, which avoids all
+        tensor round-trips and returns a ``{"image": ndarray}`` dict matching the
+        :class:`albumentations.Compose` calling convention.
+
+        All other invocations fall through to the standard
+        :meth:`~torch.nn.Module.__call__` → :meth:`forward` path.
+
+        Args:
+            *args: Positional arguments forwarded to :meth:`forward`.
+            **kwargs: Keyword arguments.  When ``"image"`` is present,
+                ``isinstance(kwargs["image"], np.ndarray)`` is checked to
+                decide routing.
+
+        Returns:
+            ``dict`` with ``"image"`` key (HWC NumPy) for the Albu native path,
+            or whatever :meth:`forward` returns for the tensor path.
+
+        Examples:
+            >>> import numpy as np
+            >>> import albumentations as A
+            >>> from fuse_augmentations import Compose
+            >>> pipe = Compose([A.HorizontalFlip(p=0.0)])
+            >>> img = np.zeros((8, 8, 3), dtype=np.uint8)
+            >>> out = pipe(image=img)
+            >>> isinstance(out, dict) and out["image"].shape == (8, 8, 3)
+            True
+
+        """
+        if "image" in kwargs and isinstance(kwargs["image"], np.ndarray):
+            from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+
+            is_albu_adapter = isinstance(self._adapter, AlbumentationsAdapter)
+            is_empty_pipeline = self._adapter is None and not self._segments
+            if is_albu_adapter or is_empty_pipeline:
+                return self._forward_albu_native(kwargs["image"])
+        return super().__call__(*args, **kwargs)
+
+    def _forward_albu_native(self, img_hwc: NDArray[Any]) -> dict[str, NDArray[Any]]:
+        """Execute the pipeline in Albumentations native dict-input mode.
+
+        Iterates over all segments in NumPy space — no tensor conversion.
+        :class:`~fuse_augmentations.affine._segment.AlbuFusedAffineSegment`
+        segments are dispatched via their :meth:`forward_numpy` method;
+        :class:`~fuse_augmentations._compose._PassthroughSegment` segments
+        are dispatched via
+        :meth:`~fuse_augmentations.adapters._albumentations.AlbumentationsAdapter.call_nonfused_numpy`.
+
+        Args:
+            img_hwc: ``(H, W, C)`` or ``(H, W)`` NumPy array (uint8 or float32).
+
+        Returns:
+            ``{"image": result_hwc}`` matching the :class:`albumentations.Compose`
+            output convention.
+
+        Raises:
+            RuntimeError: If the pipeline contains a segment type that is not
+                supported in the Albumentations native I/O path.
+
+        """
+        from fuse_augmentations.affine._segment import ExactAffineSegment
+
+        for seg in self._segments:
+            if isinstance(seg, AlbuFusedAffineSegment):
+                img_hwc = seg.forward_numpy(img_hwc)
+                self._last_transform_matrix = seg.last_matrix
+                continue
+
+            if isinstance(seg, ExactAffineSegment):
+                # Apply each GEOMETRIC_EXACT transform via the native Albu API.
+                # The transform handles its own probability internally.
+                for tfm in seg.transforms:
+                    img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
+                continue
+
+            if isinstance(seg, _PassthroughSegment):
+                from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+
+                if isinstance(seg.adapter, AlbumentationsAdapter):
+                    img_hwc = AlbumentationsAdapter.call_nonfused_numpy(seg.transform, img_hwc)
+                else:
+                    msg = (
+                        f"Passthrough segment adapter {type(seg.adapter).__name__!r} does not "
+                        "support the Albumentations native I/O path. Use tensor input instead."
+                    )
+                    raise RuntimeError(msg)
+                continue
+
+            msg = (
+                f"Segment type {type(seg).__name__!r} is not supported in the "
+                "Albumentations native I/O path. Use tensor input instead."
+            )
+            raise RuntimeError(msg)
+
+        return {"image": img_hwc}
 
     def _convert_primary_output(self, image: torch.Tensor) -> torch.Tensor | NDArray[Any]:
         """Convert the primary image output to the requested backend."""

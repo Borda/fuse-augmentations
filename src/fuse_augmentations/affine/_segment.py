@@ -573,6 +573,88 @@ class AlbuFusedAffineSegment(nn.Module):
 
         return stacked
 
+    def forward_numpy(self, img_hwc: NDArray) -> NDArray:
+        """Apply fused affine chain to a single HWC NumPy image (no tensor conversion).
+
+        Reuses the same matrix composition logic as :meth:`forward` but operates
+        entirely in NumPy/cv2 space, eliminating the BCHW tensor round-trip for
+        the Albumentations native dict-input calling convention.
+
+        Args:
+            img_hwc: ``(H, W, C)`` or ``(H, W)`` NumPy array (uint8 or float32).
+                cv2 requires a C-contiguous array; a copy is made automatically
+                if the input is not contiguous.
+
+        Returns:
+            Warped array with the same dtype and shape as ``img_hwc``.
+
+        Note:
+            ``_last_matrix`` is set to shape ``(1, 3, 3)`` after this call,
+            matching the B=1 single-image case.  ``aux_targets`` are not
+            supported; a ``RuntimeError`` is raised if aux routing is attempted
+            via this path.
+
+        Examples:
+            >>> import numpy as np
+            >>> from fuse_augmentations.affine._segment import AlbuFusedAffineSegment
+            >>> from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+            >>> seg = AlbuFusedAffineSegment([], AlbumentationsAdapter())
+            >>> img = np.zeros((8, 8, 3), dtype=np.uint8)
+            >>> out = seg.forward_numpy(img)
+            >>> out.shape
+            (8, 8, 3)
+
+        """
+        img_hwc = np.ascontiguousarray(img_hwc)
+        height, width = img_hwc.shape[:2]
+        n_ch = img_hwc.shape[2] if img_hwc.ndim == 3 else 1
+        original_2d = img_hwc.ndim == 2
+
+        composed = torch.eye(3, dtype=torch.float64)
+
+        if len(self.transforms) == 0:
+            self._last_matrix = composed.unsqueeze(0).to(dtype=torch.float32)
+            return img_hwc
+
+        # Draw per-transform active masks for bsz=1 (mirrors forward() logic).
+        active_masks: list[Any] = []
+        for tfm in self.transforms:
+            prob = float(getattr(tfm, "p", 1.0))
+            same_on_batch = bool(getattr(tfm, "same_on_batch", False))
+            if same_on_batch:
+                draw = bool(np.random.rand() < prob)
+                active_masks.append(np.full(1, draw))
+            else:
+                active_masks.append(np.random.rand(1) < prob)
+
+        interp_flag = _CV2_INTERP.get(self.interpolation, _CV2_INTERP.get("bilinear", 1))
+        border_flag = _CV2_BORDER.get(self.padding_mode, _CV2_BORDER.get("zeros", 0))
+
+        acc: MatrixArray = np.eye(3, dtype=np.float64)
+        any_active = False
+
+        for j, tfm in enumerate(self.transforms):
+            active = bool(active_masks[j][0])
+            params = self.adapter.sample_params(tfm, (1, n_ch, height, width), torch.device("cpu"))
+            mtx_i = self.adapter.build_matrix(tfm, params, height, width)
+            if active:
+                any_active = True
+                acc = mtx_i[0].double().cpu().numpy() @ acc
+
+        self._last_matrix = torch.as_tensor(acc.copy()).unsqueeze(0).to(dtype=torch.float32)
+
+        if not any_active:
+            return img_hwc
+
+        m_dst2src: MatrixArray = np.linalg.inv(acc)
+
+        if original_2d:
+            return _warp(img_hwc, m_dst2src, width, height, interp_flag, border_flag)
+        if n_ch == 1:
+            warped = _warp(img_hwc[:, :, 0], m_dst2src, width, height, interp_flag, border_flag)
+            return warped[:, :, np.newaxis]
+        return _warp(img_hwc, m_dst2src, width, height, interp_flag, border_flag)
+
 
 # ---------------------------------------------------------------------------
 # ProjectiveSegment — PyTorch backend for perspective transforms

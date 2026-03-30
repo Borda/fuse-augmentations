@@ -490,6 +490,34 @@ class AlbumentationsAdapter:
 
         return torch.stack(results).to(device=device, dtype=dtype)
 
+    @staticmethod
+    def call_nonfused_numpy(transform: object, img_hwc: NDArray) -> NDArray:
+        """Apply a non-fused Albumentations transform to a single HWC NumPy image.
+
+        Calls the transform via its native Albumentations dict API
+        (``transform(image=img_hwc)["image"]``) without any tensor conversion.
+        Used by :meth:`~fuse_augmentations._compose.FusedCompose._forward_albu_native`
+        to apply passthrough transforms in the Albumentations native I/O path.
+
+        Args:
+            transform: Any Albumentations transform instance.
+            img_hwc: ``(H, W, C)`` NumPy array.
+
+        Returns:
+            Transformed ``(H, W, C)`` NumPy array.
+
+        Examples:
+            >>> import numpy as np
+            >>> import albumentations as A
+            >>> from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+            >>> img = np.zeros((8, 8, 3), dtype=np.uint8)
+            >>> out = AlbumentationsAdapter.call_nonfused_numpy(A.GaussianBlur(p=1.0), img)
+            >>> out.shape
+            (8, 8, 3)
+
+        """
+        return transform(image=img_hwc)["image"]  # type: ignore[operator]
+
 
 # ---------------------------------------------------------------------------
 # Private helpers
