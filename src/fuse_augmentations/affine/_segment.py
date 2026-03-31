@@ -37,6 +37,28 @@ from fuse_augmentations.affine._matrix import (
     perspective_grid,
 )
 
+# cv2 optional import — used by both FusedAffineSegment (B=1 CPU fast path)
+# and AlbuFusedAffineSegment (Albumentations cv2 backend).
+try:
+    import cv2 as _cv2
+
+    _CV2_INTERP: dict[str, int] = {
+        "bilinear": _cv2.INTER_LINEAR,
+        "nearest": _cv2.INTER_NEAREST,
+        "bicubic": _cv2.INTER_CUBIC,
+    }
+    _CV2_BORDER: dict[str, int] = {
+        "zeros": _cv2.BORDER_CONSTANT,
+        "border": _cv2.BORDER_REPLICATE,
+        "reflection": _cv2.BORDER_REFLECT,
+    }
+    _CV2_WARP_INVERSE_MAP: int = _cv2.WARP_INVERSE_MAP
+except ImportError:
+    _cv2 = None  # type: ignore[assignment]
+    _CV2_INTERP = {}
+    _CV2_BORDER = {}
+    _CV2_WARP_INVERSE_MAP = 16  # cv2.WARP_INVERSE_MAP = 16
+
 __doctest_skip__: list[str] = []
 if not _KORNIA_AVAILABLE:
     __doctest_skip__ += [".", "ExactAffineSegment"]
@@ -253,6 +275,15 @@ class FusedAffineSegment(nn.Module):
         # (only shape / det / inv roundtrip), so skip expensive reconstruction
         # and set identity instead - saves 0.05-0.07 ms per call.
         self._skip_matrix_recon: bool = len(transforms) == 1 and self._fast_path is not None
+        # cv2 warp fast path: for B=1 CPU multi-op segments, cv2.warpAffine is
+        # ~2x faster than PyTorch's affine_grid + grid_sample because it avoids
+        # the grid construction overhead entirely.
+        self._cv2_warp: bool = _cv2 is not None and len(transforms) > 1
+        # Pre-compute cv2 flags once (used by the cv2 fast path every call).
+        _interp_str = self.interpolation or "bilinear"
+        _pad_str = self.padding_mode or "zeros"
+        self._cv2_interp_flag: int = _CV2_INTERP.get(_interp_str, _CV2_INTERP.get("bilinear", 1))
+        self._cv2_border_flag: int = _CV2_BORDER.get(_pad_str, _CV2_BORDER.get("zeros", 0))
 
     @property
     def last_matrix(self) -> Tensor | None:
@@ -376,6 +407,47 @@ class FusedAffineSegment(nn.Module):
                     self._last_matrix = _mtx.to(device=device, dtype=dtype).detach().clone()
                     return image
 
+        # ------------------------------------------------------------------ #
+        # B=1 CPU cv2 fast path: cv2.warpAffine is ~2x faster than PyTorch's  #
+        # affine_grid + grid_sample for single-image CPU tensors because it    #
+        # avoids the H*W grid construction overhead entirely.  Compose the     #
+        # matrix using the same sample_params / build_matrix loop but replace  #
+        # the PyTorch warp backend with cv2.  Only activates when:             #
+        # - B=1, CPU, no CUDA, no aux_targets, cv2 available, >1 transform    #
+        # ------------------------------------------------------------------ #
+        if self._cv2_warp and bsz == 1 and not _has_aux and not image.is_cuda:
+            acc_np = np.eye(3, dtype=np.float64)
+            for tfm in self.transforms:
+                prob = getattr(tfm, "p", 1.0)
+                active = bool(np.random.rand() < prob) if prob < 1.0 else True
+                if not active:
+                    # Still need to sample params to advance RNG state consistently.
+                    self.adapter.sample_params(tfm, input_shape, device)
+                    continue
+                params = self.adapter.sample_params(tfm, input_shape, device)
+                mtx_i = self.adapter.build_matrix(tfm, params, height, width)
+                acc_np = mtx_i[0].double().cpu().numpy() @ acc_np
+
+            self._last_matrix = (
+                torch
+                .as_tensor(
+                    acc_np,
+                    dtype=torch.float32,
+                )
+                .unsqueeze(0)
+                .clone()
+            )
+
+            m_inv_np = np.linalg.inv(acc_np)
+            img_np = image[0].permute(1, 2, 0).contiguous().numpy()
+            if n_ch == 1:
+                warped = _warp(img_np[:, :, 0], m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag)
+                warped = warped[:, :, np.newaxis]
+            else:
+                warped = _warp(img_np, m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag)
+            image = torch.from_numpy(np.ascontiguousarray(warped).copy()).permute(2, 0, 1).unsqueeze(0)
+            return image.to(device=device, dtype=dtype)
+
         eye = torch.eye(3, device=device, dtype=dtype)
         eye_batch = eye.unsqueeze(0).expand(bsz, -1, -1)
         acc = eye_batch.clone()
@@ -447,26 +519,6 @@ class FusedAffineSegment(nn.Module):
 # ---------------------------------------------------------------------------
 # AlbuFusedAffineSegment — cv2 backend for Albumentations
 # ---------------------------------------------------------------------------
-
-try:
-    import cv2 as _cv2
-
-    _CV2_INTERP: dict[str, int] = {
-        "bilinear": _cv2.INTER_LINEAR,
-        "nearest": _cv2.INTER_NEAREST,
-        "bicubic": _cv2.INTER_CUBIC,
-    }
-    _CV2_BORDER: dict[str, int] = {
-        "zeros": _cv2.BORDER_CONSTANT,
-        "border": _cv2.BORDER_REPLICATE,
-        "reflection": _cv2.BORDER_REFLECT,
-    }
-    _CV2_WARP_INVERSE_MAP: int = _cv2.WARP_INVERSE_MAP
-except ImportError:
-    _cv2 = None  # type: ignore[assignment]
-    _CV2_INTERP = {}
-    _CV2_BORDER = {}
-    _CV2_WARP_INVERSE_MAP = 16  # cv2.WARP_INVERSE_MAP = 16
 
 ImageArray = NDArray[np.integer[Any] | np.floating[Any]]
 MatrixArray = NDArray[np.floating[Any]]
@@ -547,6 +599,12 @@ class AlbuFusedAffineSegment(nn.Module):
 
     """
 
+    # Pre-classified dispatch tags for forward_numpy fast path.
+    _TAG_INTERP: int = 0
+    _TAG_HFLIP: int = 1
+    _TAG_VFLIP: int = 2
+    _TAG_ADAPTER: int = 3  # fallback: use adapter round-trip
+
     def __init__(
         self,
         transforms: list[object],
@@ -560,6 +618,41 @@ class AlbuFusedAffineSegment(nn.Module):
         self.interpolation = interpolation or "bilinear"
         self.padding_mode = padding_mode or "zeros"
         self._last_matrix: Tensor | None = None
+        # Pre-compute cv2 flags once instead of dict-lookups per call.
+        self._interp_flag: int = _CV2_INTERP.get(self.interpolation, _CV2_INTERP.get("bilinear", 1))
+        self._border_flag: int = _CV2_BORDER.get(self.padding_mode, _CV2_BORDER.get("zeros", 0))
+        # Pre-classify transforms to avoid per-call _is_albu_instance dispatch.
+        self._tfm_tags: list[int] = self._classify_transforms(transforms, adapter)
+
+    @staticmethod
+    def _classify_transforms(transforms: list[object], adapter: TransformAdapter) -> list[int]:
+        """Classify each transform for dispatch in ``forward_numpy``.
+
+        Returns a list of integer tags (one per transform) enabling O(1)
+        dispatch in the hot loop instead of O(n) ``isinstance`` chains.
+
+        """
+        tags: list[int] = []
+        try:
+            from fuse_augmentations.adapters._albumentations import (
+                _HFLIP_TYPES,
+                _INTERP_TYPES,
+                _VFLIP_TYPES,
+                _is_albu_instance,
+            )
+        except ImportError:
+            return [AlbuFusedAffineSegment._TAG_ADAPTER] * len(transforms)
+
+        for tfm in transforms:
+            if _is_albu_instance(tfm, _INTERP_TYPES):
+                tags.append(AlbuFusedAffineSegment._TAG_INTERP)
+            elif _is_albu_instance(tfm, _HFLIP_TYPES):
+                tags.append(AlbuFusedAffineSegment._TAG_HFLIP)
+            elif _is_albu_instance(tfm, _VFLIP_TYPES):
+                tags.append(AlbuFusedAffineSegment._TAG_VFLIP)
+            else:
+                tags.append(AlbuFusedAffineSegment._TAG_ADAPTER)
+        return tags
 
     @property
     def last_matrix(self) -> Tensor | None:
@@ -622,8 +715,8 @@ class AlbuFusedAffineSegment(nn.Module):
             else:
                 active_masks.append(np.random.rand(bsz) < prob)
 
-        interp_flag = _CV2_INTERP.get(self.interpolation, _CV2_INTERP["bilinear"])
-        border_flag = _CV2_BORDER.get(self.padding_mode, _CV2_BORDER["zeros"])
+        interp_flag = self._interp_flag
+        border_flag = self._border_flag
 
         output_np: list[ImageArray] = []
 
@@ -733,21 +826,42 @@ class AlbuFusedAffineSegment(nn.Module):
             else:
                 active_masks.append(np.random.rand(1) < prob)
 
-        interp_flag = _CV2_INTERP.get(self.interpolation, _CV2_INTERP.get("bilinear", 1))
-        border_flag = _CV2_BORDER.get(self.padding_mode, _CV2_BORDER.get("zeros", 0))
-
         acc: MatrixArray = np.eye(3, dtype=np.float64)
         any_active = False
 
+        # Fast numpy-only matrix loop: bypass the adapter's torch round-trip
+        # by dispatching on pre-classified tags from __init__.
+        _tags = self._tfm_tags
         for j, tfm in enumerate(self.transforms):
             active = bool(active_masks[j][0])
             if not active:
                 # Skip expensive sample_params + build_matrix for inactive transforms.
                 continue
-            params = self.adapter.sample_params(tfm, (1, n_ch, height, width), torch.device("cpu"))
-            mtx_i = self.adapter.build_matrix(tfm, params, height, width)
-            any_active = True
-            acc = mtx_i[0].double().cpu().numpy() @ acc
+            tag = _tags[j]
+            if tag == self._TAG_INTERP:
+                # Direct numpy: call _sample_matrices (returns (1,3,3) float64 ndarray)
+                # without the numpy -> torch.tensor -> .numpy() adapter round-trip.
+                from fuse_augmentations.adapters._albumentations import _sample_matrices
+
+                mtx_np = _sample_matrices(tfm, 1, height, width)
+                any_active = True
+                acc = mtx_np[0] @ acc
+            elif tag == self._TAG_HFLIP:
+                from fuse_augmentations.adapters._albumentations import hflip_matrix_np
+
+                any_active = True
+                acc = hflip_matrix_np(W=width) @ acc
+            elif tag == self._TAG_VFLIP:
+                from fuse_augmentations.adapters._albumentations import vflip_matrix_np
+
+                any_active = True
+                acc = vflip_matrix_np(H=height) @ acc
+            else:
+                # Fallback: full adapter round-trip for unrecognised types.
+                params = self.adapter.sample_params(tfm, (1, n_ch, height, width), torch.device("cpu"))
+                mtx_i = self.adapter.build_matrix(tfm, params, height, width)
+                any_active = True
+                acc = mtx_i[0].double().cpu().numpy() @ acc
 
         self._last_matrix = torch.as_tensor(acc.copy()).unsqueeze(0).to(dtype=torch.float32)
 
@@ -757,11 +871,11 @@ class AlbuFusedAffineSegment(nn.Module):
         m_dst2src: MatrixArray = np.linalg.inv(acc)
 
         if original_2d:
-            return _warp(img_hwc, m_dst2src, width, height, interp_flag, border_flag)
+            return _warp(img_hwc, m_dst2src, width, height, self._interp_flag, self._border_flag)
         if n_ch == 1:
-            warped = _warp(img_hwc[:, :, 0], m_dst2src, width, height, interp_flag, border_flag)
+            warped = _warp(img_hwc[:, :, 0], m_dst2src, width, height, self._interp_flag, self._border_flag)
             return warped[:, :, np.newaxis]
-        return _warp(img_hwc, m_dst2src, width, height, interp_flag, border_flag)
+        return _warp(img_hwc, m_dst2src, width, height, self._interp_flag, self._border_flag)
 
 
 # ---------------------------------------------------------------------------
