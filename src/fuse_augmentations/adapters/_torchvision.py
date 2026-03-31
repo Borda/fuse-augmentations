@@ -29,6 +29,7 @@ import math
 import warnings
 from typing import cast
 
+import numpy as np
 import torch
 
 from fuse_augmentations._types import TransformCategory
@@ -795,3 +796,115 @@ def _build_color_jitter_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:
             acc[b] = mat_b[0]
 
     return acc
+
+
+# ---------------------------------------------------------------------------
+# NumPy-native matrix builders for B=1 cv2 warp fast path
+# ---------------------------------------------------------------------------
+
+
+def _affine_matrix_np_b1_tv(
+    params: dict[str, torch.Tensor],
+    cx: float,
+    cy: float,
+) -> np.ndarray:
+    """Compose TorchVision-style affine matrix from canonical params (B=1, NumPy only).
+
+    Implements the ``T * C * RSS * C^-1`` composition used by TorchVision's
+    ``_get_inverse_affine_matrix``.  Extracts scalar values from ``params`` via
+    ``.item()`` and computes the (3, 3) float64 matrix entirely in NumPy.
+
+    Args:
+        params: Canonical parameter dict from ``TorchVisionAdapter.sample_params``.
+        cx: Horizontal centre in pixels ``(W - 1) / 2``.
+        cy: Vertical centre in pixels ``(H - 1) / 2``.
+
+    Returns:
+        ``(3, 3)`` float64 forward affine matrix in pixel coordinates.
+
+    """
+    import numpy as np
+
+    rot = float(params["angle_rad"].item()) if "angle_rad" in params else 0.0
+    sc = float(params["scale"].item()) if "scale" in params else 1.0
+    sx = float(params["shear_x_rad"].item()) if "shear_x_rad" in params else 0.0
+    sy = float(params["shear_y_rad"].item()) if "shear_y_rad" in params else 0.0
+    tx = float(params["translate_x"].item()) if "translate_x" in params else 0.0
+    ty = float(params["translate_y"].item()) if "translate_y" in params else 0.0
+
+    cos_sy = np.cos(sy)
+    tan_sx = np.tan(sx)
+    cos_rot_sy = np.cos(rot - sy)
+    sin_rot_sy = np.sin(rot - sy)
+    sin_rot = np.sin(rot)
+    cos_rot = np.cos(rot)
+
+    a = sc * cos_rot_sy / cos_sy
+    b = sc * (-cos_rot_sy * tan_sx / cos_sy - sin_rot)
+    c = sc * sin_rot_sy / cos_sy
+    d = sc * (-sin_rot_sy * tan_sx / cos_sy + cos_rot)
+
+    return np.array(
+        [
+            [a, b, cx * (1.0 - a) - cy * b + tx],
+            [c, d, cy * (1.0 - d) - cx * c + ty],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+
+
+def build_matrix_numpy_b1_tv(
+    transform: object,
+    params: dict[str, torch.Tensor],
+    H: int,  # noqa: N803
+    W: int,  # noqa: N803
+) -> np.ndarray:
+    """Return (3, 3) float64 pixel-space matrix for B=1, bypassing torch tensor creation.
+
+    Drop-in replacement for
+    ``TorchVisionAdapter.build_matrix(transform, params, H, W)[0].double().cpu().numpy()``
+    in the B=1 CPU cv2 warp path.  Extracts scalar values from ``params`` via
+    ``.item()`` and computes the matrix directly in NumPy, avoiding the 8-12
+    intermediate ``(1,)`` / ``(1, 3, 3)`` torch tensor allocations produced by
+    the torch-based construction path.
+
+    Args:
+        transform: A TorchVision augmentation transform (type-dispatched).
+        params: Canonical parameter dict from ``TorchVisionAdapter.sample_params``.
+        H: Image height in pixels.
+        W: Image width in pixels.
+
+    Returns:
+        ``(3, 3)`` float64 forward affine matrix in pixel coordinates.
+
+    """
+    import numpy as np
+
+    cx, cy = (W - 1) * 0.5, (H - 1) * 0.5
+    ttype = type(transform)
+
+    if ttype in _HFLIP_TYPES_FS:
+        return np.array([[-1.0, 0.0, float(W - 1)], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+    if ttype in _VFLIP_TYPES_FS:
+        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, float(H - 1)], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+    if ttype in _ROTATION_TYPES_FS:
+        angle_rad = float(params["angle_rad"].item())
+        cos_a = np.cos(angle_rad)
+        sin_a = np.sin(angle_rad)
+        return np.array(
+            [
+                [cos_a, -sin_a, cx * (1.0 - cos_a) + cy * sin_a],
+                [sin_a, cos_a, cy * (1.0 - cos_a) - cx * sin_a],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+
+    if ttype in _AFFINE_TYPES_FS:
+        return _affine_matrix_np_b1_tv(params, cx, cy)
+
+    # Fallback: torch path for perspective, crop-resize, colour jitter, unknown types.
+    return TorchVisionAdapter.build_matrix(transform, params, H, W)[0].double().cpu().numpy()

@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import warnings
 
+import numpy as np
 import torch
+from numpy.typing import NDArray
 
 from fuse_augmentations._types import TransformCategory
 from fuse_augmentations.affine._matrix import (
@@ -671,6 +673,112 @@ class KorniaAdapter:
 
         # Unsupported transform type — return empty
         return {}
+
+
+# ---------------------------------------------------------------------------
+# NumPy-native matrix builder for B=1 CPU cv2 warp path
+# ---------------------------------------------------------------------------
+
+
+def _rotation_np_b1(angle_rad: float, cx: float, cy: float) -> NDArray[np.float64]:
+    cos_a = np.cos(angle_rad)
+    sin_a = np.sin(angle_rad)
+    return np.array(
+        [
+            [cos_a, -sin_a, cx * (1.0 - cos_a) + cy * sin_a],
+            [sin_a, cos_a, cy * (1.0 - cos_a) - cx * sin_a],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+
+
+def _affine_matrix_np_b1(
+    params: dict[str, torch.Tensor],
+    cx: float,
+    cy: float,
+) -> NDArray[np.float64]:
+    """Compose rotation/scale/shear/translate from canonical params (B=1, NumPy only)."""
+    acc = np.eye(3, dtype=np.float64)
+
+    if "angle_rad" in params:
+        a = float(params["angle_rad"].item())
+        if a != 0.0:
+            acc = _rotation_np_b1(a, cx, cy) @ acc
+
+    if "scale_x" in params and "scale_y" in params:
+        sx = float(params["scale_x"].item())
+        sy = float(params["scale_y"].item())
+        if sx != 1.0 or sy != 1.0:
+            scale_m = np.array(
+                [[sx, 0.0, cx * (1.0 - sx)], [0.0, sy, cy * (1.0 - sy)], [0.0, 0.0, 1.0]], dtype=np.float64
+            )
+            acc = scale_m @ acc
+
+    if "shear_x_rad" in params:
+        sx_r = float(params["shear_x_rad"].item())
+        if sx_r != 0.0:
+            tsx = np.tan(sx_r)
+            acc = np.array([[1.0, tsx, -cy * tsx], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64) @ acc
+
+    if "shear_y_rad" in params:
+        sy_r = float(params["shear_y_rad"].item())
+        if sy_r != 0.0:
+            tsy = np.tan(sy_r)
+            acc = np.array([[1.0, 0.0, 0.0], [tsy, 1.0, -cx * tsy], [0.0, 0.0, 1.0]], dtype=np.float64) @ acc
+
+    if "translate_x" in params and "translate_y" in params:
+        tx = float(params["translate_x"].item())
+        ty = float(params["translate_y"].item())
+        if tx != 0.0 or ty != 0.0:
+            acc = np.array([[1.0, 0.0, tx], [0.0, 1.0, ty], [0.0, 0.0, 1.0]], dtype=np.float64) @ acc
+
+    return acc
+
+
+def build_matrix_numpy_b1_kornia(
+    transform: object,
+    params: dict[str, torch.Tensor],
+    H: int,  # noqa: N803
+    W: int,  # noqa: N803
+) -> NDArray[np.float64]:
+    """Return (3, 3) float64 pixel-space matrix for B=1, bypassing torch tensor creation.
+
+    Drop-in replacement for
+    ``KorniaAdapter.build_matrix(transform, params, H, W)[0].double().cpu().numpy()``
+    in the B=1 CPU cv2 warp path.  Extracts scalar values from ``params`` via
+    ``.item()`` and computes the matrix directly in NumPy, avoiding the 8-12
+    intermediate ``(1,)`` / ``(1, 3, 3)`` torch tensor allocations produced by
+    the torch-based construction path.
+
+    Args:
+        transform: A Kornia augmentation transform (type-dispatched).
+        params: Canonical parameter dict from ``KorniaAdapter.sample_params``.
+        H: Image height in pixels.
+        W: Image width in pixels.
+
+    Returns:
+        ``(3, 3)`` float64 forward affine matrix in pixel coordinates.
+
+    """
+    cx, cy = (W - 1) * 0.5, (H - 1) * 0.5
+    ttype = type(transform)
+
+    if TRANSFORM_REGISTRY and ttype is _RandomRotation:
+        return _rotation_np_b1(float(params["angle_rad"].item()), cx, cy)
+
+    if TRANSFORM_REGISTRY and ttype is _RandomHorizontalFlip:
+        return np.array([[-1.0, 0.0, float(W - 1)], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+    if TRANSFORM_REGISTRY and ttype is _RandomVerticalFlip:
+        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, float(H - 1)], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+    if TRANSFORM_REGISTRY and ttype in (_RandomAffine, _RandomShear, _RandomTranslate):
+        return _affine_matrix_np_b1(params, cx, cy)
+
+    # Fallback: torch path for uncommon types (RandomRotation90, RandomPerspective,
+    # RandomResizedCrop, color ops, etc.).
+    return KorniaAdapter.build_matrix(transform, params, H, W)[0].double().cpu().numpy()
 
 
 # ---------------------------------------------------------------------------
