@@ -4,8 +4,6 @@
 
 Reach a composite boost score ≥ 1.40, where score = geometric mean of native/fused latency ratios across 15 cases (Kornia×5 + TorchVision×5 + Albumentations×5: b02_geom_3, b04_geom_5, b05_geom_5_warp, a01_rotate, a04_scale).
 
-**Target reached** (score ≈ 1.59 as of 2026-03-31 with 15 cases).
-
 ## Sequence naming conventions
 
 Keys follow `<group>_<number>_<name>` so `sorted(SEQUENCE_BANK)` gives the intended display order.
@@ -35,6 +33,43 @@ d-group sequences are benchmarked under all three policies. Variants appear as s
 
 Single-op passthrough is implemented: when `len(segment.transforms) == 1`, the segment skips matrix compose + `grid_sample` and calls the native adapter transform directly. Do NOT apply tensor-path passthrough to `AlbuFusedAffineSegment` — Albumentations single ops are already ≈ 1.0 via the native I/O path.
 
+## Theoretical Background
+
+### Geometric (affine warp) fusion
+
+`FusedAffineSegment` composes N affine matrices into one and calls `grid_sample` once.
+Native runs N independent `grid_sample` calls. Speedup = N / 1 = N:
+
+| N (native warps) | Fused warps | Gain | Score contribution |
+| ---------------- | ----------- | ---- | ------------------ |
+| 1                | 1           | 0    | 1.0x               |
+| 2                | 1           | 1x   | 2.0x               |
+| 3                | 1           | 2x   | 3.0x               |
+| 5                | 1           | 4x   | 5.0x               |
+
+Gain = (N − 1). Score (latency ratio) = N.
+
+**Composite ceiling** — the score target is the geomean of per-case speedup ratios:
+
+```
+geomean([1, 1, 3, 5, 5] x 3 backends) = 75^(1/5) ≈ 2.37
+```
+
+Auto-computed by `optimize_score.py` from `nb_geom` per case and printed as `theoretical_target`.
+Adding a case with `nb_geom=7` automatically updates the ceiling.
+
+### Pixel / colour op fusion (potential future work)
+
+Each colour op is a full memory round-trip: read H×W×C, transform, write H×W×C.
+N ops → N round-trips. Fused (read-once, apply N ops, write-once) → 1 round-trip.
+
+```
+# same formula as geom
+gain = (N − 1)x
+```
+
+Unlike geo, there is no closed-form composition for colour ops — fusion requires a custom kernel or loop-fusion IR. Not yet implemented.
+
 ## Constraints
 
 Every kept commit must not break:
@@ -55,9 +90,9 @@ Every kept commit must not break:
 ```
 command: uv run python experiments/optimize_score.py
 direction: higher
-target: 1.40
+theoretical_target: geomean(nb_geom across all cases)  # auto-computed and printed by optimize_score.py as theoretical_target=X.XXXX; omitting target: runs campaign for max_iterations
 baseline: 1.1298  (2026-03-30, 12 cases — pre b05)
-achieved: ~1.59   (2026-03-31, 15 cases — post b05 + single-op passthrough + POINTWISE reorder)
+achieved: ~1.61   (2026-03-31, 15 cases — post b05 + single-op passthrough + POINTWISE reorder)
 ```
 
 ## Guard

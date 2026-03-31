@@ -220,7 +220,18 @@ __marimo__/
 docs/adr/
 tasks/
 _developments/
+_optimizations/
 _outputs/
+_reviews/
 
 # Benchmark results (generated at runtime)
 experiments/results/
+
+# Skill artifact directories (ephemeral, TTL-managed)
+.experiments/
+.reports/
+.temp/
+.plans/
+.notes/
+.developments/
+.cache/gh/

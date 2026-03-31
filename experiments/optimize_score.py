@@ -17,13 +17,18 @@ avoids tensor round-trips and measures the true warp-fusion gain.
 
 Score = geometric_mean(all 15 boost ratios).
 Direction: higher is better.
-Target: >= 1.4  (requires single-op overhead <= ~5-10% AND sequences stay fast).
+Theoretical target = geometric_mean(nb_geom per case) = 75^(1/5) ≈ 2.37 for the
+current 15 cases — recomputed automatically from ``nb_geom`` in ``_CASES`` /
+``_ALBU_CASES`` whenever cases are added or changed.
 
 Usage::
 
     uv run python scripts/optimize_score.py
 
-Outputs a single line: ``score=X.XXXX``
+Outputs two lines::
+
+    real_score=X.XXXX
+    theoretical_target=X.XXXX
 
 """
 
@@ -68,19 +73,22 @@ def _bench_albu(fn: object) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Benchmark cases: (label, kornia_transforms, tv_transforms)
+# Benchmark cases: (label, nb_geom, kornia_transforms, tv_transforms)
+# nb_geom = number of geometric ops in the sequence; theoretical boost = nb_geom.
 # Copied verbatim from bench_augmentation_pipelines.py so scores are comparable.
 # ---------------------------------------------------------------------------
-_CASES: list[tuple[str, list, list]] = [
+_CASES: list[tuple[str, int, list, list]] = [
     # b02_geom_3 — Rotate + HFlip + Scale
     (
         "b02_geom_3",
+        3,
         [K.RandomRotation(30.0), K.RandomHorizontalFlip(p=0.5), K.RandomAffine(0, scale=(0.8, 1.2))],
         [tv.RandomRotation(30), tv.RandomHorizontalFlip(0.5), tv.RandomAffine(degrees=0, scale=(0.8, 1.2))],
     ),
     # b04_geom_5 — Rotate + HFlip + Shear + VFlip + Rotate
     (
         "b04_geom_5",
+        5,
         [
             K.RandomRotation(10.0),
             K.RandomHorizontalFlip(p=0.5),
@@ -100,6 +108,7 @@ _CASES: list[tuple[str, list, list]] = [
     # No flips: every native op requires a full warp, so fused should be ~3-4x faster.
     (
         "b05_geom_5_warp",
+        5,
         [
             K.RandomRotation(30.0, p=1.0),
             K.RandomAffine(0, scale=(0.8, 1.2), p=1.0),
@@ -118,12 +127,14 @@ _CASES: list[tuple[str, list, list]] = [
     # a01_rotate — single Rotate (no fusion gain, only overhead)
     (
         "a01_rotate",
+        1,
         [K.RandomRotation(30.0)],
         [tv.RandomRotation(30)],
     ),
     # a04_scale — single Scale/Affine (no fusion gain, only overhead)
     (
         "a04_scale",
+        1,
         [K.RandomAffine(0, scale=(0.8, 1.2))],
         [tv.RandomAffine(degrees=0, scale=(0.8, 1.2))],
     ),
@@ -131,13 +142,15 @@ _CASES: list[tuple[str, list, list]] = [
 
 # Albumentations cases — same four workloads benchmarked via the dict-input path.
 # Transforms copied from bench_augmentation_pipelines.py for comparability.
-_ALBU_CASES: list[tuple[str, list]] = [
+_ALBU_CASES: list[tuple[str, int, list]] = [
     (
         "b02_geom_3",
+        3,
         [A.Rotate(limit=30), A.HorizontalFlip(p=0.5), A.Affine(scale=(0.8, 1.2))],
     ),
     (
         "b04_geom_5",
+        5,
         [
             A.Rotate(limit=10),
             A.HorizontalFlip(p=0.5),
@@ -148,6 +161,7 @@ _ALBU_CASES: list[tuple[str, list]] = [
     ),
     (
         "b05_geom_5_warp",
+        5,
         [
             A.Rotate(limit=30, p=1.0),
             A.Affine(scale=(0.8, 1.2), p=1.0),
@@ -158,19 +172,21 @@ _ALBU_CASES: list[tuple[str, list]] = [
     ),
     (
         "a01_rotate",
+        1,
         [A.Rotate(limit=30, p=1.0)],
     ),
     (
         "a04_scale",
+        1,
         [A.Affine(scale=(0.8, 1.2), p=1.0)],
     ),
 ]
 
 
 def main() -> None:
-    """Run all cases and print the composite score."""
+    """Run all cases and print the composite score and theoretical target."""
     boosts: list[float] = []
-    for _label, k_tfms, tv_tfms in _CASES:
+    for _label, _nb_geom, k_tfms, tv_tfms in _CASES:
         for _backend, tfms, native_fn in [
             ("kornia", k_tfms, lambda t: K.AugmentationSequential(*t)),
             ("torchvision", tv_tfms, lambda t: tv.Compose(t)),
@@ -186,7 +202,7 @@ def main() -> None:
             boosts.append(boost)
 
     # Albumentations: compare A.Compose vs FuseCompose both via dict-input path.
-    for _label, albu_tfms in _ALBU_CASES:
+    for _label, _nb_geom, albu_tfms in _ALBU_CASES:
         native = A.Compose(copy.deepcopy(albu_tfms))
         fused = FuseCompose(copy.deepcopy(albu_tfms))
         # Warm-up to trigger lazy init.
@@ -198,7 +214,17 @@ def main() -> None:
         boosts.append(boost)
 
     score = statistics.geometric_mean(boosts)
-    print(f"score={score:.4f}")
+
+    # Theoretical ceiling: each case can achieve at most nb_geom x speedup.
+    # geomean(nb_geom across all backends) = (prod nb_geom)^(1/N).
+    all_nb_geom = (
+        [nb for _, nb, _, _ in _CASES] * 2  # kornia + torchvision
+        + [nb for _, nb, _ in _ALBU_CASES]
+    )
+    theoretical_target = statistics.geometric_mean(all_nb_geom)
+
+    print(f"real_score={score:.4f}")
+    print(f"theoretical_target={theoretical_target:.4f}")
 
 
 if __name__ == "__main__":
