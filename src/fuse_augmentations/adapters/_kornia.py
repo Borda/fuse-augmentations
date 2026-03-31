@@ -781,6 +781,115 @@ def build_matrix_numpy_b1_kornia(
     return KorniaAdapter.build_matrix(transform, params, H, W)[0].double().cpu().numpy()
 
 
+def sample_and_build_matrix_numpy_b1_kornia(
+    transform: object,
+    input_shape: tuple[int, int, int, int],
+    H: int,  # noqa: N803
+    W: int,  # noqa: N803
+) -> NDArray[np.float64]:
+    """Sample params and build (3, 3) float64 matrix for B=1, entirely in numpy.
+
+    Fuses :func:`KorniaAdapter.sample_params` + :func:`build_matrix_numpy_b1_kornia`
+    into a single call that calls ``generate_parameters`` directly, extracts scalar
+    floats without creating intermediate canonical torch tensors, and computes the
+    affine matrix in NumPy.  Compared to the two-step path this avoids 3-6 small
+    torch tensor allocations per transform per forward call (``-torch.deg2rad(...)``,
+    splits for scale/translation, etc.).
+
+    Only handles the types common in the benchmark hot path
+    (``RandomRotation``, ``RandomAffine``, ``RandomShear``, ``RandomTranslate``,
+    ``RandomHorizontalFlip``, ``RandomVerticalFlip``).  All other types fall back
+    to the two-step path and return ``None`` to signal that the caller should fall
+    back.
+
+    Args:
+        transform: A Kornia augmentation transform (type-dispatched).
+        input_shape: ``(B, C, H, W)`` shape tuple passed to ``generate_parameters``.
+        H: Image height in pixels.
+        W: Image width in pixels.
+
+    Returns:
+        ``(3, 3)`` float64 forward affine matrix, or ``None`` if this type is not
+        handled (caller must fall back to the two-step path).
+
+    """
+    cx, cy = (W - 1) * 0.5, (H - 1) * 0.5
+    ttype = type(transform)
+
+    if not TRANSFORM_REGISTRY:
+        return None  # type: ignore[return-value]
+
+    if ttype is _RandomHorizontalFlip:
+        # No generate_parameters needed — matrix is constant.
+        transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
+        return np.array([[-1.0, 0.0, float(W - 1)], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+    if ttype is _RandomVerticalFlip:
+        transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
+        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, float(H - 1)], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+    if ttype is _RandomRotation:
+        raw = transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
+        # Kornia degrees: positive = CW; negate for CCW convention.
+        angle_rad = -float(raw["degrees"].item()) * (np.pi / 180.0)
+        return _rotation_np_b1(angle_rad, cx, cy)
+
+    if ttype in (_RandomAffine, _RandomShear, _RandomTranslate):
+        raw = transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
+        acc = np.eye(3, dtype=np.float64)
+
+        # Rotation
+        if "angle" in raw:
+            a = -float(raw["angle"].item()) * (np.pi / 180.0)
+            if a != 0.0:
+                acc = _rotation_np_b1(a, cx, cy) @ acc
+
+        # Scale
+        if "scale" in raw:
+            sc = raw["scale"]
+            sx = float(sc[0, 0].item())
+            sy = float(sc[0, 1].item())
+            if sx != 1.0 or sy != 1.0:
+                acc = (
+                    np.array(
+                        [[sx, 0.0, cx * (1.0 - sx)], [0.0, sy, cy * (1.0 - sy)], [0.0, 0.0, 1.0]],
+                        dtype=np.float64,
+                    )
+                    @ acc
+                )
+
+        # X-Shear
+        if "shear_x" in raw:
+            sx_deg = float(raw["shear_x"].item())
+            if sx_deg != 0.0:
+                tsx = np.tan(-sx_deg * (np.pi / 180.0))
+                acc = np.array([[1.0, tsx, -cy * tsx], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64) @ acc
+
+        # Y-Shear
+        if "shear_y" in raw:
+            sy_deg = float(raw["shear_y"].item())
+            if sy_deg != 0.0:
+                tsy = np.tan(-sy_deg * (np.pi / 180.0))
+                acc = np.array([[1.0, 0.0, 0.0], [tsy, 1.0, -cx * tsy], [0.0, 0.0, 1.0]], dtype=np.float64) @ acc
+
+        # Translation
+        if "translations" in raw:
+            tx = float(raw["translations"][0, 0].item())
+            ty = float(raw["translations"][0, 1].item())
+            if tx != 0.0 or ty != 0.0:
+                acc = np.array([[1.0, 0.0, tx], [0.0, 1.0, ty], [0.0, 0.0, 1.0]], dtype=np.float64) @ acc
+        elif "translate_x" in raw and "translate_y" in raw:
+            tx = float(raw["translate_x"].item())
+            ty = float(raw["translate_y"].item())
+            if tx != 0.0 or ty != 0.0:
+                acc = np.array([[1.0, 0.0, tx], [0.0, 1.0, ty], [0.0, 0.0, 1.0]], dtype=np.float64) @ acc
+
+        return acc
+
+    # Unsupported type: signal caller to fall back to the two-step path.
+    return None  # type: ignore[return-value]
+
+
 # ---------------------------------------------------------------------------
 # Private helpers -- color matrix construction
 # ---------------------------------------------------------------------------

@@ -284,6 +284,35 @@ class FusedAffineSegment(nn.Module):
         _pad_str = self.padding_mode or "zeros"
         self._cv2_interp_flag: int = _CV2_INTERP.get(_interp_str, _CV2_INTERP.get("bilinear", 1))
         self._cv2_border_flag: int = _CV2_BORDER.get(_pad_str, _CV2_BORDER.get("zeros", 0))
+        # Numpy-native matrix builder for the cv2 warp path: builds a (3,3)
+        # float64 matrix directly in numpy, avoiding the torch tensor
+        # allocations in build_matrix that are immediately converted back to
+        # numpy.  Resolved once at construction from self._fast_path.
+        self._np_matrix_builder = None
+        # Fused sample+build builder: calls generate_parameters directly and
+        # skips the canonical param dict entirely, saving ~3-6 torch tensor
+        # allocations per transform per forward call.  Only available for the
+        # Kornia cv2 path.  Returns None for unsupported types (caller falls
+        # back to the two-step path).
+        self._np_fused_builder = None
+        if self._cv2_warp and self._fast_path == "kornia":
+            try:
+                from fuse_augmentations.adapters._kornia import (
+                    build_matrix_numpy_b1_kornia,
+                    sample_and_build_matrix_numpy_b1_kornia,
+                )
+
+                self._np_matrix_builder = build_matrix_numpy_b1_kornia
+                self._np_fused_builder = sample_and_build_matrix_numpy_b1_kornia
+            except ImportError:
+                pass
+        elif self._cv2_warp and self._fast_path == "torchvision":
+            try:
+                from fuse_augmentations.adapters._torchvision import build_matrix_numpy_b1_tv
+
+                self._np_matrix_builder = build_matrix_numpy_b1_tv
+            except ImportError:
+                pass
 
     @property
     def last_matrix(self) -> Tensor | None:
@@ -417,6 +446,10 @@ class FusedAffineSegment(nn.Module):
         # ------------------------------------------------------------------ #
         if self._cv2_warp and bsz == 1 and not _has_aux and not image.is_cuda:
             acc_np = np.eye(3, dtype=np.float64)
+            # Select the numpy-native matrix builder when available (avoids
+            # creating intermediate torch tensors that are immediately converted
+            # back to numpy).
+            _np_builder = self._np_matrix_builder
             for tfm in self.transforms:
                 prob = getattr(tfm, "p", 1.0)
                 active = bool(np.random.rand() < prob) if prob < 1.0 else True
@@ -425,8 +458,12 @@ class FusedAffineSegment(nn.Module):
                     self.adapter.sample_params(tfm, input_shape, device)
                     continue
                 params = self.adapter.sample_params(tfm, input_shape, device)
-                mtx_i = self.adapter.build_matrix(tfm, params, height, width)
-                acc_np = mtx_i[0].double().cpu().numpy() @ acc_np
+                if _np_builder is not None:
+                    mtx_np = _np_builder(tfm, params, height, width)
+                    acc_np = mtx_np @ acc_np
+                else:
+                    mtx_i = self.adapter.build_matrix(tfm, params, height, width)
+                    acc_np = mtx_i[0].double().cpu().numpy() @ acc_np
 
             self._last_matrix = (
                 torch

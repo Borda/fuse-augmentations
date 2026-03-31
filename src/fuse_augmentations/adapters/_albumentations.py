@@ -805,6 +805,13 @@ def _sample_crop_resize_params(
     }
 
 
+# Module-level cache mapping (H, W) -> reusable dummy (H, W, 1) float32 array.
+# The dummy is only ever inspected for its .shape by Albumentations' param
+# sampling path; pixel values are never read.  Reusing the array avoids a
+# fresh ~256 KB allocation on every call, which was ~0.6 µs each at H=W=256.
+_DUMMY_IMAGE_CACHE: dict[tuple[int, int], NDArray[np.float32]] = {}
+
+
 def _sample_matrices(transform: object, B: int, H: int, W: int) -> NDArray[np.float64]:  # noqa: N803
     """Call ``get_params_dependent_on_data()`` B times, stack into (B, 3, 3).
 
@@ -821,7 +828,11 @@ def _sample_matrices(transform: object, B: int, H: int, W: int) -> NDArray[np.fl
         ``(B, 3, 3)`` float64 array of forward pixel-space matrices.
 
     """
-    dummy = np.empty((H, W, 1), dtype=np.float32)  # shape is all that matters; values unused
+    _key = (H, W)
+    dummy = _DUMMY_IMAGE_CACHE.get(_key)
+    if dummy is None:
+        dummy = np.empty((H, W, 1), dtype=np.float32)
+        _DUMMY_IMAGE_CACHE[_key] = dummy
     data = {"image": dummy}
     matrices = np.empty((B, 3, 3), dtype=np.float64)
     for i in range(B):

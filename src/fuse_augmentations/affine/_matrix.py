@@ -368,28 +368,47 @@ def normalize_matrix(M: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: 
         msg = "H must be >= 2 for normalization (H=1 causes division by zero)"
         raise ValueError(msg)
 
-    B = M.shape[0]  # noqa: N806
-    device = M.device
-    dtype = M.dtype
+    hw: float = (W - 1) / 2.0  # N_inv[0,0] = N_inv[0,2]
+    hh: float = (H - 1) / 2.0  # N_inv[1,1] = N_inv[1,2]
+    sx: float = 2.0 / (W - 1)  # N[0,0]
+    sy: float = 2.0 / (H - 1)  # N[1,1]
 
-    # N: pixel -> normalized [-1, 1]
-    N = torch.zeros(B, 3, 3, device=device, dtype=dtype)  # noqa: N806
-    N[:, 0, 0] = 2.0 / (W - 1)
-    N[:, 0, 2] = -1.0
-    N[:, 1, 1] = 2.0 / (H - 1)
-    N[:, 1, 2] = -1.0
-    N[:, 2, 2] = 1.0
+    # Closed-form analytic expansion of N @ M @ N_inv.
+    # Avoids allocating two (B,3,3) intermediate matrices and two bmm calls.
+    #
+    # Step 1 — tmp = N @ M, where N=[[sx,0,-1],[0,sy,-1],[0,0,1]]:
+    #   tmp[b, 0, j] = sx*M[b,0,j] - M[b,2,j]
+    #   tmp[b, 1, j] = sy*M[b,1,j] - M[b,2,j]
+    #   tmp[b, 2, j] = M[b,2,j]
+    #
+    # Step 2 — result = tmp @ N_inv, where N_inv=[[hw,0,hw],[0,hh,hh],[0,0,1]]:
+    #   result[b,i,0] = tmp[b,i,0]*hw
+    #   result[b,i,1] = tmp[b,i,1]*hh
+    #   result[b,i,2] = tmp[b,i,0]*hw + tmp[b,i,1]*hh + tmp[b,i,2]
+    result = torch.empty_like(M)
 
-    # N_inv: normalized -> pixel
-    N_inv = torch.zeros(B, 3, 3, device=device, dtype=dtype)  # noqa: N806
-    N_inv[:, 0, 0] = (W - 1) / 2.0
-    N_inv[:, 0, 2] = (W - 1) / 2.0
-    N_inv[:, 1, 1] = (H - 1) / 2.0
-    N_inv[:, 1, 2] = (H - 1) / 2.0
-    N_inv[:, 2, 2] = 1.0
+    # Row 0: tmp[0,j] = sx*M[0,j] - M[2,j]
+    t00 = sx * M[:, 0, 0] - M[:, 2, 0]
+    t01 = sx * M[:, 0, 1] - M[:, 2, 1]
+    t02 = sx * M[:, 0, 2] - M[:, 2, 2]
+    result[:, 0, 0] = t00 * hw
+    result[:, 0, 1] = t01 * hh
+    result[:, 0, 2] = t00 * hw + t01 * hh + t02
 
-    # Sandwich: N @ M @ N_inv
-    return matmul3x3(matmul3x3(N, M), N_inv)
+    # Row 1: tmp[1,j] = sy*M[1,j] - M[2,j]
+    t10 = sy * M[:, 1, 0] - M[:, 2, 0]
+    t11 = sy * M[:, 1, 1] - M[:, 2, 1]
+    t12 = sy * M[:, 1, 2] - M[:, 2, 2]
+    result[:, 1, 0] = t10 * hw
+    result[:, 1, 1] = t11 * hh
+    result[:, 1, 2] = t10 * hw + t11 * hh + t12
+
+    # Row 2: tmp[2,j] = M[2,j] (N[2,:] = [0,0,1])
+    result[:, 2, 0] = M[:, 2, 0] * hw
+    result[:, 2, 1] = M[:, 2, 1] * hh
+    result[:, 2, 2] = M[:, 2, 0] * hw + M[:, 2, 1] * hh + M[:, 2, 2]
+
+    return result
 
 
 def crop_resize_matrix(
