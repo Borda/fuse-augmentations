@@ -252,6 +252,25 @@ class FusedCompose(nn.Module):
         self._last_matrix_segment: object | None = None  # deferred resolution
         self._transform_adapters: dict[int, TransformAdapter] = transform_adapters or {}
 
+        # Pre-compute single-segment fast-path: when the pipeline contains
+        # exactly one ExactAffineSegment with a single transform, forward()
+        # can bypass the segment's nn.Module.__call__ and probability
+        # machinery by calling the native adapter directly via call_nonfused.
+        # This eliminates ~6 us/call overhead for operations like single-flip
+        # pipelines where the native transform takes <50 us total.
+        # Only safe for real backend adapters (Kornia, TorchVision) where
+        # call_nonfused delegates to the native transform; _DirectParamAdapter
+        # has a no-op call_nonfused and must go through ExactAffineSegment.
+        self._single_exact_fast: tuple[TransformAdapter, object] | None = None
+        if (
+            len(self._segments) == 1
+            and isinstance(self._segments[0], ExactAffineSegment)
+            and len(self._segments[0].transforms) == 1
+            and adapter is not None
+            and not isinstance(adapter, _DirectParamAdapter)
+        ):
+            self._single_exact_fast = (adapter, self._segments[0].transforms[0])
+
         # Resolve output_backend converter.
         from fuse_augmentations._types import BackendConverter
 
@@ -513,6 +532,15 @@ class FusedCompose(nn.Module):
             aux_targets = {}
             for key, val in zip(aux_keys, args[1:], strict=True):
                 aux_targets[key] = val
+
+        # Single ExactAffineSegment fast path: bypass the segment's
+        # nn.Module.__call__ and probability machinery by calling the native
+        # adapter directly.  Only safe for single-tensor mode (no aux_targets)
+        # because ExactAffineSegment has no last_matrix to propagate.
+        _sef = self._single_exact_fast
+        if _sef is not None and aux_targets is None:
+            image = _sef[0].call_nonfused(_sef[1], image)
+            return self._convert_primary_output(image)
 
         for seg in self._segments:
             if isinstance(seg, FusedAffineSegment):

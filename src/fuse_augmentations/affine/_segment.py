@@ -831,15 +831,14 @@ class AlbuFusedAffineSegment(nn.Module):
             (8, 8, 3)
 
         """
-        img_hwc = np.ascontiguousarray(img_hwc)
+        if not img_hwc.flags["C_CONTIGUOUS"]:
+            img_hwc = np.ascontiguousarray(img_hwc)
         height, width = img_hwc.shape[:2]
         n_ch = img_hwc.shape[2] if img_hwc.ndim == 3 else 1
         original_2d = img_hwc.ndim == 2
 
-        composed = torch.eye(3, dtype=torch.float64)
-
         if len(self.transforms) == 0:
-            self._last_matrix = composed.unsqueeze(0).to(dtype=torch.float32)
+            self._last_matrix = torch.eye(3, dtype=torch.float32).unsqueeze(0)
             return img_hwc
 
         # Single-op fast path: bypass matrix composition entirely and call the
@@ -853,46 +852,52 @@ class AlbuFusedAffineSegment(nn.Module):
             return self.transforms[0](image=img_hwc)["image"]  # type: ignore[operator]
 
         # Draw per-transform active masks for bsz=1 (mirrors forward() logic).
-        active_masks: list[Any] = []
+        # For p=1.0 transforms, skip the RNG draw and use a constant True.
+        active_masks: list[bool] = []
         for tfm in self.transforms:
             prob = float(getattr(tfm, "p", 1.0))
-            same_on_batch = bool(getattr(tfm, "same_on_batch", False))
-            if same_on_batch:
-                draw = bool(np.random.rand() < prob)
-                active_masks.append(np.full(1, draw))
+            if prob >= 1.0:
+                active_masks.append(True)
+            elif prob <= 0.0:
+                active_masks.append(False)
             else:
-                active_masks.append(np.random.rand(1) < prob)
+                active_masks.append(bool(np.random.rand() < prob))
 
         acc: MatrixArray = np.eye(3, dtype=np.float64)
         any_active = False
+
+        # Resolve imports once (cached by Python import system, but avoids
+        # per-iteration dict lookups inside the hot loop).
+        from fuse_augmentations.adapters._albumentations import (
+            _sample_matrices as _sample_matrices_fn,
+        )
+        from fuse_augmentations.adapters._albumentations import (
+            hflip_matrix_np as _hflip_matrix_np_fn,
+        )
+        from fuse_augmentations.adapters._albumentations import (
+            vflip_matrix_np as _vflip_matrix_np_fn,
+        )
 
         # Fast numpy-only matrix loop: bypass the adapter's torch round-trip
         # by dispatching on pre-classified tags from __init__.
         _tags = self._tfm_tags
         for j, tfm in enumerate(self.transforms):
-            active = bool(active_masks[j][0])
-            if not active:
+            if not active_masks[j]:
                 # Skip expensive sample_params + build_matrix for inactive transforms.
                 continue
             tag = _tags[j]
             if tag == self._TAG_INTERP:
                 # Direct numpy: call _sample_matrices (returns (1,3,3) float64 ndarray)
                 # without the numpy -> torch.tensor -> .numpy() adapter round-trip.
-                from fuse_augmentations.adapters._albumentations import _sample_matrices
-
-                mtx_np = _sample_matrices(tfm, 1, height, width)
+                mtx_np = _sample_matrices_fn(tfm, 1, height, width)
                 any_active = True
                 acc = mtx_np[0] @ acc
             elif tag == self._TAG_HFLIP:
-                from fuse_augmentations.adapters._albumentations import hflip_matrix_np
-
                 any_active = True
-                acc = hflip_matrix_np(W=width) @ acc
+                acc = _hflip_matrix_np_fn(W=width) @ acc
             elif tag == self._TAG_VFLIP:
-                from fuse_augmentations.adapters._albumentations import vflip_matrix_np
-
                 any_active = True
-                acc = vflip_matrix_np(H=height) @ acc
+                acc = _vflip_matrix_np_fn(H=height) @ acc
             else:
                 # Fallback: full adapter round-trip for unrecognised types.
                 params = self.adapter.sample_params(tfm, (1, n_ch, height, width), torch.device("cpu"))
@@ -900,7 +905,7 @@ class AlbuFusedAffineSegment(nn.Module):
                 any_active = True
                 acc = mtx_i[0].double().cpu().numpy() @ acc
 
-        self._last_matrix = torch.as_tensor(acc.copy()).unsqueeze(0).to(dtype=torch.float32)
+        self._last_matrix = torch.from_numpy(acc.astype(np.float32, copy=True)).unsqueeze(0)
 
         if not any_active:
             return img_hwc
