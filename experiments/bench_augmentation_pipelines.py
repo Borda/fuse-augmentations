@@ -826,7 +826,8 @@ _COL_BACKENDS = ["albumentations", "kornia", "torchvision"]
 _COL_ABBREV = {"albumentations": "alb", "kornia": "kornia", "torchvision": "tv"}
 _W_SEQ = 20  # sequence name column width
 _W_VAL = 7  # ms value column width
-_W_BOOST = 7  # fixed boost field: "x1.23 ✔" = 5-char ratio + space + 1-char symbol
+_W_BOOST = 6  # ratio only: "x1.23"
+_W_SYM = 1  # emoji symbol column (✔ / ≈ / ⚠)
 
 
 def _boost_symbol(ratio: float) -> str:
@@ -851,40 +852,45 @@ def _boost_symbol(ratio: float) -> str:
     return "⚠"
 
 
-# Per-group char width: 1(sep) + W_VAL + 1 + W_VAL + 3(" | ") + W_BOOST + 1(trail)
-_GROUP_W = _W_VAL * 2 + _W_BOOST + 6
+# Per-group width (no leading sep): VAL + " : " + VAL + " : " + BOOST + " " + SYM + " " (trail)
+_GROUP_W = _W_VAL * 2 + _W_BOOST + _W_SYM + 8
 
 # ── header ───────────────────────────────────────────────────────────────────
-_sep = "─" * (_W_SEQ + 1 + len(_COL_BACKENDS) * _GROUP_W)
+# Each group prefixed by " " (first) or "|" (subsequent) — 1 char per group.
+_sep = "─" * (_W_SEQ + len(_COL_BACKENDS) * (1 + _GROUP_W))
 print("\n" + _sep)
 
-# row 1: backend group labels, centred over their three sub-columns
+# row 1: backend group labels, centred over their group width; "|" between groups
 header1 = f"{'Sequence':<{_W_SEQ}}"
-for b in _COL_BACKENDS:
-    header1 += " " + f"{_COL_ABBREV[b]:^{_GROUP_W}}"
+for i, b in enumerate(_COL_BACKENDS):
+    header1 += ("|" if i > 0 else " ") + f"{_COL_ABBREV[b]:^{_GROUP_W}}"
 print(header1)
 
 # row 2: sub-column labels
+_H2_GROUP = f"{'native':>{_W_VAL}} ; {'fused':>{_W_VAL}} ; {'boost':>{_W_BOOST}} {'':>{_W_SYM}} "
 header2 = f"{'':^{_W_SEQ}}"
-for _ in _COL_BACKENDS:
-    header2 += f" {'native':>{_W_VAL}} {'fused':>{_W_VAL}} | {'boost':>{_W_BOOST}} "
+for i, _ in enumerate(_COL_BACKENDS):
+    header2 += ("|" if i > 0 else " ") + _H2_GROUP
 print(header2)
 print(_sep)
 
 # ── data rows ─────────────────────────────────────────────────────────────────
 for seq in _TABLE_SEQS_ORDER:
     row = f"{seq:<{_W_SEQ}}"
-    for b in _COL_BACKENDS:
+    for i, b in enumerate(_COL_BACKENDS):
         nat = _by_key.get((seq, b, "native"))
         fus = _by_key.get((seq, b, "fused"))
         if nat and fus:
             n_ms = nat["timing_ms"]["mean"]
             f_ms = fus["timing_ms"]["mean"]
             ratio = n_ms / f_ms if f_ms > 0 else None
-            boost_str = f"x{ratio:.2f} {_boost_symbol(ratio)}" if ratio is not None else "  N/A "
-            row += f" {n_ms:>{_W_VAL}.2f} {f_ms:>{_W_VAL}.2f} | {boost_str:>{_W_BOOST}} "
+            ratio_str = f"x{ratio:.2f}" if ratio is not None else " N/A"
+            sym = _boost_symbol(ratio) if ratio is not None else ""
+            sep = "|" if i > 0 else " "
+            row += sep + f"{n_ms:>{_W_VAL}.3f} ; {f_ms:>{_W_VAL}.3f} ; {ratio_str:>{_W_BOOST}} {sym:<{_W_SYM}} "
         else:
-            row += f" {'N/A':>{_W_VAL}} {'N/A':>{_W_VAL}} | {'---':>{_W_BOOST}} "
+            sep = "|" if i > 0 else " "
+            row += sep + f"{'N/A':>{_W_VAL}} ; {'N/A':>{_W_VAL}} ; {'---':>{_W_BOOST}} {' ':<{_W_SYM}} "
     print(row)
 
 print(_sep)
