@@ -271,6 +271,38 @@ class FusedCompose(nn.Module):
         ):
             self._single_exact_fast = (adapter, self._segments[0].transforms[0])
 
+        # Single-transform FusedAffineSegment fast path: bypass the segment's
+        # nn.Module.__call__ for single-op GEOMETRIC_INTERP pipelines (a-group
+        # rotate/scale/shear).  Saves ~10-15 us vs going through the segment
+        # Module machinery.  Guards:
+        # - Single segment, single transform (prevents cv2-path regression from
+        #   iter 1 where multi-transform segments were incorrectly bypassed)
+        # - Kornia or TorchVision adapter only (not Albu — uses _forward_albu_native)
+        # - For TorchVision: v2 transforms only (v1 has incompatible interpolation)
+        self._single_fused_fast_seg: tuple[TransformAdapter, object] | None = None
+        if (
+            len(self._segments) == 1
+            and isinstance(self._segments[0], FusedAffineSegment)
+            and len(self._segments[0].transforms) == 1
+            and getattr(self._segments[0], "_fast_path", None) in ("kornia", "torchvision")
+            and adapter is not None
+            and not isinstance(adapter, _DirectParamAdapter)
+        ):
+            _seg0 = self._segments[0]
+            _tfm0 = _seg0.transforms[0]
+            _bypass_ok = True
+            if _seg0._fast_path == "torchvision":
+                try:
+                    from fuse_augmentations.adapters._torchvision import _is_torchvision_v2_transform
+
+                    _bypass_ok = _is_torchvision_v2_transform(_tfm0)
+                except ImportError:
+                    _bypass_ok = False
+            if _bypass_ok:
+                self._single_fused_fast_seg = (adapter, _tfm0)
+        # Pre-cached B=1 CPU float32 identity for _last_transform_matrix in fast paths.
+        self._eye_1x3x3_f32: Tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0)
+
         # Resolve output_backend converter.
         from fuse_augmentations._types import BackendConverter
 
@@ -540,6 +572,18 @@ class FusedCompose(nn.Module):
         _sef = self._single_exact_fast
         if _sef is not None and aux_targets is None:
             image = _sef[0].call_nonfused(_sef[1], image)
+            return self._convert_primary_output(image)
+
+        # Single-transform FusedAffineSegment fast path: same bypass for
+        # single-op GEOMETRIC_INTERP pipelines (a-group rotate/scale/shear).
+        # Sets _last_transform_matrix to identity — the single-op path always
+        # returns identity regardless (no matrix reconstruction for a-group).
+        _sffs = self._single_fused_fast_seg
+        if _sffs is not None and aux_targets is None:
+            image = _sffs[0].call_nonfused(_sffs[1], image)
+            _bsz = image.shape[0]
+            _e = self._eye_1x3x3_f32
+            self._last_transform_matrix = _e if _bsz == 1 else _e.expand(_bsz, -1, -1).clone()
             return self._convert_primary_output(image)
 
         for seg in self._segments:
