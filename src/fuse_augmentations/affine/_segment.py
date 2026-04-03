@@ -313,6 +313,13 @@ class FusedAffineSegment(nn.Module):
                 self._np_matrix_builder = build_matrix_numpy_b1_tv
             except ImportError:
                 pass
+        # Pre-allocated (1, 3, 3) float32 buffer for cv2 path _last_matrix writes.
+        # Avoids per-call torch.as_tensor + unsqueeze + clone (~3-5 us).
+        self._cv2_last_mat_buf: Tensor = torch.empty((1, 3, 3), dtype=torch.float32)
+        # Pre-cached B=1 CPU float32 identity for single-op fast-path _last_matrix
+        # writes.  Avoids per-call torch.eye + unsqueeze + expand + clone (~4-6 us)
+        # when device and dtype match.
+        self._eye_1x3x3_f32: Tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0)
 
     @property
     def last_matrix(self) -> Tensor | None:
@@ -375,8 +382,12 @@ class FusedAffineSegment(nn.Module):
                 _bp_raw = getattr(_tfm, "_params", {}).get("batch_prob")
                 _all_skipped = _bp_raw is not None and not _bp_raw.to(device=device).bool().any()
                 if _all_skipped or self._skip_matrix_recon:
-                    _eye3 = torch.eye(3, device=device, dtype=dtype)
-                    self._last_matrix = _eye3.unsqueeze(0).expand(bsz, -1, -1).detach().clone()
+                    _e = self._eye_1x3x3_f32
+                    self._last_matrix = (
+                        _e
+                        if (bsz == 1 and dtype == _e.dtype and device == _e.device)
+                        else _e.expand(bsz, -1, -1).detach().clone().to(device=device, dtype=dtype)
+                    )
                     return image
 
                 _native_p = KorniaAdapter.convert_native_params(_tfm, device)
@@ -414,8 +425,11 @@ class FusedAffineSegment(nn.Module):
                 if _is_torchvision_v2_transform(_tfm):
                     if self._skip_matrix_recon:
                         image = TorchVisionAdapter.call_nonfused(_tfm, image)
-                        _eye3 = torch.eye(3, device=device, dtype=dtype)
-                        self._last_matrix = _eye3.unsqueeze(0).expand(bsz, -1, -1).detach().clone()
+                        _e = self._eye_1x3x3_f32
+                        if bsz == 1 and dtype == _e.dtype and device == _e.device:
+                            self._last_matrix = _e
+                        else:
+                            self._last_matrix = _e.expand(bsz, -1, -1).detach().clone().to(device=device, dtype=dtype)
                         return image
                     # TV v2 GEOMETRIC_INTERP transforms (RandomRotation, RandomAffine)
                     # always apply and make exactly one RNG call (get_params) - same as
@@ -475,15 +489,8 @@ class FusedAffineSegment(nn.Module):
                     mtx_i = self.adapter.build_matrix(tfm, params, height, width)
                     acc_np = mtx_i[0].double().cpu().numpy() @ acc_np
 
-            self._last_matrix = (
-                torch
-                .as_tensor(
-                    acc_np,
-                    dtype=torch.float32,
-                )
-                .unsqueeze(0)
-                .clone()
-            )
+            np.copyto(self._cv2_last_mat_buf[0].numpy(), acc_np, casting="unsafe")
+            self._last_matrix = self._cv2_last_mat_buf
 
             m_inv_np = _inv3x3_affine_np(acc_np)
             img_np = image[0].permute(1, 2, 0).contiguous().numpy()
