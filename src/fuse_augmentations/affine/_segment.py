@@ -308,9 +308,13 @@ class FusedAffineSegment(nn.Module):
                 pass
         elif self._cv2_warp and self._fast_path == "torchvision":
             try:
-                from fuse_augmentations.adapters._torchvision import build_matrix_numpy_b1_tv
+                from fuse_augmentations.adapters._torchvision import (
+                    build_matrix_numpy_b1_tv,
+                    sample_and_build_matrix_numpy_b1_tv,
+                )
 
                 self._np_matrix_builder = build_matrix_numpy_b1_tv
+                self._np_fused_builder = sample_and_build_matrix_numpy_b1_tv
             except ImportError:
                 pass
         # Pre-allocated (1, 3, 3) float32 buffer for cv2 path _last_matrix writes.

@@ -908,3 +908,97 @@ def build_matrix_numpy_b1_tv(
 
     # Fallback: torch path for perspective, crop-resize, colour jitter, unknown types.
     return TorchVisionAdapter.build_matrix(transform, params, H, W)[0].double().cpu().numpy()
+
+
+def sample_and_build_matrix_numpy_b1_tv(
+    transform: object,
+    input_shape: tuple[int, int, int, int],
+    H: int,  # noqa: N803
+    W: int,  # noqa: N803
+) -> np.ndarray | None:
+    """Sample params and build ``(3, 3)`` float64 matrix for B=1, entirely in numpy.
+
+    Fuses :func:`TorchVisionAdapter.sample_params` + :func:`build_matrix_numpy_b1_tv`
+    into a single call that invokes ``get_params`` directly, extracts scalar
+    floats without creating intermediate canonical torch tensors, and computes
+    the affine matrix in NumPy.  Compared to the two-step path this avoids
+    4-6 small ``(1,)``/``(1, 3, 3)`` torch tensor allocations per transform per
+    forward call.
+
+    Only handles the types common in the benchmark hot path
+    (``RandomRotation``, ``RandomAffine``, ``RandomHorizontalFlip``,
+    ``RandomVerticalFlip``).  All other types return ``None`` to signal that
+    the caller should fall back to the two-step path.
+
+    Args:
+        transform: A TorchVision augmentation transform (type-dispatched).
+        input_shape: ``(B, C, H, W)`` shape tuple (unused for TV; kept for
+            interface compatibility with the Kornia fused builder).
+        H: Image height in pixels.
+        W: Image width in pixels.
+
+    Returns:
+        ``(3, 3)`` float64 forward affine matrix, or ``None`` if this type is
+        not handled (caller must fall back to the two-step path).
+
+    """
+    ttype = type(transform)
+    cx, cy = (W - 1) * 0.5, (H - 1) * 0.5
+
+    if ttype in _HFLIP_TYPES_FS:
+        return np.array([[-1.0, 0.0, float(W - 1)], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+    if ttype in _VFLIP_TYPES_FS:
+        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, float(H - 1)], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+    if ttype in _ROTATION_TYPES_FS:
+        angle_deg = float(ttype.get_params(transform.degrees))  # type: ignore[attr-defined]
+        angle_rad = math.radians(angle_deg)
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+        return np.array(
+            [
+                [cos_a, -sin_a, cx * (1.0 - cos_a) + cy * sin_a],
+                [sin_a, cos_a, cy * (1.0 - cos_a) - cx * sin_a],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+
+    if ttype in _AFFINE_TYPES_FS:
+        angle, translations, sc_val, shear = ttype.get_params(  # type: ignore[attr-defined]
+            transform.degrees,  # type: ignore[attr-defined]
+            transform.translate,  # type: ignore[attr-defined]
+            transform.scale,  # type: ignore[attr-defined]
+            transform.shear,  # type: ignore[attr-defined]
+            img_size=(W, H),
+        )
+        rot = math.radians(float(angle))
+        tx = float(translations[0])
+        ty = float(translations[1])
+        sc = float(sc_val)
+        sx = math.radians(float(shear[0]))
+        sy = math.radians(float(shear[1]))
+
+        cos_sy = math.cos(sy)
+        tan_sx = math.tan(sx)
+        cos_rot_sy = math.cos(rot - sy)
+        sin_rot_sy = math.sin(rot - sy)
+        sin_rot = math.sin(rot)
+        cos_rot = math.cos(rot)
+
+        a = sc * cos_rot_sy / cos_sy
+        b = sc * (-cos_rot_sy * tan_sx / cos_sy - sin_rot)
+        c = sc * sin_rot_sy / cos_sy
+        d = sc * (-sin_rot_sy * tan_sx / cos_sy + cos_rot)
+
+        return np.array(
+            [
+                [a, b, cx * (1.0 - a) - cy * b + tx],
+                [c, d, cy * (1.0 - d) - cx * c + ty],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+
+    return None
