@@ -14,6 +14,8 @@ Primary objectives by priority:
 
 `real_score > theoretical_target` is a valid and expected outcome for b-group TV/Kornia cases (flips are nearly free in native, giving super-theoretical ratios). Do not modify `optimize_score.py` to clamp or renormalise scores.
 
+**Revised ceiling (Albu 2.0)**: The printed `theoretical_target` (~2.375) assumes Albu 1.x behavior where N sequential affine ops each dispatch a separate `cv2.warpAffine`. Albumentations 2.0 already composes consecutive affine matrices internally — native b02 (3 ops, ~0.243 ms) is nearly identical to native a01 (1 op, ~0.225 ms). Both fused and native execute exactly one warp. As a result, b01–b04 can never approach 2–5× regardless of optimization; the realistic geomean ceiling with the current 45-case mix is **~1.85–1.95**. Treat the printed `theoretical_target` as a display artifact of the benchmark formula; use 1.85–1.95 as the practical stopping criterion.
+
 ## Sequence naming conventions
 
 Keys follow `<group>_<number>_<name>` so `sorted(SEQUENCE_BANK)` gives the intended display order.
@@ -54,7 +56,7 @@ direction: higher
 baseline: 1.6550  # confirmed on 45-case metric (2026-04-02)
 ```
 
-`theoretical_target` is printed on every run. Campaign success = `real_score ≥ theoretical_target` (~2.375 for the 45-case set). No `target:` is set — the campaign runs to `max_iterations` and the operator uses the printed `theoretical_target` as the visual stopping criterion.
+`theoretical_target` is printed on every run. Campaign success = `real_score ≥ 1.85` (revised practical ceiling — see Goal section). No `target:` is set — the campaign runs to `max_iterations`; stop when `real_score ≥ 1.85` or diminishing-returns window fires.
 
 ## Guard
 
@@ -84,6 +86,29 @@ compute: local
 
 `optimize_score.py` runs in ~60 s on the expanded 45-case metric (WARMUP=10 + REPS=50 × 45 cases × 2 backends per case) — within the 120 s `VERIFY_TIMEOUT_SEC` limit.
 
-The 45-case theoretical target ≈ 2.375 = geomean([1⁵ × 2×3×4×5×5 × 3×3×4×4×5]^3)^(1/45). This is almost identical to the 15-case theoretical target (2.371) because adding a-group ones (pulls down) and d-group 3–5s (pulls up) balance out.
+The 45-case printed `theoretical_target` ≈ 2.375 = geomean([1⁵ × 2×3×4×5×5 × 3×3×4×4×5]^3)^(1/45). This formula assumes Albu 1.x (N separate warps); it is NOT the achievable ceiling with Albu 2.0. The realistic ceiling is **~1.85–1.95** — use this as the campaign's practical target.
 
 Kornia d-group results with `AGGRESSIVE` reordering are bounded by colour-op time; even perfect geo-fusion leaves the colour ops unsaved. The d-group Kornia ceiling with `__agr` is ≈ 1.1–2.1× — this is expected, not a bug.
+
+## Next Experiments (priority order)
+
+### 1. Pre-allocated `_last_matrix` buffer — expected +~0.4% geomean, low risk
+
+In `AlbuFusedAffineSegment.forward_numpy` (and `_call_single_image`), the multi-op path ends with:
+
+```python
+self._last_matrix = torch.from_numpy(acc.astype(np.float32, copy=True)).unsqueeze(0)
+```
+
+This allocates a new tensor on every call (~2–4 µs: `astype` copy + `from_numpy` + `unsqueeze`). Replace with a pre-allocated `self._matrix_buf: Tensor` (shape `[1, 3, 3]`, dtype `float32`) initialised in `__init__`, then fill in-place:
+
+```python
+self._matrix_buf[0] = torch.from_numpy(acc.astype(np.float32))
+self._last_matrix = self._matrix_buf
+```
+
+Or use `self._matrix_buf[0].copy_(torch.from_numpy(acc.astype(np.float32)))`. `_last_matrix` is read-only (exposed via the `last_matrix` property); downstream callers must not mutate it. Risk: low. Expected saving: ~3 µs per multi-op call; ~0.4% geomean given current 45-case mix.
+
+### 2. Kornia/TV a-group tensor path — profile `nn.Module.__call__` overhead
+
+Several Kornia and TorchVision a-group cases show 0.76–1.30× variance. The a-group has `nb_geom=1` so theoretical is 1.0×; anything below 1.0× is a regression driven by wrapper overhead. Target: `FusedAffineSegment.forward()` tensor path — profile the call chain from `FuseCompose.__call__` through `nn.Module.__call__` into the segment forward. Likely culprits: repeated `isinstance` checks in the tensor dispatch path, `torch.eye` allocation not yet pre-cached for the tensor path, or `grid_sample` mode-string lookup overhead. Profile with `torch.profiler.profile` on a01–a05/kor and a01–a05/tv to identify the dominant µs-scale cost before making changes.
