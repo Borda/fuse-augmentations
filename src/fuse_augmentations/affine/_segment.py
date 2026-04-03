@@ -450,6 +450,11 @@ class FusedAffineSegment(nn.Module):
             # creating intermediate torch tensors that are immediately converted
             # back to numpy).
             _np_builder = self._np_matrix_builder
+            # Fused sample+build: calls generate_parameters directly and builds
+            # the matrix in one numpy-native call, avoiding ~15-25us of
+            # adapter.sample_params overhead per active transform. Falls back to
+            # two-step path when the transform type is not handled (returns None).
+            _np_fused = self._np_fused_builder
             for tfm in self.transforms:
                 prob = getattr(tfm, "p", 1.0)
                 active = bool(np.random.rand() < prob) if prob < 1.0 else True
@@ -457,6 +462,11 @@ class FusedAffineSegment(nn.Module):
                     # Still need to sample params to advance RNG state consistently.
                     self.adapter.sample_params(tfm, input_shape, device)
                     continue
+                if _np_fused is not None:
+                    mtx_np = _np_fused(tfm, input_shape, height, width)
+                    if mtx_np is not None:
+                        acc_np = mtx_np @ acc_np
+                        continue
                 params = self.adapter.sample_params(tfm, input_shape, device)
                 if _np_builder is not None:
                     mtx_np = _np_builder(tfm, params, height, width)
@@ -475,14 +485,14 @@ class FusedAffineSegment(nn.Module):
                 .clone()
             )
 
-            m_inv_np = np.linalg.inv(acc_np)
+            m_inv_np = _inv3x3_affine_np(acc_np)
             img_np = image[0].permute(1, 2, 0).contiguous().numpy()
             if n_ch == 1:
                 warped = _warp(img_np[:, :, 0], m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag)
                 warped = warped[:, :, np.newaxis]
             else:
                 warped = _warp(img_np, m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag)
-            image = torch.from_numpy(np.ascontiguousarray(warped).copy()).permute(2, 0, 1).unsqueeze(0)
+            image = torch.from_numpy(warped.copy()).permute(2, 0, 1).unsqueeze(0)
             return image.to(device=device, dtype=dtype)
 
         eye = torch.eye(3, device=device, dtype=dtype)
