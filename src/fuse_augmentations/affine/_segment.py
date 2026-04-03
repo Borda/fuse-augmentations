@@ -697,6 +697,11 @@ class AlbuFusedAffineSegment(nn.Module):
         self._tfm_tags: list[int] = self._classify_transforms(transforms, adapter)
         # Pre-allocated identity (1,3,3) — reused for zero/single-op early returns.
         self._identity_1x3x3: Tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0)
+        # Pre-allocated (1,3,3) buffer for forward_numpy last_matrix writes.
+        # Avoids per-call tensor allocation from torch.from_numpy(...).unsqueeze(0).
+        self._last_matrix_buffer: Tensor = torch.empty((1, 3, 3), dtype=torch.float32)
+        self._last_matrix_np_buffer: NDArray[np.float32] = np.empty((3, 3), dtype=np.float32)
+        self._last_matrix_np_tensor: Tensor = torch.from_numpy(self._last_matrix_np_buffer)
 
     @staticmethod
     def _classify_transforms(transforms: list[object], adapter: TransformAdapter) -> list[int]:
@@ -942,7 +947,9 @@ class AlbuFusedAffineSegment(nn.Module):
                 any_active = True
                 acc = mtx_i[0].double().cpu().numpy() @ acc
 
-        self._last_matrix = torch.from_numpy(acc.astype(np.float32, copy=True)).unsqueeze(0)
+        np.copyto(self._last_matrix_np_buffer, acc, casting="unsafe")
+        self._last_matrix_buffer[0].copy_(self._last_matrix_np_tensor)
+        self._last_matrix = self._last_matrix_buffer
 
         if not any_active:
             return img_hwc
