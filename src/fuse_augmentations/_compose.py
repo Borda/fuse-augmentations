@@ -588,7 +588,10 @@ class FusedCompose(nn.Module):
 
         for seg in self._segments:
             if isinstance(seg, FusedAffineSegment):
-                result = seg(image, aux_targets)
+                # Call forward directly to skip nn.Module.__call__ overhead
+                # (~10-15 us: hook dispatch, _call_impl indirection) for the
+                # common case of no registered hooks.
+                result = seg.forward(image, aux_targets)
                 if aux_targets is not None:
                     image, aux_targets = result
                 else:
