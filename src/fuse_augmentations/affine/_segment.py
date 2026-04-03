@@ -601,6 +601,41 @@ def _warp(
     )
 
 
+def _inv3x3_affine_np(m: MatrixArray) -> MatrixArray:
+    """Closed-form inverse of a 3x3 affine matrix (bottom row = [0, 0, 1]).
+
+    Uses Cramer's rule for the upper-left 2x2 sub-matrix, avoiding LAPACK
+    dispatch overhead (~15-20us) of ``np.linalg.inv`` for a single 3x3 matrix.
+
+    Args:
+        m: A (3, 3) float64 ndarray representing a forward affine transform.
+           The bottom row must be ``[0, 0, 1]`` (standard affine convention).
+
+    Returns:
+        The (3, 3) inverse affine matrix as a float64 ndarray.
+
+    Examples:
+        >>> import numpy as np
+        >>> m = np.eye(3, dtype=np.float64)
+        >>> _inv3x3_affine_np(m)
+        array([[1., 0., 0.],
+               [0., 1., 0.],
+               [0., 0., 1.]])
+
+    """
+    a, b, tx = m[0, 0], m[0, 1], m[0, 2]
+    c, d, ty = m[1, 0], m[1, 1], m[1, 2]
+    inv_det = 1.0 / (a * d - b * c)
+    return np.array(
+        [
+            [d * inv_det, -b * inv_det, (b * ty - d * tx) * inv_det],
+            [-c * inv_det, a * inv_det, (c * tx - a * ty) * inv_det],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+
+
 class AlbuFusedAffineSegment(nn.Module):
     """Fused affine segment for the Albumentations cv2 backend.
 
@@ -660,6 +695,8 @@ class AlbuFusedAffineSegment(nn.Module):
         self._border_flag: int = _CV2_BORDER.get(self.padding_mode, _CV2_BORDER.get("zeros", 0))
         # Pre-classify transforms to avoid per-call _is_albu_instance dispatch.
         self._tfm_tags: list[int] = self._classify_transforms(transforms, adapter)
+        # Pre-allocated identity (1,3,3) — reused for zero/single-op early returns.
+        self._identity_1x3x3: Tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0)
 
     @staticmethod
     def _classify_transforms(transforms: list[object], adapter: TransformAdapter) -> list[int]:
@@ -838,7 +875,7 @@ class AlbuFusedAffineSegment(nn.Module):
         original_2d = img_hwc.ndim == 2
 
         if len(self.transforms) == 0:
-            self._last_matrix = torch.eye(3, dtype=torch.float32).unsqueeze(0)
+            self._last_matrix = self._identity_1x3x3
             return img_hwc
 
         # Single-op fast path: bypass matrix composition entirely and call the
@@ -848,7 +885,7 @@ class AlbuFusedAffineSegment(nn.Module):
         # identity (1, 3, 3) to satisfy shape requirements; correctness-sensitive
         # callers should use the BCHW tensor path which reconstructs the matrix.
         if len(self.transforms) == 1:
-            self._last_matrix = torch.eye(3, dtype=torch.float32).unsqueeze(0)
+            self._last_matrix = self._identity_1x3x3
             return self.transforms[0](image=img_hwc)["image"]  # type: ignore[operator]
 
         # Draw per-transform active masks for bsz=1 (mirrors forward() logic).
@@ -910,7 +947,40 @@ class AlbuFusedAffineSegment(nn.Module):
         if not any_active:
             return img_hwc
 
-        m_dst2src: MatrixArray = np.linalg.inv(acc)
+        tol = 1e-6
+        is_bottom_row = (
+            abs(float(acc[2, 0])) < tol and abs(float(acc[2, 1])) < tol and abs(float(acc[2, 2]) - 1.0) < tol
+        )
+        is_no_shear = abs(float(acc[0, 1])) < tol and abs(float(acc[1, 0])) < tol
+        if is_bottom_row and is_no_shear:
+            is_hflip = (
+                abs(float(acc[0, 0]) + 1.0) < tol
+                and abs(float(acc[1, 1]) - 1.0) < tol
+                and abs(float(acc[0, 2]) - float(width - 1)) < tol
+                and abs(float(acc[1, 2])) < tol
+            )
+            if is_hflip:
+                return np.ascontiguousarray(np.flip(img_hwc, axis=1))
+
+            is_vflip = (
+                abs(float(acc[0, 0]) - 1.0) < tol
+                and abs(float(acc[1, 1]) + 1.0) < tol
+                and abs(float(acc[0, 2])) < tol
+                and abs(float(acc[1, 2]) - float(height - 1)) < tol
+            )
+            if is_vflip:
+                return np.ascontiguousarray(np.flip(img_hwc, axis=0))
+
+            is_hvflip = (
+                abs(float(acc[0, 0]) + 1.0) < tol
+                and abs(float(acc[1, 1]) + 1.0) < tol
+                and abs(float(acc[0, 2]) - float(width - 1)) < tol
+                and abs(float(acc[1, 2]) - float(height - 1)) < tol
+            )
+            if is_hvflip:
+                return np.ascontiguousarray(np.flip(img_hwc, axis=(0, 1)))
+
+        m_dst2src: MatrixArray = _inv3x3_affine_np(acc)
 
         if original_2d:
             return _warp(img_hwc, m_dst2src, width, height, self._interp_flag, self._border_flag)
