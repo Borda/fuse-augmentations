@@ -501,7 +501,7 @@ class FusedAffineSegment(nn.Module):
                 warped = warped[:, :, np.newaxis]
             else:
                 warped = _warp(img_np, m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag)
-            image = torch.from_numpy(warped.copy()).permute(2, 0, 1).unsqueeze(0)
+            image = torch.from_numpy(warped).permute(2, 0, 1).unsqueeze(0)
             return image.to(device=device, dtype=dtype)
 
         eye = torch.eye(3, device=device, dtype=dtype)
