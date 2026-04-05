@@ -477,8 +477,6 @@ class FusedAffineSegment(nn.Module):
                 prob = getattr(tfm, "p", 1.0)
                 active = bool(np.random.rand() < prob) if prob < 1.0 else True
                 if not active:
-                    # Still need to sample params to advance RNG state consistently.
-                    self.adapter.sample_params(tfm, input_shape, device)
                     continue
                 if _np_fused is not None:
                     mtx_np = _np_fused(tfm, input_shape, height, width)

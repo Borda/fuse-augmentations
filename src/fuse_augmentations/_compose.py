@@ -303,6 +303,28 @@ class FusedCompose(nn.Module):
         # Pre-cached B=1 CPU float32 identity for _last_transform_matrix in fast paths.
         self._eye_1x3x3_f32: Tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0)
 
+        # Single-op Albumentations direct fast path: for pipelines with exactly
+        # one AlbuFusedAffineSegment containing one transform, bypass
+        # _forward_albu_native entirely.  Saves ~5-10 us/call: 4 lazy imports,
+        # function call overhead, forward_numpy dispatch, and segment isinstance loop.
+        # Guards: single segment + single transform + AlbumentationsAdapter only.
+        # Not used when aux_targets are passed (kwargs size > 1).
+        self._single_albu_direct_tfm: object | None = None
+        if (
+            len(self._segments) == 1
+            and isinstance(self._segments[0], AlbuFusedAffineSegment)
+            and len(self._segments[0].transforms) == 1
+        ):
+            try:
+                from fuse_augmentations.adapters._albumentations import (
+                    AlbumentationsAdapter as AlbuAdapterCls,
+                )
+
+                if isinstance(adapter, AlbuAdapterCls):
+                    self._single_albu_direct_tfm = self._segments[0].transforms[0]
+            except ImportError:
+                pass
+
         # Resolve output_backend converter.
         from fuse_augmentations._types import BackendConverter
 
@@ -407,6 +429,15 @@ class FusedCompose(nn.Module):
             True
 
         """
+        if (
+            self._single_albu_direct_tfm is not None
+            and len(kwargs) == 1
+            and "image" in kwargs
+            and isinstance(kwargs["image"], np.ndarray)
+        ):
+            img = self._single_albu_direct_tfm(image=kwargs["image"])["image"]  # type: ignore[operator]
+            self._last_transform_matrix = self._eye_1x3x3_f32
+            return {"image": img}
         if "image" in kwargs and isinstance(kwargs["image"], np.ndarray):
             from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
 
