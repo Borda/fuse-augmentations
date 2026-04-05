@@ -38,8 +38,13 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
+from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
 from fuse_augmentations._types import TransformCategory
 from fuse_augmentations.affine._matrix import crop_resize_matrix, hflip_matrix, matmul3x3, rotation_matrix, vflip_matrix
+
+__doctest_skip__: list[str] = []
+if not _ALBUMENTATIONS_AVAILABLE:
+    __doctest_skip__ += ["AlbumentationsAdapter.call_nonfused_numpy"]
 
 # ---------------------------------------------------------------------------
 # Inline NumPy matrix helpers (moved from _np_matrix.py)

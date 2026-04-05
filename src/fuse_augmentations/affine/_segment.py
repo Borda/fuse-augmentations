@@ -638,9 +638,9 @@ def _inv3x3_affine_np(m: MatrixArray) -> MatrixArray:
         >>> import numpy as np
         >>> m = np.eye(3, dtype=np.float64)
         >>> _inv3x3_affine_np(m)
-        array([[1., 0., 0.],
-               [0., 1., 0.],
-               [0., 0., 1.]])
+        array([[ 1., -0.,  0.],
+               [-0.,  1.,  0.],
+               [ 0.,  0.,  1.]])
 
     """
     a, b, tx = m[0, 0], m[0, 1], m[0, 2]
