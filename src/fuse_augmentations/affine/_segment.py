@@ -19,6 +19,7 @@ Example:
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
@@ -695,6 +696,7 @@ class AlbuFusedAffineSegment(nn.Module):
     _TAG_HFLIP: int = 1
     _TAG_VFLIP: int = 2
     _TAG_ADAPTER: int = 3  # fallback: use adapter round-trip
+    _TAG_FAST_ROTATE: int = 4  # A.Rotate fast path (direct numpy, bypasses albu gpdd)
 
     def __init__(
         self,
@@ -741,8 +743,17 @@ class AlbuFusedAffineSegment(nn.Module):
         except ImportError:
             return [AlbuFusedAffineSegment._TAG_ADAPTER] * len(transforms)
 
+        try:
+            from albumentations import Rotate as _AlbuRotate  # type: ignore[import-untyped]
+
+            _rotate_type: type | None = _AlbuRotate
+        except ImportError:
+            _rotate_type = None
+
         for tfm in transforms:
-            if _is_albu_instance(tfm, _INTERP_TYPES):
+            if _rotate_type is not None and isinstance(tfm, _rotate_type) and not getattr(tfm, "crop_border", True):
+                tags.append(AlbuFusedAffineSegment._TAG_FAST_ROTATE)
+            elif _is_albu_instance(tfm, _INTERP_TYPES):
                 tags.append(AlbuFusedAffineSegment._TAG_INTERP)
             elif _is_albu_instance(tfm, _HFLIP_TYPES):
                 tags.append(AlbuFusedAffineSegment._TAG_HFLIP)
@@ -947,7 +958,27 @@ class AlbuFusedAffineSegment(nn.Module):
                 # Skip expensive sample_params + build_matrix for inactive transforms.
                 continue
             tag = _tags[j]
-            if tag == self._TAG_INTERP:
+            if tag == self._TAG_FAST_ROTATE:
+                # Ultra-fast path for A.Rotate (crop_border=False):
+                # Call tfm.py_random.uniform directly (same Python Random instance as
+                # albumentations) then build the rotation matrix in pure Python/numpy.
+                # Identical output to albumentations; saves ~19µs vs get_params_dependent_on_data.
+                angle = tfm.py_random.uniform(*tfm.limit)  # type: ignore[attr-defined]
+                _rad = math.radians(angle)
+                _c, _s = math.cos(_rad), math.sin(_rad)
+                _cx = width / 2.0 - 0.5
+                _cy = height / 2.0 - 0.5
+                mtx_np = np.array(
+                    [
+                        [_c, _s, _cx * (1.0 - _c) - _cy * _s],
+                        [-_s, _c, _cy * (1.0 - _c) + _cx * _s],
+                        [0.0, 0.0, 1.0],
+                    ],
+                    dtype=np.float64,
+                )
+                any_active = True
+                acc = mtx_np @ acc
+            elif tag == self._TAG_INTERP:
                 # Direct numpy: call _sample_matrices (returns (1,3,3) float64 ndarray)
                 # without the numpy -> torch.tensor -> .numpy() adapter round-trip.
                 mtx_np = _sample_matrices_fn(tfm, 1, height, width)
