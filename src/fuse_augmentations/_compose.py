@@ -325,6 +325,53 @@ class FusedCompose(nn.Module):
             except ImportError:
                 pass
 
+        # Pre-computed Albumentations dict-input routing flag: avoids the
+        # per-call lazy import + isinstance check in __call__ for Albu pipelines.
+        _is_albu: bool = False
+        if adapter is not None:
+            try:
+                from fuse_augmentations.adapters._albumentations import (
+                    AlbumentationsAdapter as _AlbuAdapterCls,
+                )
+
+                _is_albu = isinstance(adapter, _AlbuAdapterCls)
+            except ImportError:
+                pass
+        self._is_albu_native: bool = _is_albu or (adapter is None and not self._segments)
+
+        # Pre-classify segments for the _forward_albu_native hot path: replace
+        # per-call isinstance checks with an integer-tagged dispatch list.
+        # Tags: 0=AlbuFusedAffineSegment, 1=ExactAffine, 2=FusedColor,
+        # 3=CropResize, 4=Passthrough(Albu), 5=Passthrough(non-Albu), -1=unsupported.
+        # Built only for Albu pipelines where _forward_albu_native is used.
+        self._albu_seg_tags: list[int] | None = None
+        if self._is_albu_native and self._segments:
+            tags: list[int] = []
+            for seg in self._segments:
+                if isinstance(seg, AlbuFusedAffineSegment):
+                    tags.append(0)
+                elif isinstance(seg, ExactAffineSegment):
+                    tags.append(1)
+                elif isinstance(seg, FusedColorSegment):
+                    tags.append(2)
+                elif isinstance(seg, CropResizeSegment):
+                    tags.append(3)
+                elif isinstance(seg, _PassthroughSegment):
+                    try:
+                        from fuse_augmentations.adapters._albumentations import (
+                            AlbumentationsAdapter as _AlbuAdapterCheck,
+                        )
+
+                        if isinstance(seg.adapter, _AlbuAdapterCheck):
+                            tags.append(4)
+                        else:
+                            tags.append(5)
+                    except ImportError:
+                        tags.append(5)
+                else:
+                    tags.append(-1)
+            self._albu_seg_tags = tags
+
         # Resolve output_backend converter.
         from fuse_augmentations._types import BackendConverter
 
@@ -438,13 +485,27 @@ class FusedCompose(nn.Module):
             img = self._single_albu_direct_tfm(image=kwargs["image"])["image"]  # type: ignore[operator]
             self._last_transform_matrix = self._eye_1x3x3_f32
             return {"image": img}
-        if "image" in kwargs and isinstance(kwargs["image"], np.ndarray):
-            from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+        if self._is_albu_native and "image" in kwargs and isinstance(kwargs["image"], np.ndarray):
+            return self._forward_albu_native(kwargs["image"])
 
-            is_albu_adapter = isinstance(self._adapter, AlbumentationsAdapter)
-            is_empty_pipeline = self._adapter is None and not self._segments
-            if is_albu_adapter or is_empty_pipeline:
-                return self._forward_albu_native(kwargs["image"])
+        # Single-op tensor fast paths: bypass nn.Module.__call__ overhead
+        # (~10-15 us from hook dispatch, _call_impl indirection) for the
+        # common single-tensor, single-op case.  Guards: exactly 1 positional
+        # arg, no kwargs, data_keys is None (single-tensor mode).
+        if len(args) == 1 and not kwargs and self.data_keys is None:
+            _sef = self._single_exact_fast
+            if _sef is not None:
+                image = _sef[0].call_nonfused(_sef[1], args[0])
+                return self._convert_primary_output(image)
+
+            _sffs = self._single_fused_fast_seg
+            if _sffs is not None:
+                image = _sffs[0].call_nonfused(_sffs[1], args[0])
+                _bsz = image.shape[0]
+                _e = self._eye_1x3x3_f32
+                self._last_transform_matrix = _e if _bsz == 1 else _e.expand(_bsz, -1, -1).clone()
+                return self._convert_primary_output(image)
+
         return super().__call__(*args, **kwargs)
 
     def _forward_albu_native(self, img_hwc: NDArray[Any]) -> dict[str, NDArray[Any]]:
@@ -469,50 +530,76 @@ class FusedCompose(nn.Module):
                 supported in the Albumentations native I/O path.
 
         """
-        from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
-        from fuse_augmentations.affine._segment import CropResizeSegment, ExactAffineSegment, FusedColorSegment
+        # Use pre-classified segment tags when available (built at __init__)
+        # to avoid per-call isinstance dispatch overhead.
+        _tags = self._albu_seg_tags
+        if _tags is not None:
+            from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
 
-        for seg in self._segments:
-            if isinstance(seg, AlbuFusedAffineSegment):
-                img_hwc = seg.forward_numpy(img_hwc)
-                self._last_transform_matrix = seg.last_matrix
-                continue
-
-            if isinstance(seg, ExactAffineSegment):
-                # Apply each GEOMETRIC_EXACT transform via the native Albu API.
-                # The transform handles its own probability internally.
-                for tfm in seg.transforms:
-                    img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
-                continue
-
-            if isinstance(seg, FusedColorSegment):
-                # Apply each POINTWISE_LINEAR colour transform via the native Albu API.
-                for tfm in seg._transforms:
-                    img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
-                continue
-
-            if isinstance(seg, CropResizeSegment):
-                # Single-transform segment — apply via native Albu API.
-                for tfm in seg.transforms:
-                    img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
-                continue
-
-            if isinstance(seg, _PassthroughSegment):
-                if isinstance(seg.adapter, AlbumentationsAdapter):
+            for i, seg in enumerate(self._segments):
+                tag = _tags[i]
+                if tag == 0:  # AlbuFusedAffineSegment
+                    img_hwc = seg.forward_numpy(img_hwc)
+                    self._last_transform_matrix = seg.last_matrix
+                elif tag == 1:  # ExactAffineSegment
+                    for tfm in seg.transforms:
+                        img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
+                elif tag == 2:  # FusedColorSegment
+                    for tfm in seg._transforms:
+                        img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
+                elif tag == 3:  # CropResizeSegment
+                    for tfm in seg.transforms:
+                        img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
+                elif tag == 4:  # Passthrough(Albu adapter)
                     img_hwc = AlbumentationsAdapter.call_nonfused_numpy(seg.transform, img_hwc)
-                else:
+                elif tag == 5:  # Passthrough(non-Albu adapter)
                     msg = (
                         f"Passthrough segment adapter {type(seg.adapter).__name__!r} does not "
                         "support the Albumentations native I/O path. Use tensor input instead."
                     )
                     raise RuntimeError(msg)
-                continue
+                else:  # unsupported
+                    msg = (
+                        f"Segment type {type(seg).__name__!r} is not supported in the "
+                        "Albumentations native I/O path. Use tensor input instead."
+                    )
+                    raise RuntimeError(msg)
+        else:
+            # Fallback: isinstance dispatch (used when _albu_seg_tags was not built).
+            from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
 
-            msg = (
-                f"Segment type {type(seg).__name__!r} is not supported in the "
-                "Albumentations native I/O path. Use tensor input instead."
-            )
-            raise RuntimeError(msg)
+            for seg in self._segments:
+                if isinstance(seg, AlbuFusedAffineSegment):
+                    img_hwc = seg.forward_numpy(img_hwc)
+                    self._last_transform_matrix = seg.last_matrix
+                    continue
+                if isinstance(seg, ExactAffineSegment):
+                    for tfm in seg.transforms:
+                        img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
+                    continue
+                if isinstance(seg, FusedColorSegment):
+                    for tfm in seg._transforms:
+                        img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
+                    continue
+                if isinstance(seg, CropResizeSegment):
+                    for tfm in seg.transforms:
+                        img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
+                    continue
+                if isinstance(seg, _PassthroughSegment):
+                    if isinstance(seg.adapter, AlbumentationsAdapter):
+                        img_hwc = AlbumentationsAdapter.call_nonfused_numpy(seg.transform, img_hwc)
+                    else:
+                        msg = (
+                            f"Passthrough segment adapter {type(seg.adapter).__name__!r} does not "
+                            "support the Albumentations native I/O path. Use tensor input instead."
+                        )
+                        raise RuntimeError(msg)
+                    continue
+                msg = (
+                    f"Segment type {type(seg).__name__!r} is not supported in the "
+                    "Albumentations native I/O path. Use tensor input instead."
+                )
+                raise RuntimeError(msg)
 
         return {"image": img_hwc}
 
