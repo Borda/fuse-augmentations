@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 import torch
-from torch import nn
+from torch import Tensor, nn
 
 from fuse_augmentations._backend import Backend, detect_backends_per_transform
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
@@ -78,7 +78,6 @@ if not _ALBUMENTATIONS_AVAILABLE:
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
-    from torch import Tensor
 
     from fuse_augmentations._resolver import BackendStr, OpStr
 
@@ -498,12 +497,12 @@ class FusedCompose(nn.Module):
         if len(args) == 1 and not kwargs and self.data_keys is None:
             _sef = self._single_exact_fast
             if _sef is not None:
-                image = _sef[0].call_nonfused(_sef[1], args[0])
+                image = _sef[0].call_nonfused(_sef[1], cast(Tensor, args[0]))
                 return self._convert_primary_output(image)
 
             _sffs = self._single_fused_fast_seg
             if _sffs is not None:
-                image = _sffs[0].call_nonfused(_sffs[1], args[0])
+                image = _sffs[0].call_nonfused(_sffs[1], cast(Tensor, args[0]))
                 _bsz = image.shape[0]
                 _e = self._eye_1x3x3_f32
                 self._last_transform_matrix = _e if _bsz == 1 else _e.expand(_bsz, -1, -1).clone()
@@ -542,22 +541,22 @@ class FusedCompose(nn.Module):
             for i, seg in enumerate(self._segments):
                 tag = _tags[i]
                 if tag == 0:  # AlbuFusedAffineSegment
-                    img_hwc = seg.forward_numpy(img_hwc)
-                    self._last_transform_matrix = seg.last_matrix
+                    img_hwc = seg.forward_numpy(img_hwc)  # type: ignore[attr-defined]
+                    self._last_transform_matrix = seg.last_matrix  # type: ignore[attr-defined]
                 elif tag == 1:  # ExactAffineSegment
-                    for tfm in seg.transforms:
-                        img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
+                    for tfm in seg.transforms:  # type: ignore[attr-defined]
+                        img_hwc = tfm(image=img_hwc)["image"]
                 elif tag == 2:  # FusedColorSegment
-                    for tfm in seg._transforms:
-                        img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
+                    for tfm in seg._transforms:  # type: ignore[attr-defined]
+                        img_hwc = tfm(image=img_hwc)["image"]
                 elif tag == 3:  # CropResizeSegment
-                    for tfm in seg.transforms:
-                        img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
+                    for tfm in seg.transforms:  # type: ignore[attr-defined]
+                        img_hwc = tfm(image=img_hwc)["image"]
                 elif tag == 4:  # Passthrough(Albu adapter)
-                    img_hwc = AlbumentationsAdapter.call_nonfused_numpy(seg.transform, img_hwc)
+                    img_hwc = AlbumentationsAdapter.call_nonfused_numpy(seg.transform, img_hwc)  # type: ignore[attr-defined]
                 elif tag == 5:  # Passthrough(non-Albu adapter)
                     msg = (
-                        f"Passthrough segment adapter {type(seg.adapter).__name__!r} does not "
+                        f"Passthrough segment adapter {type(seg.adapter).__name__!r} does not "  # type: ignore[attr-defined]
                         "support the Albumentations native I/O path. Use tensor input instead."
                     )
                     raise RuntimeError(msg)
@@ -716,7 +715,7 @@ class FusedCompose(nn.Module):
                 if aux_targets is not None:
                     image, aux_targets = result
                 else:
-                    image = result
+                    image = cast(Tensor, result)
                 self._last_transform_matrix = seg.last_matrix
                 continue
 
@@ -725,7 +724,7 @@ class FusedCompose(nn.Module):
                 if aux_targets is not None:
                     image, aux_targets = result
                 else:
-                    image = result
+                    image = cast(Tensor, result)
                 self._last_transform_matrix = seg.last_matrix
                 continue
 
@@ -734,7 +733,7 @@ class FusedCompose(nn.Module):
                 if aux_targets is not None:
                     image, aux_targets = result
                 else:
-                    image = result
+                    image = cast(Tensor, result)
                 self._last_transform_matrix = seg.last_matrix
                 continue
 

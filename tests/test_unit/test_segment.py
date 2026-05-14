@@ -668,6 +668,7 @@ class TestProjectiveSegmentBuildSegments:
 
     def test_use_numpy_true_gives_albu_projective(self):
         """use_numpy=True produces AlbuProjectiveSegment."""
+        pytest.importorskip("cv2", reason="cv2 required for AlbuProjectiveSegment")
         from fuse_augmentations.affine._segment import AlbuProjectiveSegment
 
         adapter = _StubAdapter()
@@ -715,6 +716,7 @@ class TestProjectiveSegmentBuildSegments:
 
     def test_albu_projective_segment_raises_on_aux_targets(self):
         """AlbuProjectiveSegment raises RuntimeError when aux_targets is not None."""
+        pytest.importorskip("cv2", reason="cv2 required for AlbuProjectiveSegment")
         from fuse_augmentations.affine._segment import AlbuProjectiveSegment
 
         adapter = _StubAdapter()

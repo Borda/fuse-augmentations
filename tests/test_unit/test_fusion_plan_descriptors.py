@@ -32,7 +32,9 @@ class TestFusionPlanDescriptorsBasic:
 class TestFusionPlanDescriptorsKornia:
     """Tests requiring kornia -- skipped if not installed."""
 
-    kornia = pytest.importorskip("kornia", reason="kornia required")
+    @pytest.fixture(autouse=True)
+    def _require_kornia(self):
+        pytest.importorskip("kornia", reason="kornia required")
 
     def test_single_fused_segment(self):
         import kornia.augmentation as K

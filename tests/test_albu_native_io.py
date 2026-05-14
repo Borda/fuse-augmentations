@@ -14,17 +14,24 @@ from __future__ import annotations
 
 import copy
 
-import albumentations as A
 import numpy as np
+import pytest
 import torch
 
 from fuse_augmentations import Compose
+from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
+
+if _ALBUMENTATIONS_AVAILABLE:
+    import albumentations as A
+
+skip_no_albu = pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="albumentations not installed")
 
 # ---------------------------------------------------------------------------
 # Parity tests — MUST FAIL before fix (TypeError), MUST PASS after
 # ---------------------------------------------------------------------------
 
 
+@skip_no_albu
 def test_fused_compose_albu_accepts_hwc_numpy_dict_uint8():
     """FusedCompose must accept uint8 HWC NumPy dict like A.Compose."""
     img = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
@@ -37,6 +44,7 @@ def test_fused_compose_albu_accepts_hwc_numpy_dict_uint8():
     assert out["image"].shape == img.shape
 
 
+@skip_no_albu
 def test_fused_compose_albu_accepts_float32_input():
     """FusedCompose must accept float32 HWC NumPy dict."""
     img = np.random.rand(64, 64, 3).astype(np.float32)
@@ -52,6 +60,7 @@ def test_fused_compose_albu_accepts_float32_input():
 # ---------------------------------------------------------------------------
 
 
+@skip_no_albu
 def test_fused_compose_albu_tensor_path_unchanged():
     """Existing BCHW tensor input must still return BCHW tensor after the fix."""
     transforms = [A.Rotate(limit=30, p=1.0), A.HorizontalFlip(p=1.0)]
@@ -67,6 +76,7 @@ def test_fused_compose_albu_tensor_path_unchanged():
 # ---------------------------------------------------------------------------
 
 
+@skip_no_albu
 def test_transform_matrix_populated_after_dict_input():
     """pipe.transform_matrix must be (1,3,3) after a dict-input forward pass."""
     img = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
@@ -89,6 +99,7 @@ def test_empty_pipeline_dict_input():
     np.testing.assert_array_equal(out["image"], img)
 
 
+@skip_no_albu
 def test_grayscale_hwc1_dict_input():
     """(H, W, 1) single-channel input must be handled."""
     img = np.random.randint(0, 255, (64, 64, 1), dtype=np.uint8)
@@ -97,6 +108,7 @@ def test_grayscale_hwc1_dict_input():
     assert out["image"].shape == img.shape
 
 
+@skip_no_albu
 def test_fused_plus_passthrough_dict_input():
     """Mixed fused-geometric + passthrough colour op via dict input."""
     img = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)

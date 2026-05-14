@@ -166,6 +166,10 @@ class TestResolveOpComprehensive:
         if not available_backends:
             pytest.skip("No backends installed")
 
+        # shear/translate are kornia-only; rotation90 is kornia or albumentations
+        if "kornia" not in available_backends:
+            pytest.skip("kornia required for full op coverage (shear, translate)")
+
         unresolvable = []
         for op in SUPPORTED_OPS:
             resolved = False

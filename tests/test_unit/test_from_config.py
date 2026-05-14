@@ -131,6 +131,7 @@ class TestFromConfigProbability:
 
     def test_p_zero_never_applied(self):
         """p=0.0 large rotation should produce output identical to input."""
+        pytest.importorskip("kornia")
         from fuse_augmentations import TransformSpec
 
         specs = [TransformSpec(op="rotation", params={"degrees": (-90.0, 90.0)}, p=0.0)]

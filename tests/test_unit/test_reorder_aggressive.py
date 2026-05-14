@@ -143,7 +143,9 @@ class TestReorderAggressiveFunction:
 class TestAggressivePipelineImage:
     """End-to-end: AGGRESSIVE policy produces correct pipeline structure."""
 
-    kornia = pytest.importorskip("kornia")
+    @pytest.fixture(autouse=True)
+    def _require_kornia(self):
+        pytest.importorskip("kornia", reason="kornia required")
 
     def test_aggressive_pipeline_runs_without_error(self):
         import kornia.augmentation as K

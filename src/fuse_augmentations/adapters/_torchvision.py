@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -447,7 +447,7 @@ class TorchVisionAdapter:
         # For B=1, unsqueeze(0) creates a view — no data copy vs torch.stack.
         if B == 1:
             out = transform(image[0])  # type: ignore[operator]
-            return out.unsqueeze(0).to(device=device, dtype=dtype)
+            return cast(torch.Tensor, out.unsqueeze(0).to(device=device, dtype=dtype))
 
         results = []
         for i in range(B):
@@ -807,7 +807,7 @@ def _affine_matrix_np_b1_tv(
     params: dict[str, torch.Tensor],
     cx: float,
     cy: float,
-) -> np.ndarray:
+) -> np.ndarray[Any, np.dtype[np.float64]]:
     """Compose TorchVision-style affine matrix from canonical params (B=1, NumPy only).
 
     Implements the ``T * C * RSS * C^-1`` composition used by TorchVision's
@@ -859,7 +859,7 @@ def build_matrix_numpy_b1_tv(
     params: dict[str, torch.Tensor],
     H: int,  # noqa: N803
     W: int,  # noqa: N803
-) -> np.ndarray:
+) -> np.ndarray[Any, np.dtype[np.float64]]:
     """Return (3, 3) float64 pixel-space matrix for B=1, bypassing torch tensor creation.
 
     Drop-in replacement for
@@ -915,7 +915,7 @@ def sample_and_build_matrix_numpy_b1_tv(
     input_shape: tuple[int, int, int, int],
     H: int,  # noqa: N803
     W: int,  # noqa: N803
-) -> np.ndarray | None:
+) -> np.ndarray[Any, np.dtype[np.float64]] | None:
     """Sample params and build ``(3, 3)`` float64 matrix for B=1, entirely in numpy.
 
     Fuses :func:`TorchVisionAdapter.sample_params` + :func:`build_matrix_numpy_b1_tv`

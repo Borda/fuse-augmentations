@@ -168,6 +168,7 @@ except ImportError:
     _INTERP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _COLOR_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _CROP_RESIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _POINTWISE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _ALL_REGISTRY_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
 
 

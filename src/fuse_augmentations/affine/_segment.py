@@ -315,7 +315,7 @@ class FusedAffineSegment(nn.Module):
                 )
 
                 self._np_matrix_builder = build_matrix_numpy_b1_tv
-                self._np_fused_builder = sample_and_build_matrix_numpy_b1_tv
+                self._np_fused_builder = sample_and_build_matrix_numpy_b1_tv  # type: ignore[assignment]
             except ImportError:
                 pass
         # Pre-allocated (1, 3, 3) float32 buffer for cv2 path _last_matrix writes.
@@ -514,9 +514,9 @@ class FusedAffineSegment(nn.Module):
             same_on_batch = _shares_randomness_across_batch(self.adapter, tfm)
             if same_on_batch:
                 active_scalar = torch.rand((), device=device) < prob
-                active = active_scalar.repeat(bsz)
+                active = active_scalar.repeat(bsz)  # type: ignore[assignment]
             else:
-                active = torch.rand(bsz, device=device) < prob
+                active = torch.rand(bsz, device=device) < prob  # type: ignore[assignment]
 
             params = self.adapter.sample_params(tfm, input_shape, device)
             mtx_i = self.adapter.build_matrix(tfm, params, height, width)
@@ -528,7 +528,7 @@ class FusedAffineSegment(nn.Module):
             # Ensure adapter output is on the same device and dtype as the image
             mtx_i = mtx_i.to(device=device, dtype=dtype)
 
-            mtx_i = torch.where(active[:, None, None], mtx_i, eye_batch)
+            mtx_i = torch.where(active[:, None, None], mtx_i, eye_batch)  # type: ignore[index]
             acc = matmul3x3(mtx_i, acc)
 
         self._last_matrix = acc.detach().clone()
@@ -744,7 +744,7 @@ class AlbuFusedAffineSegment(nn.Module):
             return [AlbuFusedAffineSegment._TAG_ADAPTER] * len(transforms)
 
         try:
-            from albumentations import Rotate as _AlbuRotate  # type: ignore[import-untyped]
+            from albumentations import Rotate as _AlbuRotate
 
             _rotate_type: type | None = _AlbuRotate
         except ImportError:
@@ -921,7 +921,7 @@ class AlbuFusedAffineSegment(nn.Module):
         # callers should use the BCHW tensor path which reconstructs the matrix.
         if len(self.transforms) == 1:
             self._last_matrix = self._identity_1x3x3
-            return self.transforms[0](image=img_hwc)["image"]  # type: ignore[operator]
+            return self.transforms[0](image=img_hwc)["image"]  # type: ignore[operator, no-any-return]
 
         # Draw per-transform active masks for bsz=1 (mirrors forward() logic).
         # For p=1.0 transforms, skip the RNG draw and use a constant True.
