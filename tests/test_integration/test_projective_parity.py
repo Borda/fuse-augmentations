@@ -31,65 +31,65 @@ class TestKorniaProjectiveParity:
         pytest.importorskip("kornia", reason="kornia required")
 
     def test_single_perspective_shape(self):
-        """Single K.RandomPerspective produces output with same shape."""
-        import kornia.augmentation as K
+        """Single kornia_aug.RandomPerspective produces output with same shape."""
+        import kornia.augmentation as kornia_aug
 
         from fuse_augmentations import Compose
 
-        t = K.RandomPerspective(distortion_scale=0.5, p=1.0)
-        pipe = Compose([t])
-        img = torch.rand(2, 3, 32, 32)
-        out = pipe(img)
-        assert out.shape == img.shape
+        transform = kornia_aug.RandomPerspective(distortion_scale=0.5, p=1.0)
+        pipe = Compose([transform])
+        image = torch.rand(2, 3, 32, 32)
+        image_output = pipe(image)
+        assert image_output.shape == image.shape
 
     def test_single_perspective_fusion_plan(self):
         """Compose([K.RandomPerspective(p=1)]).fusion_plan shows projective(...)."""
-        import kornia.augmentation as K
+        import kornia.augmentation as kornia_aug
 
         from fuse_augmentations import Compose
 
-        t = K.RandomPerspective(distortion_scale=0.5, p=1.0)
-        pipe = Compose([t])
+        transform = kornia_aug.RandomPerspective(distortion_scale=0.5, p=1.0)
+        pipe = Compose([transform])
         assert "projective" in pipe.fusion_plan
         assert "RandomPerspective" in pipe.fusion_plan
 
     def test_chain_n_warps_saved(self):
         """Two K.RandomPerspective fused into one segment -> n_warps_saved == 1."""
-        import kornia.augmentation as K
+        import kornia.augmentation as kornia_aug
 
         from fuse_augmentations import Compose
 
-        t = K.RandomPerspective(distortion_scale=0.5, p=1.0)
-        pipe = Compose([t, t])
+        transform = kornia_aug.RandomPerspective(distortion_scale=0.5, p=1.0)
+        pipe = Compose([transform, transform])
         assert pipe.n_warps_saved == 1
 
     def test_single_perspective_records_transform_matrix(self):
         """Single fused RandomPerspective records a finite 3x3 transform matrix."""
-        import kornia.augmentation as K
+        import kornia.augmentation as kornia_aug
 
         from fuse_augmentations import Compose
 
-        t = K.RandomPerspective(distortion_scale=0.4, p=1.0)
-        img = torch.rand(1, 3, 32, 32)
+        transform = kornia_aug.RandomPerspective(distortion_scale=0.4, p=1.0)
+        image = torch.rand(1, 3, 32, 32)
 
         # Fused path -- same transform, uses ProjectiveSegment
-        pipe = Compose([t])
-        fused_out = pipe(img)
+        pipe = Compose([transform])
+        image_output = pipe(image)
 
-        assert fused_out.shape == img.shape
+        assert image_output.shape == image.shape
         assert pipe.transform_matrix is not None
         assert pipe.transform_matrix.shape == (1, 3, 3)
         assert torch.isfinite(pipe.transform_matrix).all()
 
     def test_mixed_rotate_then_perspective_gives_two_segments(self):
         """[Rotation, RandomPerspective] -> fusion_plan has fused(...) -> projective(...)."""
-        import kornia.augmentation as K
+        import kornia.augmentation as kornia_aug
 
         from fuse_augmentations import Compose
 
-        rot = K.RandomRotation(degrees=30, p=1.0)
-        persp = K.RandomPerspective(distortion_scale=0.5, p=1.0)
-        pipe = Compose([rot, persp])
+        transform_rotation = kornia_aug.RandomRotation(degrees=30, p=1.0)
+        transform_perspective = kornia_aug.RandomPerspective(distortion_scale=0.5, p=1.0)
+        pipe = Compose([transform_rotation, transform_perspective])
         plan = pipe.fusion_plan
         assert "fused" in plan
         assert "projective" in plan
@@ -115,20 +115,20 @@ class TestKorniaProjectiveParity:
         # Known 4-point correspondence (slight projective distortion)
         src = torch.tensor([[[0.0, 0.0], [32.0, 0.0], [32.0, 32.0], [0.0, 32.0]]])
         dst = torch.tensor([[[2.0, 1.0], [30.0, 3.0], [31.0, 29.0], [1.0, 28.0]]])
-        H_fwd = perspective_from_points(src, dst)  # (1, 3, 3) src→dst homography
+        mtx_forward = perspective_from_points(src, dst)  # (1, 3, 3) src→dst homography
 
-        img = torch.rand(1, 3, 32, 32)
+        image = torch.rand(1, 3, 32, 32)
 
         # Reference: kornia native warp_perspective (forward src→dst homography)
-        native_out = kornia.geometry.warp_perspective(img, H_fwd, (32, 32), align_corners=True)
+        native_out = kornia.geometry.warp_perspective(image, mtx_forward, (32, 32), align_corners=True)
 
         # Fused path: perspective_grid + F.grid_sample (ProjectiveSegment internals)
-        H_inv = inv3x3(H_fwd)
-        H_norm = normalize_matrix(H_inv, 32, 32)
-        grid = perspective_grid(H_norm, 32, 32)
-        fused_out = F.grid_sample(img, grid, mode="bilinear", padding_mode="zeros", align_corners=True)
+        mtx_inverse = inv3x3(mtx_forward)
+        mtx_normalized = normalize_matrix(mtx_inverse, 32, 32)
+        grid = perspective_grid(mtx_normalized, 32, 32)
+        image_output_fused = F.grid_sample(image, grid, mode="bilinear", padding_mode="zeros", align_corners=True)
 
-        assert torch.allclose(fused_out, native_out, atol=1e-4), (
+        assert torch.allclose(image_output_fused, native_out, atol=1e-4), (
             "perspective_grid + F.grid_sample must match kornia.geometry.warp_perspective for the same homography"
         )
 
@@ -151,11 +151,11 @@ class TestTorchVisionProjectiveParity:
 
         from fuse_augmentations import Compose
 
-        t = T.RandomPerspective(distortion_scale=0.5, p=1.0)
-        pipe = Compose([t])
-        img = torch.rand(2, 3, 32, 32)
-        out = pipe(img)
-        assert out.shape == img.shape
+        transform = T.RandomPerspective(distortion_scale=0.5, p=1.0)
+        pipe = Compose([transform])
+        image = torch.rand(2, 3, 32, 32)
+        image_output = pipe(image)
+        assert image_output.shape == image.shape
 
     def test_single_perspective_fusion_plan(self):
         """Compose([T.RandomPerspective]).fusion_plan shows projective(...)."""
@@ -163,8 +163,8 @@ class TestTorchVisionProjectiveParity:
 
         from fuse_augmentations import Compose
 
-        t = T.RandomPerspective(distortion_scale=0.5, p=1.0)
-        pipe = Compose([t])
+        transform = T.RandomPerspective(distortion_scale=0.5, p=1.0)
+        pipe = Compose([transform])
         assert "projective" in pipe.fusion_plan
 
     def test_chain_n_warps_saved(self):
@@ -173,8 +173,8 @@ class TestTorchVisionProjectiveParity:
 
         from fuse_augmentations import Compose
 
-        t = T.RandomPerspective(distortion_scale=0.5, p=1.0)
-        pipe = Compose([t, t])
+        transform = T.RandomPerspective(distortion_scale=0.5, p=1.0)
+        pipe = Compose([transform, transform])
         assert pipe.n_warps_saved == 1
 
     def test_v2_perspective_shape(self):
@@ -183,11 +183,11 @@ class TestTorchVisionProjectiveParity:
 
         from fuse_augmentations import Compose
 
-        t = T.RandomPerspective(distortion_scale=0.5, p=1.0)
-        pipe = Compose([t])
-        img = torch.rand(2, 3, 32, 32)
-        out = pipe(img)
-        assert out.shape == img.shape
+        transform = T.RandomPerspective(distortion_scale=0.5, p=1.0)
+        pipe = Compose([transform])
+        image = torch.rand(2, 3, 32, 32)
+        image_output = pipe(image)
+        assert image_output.shape == image.shape
 
 
 # ---------------------------------------------------------------------------
@@ -196,52 +196,52 @@ class TestTorchVisionProjectiveParity:
 
 
 class TestAlbumentationsProjectiveParity:
-    """Fused AlbuProjectiveSegment vs native A.Perspective."""
+    """Fused AlbuProjectiveSegment vs native albu.Perspective."""
 
     @pytest.fixture(autouse=True)
     def require_albumentations(self):
         pytest.importorskip("albumentations", reason="albumentations required")
 
     def test_single_perspective_shape(self):
-        """Single A.Perspective produces output with same shape."""
-        import albumentations as A
+        """Single albu.Perspective produces output with same shape."""
+        import albumentations as albu
 
         from fuse_augmentations import Compose
 
-        t = A.Perspective(p=1.0)
-        pipe = Compose([t])
-        img = torch.rand(2, 3, 32, 32)
-        out = pipe(img)
-        assert out.shape == img.shape
+        transform = albu.Perspective(p=1.0)
+        pipe = Compose([transform])
+        image = torch.rand(2, 3, 32, 32)
+        image_output = pipe(image)
+        assert image_output.shape == image.shape
 
     def test_single_channel_perspective_shape(self):
-        """Single-channel A.Perspective preserves the grayscale channel axis."""
-        import albumentations as A
+        """Single-channel albu.Perspective preserves the grayscale channel axis."""
+        import albumentations as albu
 
         from fuse_augmentations import Compose
 
-        t = A.Perspective(p=1.0)
-        pipe = Compose([t])
-        img = torch.rand(1, 1, 8, 8)
-        out = pipe(img)
-        assert out.shape == img.shape
+        transform = albu.Perspective(p=1.0)
+        pipe = Compose([transform])
+        image = torch.rand(1, 1, 8, 8)
+        image_output = pipe(image)
+        assert image_output.shape == image.shape
 
     def test_single_perspective_fusion_plan(self):
-        """Compose([A.Perspective]).fusion_plan shows projective(...)."""
-        import albumentations as A
+        """Compose([albu.Perspective]).fusion_plan shows projective(...)."""
+        import albumentations as albu
 
         from fuse_augmentations import Compose
 
-        t = A.Perspective(p=1.0)
-        pipe = Compose([t])
+        transform = albu.Perspective(p=1.0)
+        pipe = Compose([transform])
         assert "projective" in pipe.fusion_plan
 
     def test_chain_n_warps_saved(self):
-        """Two A.Perspective fused -> n_warps_saved == 1."""
-        import albumentations as A
+        """Two albu.Perspective fused -> n_warps_saved == 1."""
+        import albumentations as albu
 
         from fuse_augmentations import Compose
 
-        t = A.Perspective(p=1.0)
-        pipe = Compose([t, t])
+        transform = albu.Perspective(p=1.0)
+        pipe = Compose([transform, transform])
         assert pipe.n_warps_saved == 1

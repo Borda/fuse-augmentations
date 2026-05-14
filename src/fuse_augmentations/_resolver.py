@@ -1,13 +1,13 @@
 """Backend resolver for canonical operation names.
 
-Maps ``(op: str, backend: str) -> type`` so that
+Maps ``(operation: str, backend: str) -> type`` so that
 :meth:`FusedCompose.from_config
 <fuse_augmentations._compose.FusedCompose.from_config>` can construct
 backend-specific transforms from a declarative :class:`TransformSpec`.
 
 Each backend adapter exposes wrapper classes (e.g. Kornia's
 ``_RandomRotation``, TorchVision's ``RandomRotation``). This module
-builds a reverse lookup from canonical op names
+builds a reverse lookup from canonical operation names
 (``"rotation"``, ``"hflip"``, etc.) to those wrapper classes,
 importing each backend lazily to avoid hard dependencies.
 
@@ -42,7 +42,7 @@ SUPPORTED_OPS: frozenset[str] = frozenset({
 })
 
 # Per-backend op coverage matrix.
-# op          | kornia | torchvision | albumentations
+# op               | kornia | torchvision | albumentations
 # ------------|--------|-------------|----------------
 # rotation    |   v    |      v      |       v
 # affine      |   v    |      v      |       v
@@ -60,7 +60,7 @@ SUPPORTED_BACKENDS: frozenset[str] = frozenset({
     "albumentations",
 })
 
-#: String literal type for canonical op names accepted by :func:`translate_params`
+#: String literal type for canonical operation names accepted by :func:`translate_params`
 #: and :func:`resolve_op`.
 OpStr = Literal[
     "rotation",
@@ -163,11 +163,11 @@ _BACKEND_REGISTRY_BUILDERS: dict[str, Callable[[], dict[str, type]]] = {
 }
 
 
-def translate_params(op: OpStr, backend: BackendStr, params: dict[str, object]) -> dict[str, object]:
+def translate_params(op_name: OpStr, backend: BackendStr, params: dict[str, object]) -> dict[str, object]:
     """Translate canonical ``TransformSpec.params`` into backend ctor kwargs.
 
     Args:
-        op: Canonical operation name.
+        op_name: Canonical operation name.
         backend: Target backend name.
         params: Canonical transform params.
 
@@ -175,7 +175,7 @@ def translate_params(op: OpStr, backend: BackendStr, params: dict[str, object]) 
         Backend-specific constructor kwargs.
 
     Raises:
-        ValueError: If ``op`` or ``backend`` is unknown.
+        ValueError: If ``operation`` or ``backend`` is unknown.
 
     Notes:
         Canonical-to-backend translations applied automatically:
@@ -193,33 +193,33 @@ def translate_params(op: OpStr, backend: BackendStr, params: dict[str, object]) 
     if backend not in SUPPORTED_BACKENDS:
         msg = f"unknown backend {backend!r}; supported: {sorted(SUPPORTED_BACKENDS)}"
         raise ValueError(msg)
-    if op not in SUPPORTED_OPS:
-        msg = f"unknown op {op!r}; supported: {sorted(SUPPORTED_OPS)}"
+    if op_name not in SUPPORTED_OPS:
+        msg = f"unknown op {op_name!r}; supported: {sorted(SUPPORTED_OPS)}"
         raise ValueError(msg)
 
     kwargs = dict(params)
 
-    def _move(src: str, dst: str) -> None:
-        if src in kwargs:
-            value = kwargs.pop(src)
-            kwargs.setdefault(dst, value)
+    def _move_param(source_key: str, target_key: str) -> None:
+        if source_key in kwargs:
+            value = kwargs.pop(source_key)
+            kwargs.setdefault(target_key, value)
 
-    if op in {"rotation", "affine"}:
+    if op_name in {"rotation", "affine"}:
         if backend == "albumentations":
-            _move("rotation", "rotate" if op == "affine" else "limit")
-            _move("degrees", "rotate" if op == "affine" else "limit")
+            _move_param("rotation", "rotate" if op_name == "affine" else "limit")
+            _move_param("degrees", "rotate" if op_name == "affine" else "limit")
         else:
-            _move("rotation", "degrees")
+            _move_param("rotation", "degrees")
 
-    if op == "scale":
-        _move("factor", "scale")
+    if op_name == "scale":
+        _move_param("factor", "scale")
         if backend in {"torchvision", "kornia"}:
             kwargs.setdefault("degrees", 0.0)
 
-    if op == "shear" and backend == "kornia":
-        _move("degrees", "shear")
+    if op_name == "shear" and backend == "kornia":
+        _move_param("degrees", "shear")
 
-    if op == "translate" and backend == "kornia":
+    if op_name == "translate" and backend == "kornia":
         if "pixels" in kwargs:
             pixels = kwargs.pop("pixels")
             kwargs.setdefault("translate_x", pixels)
@@ -229,18 +229,18 @@ def translate_params(op: OpStr, backend: BackendStr, params: dict[str, object]) 
             kwargs.setdefault("translate_x", translate)
             kwargs.setdefault("translate_y", translate)
 
-    if op == "rotation90" and backend == "kornia":
+    if op_name == "rotation90" and backend == "kornia":
         # Kornia requires explicit bounds; this default matches full quarter-turn sampling.
         kwargs.setdefault("times", (0, 3))
 
     return kwargs
 
 
-def resolve_op(op: OpStr, backend: BackendStr) -> type:
+def resolve_op(operation: OpStr, backend: BackendStr) -> type:
     """Resolve a canonical operation name to its backend transform class.
 
     Args:
-        op: Canonical operation name (e.g. ``"rotation"``, ``"hflip"``).
+        operation: Canonical operation name (e.g. ``"rotation"``, ``"hflip"``).
             Must be one of :data:`SUPPORTED_OPS`.
         backend: Backend name (e.g. ``"kornia"``, ``"torchvision"``,
             ``"albumentations"``). Must be one of :data:`SUPPORTED_BACKENDS`.
@@ -249,7 +249,7 @@ def resolve_op(op: OpStr, backend: BackendStr) -> type:
         The backend-specific transform class for the given operation.
 
     Raises:
-        ValueError: If ``op`` is not in :data:`SUPPORTED_OPS` or ``backend``
+        ValueError: If ``op_name`` is not in :data:`SUPPORTED_OPS` or ``backend``
             is not in :data:`SUPPORTED_BACKENDS`, or the backend does not
             support the requested operation.
 
@@ -261,8 +261,8 @@ def resolve_op(op: OpStr, backend: BackendStr) -> type:
     if backend not in SUPPORTED_BACKENDS:
         msg = f"unknown backend {backend!r}; supported: {sorted(SUPPORTED_BACKENDS)}"
         raise ValueError(msg)
-    if op not in SUPPORTED_OPS:
-        msg = f"unknown op {op!r}; supported: {sorted(SUPPORTED_OPS)}"
+    if operation not in SUPPORTED_OPS:
+        msg = f"unknown op {operation!r}; supported: {sorted(SUPPORTED_OPS)}"
         raise ValueError(msg)
 
     builder = _BACKEND_REGISTRY_BUILDERS[backend]
@@ -274,7 +274,7 @@ def resolve_op(op: OpStr, backend: BackendStr) -> type:
             f"not installed. Install it with e.g. `pip install fuse-augmentations[{backend}]`."
         )
         raise ValueError(msg) from exc
-    if op not in registry:
-        msg = f"backend {backend!r} does not support op {op!r}; supported ops for {backend}: {sorted(registry)}"
+    if operation not in registry:
+        msg = f"backend {backend!r} does not support op {operation!r}; supported ops for {backend}: {sorted(registry)}"
         raise ValueError(msg)
-    return registry[op]
+    return registry[operation]

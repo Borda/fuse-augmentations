@@ -70,15 +70,15 @@ class TestBackendConverterExamples:
         assert isinstance(_IdentityConverter(), BackendConverter)
 
     def test_custom_converter_round_trips_tensor(self) -> None:
-        """A custom identity converter leaves the tensor unchanged."""
-        x = torch.rand(1, 3, 8, 8)
-        result = _IdentityConverter().convert(x)
-        assert result is x
+        """Albu custom identity converter leaves the tensor unchanged."""
+        image = torch.rand(1, 3, 8, 8)
+        result = _IdentityConverter().convert(image)
+        assert result is image
 
     def test_fused_compose_torch_backend_uses_identity_path(self) -> None:
         """FusedCompose with output_backend='torch' keeps the native tensor output."""
         pipe = FusedCompose([], output_backend="torch")
-        x = torch.rand(1, 3, 8, 8)
-        result = pipe(x)
+        image = torch.rand(1, 3, 8, 8)
+        result = pipe(image)
         assert isinstance(result, torch.Tensor)
-        assert result.shape == x.shape
+        assert result.shape == image.shape

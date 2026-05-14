@@ -235,3 +235,5 @@ experiments/results/
 .notes/
 .developments/
 .cache/gh/
+
+.output*

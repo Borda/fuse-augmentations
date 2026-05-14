@@ -1,15 +1,15 @@
 """Property-based correctness tests for adapter build_color_matrix implementations.
 
-Verifies that ``build_color_matrix`` returns numerically correct ``(B, 4, 4)``
+Verifies that ``build_color_matrix`` returns numerically correct ``(batch_size, 4, 4)``
 homogeneous color-space affine matrices by comparing matrix-based application
 against the native backend transform for each supported backend.
 
 The core test pattern for each transform:
 1. Sample a random image in a safe range (avoiding clamp boundaries).
 2. Get ``params = adapter.sample_params(transform, shape, device)``.
-3. Get ``matrix = adapter.build_color_matrix(transform, params)`` -- ``(B, 4, 4)``.
-4. Apply the matrix manually: reshape pixels to ``(B, H*W, 4)`` homogeneous
-   vectors, ``bmm`` with matrix, reshape back.
+3. Get ``matrix = adapter.build_color_matrix(transform, params)`` -- ``(batch_size, 4, 4)``.
+4. Apply the matrix manually: reshape pixels to ``(batch_size, height*width, 4)`` homogeneous
+   vectors, ``bmm`` with the matrix, reshape back.
 5. Apply the transform natively via ``call_nonfused`` with the same params.
 6. Assert ``torch.testing.assert_close`` between the two results.
 
@@ -28,26 +28,26 @@ from hypothesis.strategies import integers
 
 
 def _apply_color_matrix(matrix: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
-    """Apply a (B, 4, 4) homogeneous color matrix to a (B, C, H, W) image.
+    """Apply a (batch_size, 4, 4) homogeneous color matrix to a (batch_size, num_channels, height, width) image.
 
     Args:
-        matrix: ``(B, 4, 4)`` homogeneous color-space affine matrix.
-        image: ``(B, C, H, W)`` float32 image tensor with C=3.
+        matrix: ``(batch_size, 4, 4)`` homogeneous color-space affine matrix.
+        image: ``(batch_size, num_channels, height, width)`` float32 image tensor with num_channels=3.
 
     Returns:
-        ``(B, C, H, W)`` transformed image (no clamping).
+        ``(batch_size, num_channels, height, width)`` transformed image (no clamping).
 
     """
     B, C, H, W = image.shape
     assert C == 3, f"Expected 3 channels, got {C}"
 
-    # Reshape to (B, 3, H*W) then add homogeneous coordinate
-    pixels = image.reshape(B, 3, H * W)  # (B, 3, N)
+    # Reshape to (batch_size, 3, height*width) then add homogeneous coordinate
+    pixels = image.reshape(B, 3, H * W)  # (batch_size, 3, N)
     ones = torch.ones(B, 1, H * W, device=image.device, dtype=image.dtype)
-    pixels_h = torch.cat([pixels, ones], dim=1)  # (B, 4, N)
+    pixels_h = torch.cat([pixels, ones], dim=1)  # (batch_size, 4, N)
 
     # Apply: result = matrix @ pixels_h
-    result = torch.bmm(matrix, pixels_h)  # (B, 4, N)
+    result = torch.bmm(matrix, pixels_h)  # (batch_size, 4, N)
 
     # Take first 3 rows, reshape back
     return result[:, :3, :].reshape(B, 3, H, W)
@@ -64,36 +64,36 @@ class TestKorniaColorMatrixCorrectness:
     @pytest.fixture(autouse=True)
     def _import_kornia(self):
         pytest.importorskip("kornia")
-        import kornia.augmentation as K
+        import kornia.augmentation as korniak_aug
 
         from fuse_augmentations.adapters._kornia import KorniaAdapter
 
-        self.K = K
+        self.kornia_aug = korniak_aug
         self.adapter = KorniaAdapter()
 
     def test_random_brightness_shape(self):
-        t = self.K.RandomBrightness(brightness=(0.5, 1.5), p=1.0)
+        t = self.kornia_aug.RandomBrightness(brightness=(0.5, 1.5), p=1.0)
         shape = (2, 3, 8, 8)
         params = self.adapter.sample_params(t, shape, torch.device("cpu"))
         matrix = self.adapter.build_color_matrix(t, params)
         assert matrix.shape == (2, 4, 4)
 
     def test_random_contrast_shape(self):
-        t = self.K.RandomContrast(contrast=(0.5, 1.5), p=1.0)
+        t = self.kornia_aug.RandomContrast(contrast=(0.5, 1.5), p=1.0)
         shape = (2, 3, 8, 8)
         params = self.adapter.sample_params(t, shape, torch.device("cpu"))
         matrix = self.adapter.build_color_matrix(t, params)
         assert matrix.shape == (2, 4, 4)
 
     def test_color_jitter_shape(self):
-        t = self.K.ColorJitter(brightness=(0.5, 1.5), contrast=(0.5, 1.5), p=1.0)
+        t = self.kornia_aug.ColorJitter(brightness=(0.5, 1.5), contrast=(0.5, 1.5), p=1.0)
         shape = (2, 3, 8, 8)
         params = self.adapter.sample_params(t, shape, torch.device("cpu"))
         matrix = self.adapter.build_color_matrix(t, params)
         assert matrix.shape == (2, 4, 4)
 
     def test_last_row_homogeneous(self):
-        t = self.K.RandomBrightness(brightness=(0.5, 1.5), p=1.0)
+        t = self.kornia_aug.RandomBrightness(brightness=(0.5, 1.5), p=1.0)
         shape = (3, 3, 8, 8)
         params = self.adapter.sample_params(t, shape, torch.device("cpu"))
         matrix = self.adapter.build_color_matrix(t, params)
@@ -102,7 +102,7 @@ class TestKorniaColorMatrixCorrectness:
             torch.testing.assert_close(matrix[b, 3, :], expected)
 
     def test_contrast_last_row_homogeneous(self):
-        t = self.K.RandomContrast(contrast=(0.5, 1.5), p=1.0)
+        t = self.kornia_aug.RandomContrast(contrast=(0.5, 1.5), p=1.0)
         shape = (3, 3, 8, 8)
         params = self.adapter.sample_params(t, shape, torch.device("cpu"))
         matrix = self.adapter.build_color_matrix(t, params)
@@ -115,7 +115,7 @@ class TestKorniaColorMatrixCorrectness:
     def test_random_brightness_parity(self, seed):
         """Matrix-applied brightness matches Kornia's native output (no clamping)."""
         torch.manual_seed(seed)
-        t = self.K.RandomBrightness(brightness=(0.8, 1.2), p=1.0, clip_output=False)
+        t = self.kornia_aug.RandomBrightness(brightness=(0.8, 1.2), p=1.0, clip_output=False)
         B, C, H, W = 2, 3, 8, 8
         image = torch.rand(B, C, H, W) * 0.6 + 0.2  # [0.2, 0.8] safe range
 
@@ -136,7 +136,7 @@ class TestKorniaColorMatrixCorrectness:
     def test_random_contrast_parity(self, seed):
         """Matrix-applied contrast matches Kornia's native output (no clamping)."""
         torch.manual_seed(seed)
-        t = self.K.RandomContrast(contrast=(0.8, 1.2), p=1.0, clip_output=False)
+        t = self.kornia_aug.RandomContrast(contrast=(0.8, 1.2), p=1.0, clip_output=False)
         B, C, H, W = 2, 3, 8, 8
         image = torch.rand(B, C, H, W) * 0.6 + 0.2
 
@@ -154,7 +154,7 @@ class TestKorniaColorMatrixCorrectness:
 
     def test_brightness_identity_case(self):
         """When brightness_factor=1.0, matrix should be identity."""
-        t = self.K.RandomBrightness(brightness=(1.0, 1.0), p=1.0)
+        t = self.kornia_aug.RandomBrightness(brightness=(1.0, 1.0), p=1.0)
         shape = (2, 3, 8, 8)
         params = self.adapter.sample_params(t, shape, torch.device("cpu"))
         matrix = self.adapter.build_color_matrix(t, params)
@@ -164,7 +164,7 @@ class TestKorniaColorMatrixCorrectness:
 
     def test_contrast_identity_case(self):
         """When contrast_factor=1.0, matrix should be identity."""
-        t = self.K.RandomContrast(contrast=(1.0, 1.0), p=1.0)
+        t = self.kornia_aug.RandomContrast(contrast=(1.0, 1.0), p=1.0)
         shape = (2, 3, 8, 8)
         params = self.adapter.sample_params(t, shape, torch.device("cpu"))
         matrix = self.adapter.build_color_matrix(t, params)
@@ -175,19 +175,19 @@ class TestKorniaColorMatrixCorrectness:
     def test_category_random_brightness(self):
         from fuse_augmentations._types import TransformCategory
 
-        t = self.K.RandomBrightness(brightness=(0.5, 1.5), p=1.0)
+        t = self.kornia_aug.RandomBrightness(brightness=(0.5, 1.5), p=1.0)
         assert self.adapter.category(t) == TransformCategory.POINTWISE_LINEAR
 
     def test_category_random_contrast(self):
         from fuse_augmentations._types import TransformCategory
 
-        t = self.K.RandomContrast(contrast=(0.5, 1.5), p=1.0)
+        t = self.kornia_aug.RandomContrast(contrast=(0.5, 1.5), p=1.0)
         assert self.adapter.category(t) == TransformCategory.POINTWISE_LINEAR
 
     def test_category_color_jitter(self):
         from fuse_augmentations._types import TransformCategory
 
-        t = self.K.ColorJitter(brightness=(0.5, 1.5), p=1.0)
+        t = self.kornia_aug.ColorJitter(brightness=(0.5, 1.5), p=1.0)
         assert self.adapter.category(t) == TransformCategory.POINTWISE_LINEAR
 
 

@@ -14,23 +14,23 @@ from fuse_augmentations.affine._segment import (
 
 
 class _StubTransform:
-    """A stub geometric transform with a p attribute and a matrix factory."""
+    """Albu stub geometric transform with a prob attribute and a matrix factory."""
 
-    def __init__(self, matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_INTERP):
-        self.p = p
+    def __init__(self, matrix_fn, prob=1.0, category=TransformCategory.GEOMETRIC_INTERP):
+        self.prob = prob
         self.matrix_fn = matrix_fn
         self._category = category
 
 
 class _BarrierTransform:
-    """A stub non-geometric transform (SPATIAL_KERNEL)."""
+    """Albu stub non-geometric transform (SPATIAL_KERNEL)."""
 
     def __init__(self):
         self._category = TransformCategory.SPATIAL_KERNEL
 
 
 class _PointwiseTransform:
-    """A stub pointwise transform."""
+    """Albu stub pointwise transform."""
 
     def __init__(self):
         self._category = TransformCategory.POINTWISE
@@ -43,14 +43,14 @@ class _StubAdapter:
         return getattr(transform, "_category", TransformCategory.SPATIAL_KERNEL)
 
     def sample_params(self, transform, input_shape, device):
-        bsz = input_shape[0]
-        return {"_batch_size": torch.tensor([bsz])}
+        batch_size = input_shape[0]
+        return {"_batch_size": torch.tensor([batch_size])}
 
     def build_matrix(self, transform, params, height, width):
-        bsz = int(params["_batch_size"].item())
+        batch_size = int(params["_batch_size"].item())
         if hasattr(transform, "matrix_fn"):
-            return transform.matrix_fn(bsz, height, width)
-        return torch.eye(3).unsqueeze(0).expand(bsz, -1, -1)
+            return transform.matrix_fn(batch_size, height, width)
+        return torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1)
 
     def call_nonfused(self, transform, image, **kwargs):
         return image
@@ -59,8 +59,8 @@ class _StubAdapter:
         return [3]
 
 
-def _identity_matrix_fn(B, H, W):
-    return torch.eye(3).unsqueeze(0).expand(B, -1, -1)
+def _identity_matrix_fn(batch_size: int, height: int, width: int) -> torch.Tensor:
+    return torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1)
 
 
 class TestPointwiseReorder:
@@ -88,18 +88,18 @@ class TestPointwiseReorder:
     def test_no_pointwise_unchanged(self):
         """All-geometric list is returned unchanged."""
         adapter = _StubAdapter()
-        t1 = _StubTransform(_identity_matrix_fn)
-        t2 = _StubTransform(_identity_matrix_fn)
-        result = reorder_pointwise([t1, t2], adapter)
-        assert result == [t1, t2]
+        transform1 = _StubTransform(_identity_matrix_fn)
+        transform2 = _StubTransform(_identity_matrix_fn)
+        result = reorder_pointwise([transform1, transform2], adapter)
+        assert result == [transform1, transform2]
 
     def test_all_pointwise_unchanged(self):
         """All-pointwise list stays in original order."""
         adapter = _StubAdapter()
-        p1 = _PointwiseTransform()
-        p2 = _PointwiseTransform()
-        result = reorder_pointwise([p1, p2], adapter)
-        assert result == [p1, p2]
+        pw_transform1 = _PointwiseTransform()
+        pw_transform2 = _PointwiseTransform()
+        result = reorder_pointwise([pw_transform1, pw_transform2], adapter)
+        assert result == [pw_transform1, pw_transform2]
 
     def test_empty_list(self):
         """Empty list returns empty."""
@@ -137,23 +137,23 @@ class TestBarrierSplits:
         """Multiple barriers each create independent stretches."""
         adapter = _StubAdapter()
         geo1 = _StubTransform(_identity_matrix_fn)
-        pw1 = _PointwiseTransform()
+        pw_transform1 = _PointwiseTransform()
         barrier1 = _BarrierTransform()
         geo2 = _StubTransform(_identity_matrix_fn)
-        pw2 = _PointwiseTransform()
+        pw_transform2 = _PointwiseTransform()
         barrier2 = _BarrierTransform()
         geo3 = _StubTransform(_identity_matrix_fn)
 
-        result = reorder_pointwise([geo1, pw1, barrier1, geo2, pw2, barrier2, geo3], adapter)
+        result = reorder_pointwise([geo1, pw_transform1, barrier1, geo2, pw_transform2, barrier2, geo3], adapter)
 
-        # First stretch: [geo1, pw1] -> [geo1, pw1] (geo first, then pw)
+        # First stretch: [geo1, pw_transform1] -> [geo1, pw_transform1] (geo first, then pw)
         assert result[0] is geo1
-        assert result[1] is pw1
+        assert result[1] is pw_transform1
         # Barrier 1
         assert result[2] is barrier1
-        # Second stretch: [geo2, pw2] -> [geo2, pw2]
+        # Second stretch: [geo2, pw_transform2] -> [geo2, pw_transform2]
         assert result[3] is geo2
-        assert result[4] is pw2
+        assert result[4] is pw_transform2
         # Barrier 2
         assert result[5] is barrier2
         # Third stretch: [geo3]
@@ -233,28 +233,28 @@ class TestProjectiveReorder:
 
     def _proj_transform(self):
         """Stub with PROJECTIVE category."""
-        return _StubTransform(_identity_matrix_fn, p=1.0, category=TransformCategory.PROJECTIVE)
+        return _StubTransform(_identity_matrix_fn, prob=1.0, category=TransformCategory.PROJECTIVE)
 
     def test_pointwise_moves_out_from_between_projective_ops(self):
         """[Proj, Pointwise, Proj] reorders to [Proj, Proj, Pointwise]."""
         adapter = _StubAdapter()
-        p = _PointwiseTransform()
-        j1, j2 = self._proj_transform(), self._proj_transform()
-        original = [j1, p, j2]
+        transform_pw = _PointwiseTransform()
+        proj1, proj2 = self._proj_transform(), self._proj_transform()
+        original = [proj1, transform_pw, proj2]
         reordered = reorder_pointwise(original, adapter)
-        cats = [adapter.category(t) for t in reordered]
-        geo_idx = [i for i, c in enumerate(cats) if c == TransformCategory.PROJECTIVE]
-        pw_idx = [i for i, c in enumerate(cats) if c == TransformCategory.POINTWISE]
-        assert pw_idx[0] > max(geo_idx), "POINTWISE should be after all PROJECTIVE transforms"
+        cats = [adapter.category(transform) for transform in reordered]
+        geo_indices = [idx for idx, cat in enumerate(cats) if cat == TransformCategory.PROJECTIVE]
+        pw_indices = [idx for idx, cat in enumerate(cats) if cat == TransformCategory.POINTWISE]
+        assert pw_indices[0] > max(geo_indices), "POINTWISE should be after all PROJECTIVE transforms"
 
     def test_projective_acts_as_barrier_between_affine_runs(self):
         """[Affine, Proj, Affine] -> two separate affine segments (proj is barrier)."""
 
         adapter = _StubAdapter()
-        a1 = _StubTransform(_identity_matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_INTERP)
-        j = self._proj_transform()
-        a2 = _StubTransform(_identity_matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_INTERP)
-        segments = build_segments([a1, j, a2], adapter)
-        seg_types = [type(s).__name__ for s in segments]
+        transform_affine1 = _StubTransform(_identity_matrix_fn, prob=1.0, category=TransformCategory.GEOMETRIC_INTERP)
+        transform_projective = self._proj_transform()
+        transform_affine2 = _StubTransform(_identity_matrix_fn, prob=1.0, category=TransformCategory.GEOMETRIC_INTERP)
+        segments = build_segments([transform_affine1, transform_projective, transform_affine2], adapter)
+        seg_types = [type(segment).__name__ for segment in segments]
         assert seg_types.count("FusedAffineSegment") == 2, f"Expected 2 FusedAffineSegments, got {seg_types}"
         assert seg_types.count("ProjectiveSegment") == 1

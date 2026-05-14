@@ -20,7 +20,7 @@ pytestmark = pytest.mark.integration
 # Constants
 # ---------------------------------------------------------------------------
 
-B, C, H, W = 2, 3, 32, 32
+BATCH_SIZE, CHANNELS, HEIGHT, WIDTH = 2, 3, 32, 32
 
 
 # ---------------------------------------------------------------------------
@@ -37,9 +37,9 @@ class TestMaskNearestOnly:
             [RandomRotation(degrees=45, p=1.0)],
             data_keys=["input", "mask"],
         )
-        img = torch.rand(B, C, H, W)
-        mask = torch.randint(0, 2, (B, 1, H, W)).float()
-        _, out_mask = pipe(img, mask)
+        image = torch.rand(BATCH_SIZE, CHANNELS, HEIGHT, WIDTH)
+        mask = torch.randint(0, 2, (BATCH_SIZE, 1, HEIGHT, WIDTH)).float()
+        _, out_mask = pipe(image, mask)
 
         unique_vals = torch.unique(out_mask)
         allowed = {0.0, 1.0}
@@ -55,13 +55,13 @@ class TestMaskNearestOnly:
             [RandomRotation(degrees=30, p=1.0)],
             data_keys=["input", "mask"],
         )
-        img = torch.rand(B, C, H, W)
-        mask = torch.randint(0, 3, (B, 1, H, W)).float()
-        _, out_mask = pipe(img, mask)
+        image = torch.rand(BATCH_SIZE, CHANNELS, HEIGHT, WIDTH)
+        mask = torch.randint(0, 3, (BATCH_SIZE, 1, HEIGHT, WIDTH)).float()
+        _, out_mask = pipe(image, mask)
 
         unique_vals = torch.unique(out_mask)
-        for v in unique_vals.tolist():
-            assert v == int(v), f"Mask value {v} is not an integer; nearest interpolation was NOT used"
+        for value in unique_vals.tolist():
+            assert value == int(value), f"Mask value {value} is not an integer; nearest interpolation was NOT used"
 
 
 # ---------------------------------------------------------------------------
@@ -70,24 +70,24 @@ class TestMaskNearestOnly:
 
 
 class TestMaskSpatialCorrespondence:
-    """#33: After HFlip, pixel at column x in image corresponds to column W-1-x in mask."""
+    """#33: After HFlip, pixel at column x in image corresponds to column width-1-x in mask."""
 
     def test_hflip_spatial_correspondence(self):
-        """After HFlip(p=1), mask columns are mirrored: column x -> column W-1-x."""
+        """After HFlip(prob=1), mask columns are mirrored: column coord_x -> column width-1-coord_x."""
         pipe = Compose(
             [RandomHorizontalFlip(p=1.0)],
             data_keys=["input", "mask"],
         )
         # Build a mask with distinct integer regions: left half = 1, right half = 2
-        mask = torch.ones(B, 1, H, W)
-        mask[:, :, :, W // 2 :] = 2.0
-        img = torch.rand(B, C, H, W)
+        mask = torch.ones(BATCH_SIZE, 1, HEIGHT, WIDTH)
+        mask[:, :, :, WIDTH // 2 :] = 2.0
+        image = torch.rand(BATCH_SIZE, CHANNELS, HEIGHT, WIDTH)
 
-        _, out_mask = pipe(img, mask)
+        _, out_mask = pipe(image, mask)
 
         # After HFlip: left half should now be 2, right half should be 1
-        left_half = out_mask[:, :, :, : W // 2]
-        right_half = out_mask[:, :, :, W // 2 :]
+        left_half = out_mask[:, :, :, : WIDTH // 2]
+        right_half = out_mask[:, :, :, WIDTH // 2 :]
         assert (left_half == 2.0).all(), "After HFlip, left half of mask should contain class 2"
         assert (right_half == 1.0).all(), "After HFlip, right half of mask should contain class 1"
 
@@ -106,12 +106,12 @@ class TestBboxIdentity:
             [RandomHorizontalFlip(p=0.0)],
             data_keys=["input", "bbox_xyxy"],
         )
-        img = torch.rand(B, C, H, W)
-        # (B, N, 4) format: one box per sample
-        boxes = torch.tensor([[[5.0, 10.0, 20.0, 25.0]]] * B)
-        _, out_boxes = pipe(img, boxes)
+        image = torch.rand(BATCH_SIZE, CHANNELS, HEIGHT, WIDTH)
+        # (batch_size, num_boxes, 4) format: one box per sample
+        boxes = torch.tensor([[[5.0, 10.0, 20.0, 25.0]]] * BATCH_SIZE)
+        _, image_output_boxes = pipe(image, boxes)
 
-        torch.testing.assert_close(out_boxes, boxes, atol=1e-4, rtol=1e-4)
+        torch.testing.assert_close(image_output_boxes, boxes, atol=1e-4, rtol=1e-4)
 
 
 # ---------------------------------------------------------------------------
@@ -120,23 +120,23 @@ class TestBboxIdentity:
 
 
 class TestBboxHFlip:
-    """#35: HFlip mirrors bbox x-coordinates: new_x = W - 1 - old_x."""
+    """#35: HFlip mirrors bbox x-coordinates: new_x = width - 1 - old_x."""
 
     def test_bbox_x_mirrored_after_hflip(self):
-        """After HFlip(p=1), bbox x-coords mirror: x_min' = W-1-x_max, x_max' = W-1-x_min."""
+        """After HFlip(prob=1), bbox x-coords mirror: x_min' = width-1-x_max, x_max' = width-1-x_min."""
         pipe = Compose(
             [RandomHorizontalFlip(p=1.0)],
             data_keys=["input", "bbox_xyxy"],
         )
-        img = torch.rand(B, C, H, W)
-        x1, y1, x2, y2 = 5.0, 10.0, 20.0, 25.0
-        boxes = torch.tensor([[[x1, y1, x2, y2]]] * B)
-        _, out_boxes = pipe(img, boxes)
+        image = torch.rand(BATCH_SIZE, CHANNELS, HEIGHT, WIDTH)
+        box_x1, box_y1, box_x2, box_y2 = 5.0, 10.0, 20.0, 25.0
+        boxes = torch.tensor([[[box_x1, box_y1, box_x2, box_y2]]] * BATCH_SIZE)
+        _, boxes_output = pipe(image, boxes)
 
-        expected_x1 = W - 1 - x2
-        expected_x2 = W - 1 - x1
-        expected = torch.tensor([[[expected_x1, y1, expected_x2, y2]]] * B)
-        torch.testing.assert_close(out_boxes, expected, atol=1e-4, rtol=1e-4)
+        expected_x1 = WIDTH - 1 - box_x2
+        expected_x2 = WIDTH - 1 - box_x1
+        expected = torch.tensor([[[expected_x1, box_y1, expected_x2, box_y2]]] * BATCH_SIZE)
+        torch.testing.assert_close(boxes_output, expected, atol=1e-4, rtol=1e-4)
 
 
 # ---------------------------------------------------------------------------
@@ -154,12 +154,12 @@ class TestBboxRotation:
             [RandomRotation(degrees=(90, 90), p=1.0)],
             data_keys=["input", "bbox_xyxy"],
         )
-        img = torch.rand(1, C, H, W)
-        # A box at (5, 10, 15, 20) - width=10, height=10
+        image = torch.rand(1, CHANNELS, HEIGHT, WIDTH)
+        # albu box at (5, 10, 15, 20) - width=10, height=10
         boxes = torch.tensor([[[5.0, 10.0, 15.0, 20.0]]])
-        _, out_boxes = pipe(img, boxes)
+        _, out_boxes = pipe(image, boxes)
 
-        # After 90-degree rotation around image center (W/2, H/2):
+        # After 90-degree rotation around image center (width/2, height/2):
         # The resulting AABB should exist and have valid coordinates
         assert out_boxes.shape == (1, 1, 4), f"Expected shape (1,1,4), got {out_boxes.shape}"
         # Verify AABB constraints: x1 < x2 and y1 < y2
@@ -174,23 +174,23 @@ class TestBboxRotation:
 
 
 class TestKeypointsKnownMapping:
-    """#37: For HFlip(p=1), keypoint x' = W-1-x, y' unchanged."""
+    """#37: For HFlip(prob=1), keypoint x' = width-1-x, y' unchanged."""
 
     def test_hflip_keypoint_x_mirrored(self):
-        """After HFlip, keypoint x is mirrored: x' = W-1-x, y unchanged."""
+        """After HFlip, keypoint x is mirrored: x' = width - 1 - coord_x, y' unchanged."""
         pipe = Compose(
             [RandomHorizontalFlip(p=1.0)],
             data_keys=["input", "keypoints"],
         )
-        img = torch.rand(B, C, H, W)
-        kx, ky = 10.0, 20.0
-        # (B, N, 2) format
-        kps = torch.tensor([[[kx, ky]]] * B)
-        _, out_kps = pipe(img, kps)
+        image = torch.rand(BATCH_SIZE, CHANNELS, HEIGHT, WIDTH)
+        kp_x, kp_y = 10.0, 20.0
+        # (batch_size, num_points, 2) format
+        keypoints = torch.tensor([[[kp_x, kp_y]]] * BATCH_SIZE)
+        _, keypoints_output = pipe(image, keypoints)
 
-        expected_x = W - 1 - kx
-        expected = torch.tensor([[[expected_x, ky]]] * B)
-        torch.testing.assert_close(out_kps, expected, atol=1e-4, rtol=1e-4)
+        expected_x = WIDTH - 1 - kp_x
+        expected = torch.tensor([[[expected_x, kp_y]]] * BATCH_SIZE)
+        torch.testing.assert_close(keypoints_output, expected, atol=1e-4, rtol=1e-4)
 
 
 # ---------------------------------------------------------------------------
@@ -202,68 +202,68 @@ class TestBatchConsistency:
     """#38: Per-sample transforms applied consistently to image and all aux targets."""
 
     def test_batch_image_mask_consistency(self):
-        """Batch of B=4 with p=1.0 HFlip: each sample's image and mask are consistently flipped."""
-        b = 4
+        """Batch of batch_size=4 with prob=1.0 HFlip: each sample's image and mask are consistently flipped."""
+        num_samples = 4
         pipe = Compose(
             [RandomHorizontalFlip(p=1.0)],
             data_keys=["input", "mask"],
         )
-        img = torch.rand(b, C, H, W)
+        image = torch.rand(num_samples, CHANNELS, HEIGHT, WIDTH)
         # Build a mask that is NOT symmetric, so flip is detectable
-        mask = torch.zeros(b, 1, H, W)
-        mask[:, :, :, : W // 4] = 1.0  # left quarter is 1
+        mask = torch.zeros(num_samples, 1, HEIGHT, WIDTH)
+        mask[:, :, :, : WIDTH // 4] = 1.0  # left quarter is 1
 
-        out_img, out_mask = pipe(img, mask)
+        out_image, out_mask = pipe(image, mask)
 
         # Verify each sample individually
-        for i in range(b):
+        for idx in range(num_samples):
             # Image should be horizontally flipped
-            expected_img_i = img[i].flip(dims=[-1])
+            expected_image_idx = image[idx].flip(dims=[-1])
             torch.testing.assert_close(
-                out_img[i],
-                expected_img_i,
+                out_image[idx],
+                expected_image_idx,
                 atol=1e-4,
                 rtol=1e-4,
-                msg=f"Sample {i}: image not consistently flipped",
+                msg=f"Sample {idx}: image not consistently flipped",
             )
             # Mask should also be horizontally flipped
-            expected_mask_i = mask[i].flip(dims=[-1])
+            expected_mask_idx = mask[idx].flip(dims=[-1])
             torch.testing.assert_close(
-                out_mask[i],
-                expected_mask_i,
+                out_mask[idx],
+                expected_mask_idx,
                 atol=1e-4,
                 rtol=1e-4,
-                msg=f"Sample {i}: mask not consistently flipped with image",
+                msg=f"Sample {idx}: mask not consistently flipped",
             )
 
     def test_batch_image_bbox_consistency(self):
-        """Batch with p=1.0 HFlip: each sample's bbox is consistently transformed."""
-        b = 4
+        """Batch with prob=1.0 HFlip: each sample's bbox is consistently transformed."""
+        num_samples = 4
         pipe = Compose(
             [RandomHorizontalFlip(p=1.0)],
             data_keys=["input", "bbox_xyxy"],
         )
-        img = torch.rand(b, C, H, W)
-        x1, y1, x2, y2 = 5.0, 10.0, 20.0, 25.0
-        boxes = torch.tensor([[[x1, y1, x2, y2]]] * b)
+        image = torch.rand(num_samples, CHANNELS, HEIGHT, WIDTH)
+        box_x1, box_y1, box_x2, box_y2 = 5.0, 10.0, 20.0, 25.0
+        boxes = torch.tensor([[[box_x1, box_y1, box_x2, box_y2]]] * num_samples)
 
-        out_img, out_boxes = pipe(img, boxes)
+        image_output, boxes_output = pipe(image, boxes)
 
-        expected_x1 = W - 1 - x2
-        expected_x2 = W - 1 - x1
-        for i in range(b):
+        expected_x1 = WIDTH - 1 - box_x2
+        expected_x2 = WIDTH - 1 - box_x1
+        for idx in range(num_samples):
             # Image must be flipped
-            expected_img_i = img[i].flip(dims=[-1])
-            torch.testing.assert_close(out_img[i], expected_img_i, atol=1e-4, rtol=1e-4)
+            expected_image_idx = image[idx].flip(dims=[-1])
+            torch.testing.assert_close(image_output[idx], expected_image_idx, atol=1e-4, rtol=1e-4)
             # Box must be mirrored
             torch.testing.assert_close(
-                out_boxes[i, 0, 0].item(),
+                boxes_output[idx, 0, 0].item(),
                 expected_x1,
                 atol=1e-4,
                 rtol=1e-4,
             )
             torch.testing.assert_close(
-                out_boxes[i, 0, 2].item(),
+                boxes_output[idx, 0, 2].item(),
                 expected_x2,
                 atol=1e-4,
                 rtol=1e-4,
@@ -295,14 +295,14 @@ class TestPassthroughWithAuxTargets:
             ],
             data_keys=["input", "mask"],
         )
-        img = torch.rand(B, C, H, W)
-        mask = torch.randint(0, 3, (B, 1, H, W)).float()
-        out = pipe(img, mask)
+        image = torch.rand(BATCH_SIZE, CHANNELS, HEIGHT, WIDTH)
+        mask = torch.randint(0, 3, (BATCH_SIZE, 1, HEIGHT, WIDTH)).float()
+        image_output = pipe(image, mask)
 
-        assert isinstance(out, tuple), f"Expected tuple, got {type(out)}"
-        out_img, out_mask = out
-        assert out_img.shape == img.shape, f"Image shape mismatch: {out_img.shape} vs {img.shape}"
-        assert out_mask.shape == mask.shape, f"Mask shape mismatch: {out_mask.shape} vs {mask.shape}"
+        assert isinstance(image_output, tuple), f"Expected tuple, got {type(image_output)}"
+        image_out_result, mask_out_result = image_output
+        assert image_out_result.shape == image.shape, f"Image shape mismatch: {image_out_result.shape} vs {image.shape}"
+        assert mask_out_result.shape == mask.shape, f"Mask shape mismatch: {mask_out_result.shape} vs {mask.shape}"
 
 
 # ---------------------------------------------------------------------------
@@ -319,13 +319,13 @@ class TestTransformMaskInt64:
 
         from fuse_augmentations._targets import transform_mask
 
-        mask_int64 = torch.randint(0, 3, (B, 1, H, W), dtype=torch.int64)
-        theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(B, -1, -1)
-        grid = F.affine_grid(theta, [B, 1, H, W], align_corners=True)
+        mask_int64 = torch.randint(0, 3, (BATCH_SIZE, 1, HEIGHT, WIDTH), dtype=torch.int64)
+        theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(BATCH_SIZE, -1, -1)
+        grid = F.affine_grid(theta, [BATCH_SIZE, 1, HEIGHT, WIDTH], align_corners=True)
 
-        out = transform_mask(mask_int64, grid)
-        assert out.dtype == torch.int64, f"Expected int64 output dtype, got {out.dtype}"
-        unique_vals = set(torch.unique(out).tolist())
+        image_output = transform_mask(mask_int64, grid)
+        assert image_output.dtype == torch.int64, f"Expected int64 output dtype, got {image_output.dtype}"
+        unique_vals = set(torch.unique(image_output).tolist())
         assert unique_vals.issubset({0, 1, 2}), f"Unexpected label values after transform: {unique_vals}"
 
     def test_transform_mask_int64_preserves_large_labels_with_fp16_grid(self):
@@ -334,13 +334,13 @@ class TestTransformMaskInt64:
 
         from fuse_augmentations._targets import transform_mask
 
-        mask_int64 = torch.full((B, 1, H, W), 4097, dtype=torch.int64)
-        theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(B, -1, -1)
-        grid = F.affine_grid(theta, [B, 1, H, W], align_corners=True).to(torch.float16)
+        mask_int64 = torch.full((BATCH_SIZE, 1, HEIGHT, WIDTH), 4097, dtype=torch.int64)
+        theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(BATCH_SIZE, -1, -1)
+        grid = F.affine_grid(theta, [BATCH_SIZE, 1, HEIGHT, WIDTH], align_corners=True).to(torch.float16)
 
-        out = transform_mask(mask_int64, grid)
-        assert out.dtype == torch.int64, f"Expected int64 output dtype, got {out.dtype}"
-        assert (out == 4097).all(), "Large class IDs must not be rounded in mixed-precision paths"
+        image_output = transform_mask(mask_int64, grid)
+        assert image_output.dtype == torch.int64, f"Expected int64 output dtype, got {image_output.dtype}"
+        assert (image_output == 4097).all(), "Large class IDs must not be rounded in mixed-precision paths"
 
 
 # ---------------------------------------------------------------------------
@@ -351,42 +351,42 @@ class TestTransformMaskInt64:
 class TestTransformMaskDtypes:
     """transform_mask preserves dtype for int32, bool, and float32 inputs."""
 
-    def _identity_grid(self, b: int, h: int, w: int) -> torch.Tensor:
+    def _identity_grid(self, batch_size: int, height: int, width: int) -> torch.Tensor:
         import torch.nn.functional as F
 
-        theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(b, -1, -1)
-        return F.affine_grid(theta, [b, 1, h, w], align_corners=True)
+        theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(batch_size, -1, -1)
+        return F.affine_grid(theta, [batch_size, 1, height, width], align_corners=True)
 
     def test_transform_mask_int32_preserves_dtype_and_labels(self):
         """Int32 mask is cast internally and cast back; output dtype is int32."""
         from fuse_augmentations._targets import transform_mask
 
-        mask = torch.randint(0, 3, (B, 1, H, W), dtype=torch.int32)
-        grid = self._identity_grid(B, H, W)
+        mask = torch.randint(0, 3, (BATCH_SIZE, 1, HEIGHT, WIDTH), dtype=torch.int32)
+        grid = self._identity_grid(BATCH_SIZE, HEIGHT, WIDTH)
 
-        out = transform_mask(mask, grid)
-        assert out.dtype == torch.int32, f"Expected int32 output dtype, got {out.dtype}"
-        unique_vals = set(torch.unique(out).tolist())
+        image_output = transform_mask(mask, grid)
+        assert image_output.dtype == torch.int32, f"Expected int32 output dtype, got {image_output.dtype}"
+        unique_vals = set(torch.unique(image_output).tolist())
         assert unique_vals.issubset({0, 1, 2}), f"Unexpected values after transform: {unique_vals}"
 
     def test_transform_mask_bool_preserves_dtype_and_values(self):
         """Bool mask is cast internally and cast back; output dtype is bool."""
         from fuse_augmentations._targets import transform_mask
 
-        mask = torch.randint(0, 2, (B, 1, H, W)).bool()
-        grid = self._identity_grid(B, H, W)
+        mask = torch.randint(0, 2, (BATCH_SIZE, 1, HEIGHT, WIDTH)).bool()
+        grid = self._identity_grid(BATCH_SIZE, HEIGHT, WIDTH)
 
-        out = transform_mask(mask, grid)
-        assert out.dtype == torch.bool, f"Expected bool output dtype, got {out.dtype}"
-        unique_vals = set(torch.unique(out).tolist())
+        image_output = transform_mask(mask, grid)
+        assert image_output.dtype == torch.bool, f"Expected bool output dtype, got {image_output.dtype}"
+        unique_vals = set(torch.unique(image_output).tolist())
         assert unique_vals.issubset({False, True}), f"Unexpected values after transform: {unique_vals}"
 
     def test_transform_mask_float32_passthrough_preserves_dtype(self):
         """Float32 mask takes the needs_cast_back=False path; output dtype is float32."""
         from fuse_augmentations._targets import transform_mask
 
-        mask = torch.rand(B, 1, H, W, dtype=torch.float32)
-        grid = self._identity_grid(B, H, W)
+        mask = torch.rand(BATCH_SIZE, 1, HEIGHT, WIDTH, dtype=torch.float32)
+        grid = self._identity_grid(BATCH_SIZE, HEIGHT, WIDTH)
 
-        out = transform_mask(mask, grid)
-        assert out.dtype == torch.float32, f"Expected float32 output dtype, got {out.dtype}"
+        image_output = transform_mask(mask, grid)
+        assert image_output.dtype == torch.float32, f"Expected float32 output dtype, got {image_output.dtype}"

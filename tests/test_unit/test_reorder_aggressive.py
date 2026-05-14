@@ -148,12 +148,12 @@ class TestAggressivePipelineImage:
         pytest.importorskip("kornia", reason="kornia required")
 
     def test_aggressive_pipeline_runs_without_error(self):
-        import kornia.augmentation as K
+        import kornia.augmentation as kornia_aug
 
         from fuse_augmentations import Compose
 
         pipe = Compose(
-            [K.RandomRotation(degrees=30, p=1.0), K.RandomHorizontalFlip(p=1.0)],
+            [kornia_aug.RandomRotation(degrees=30, p=1.0), kornia_aug.RandomHorizontalFlip(p=1.0)],
             reorder=ReorderPolicy.AGGRESSIVE,
         )
         x = torch.zeros(2, 3, 32, 32)

@@ -150,15 +150,15 @@ class TransformAdapter(Protocol):
         input_shape: tuple[int, int, int, int],
         device: torch.device,
     ) -> dict[str, Tensor]:
-        """Sample random parameters for a batch of B images.
+        """Sample random parameters for a batch of images.
 
         Args:
             transform: The backend transform object.
-            input_shape: (B, C, H, W) tuple.
+            input_shape: (batch_size, channels, height, width) tuple.
             device: Target device for parameter tensors.
 
         Returns:
-            Dict mapping canonical parameter names to (B,) tensors.
+            Dict mapping canonical parameter names to (batch_size,) tensors.
 
         """
         ...
@@ -167,19 +167,19 @@ class TransformAdapter(Protocol):
         self,
         transform: object,
         params: dict[str, Tensor],
-        H: int,  # noqa: N803
-        W: int,  # noqa: N803
+        height: int,
+        width: int,
     ) -> Tensor:
-        """Build a (B, 3, 3) pixel-space forward affine matrix from sampled params.
+        """Build a (batch_size, 3, 3) pixel-space forward affine matrix from sampled params.
 
         Args:
             transform: The backend transform object.
             params: Canonical-unit parameter dict from sample_params().
-            H: Image height in pixels.
-            W: Image width in pixels.
+            height: Image height in pixels.
+            width: Image width in pixels.
 
         Returns:
-            Tensor of shape (B, 3, 3).
+            Tensor of shape (batch_size, 3, 3).
 
         """
         ...
@@ -212,10 +212,10 @@ class TransformAdapter(Protocol):
 
         Args:
             transform: The backend transform object (GEOMETRIC_EXACT category).
-            image: ``(B, C, H, W)`` input tensor.
+            image: ``(batch_size, channels, height, width)`` input tensor.
 
         Returns:
-            Transformed ``(B, C, H, W)`` tensor.
+            Transformed ``(batch_size, channels, height, width)`` tensor.
 
         """
         return image.flip(dims=self.exact_flip_dims(transform))
@@ -244,10 +244,10 @@ class TransformAdapter(Protocol):
         transform: object,
         params: dict[str, Tensor],
     ) -> Tensor:
-        """Build a (B, 4, 4) homogeneous color-space affine matrix from sampled params.
+        """Build a (batch_size, 4, 4) homogeneous color-space affine matrix from sampled params.
 
         Adapters that support ``POINTWISE_LINEAR`` fusion must override this
-        method to return a ``(B, 4, 4)`` matrix encoding the per-channel linear
+        method to return a ``(batch_size, 4, 4)`` matrix encoding the per-channel linear
         colour transform (3x3 colour matrix + 3-element bias in homogeneous
         form).  The default implementation raises ``NotImplementedError`` so
         that adapters without colour-fusion support fall back to passthrough
@@ -258,7 +258,7 @@ class TransformAdapter(Protocol):
             params: Canonical parameter dict from :meth:`sample_params`.
 
         Returns:
-            Tensor of shape ``(B, 4, 4)``.
+            Tensor of shape ``(batch_size, 4, 4)``.
 
         Raises:
             NotImplementedError: If the adapter does not support colour-space
@@ -282,30 +282,30 @@ class TransformSpec:
     pipelines from configuration data rather than live transform objects.
 
     Args:
-        op: Canonical operation name (e.g. ``"rotation"``, ``"hflip"``).
+        operation: Canonical operation name (e.g. ``"rotation"``, ``"hflip"``).
         params: Operation-specific parameters (e.g. ``{"degrees": (-30, 30)}``).
             Range values (``degrees``, ``scale``, etc.) must be 2-tuples, not
             lists. For JSON/YAML-deserialized configs use :meth:`from_dict`,
             which restores tuple semantics from lists automatically.
-        p: Per-sample application probability. Default ``1.0``.
+        prob: Per-sample application probability. Default ``1.0``.
 
     Example:
-        >>> spec = TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.8)
-        >>> spec.op
+        >>> spec = TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=0.8)
+        >>> spec.operation
         'rotation'
-        >>> spec.p
+        >>> spec.prob
         0.8
 
     """
 
-    op: str
+    operation: str
     params: Mapping[str, object]
-    p: float = 1.0
+    prob: float = 1.0
 
     def __post_init__(self) -> None:
         """Freeze mapping-like params and validate probability bounds."""
-        if not (0.0 <= self.p <= 1.0):
-            msg = f"TransformSpec.p must be in [0.0, 1.0], got {self.p!r}"
+        if not (0.0 <= self.prob <= 1.0):
+            msg = f"TransformSpec.prob must be in [0.0, 1.0], got {self.prob!r}"
             raise ValueError(msg)
         object.__setattr__(self, "params", _freeze_param_mapping(self.params))
 
@@ -313,24 +313,24 @@ class TransformSpec:
         """Return a JSON-serialisable dict representation.
 
         Returns:
-            Dict with keys ``"op"``, ``"params"``, and ``"p"``.
+            Dict with keys ``"operation"``, ``"params"``, and ``"prob"``.
 
         Example:
-            >>> spec = TransformSpec(op="hflip", params={}, p=0.5)
+            >>> spec = TransformSpec(operation="hflip", params={}, prob=0.5)
             >>> spec.to_dict()
-            {'op': 'hflip', 'params': {}, 'p': 0.5}
+            {'operation': 'hflip', 'params': {}, 'prob': 0.5}
 
         """
         params = _to_json_compatible(self.params)
-        return {"op": self.op, "params": params, "p": self.p}
+        return {"operation": self.operation, "params": params, "prob": self.prob}
 
     @classmethod
-    def from_dict(cls, d: dict[str, object]) -> "TransformSpec":
+    def from_dict(cls, data_dict: dict[str, object]) -> "TransformSpec":
         """Construct a ``TransformSpec`` from a dict (e.g. parsed JSON).
 
         Args:
-            d: Dict with at least an ``"op"`` key. ``"params"`` defaults to
-                ``{}`` and ``"p"`` defaults to ``1.0`` when absent.
+            data_dict: Dict with at least an ``"operation"`` key. ``"params"`` defaults to
+                ``{}`` and ``"prob"`` defaults to ``1.0`` when absent.
 
         Returns:
             A new ``TransformSpec`` instance.
@@ -344,14 +344,14 @@ class TransformSpec:
 
         Example:
             >>> import json
-            >>> spec = TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.8)
+            >>> spec = TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=0.8)
             >>> restored = TransformSpec.from_dict(json.loads(json.dumps(spec.to_dict())))
             >>> restored == spec  # list → tuple restored
             True
 
         """
-        if "params" in d:
-            raw_params = d["params"]
+        if "params" in data_dict:
+            raw_params = data_dict["params"]
             if raw_params is None:
                 raw_params = {}
             elif not isinstance(raw_params, Mapping):
@@ -361,9 +361,9 @@ class TransformSpec:
         else:
             raw_params = {}
         params = _normalize_loaded_params(raw_params)
-        raw_p = d.get("p", 1.0)
-        p = float(raw_p)  # type: ignore[arg-type]
-        return cls(op=str(d["op"]), params=params, p=p)
+        raw_p = data_dict.get("prob", 1.0)
+        prob = float(raw_p)  # type: ignore[arg-type]
+        return cls(operation=str(data_dict["operation"]), params=params, prob=prob)
 
 
 _RANGE_PARAM_KEYS: frozenset[str] = frozenset({

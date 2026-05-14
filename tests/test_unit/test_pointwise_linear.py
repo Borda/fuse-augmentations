@@ -74,12 +74,12 @@ class _StubAdapter:
         return getattr(transform, "_category", TransformCategory.SPATIAL_KERNEL)
 
     def sample_params(self, transform, input_shape, device):
-        bsz = input_shape[0]
-        return {"_batch_size": torch.tensor([bsz])}
+        batch_size = input_shape[0]
+        return {"_batch_size": torch.tensor([batch_size])}
 
     def build_matrix(self, transform, params, height, width):
-        bsz = int(params["_batch_size"].item())
-        return torch.eye(3).unsqueeze(0).expand(bsz, -1, -1).clone()
+        batch_size = int(params["_batch_size"].item())
+        return torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1).clone()
 
     def call_nonfused(self, transform, image, **kwargs):
         return image
@@ -196,7 +196,7 @@ class TestPointwiseLinearReordering:
         assert result == original
 
     def test_pl_only_pipeline_unchanged(self):
-        """A pipeline with only POINTWISE_LINEAR ops is unchanged."""
+        """Albu pipeline with only POINTWISE_LINEAR ops is unchanged."""
         adapter = _StubAdapter()
         pl1 = _PointwiseLinearTransform()
         pl2 = _PointwiseLinearTransform()
@@ -239,7 +239,7 @@ class TestPointwiseLinearSegmentation:
         assert segments[0] is linear
 
     def test_pl_does_not_merge_with_geometric(self):
-        """A POINTWISE_LINEAR between two geometric ops creates two separate fused segments."""
+        """Albu POINTWISE_LINEAR between two geometric ops creates two separate fused segments."""
         adapter = _StubAdapter()
         geo1 = _GeoTransform()
         geo2 = _GeoTransform()
@@ -312,17 +312,17 @@ class TestPointwiseLinearSegmentation:
 #
 # in homogeneous 4x4 form:
 #   A_fused = A2 * A1
-#   where A = [[M, b], [0^T, 1]]
+#   where albu = [[M, b], [0^T, 1]]
 #
 # These tests confirm the algebra is correct in float32. When FusedColorSegment
 # is implemented in a later phase, these properties should hold for its output.
 # ---------------------------------------------------------------------------
 
-DTYPE = torch.float64
+DEFAULT_DTYPE = torch.float64
 
 
 def _make_color_matrix(M: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """Build a (1, 4, 4) homogeneous color-space affine matrix from (3,3) M and (3,) b."""
+    """Build a (1, 4, 4) homogeneous color-space affine matrix from (3,3) matrix and (3,) b."""
     A = torch.eye(4, dtype=M.dtype)
     A[:3, :3] = M
     A[:3, 3] = b
@@ -360,15 +360,15 @@ def test_brightness_fusion_equals_sequential(
     Sequential: c'' = m2*(m1*c + b1) + b2 = (m2*m1)*c + (m2*b1 + b2)
     Fused:      A_fused = A2 * A1 applied once.
     """
-    M1 = m1 * torch.eye(3, dtype=DTYPE)
-    B1 = b1 * torch.ones(3, dtype=DTYPE)
-    M2 = m2 * torch.eye(3, dtype=DTYPE)
-    B2 = b2 * torch.ones(3, dtype=DTYPE)
+    M1 = m1 * torch.eye(3, dtype=DEFAULT_DTYPE)
+    B1 = b1 * torch.ones(3, dtype=DEFAULT_DTYPE)
+    M2 = m2 * torch.eye(3, dtype=DEFAULT_DTYPE)
+    B2 = b2 * torch.ones(3, dtype=DEFAULT_DTYPE)
 
     A1 = _make_color_matrix(M1, B1)
     A2 = _make_color_matrix(M2, B2)
 
-    c = torch.tensor([r, g, b_val], dtype=DTYPE)
+    c = torch.tensor([r, g, b_val], dtype=DEFAULT_DTYPE)
 
     # Sequential application
     c_seq = _apply_color_matrix(A2, _apply_color_matrix(A1, c))
@@ -399,13 +399,13 @@ def test_n_color_ops_fuse_to_single_matrix(seed: int, n_ops: int) -> None:
     matrices = []
     biases = []
     for _ in range(n_ops):
-        M = torch.randn(3, 3, dtype=DTYPE) * 0.3 + torch.eye(3, dtype=DTYPE)
-        b = torch.randn(3, dtype=DTYPE) * 0.1
+        M = torch.randn(3, 3, dtype=DEFAULT_DTYPE) * 0.3 + torch.eye(3, dtype=DEFAULT_DTYPE)
+        b = torch.randn(3, dtype=DEFAULT_DTYPE) * 0.1
         matrices.append(M)
         biases.append(b)
 
     # Random input color vector
-    c = torch.rand(3, dtype=DTYPE)
+    c = torch.rand(3, dtype=DEFAULT_DTYPE)
 
     # Sequential: apply ops left to right
     c_seq = c.clone()
@@ -442,17 +442,17 @@ def test_brightness_then_contrast_non_commutative(
 
     """
     # Brightness: c' = alpha*c
-    M_b = alpha * torch.eye(3, dtype=DTYPE)
-    b_b = torch.zeros(3, dtype=DTYPE)
+    M_b = alpha * torch.eye(3, dtype=DEFAULT_DTYPE)
+    b_b = torch.zeros(3, dtype=DEFAULT_DTYPE)
 
     # Contrast: c' = beta*(c - mu) + mu = beta*c + (1-beta)*mu
-    M_c = beta * torch.eye(3, dtype=DTYPE)
-    b_c = (1.0 - beta) * mu * torch.ones(3, dtype=DTYPE)
+    M_c = beta * torch.eye(3, dtype=DEFAULT_DTYPE)
+    b_c = (1.0 - beta) * mu * torch.ones(3, dtype=DEFAULT_DTYPE)
 
     A_brightness = _make_color_matrix(M_b, b_b)
     A_contrast = _make_color_matrix(M_c, b_c)
 
-    c = torch.tensor([r, g, b_val], dtype=DTYPE)
+    c = torch.tensor([r, g, b_val], dtype=DEFAULT_DTYPE)
 
     # Order 1: brightness then contrast
     A_bc = torch.bmm(A_contrast, A_brightness)
@@ -489,10 +489,10 @@ def test_color_matrix_composition_law(seed: int) -> None:
 
     """
     torch.manual_seed(seed)
-    M1 = torch.randn(3, 3, dtype=DTYPE)
-    b1 = torch.randn(3, dtype=DTYPE)
-    M2 = torch.randn(3, 3, dtype=DTYPE)
-    b2 = torch.randn(3, dtype=DTYPE)
+    M1 = torch.randn(3, 3, dtype=DEFAULT_DTYPE)
+    b1 = torch.randn(3, dtype=DEFAULT_DTYPE)
+    M2 = torch.randn(3, 3, dtype=DEFAULT_DTYPE)
+    b2 = torch.randn(3, dtype=DEFAULT_DTYPE)
 
     A1 = _make_color_matrix(M1, b1)
     A2 = _make_color_matrix(M2, b2)

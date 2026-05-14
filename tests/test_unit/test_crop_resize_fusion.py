@@ -45,36 +45,36 @@ class TestCropResizeMatrix:
         """Crop covering the full image with the same target size gives identity."""
         from fuse_augmentations.affine._matrix import crop_resize_matrix
 
-        H, W = 32, 32
+        height, width = 32, 32
         top = torch.zeros(1)
         left = torch.zeros(1)
-        crop_h = torch.full((1,), float(H))
-        crop_w = torch.full((1,), float(W))
-        target_h = torch.full((1,), float(H))
-        target_w = torch.full((1,), float(W))
+        crop_h = torch.full((1,), float(height))
+        crop_w = torch.full((1,), float(width))
+        target_h = torch.full((1,), float(height))
+        target_w = torch.full((1,), float(width))
 
-        M = crop_resize_matrix(top, left, crop_h, crop_w, target_h, target_w)
-        assert M.shape == (1, 3, 3)
-        assert torch.allclose(M, torch.eye(3).unsqueeze(0))
+        mtx = crop_resize_matrix(top, left, crop_h, crop_w, target_h, target_w)
+        assert mtx.shape == (1, 3, 3)
+        assert torch.allclose(mtx, torch.eye(3).unsqueeze(0))
 
     def test_scale_halves_output(self):
         """Crop full image but resize to half: scale factor = 0.5."""
         from fuse_augmentations.affine._matrix import crop_resize_matrix
 
-        H, W = 64, 64
+        height, width = 64, 64
         top = torch.zeros(1)
         left = torch.zeros(1)
-        crop_h = torch.full((1,), float(H))
-        crop_w = torch.full((1,), float(W))
-        target_h = torch.full((1,), float(H) / 2)
-        target_w = torch.full((1,), float(W) / 2)
+        crop_h = torch.full((1,), float(height))
+        crop_w = torch.full((1,), float(width))
+        target_h = torch.full((1,), float(height) / 2)
+        target_w = torch.full((1,), float(width) / 2)
 
-        M = crop_resize_matrix(top, left, crop_h, crop_w, target_h, target_w)
+        mtx = crop_resize_matrix(top, left, crop_h, crop_w, target_h, target_w)
         # align_corners=True endpoint mapping:
-        # sx = (W_out-1)/(W_in-1) = 31/63, sy = 31/63
-        s = 31.0 / 63.0
-        expected = torch.tensor([[s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, 1.0]]).unsqueeze(0)
-        assert torch.allclose(M, expected)
+        # scale_x = (W_out-1)/(W_in-1) = 31/63, scale_y = 31/63
+        scale_val = 31.0 / 63.0
+        expected = torch.tensor([[scale_val, 0.0, 0.0], [0.0, scale_val, 0.0], [0.0, 0.0, 1.0]]).unsqueeze(0)
+        assert torch.allclose(mtx, expected)
 
     def test_top_left_offset_translates(self):
         """Crop starting at (top=8, left=8) with same-size output: translation only."""
@@ -87,25 +87,25 @@ class TestCropResizeMatrix:
         target_h = torch.tensor([32.0])
         target_w = torch.tensor([32.0])
 
-        M = crop_resize_matrix(top, left, crop_h, crop_w, target_h, target_w)
-        # sx = 1, tx = -8; sy = 1, ty = -8
+        mtx = crop_resize_matrix(top, left, crop_h, crop_w, target_h, target_w)
+        # scale_x = 1, translation_x = -8; scale_y = 1, translation_y = -8
         expected = torch.tensor([[1.0, 0.0, -8.0], [0.0, 1.0, -8.0], [0.0, 0.0, 1.0]]).unsqueeze(0)
-        assert torch.allclose(M, expected)
+        assert torch.allclose(mtx, expected)
 
     def test_batch_of_two(self):
-        """crop_resize_matrix accepts (B,) tensors and returns (B, 3, 3)."""
+        """crop_resize_matrix accepts (batch_size,) tensors and returns (batch_size, 3, 3)."""
         from fuse_augmentations.affine._matrix import crop_resize_matrix
 
-        B = 2
-        top = torch.zeros(B)
-        left = torch.zeros(B)
-        crop_h = torch.full((B,), 32.0)
-        crop_w = torch.full((B,), 32.0)
-        target_h = torch.full((B,), 32.0)
-        target_w = torch.full((B,), 32.0)
+        batch_size = 2
+        top = torch.zeros(batch_size)
+        left = torch.zeros(batch_size)
+        crop_h = torch.full((batch_size,), 32.0)
+        crop_w = torch.full((batch_size,), 32.0)
+        target_h = torch.full((batch_size,), 32.0)
+        target_w = torch.full((batch_size,), 32.0)
 
-        M = crop_resize_matrix(top, left, crop_h, crop_w, target_h, target_w)
-        assert M.shape == (B, 3, 3)
+        mtx = crop_resize_matrix(top, left, crop_h, crop_w, target_h, target_w)
+        assert mtx.shape == (batch_size, 3, 3)
 
     def test_rejects_degenerate_crop_or_target_sizes(self):
         """crop_resize_matrix rejects sizes <= 1 (singular endpoint mapping)."""
@@ -129,34 +129,36 @@ class TestNormalizeMatrixIO:
         """When H_in==H_out and W_in==W_out, normalize_matrix_io == normalize_matrix."""
         from fuse_augmentations.affine._matrix import normalize_matrix, normalize_matrix_io
 
-        H, W = 64, 64
-        M = torch.eye(3).unsqueeze(0)
-        nm = normalize_matrix(M, H=H, W=W)
-        nmio = normalize_matrix_io(M, H_in=H, W_in=W, H_out=H, W_out=W)
+        height, width = 64, 64
+        matrix = torch.eye(3).unsqueeze(0)
+        nm = normalize_matrix(matrix, height=height, width=width)
+        nmio = normalize_matrix_io(matrix, height_in=height, width_in=width, height_out=height, width_out=width)
         assert torch.allclose(nm, nmio, atol=1e-6)
 
     def test_crop_to_half_scale_factor(self):
         """normalize_matrix_io for a 2x downscale inverse maps correctly."""
         from fuse_augmentations.affine._matrix import crop_resize_matrix, inv3x3, normalize_matrix_io
 
-        H_in, W_in = 64, 64
-        H_out, W_out = 32, 32
+        height_in, width_in = 64, 64
+        height_out, width_out = 32, 32
 
         top = torch.zeros(1)
         left = torch.zeros(1)
-        M_fwd = crop_resize_matrix(
+        matrix_fwd = crop_resize_matrix(
             top,
             left,
-            torch.full((1,), float(H_in)),
-            torch.full((1,), float(W_in)),
-            torch.full((1,), float(H_out)),
-            torch.full((1,), float(W_out)),
+            torch.full((1,), float(height_in)),
+            torch.full((1,), float(width_in)),
+            torch.full((1,), float(height_out)),
+            torch.full((1,), float(width_out)),
         )
-        M_inv = inv3x3(M_fwd)
-        M_norm = normalize_matrix_io(M_inv, H_in=H_in, W_in=W_in, H_out=H_out, W_out=W_out)
-        assert M_norm.shape == (1, 3, 3)
+        matrix_inv = inv3x3(matrix_fwd)
+        matrix_norm = normalize_matrix_io(
+            matrix_inv, height_in=height_in, width_in=width_in, height_out=height_out, width_out=width_out
+        )
+        assert matrix_norm.shape == (1, 3, 3)
         # The normalized matrix should have finite values
-        assert torch.all(torch.isfinite(M_norm))
+        assert torch.all(torch.isfinite(matrix_norm))
 
     def test_crop_resize_matches_explicit_crop_then_interpolate(self):
         """normalize_matrix_io + grid_sample matches explicit crop + interpolate."""
@@ -164,33 +166,35 @@ class TestNormalizeMatrixIO:
 
         from fuse_augmentations.affine._matrix import crop_resize_matrix, inv3x3, normalize_matrix_io
 
-        H_in, W_in = 64, 80
-        H_out, W_out = 32, 32
+        height_in, width_in = 64, 80
+        height_out, width_out = 32, 32
         top, left = 7, 11
         crop_h, crop_w = 40, 50
 
-        x = torch.linspace(0.0, 1.0, H_in * W_in).reshape(1, 1, H_in, W_in).repeat(1, 3, 1, 1)
-        ref = F.interpolate(
-            x[:, :, top : top + crop_h, left : left + crop_w],
-            size=(H_out, W_out),
+        image = torch.linspace(0.0, 1.0, height_in * width_in).reshape(1, 1, height_in, width_in).repeat(1, 3, 1, 1)
+        image_reference = F.interpolate(
+            image[:, :, top : top + crop_h, left : left + crop_w],
+            size=(height_out, width_out),
             mode="bilinear",
             align_corners=True,
         )
 
-        M_fwd = crop_resize_matrix(
+        matrix_fwd = crop_resize_matrix(
             top=torch.tensor([float(top)]),
             left=torch.tensor([float(left)]),
             crop_h=torch.tensor([float(crop_h)]),
             crop_w=torch.tensor([float(crop_w)]),
-            target_h=torch.tensor([float(H_out)]),
-            target_w=torch.tensor([float(W_out)]),
+            target_h=torch.tensor([float(height_out)]),
+            target_w=torch.tensor([float(width_out)]),
         )
-        M_inv = inv3x3(M_fwd)
-        M_norm = normalize_matrix_io(M_inv, H_in=H_in, W_in=W_in, H_out=H_out, W_out=W_out)
-        grid = F.affine_grid(M_norm[:, :2, :], [1, 3, H_out, W_out], align_corners=True)
-        out = F.grid_sample(x, grid, mode="bilinear", padding_mode="zeros", align_corners=True)
+        matrix_inv = inv3x3(matrix_fwd)
+        matrix_norm = normalize_matrix_io(
+            matrix_inv, height_in=height_in, width_in=width_in, height_out=height_out, width_out=width_out
+        )
+        grid = F.affine_grid(matrix_norm[:, :2, :], [1, 3, height_out, width_out], align_corners=True)
+        image_output = F.grid_sample(image, grid, mode="bilinear", padding_mode="zeros", align_corners=True)
 
-        torch.testing.assert_close(out, ref, rtol=1e-6, atol=1e-6)
+        torch.testing.assert_close(image_output, image_reference, rtol=1e-6, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -205,8 +209,8 @@ class TestKorniaAdapterCategory:
         kornia = pytest.importorskip("kornia")
         from fuse_augmentations.adapters._kornia import KorniaAdapter
 
-        t = kornia.augmentation.RandomResizedCrop(size=(64, 64), scale=(0.5, 1.0))
-        assert KorniaAdapter.category(t) == TransformCategory.CROP_RESIZE_FIXED
+        transform = kornia.augmentation.RandomResizedCrop(size=(64, 64), scale=(0.5, 1.0))
+        assert KorniaAdapter.category(transform) == TransformCategory.CROP_RESIZE_FIXED
 
 
 class TestTorchVisionAdapterCategory:
@@ -216,15 +220,15 @@ class TestTorchVisionAdapterCategory:
         tv = pytest.importorskip("torchvision")
         from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
 
-        t = tv.transforms.RandomResizedCrop(size=(64, 64))
-        assert TorchVisionAdapter.category(t) == TransformCategory.CROP_RESIZE_FIXED
+        transform = tv.transforms.RandomResizedCrop(size=(64, 64))
+        assert TorchVisionAdapter.category(transform) == TransformCategory.CROP_RESIZE_FIXED
 
     def test_v2_random_resized_crop_category(self):
         tv = pytest.importorskip("torchvision")
         from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
 
-        t = tv.transforms.v2.RandomResizedCrop(size=(64, 64))
-        assert TorchVisionAdapter.category(t) == TransformCategory.CROP_RESIZE_FIXED
+        transform = tv.transforms.v2.RandomResizedCrop(size=(64, 64))
+        assert TorchVisionAdapter.category(transform) == TransformCategory.CROP_RESIZE_FIXED
 
 
 class TestAlbumentationsAdapterCategory:
@@ -232,12 +236,12 @@ class TestAlbumentationsAdapterCategory:
 
     def test_random_resized_crop_category(self):
         pytest.importorskip("albumentations")
-        import albumentations as A
+        import albumentations as albu
 
         from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
 
-        t = A.RandomResizedCrop(size=(64, 64), scale=(0.5, 1.0))
-        assert AlbumentationsAdapter.category(t) == TransformCategory.CROP_RESIZE_FIXED
+        transform = albu.RandomResizedCrop(size=(64, 64), scale=(0.5, 1.0))
+        assert AlbumentationsAdapter.category(transform) == TransformCategory.CROP_RESIZE_FIXED
 
 
 # ---------------------------------------------------------------------------
@@ -253,9 +257,9 @@ class TestBuildSegmentsCropResize:
         from fuse_augmentations.adapters._kornia import KorniaAdapter
         from fuse_augmentations.affine._segment import CropResizeSegment, build_segments
 
-        t = kornia.augmentation.RandomResizedCrop(size=(64, 64), scale=(0.5, 1.0))
+        transform = kornia.augmentation.RandomResizedCrop(size=(64, 64), scale=(0.5, 1.0))
         adapter = KorniaAdapter()
-        segments = build_segments([t], adapter, use_numpy=False)
+        segments = build_segments([transform], adapter, use_numpy=False)
         assert len(segments) == 1
         assert isinstance(segments[0], CropResizeSegment)
 
@@ -264,9 +268,9 @@ class TestBuildSegmentsCropResize:
         from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
         from fuse_augmentations.affine._segment import CropResizeSegment, build_segments
 
-        t = tv.transforms.RandomResizedCrop(size=(64, 64))
+        transform = tv.transforms.RandomResizedCrop(size=(64, 64))
         adapter = TorchVisionAdapter()
-        segments = build_segments([t], adapter, use_numpy=False)
+        segments = build_segments([transform], adapter, use_numpy=False)
         assert len(segments) == 1
         assert isinstance(segments[0], CropResizeSegment)
 
@@ -284,12 +288,12 @@ class TestBuildSegmentsCropResize:
     def test_albumentations_numpy_path_produces_passthrough(self):
         """Albumentations path emits the raw transform (not CropResizeSegment)."""
         pytest.importorskip("albumentations")
-        import albumentations as A
+        import albumentations as albu
 
         from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
         from fuse_augmentations.affine._segment import CropResizeSegment, build_segments
 
-        t = A.RandomResizedCrop(size=(64, 64), scale=(0.5, 1.0))
+        t = albu.RandomResizedCrop(size=(64, 64), scale=(0.5, 1.0))
         adapter = AlbumentationsAdapter()
         segments = build_segments([t], adapter, use_numpy=True)
         # Should emit passthrough, not CropResizeSegment
@@ -297,7 +301,7 @@ class TestBuildSegmentsCropResize:
         assert not isinstance(segments[0], CropResizeSegment)
 
     def test_crop_resize_flushes_preceding_geo(self):
-        """A preceding GEOMETRIC_INTERP run is flushed before the CropResizeSegment."""
+        """Albu preceding GEOMETRIC_INTERP run is flushed before the CropResizeSegment."""
         kornia = pytest.importorskip("kornia")
         from fuse_augmentations.adapters._kornia import KorniaAdapter
         from fuse_augmentations.affine._segment import CropResizeSegment, FusedAffineSegment, build_segments
@@ -341,14 +345,14 @@ class TestCropResizeSegmentForward:
         return CropResizeSegment(t, adapter)
 
     def test_kornia_output_shape(self, kornia_crop_segment):
-        """Kornia CropResizeSegment outputs (B, C, target_H, target_W)."""
+        """Kornia CropResizeSegment outputs (batch_size, num_channels, target_H, target_W)."""
         seg = kornia_crop_segment
         x = torch.rand(2, 3, 128, 128)
         out = seg(x)
         assert out.shape == torch.Size([2, 3, 64, 64])
 
     def test_tv_v1_output_shape(self, tv_v1_crop_segment):
-        """TorchVision v1 CropResizeSegment outputs (B, C, target_H, target_W)."""
+        """TorchVision v1 CropResizeSegment outputs (batch_size, num_channels, target_H, target_W)."""
         seg = tv_v1_crop_segment
         x = torch.rand(2, 3, 128, 128)
         out = seg(x)
@@ -386,7 +390,7 @@ class TestCropResizeSegmentForward:
         assert out.shape == torch.Size([1, 3, 64, 64])
 
     def test_p_zero_is_ignored(self):
-        """CropResizeSegment always applies regardless of p; p=0.0 still crops."""
+        """CropResizeSegment always applies regardless of prob; prob=0.0 still crops."""
         kornia = pytest.importorskip("kornia")
         from fuse_augmentations.adapters._kornia import KorniaAdapter
         from fuse_augmentations.affine._segment import CropResizeSegment
@@ -395,7 +399,7 @@ class TestCropResizeSegmentForward:
         seg = CropResizeSegment(t, KorniaAdapter())
         x = torch.rand(2, 3, 64, 64)
         out = seg(x)
-        # Shape must be target size even though p=0.0
+        # Shape must be target size even though prob=0.0
         assert out.shape == torch.Size([2, 3, 32, 32])
 
 

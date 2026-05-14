@@ -11,23 +11,23 @@ from fuse_augmentations.affine._segment import ExactAffineSegment, FusedAffineSe
 
 
 class _StubTransform:
-    """A stub geometric transform with a p attribute and a matrix factory."""
+    """Albu stub geometric transform with a prob attribute and a matrix factory."""
 
-    def __init__(self, matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_INTERP):
-        self.p = p
+    def __init__(self, matrix_fn, prob=1.0, category=TransformCategory.GEOMETRIC_INTERP):
+        self.prob = prob
         self.matrix_fn = matrix_fn
         self._category = category
 
 
 class _BarrierTransform:
-    """A stub non-geometric transform (SPATIAL_KERNEL)."""
+    """Albu stub non-geometric transform (SPATIAL_KERNEL)."""
 
     def __init__(self):
         self._category = TransformCategory.SPATIAL_KERNEL
 
 
 class _PointwiseTransform:
-    """A stub pointwise transform."""
+    """Albu stub pointwise transform."""
 
     def __init__(self):
         self._category = TransformCategory.POINTWISE
@@ -42,118 +42,118 @@ class _StubAdapter:
 
     def sample_params(self, transform, input_shape, device):
         """Return minimal canonical params with batch size from input_shape."""
-        bsz = input_shape[0]
-        return {"_batch_size": torch.tensor([bsz])}
+        batch_size = input_shape[0]
+        return {"_batch_size": torch.tensor([batch_size])}
 
     def build_matrix(self, transform, params, height, width):
         """Delegate to transform.matrix_fn or return identity."""
-        bsz = int(params["_batch_size"].item())
+        batch_size = int(params["_batch_size"].item())
         if hasattr(transform, "matrix_fn"):
-            return transform.matrix_fn(bsz, height, width)
-        return torch.eye(3).unsqueeze(0).expand(bsz, -1, -1)
+            return transform.matrix_fn(batch_size, height, width)
+        return torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1)
 
     def call_nonfused(self, transform, image, **kwargs):
         """Pass through the image unchanged for stub testing."""
         return image
 
 
-def _identity_matrix_fn(B, H, W):
-    """Return (B, 3, 3) identity matrices."""
-    return torch.eye(3).unsqueeze(0).expand(B, -1, -1)
+def _identity_matrix_fn(batch_size: int, height: int, width: int) -> torch.Tensor:
+    """Return (batch_size, 3, 3) identity matrices."""
+    return torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1)
 
 
-def _hflip_matrix_fn(B, H, W):
-    """Return (B, 3, 3) horizontal flip matrices."""
+def _hflip_matrix_fn(batch_size: int, height: int, width: int) -> torch.Tensor:
+    """Return (batch_size, 3, 3) horizontal flip matrices."""
     from fuse_augmentations.affine._matrix import hflip_matrix
 
-    return hflip_matrix(W=W, batch_size=B, device=torch.device("cpu"), dtype=torch.float32)
+    return hflip_matrix(width=width, batch_size=batch_size, device=torch.device("cpu"), dtype=torch.float32)
 
 
-def _vflip_matrix_fn(B, H, W):
-    """Return (B, 3, 3) vertical flip matrices."""
+def _vflip_matrix_fn(batch_size: int, height: int, width: int) -> torch.Tensor:
+    """Return (batch_size, 3, 3) vertical flip matrices."""
     from fuse_augmentations.affine._matrix import vflip_matrix
 
-    return vflip_matrix(H=H, batch_size=B, device=torch.device("cpu"), dtype=torch.float32)
+    return vflip_matrix(height=height, batch_size=batch_size, device=torch.device("cpu"), dtype=torch.float32)
 
 
-def _small_scale_matrix_fn(B, H, W):
+def _small_scale_matrix_fn(batch_size: int, height: int, width: int) -> torch.Tensor:
     """Scale 0.01 -- near-degenerate but valid."""
     from fuse_augmentations.affine._matrix import scale_matrix
 
-    sx = torch.full((B,), 0.01)
-    sy = torch.full((B,), 0.01)
-    return scale_matrix(sx, sy, H=H, W=W)
+    scale_x = torch.full((batch_size,), 0.01)
+    scale_y = torch.full((batch_size,), 0.01)
+    return scale_matrix(scale_x, scale_y, height=height, width=width)
 
 
 class TestP0Identity:
-    """Verify that p=0 produces identity (no-op) behaviour."""
+    """Verify that prob=0 produces identity (no-operation) behaviour."""
 
     def test_all_transforms_inactive(self):
-        """With p=0 every transform is skipped; composed matrix is identity."""
+        """With prob=0 every transform is skipped; composed matrix is identity."""
         adapter = _StubAdapter()
-        t = _StubTransform(_hflip_matrix_fn, p=0.0)
-        seg = FusedAffineSegment([t, t], adapter)
+        transform = _StubTransform(_hflip_matrix_fn, prob=0.0)
+        segment = FusedAffineSegment([transform, transform], adapter)
 
-        img = torch.rand(2, 3, 16, 16)
-        out = seg(img)
+        image = torch.rand(2, 3, 16, 16)
+        image_output = segment(image)
 
-        assert torch.allclose(out, img, atol=1e-5)
+        assert torch.allclose(image_output, image, atol=1e-5)
         # Composed matrix should be identity
-        mtx_i = torch.eye(3).unsqueeze(0).expand(2, -1, -1)
-        assert torch.allclose(seg.last_matrix, mtx_i, atol=1e-7)
+        mtx_identity = torch.eye(3).unsqueeze(0).expand(2, -1, -1)
+        assert torch.allclose(segment.last_matrix, mtx_identity, atol=1e-7)
 
 
 class TestP1AlwaysActive:
-    """Verify that p=1 always applies the transform."""
+    """Verify that prob=1 always applies the transform."""
 
     def test_both_flips_compose_to_rotation_180(self):
-        """Two flips (h+v) with p=1 should compose to 180-deg rotation."""
+        """Two flips (h+v) with prob=1 should compose to 180-deg rotation."""
         adapter = _StubAdapter()
-        t_h = _StubTransform(_hflip_matrix_fn, p=1.0)
-        t_v = _StubTransform(_vflip_matrix_fn, p=1.0)
-        seg = FusedAffineSegment([t_h, t_v], adapter)
+        transform_h = _StubTransform(_hflip_matrix_fn, prob=1.0)
+        transform_v = _StubTransform(_vflip_matrix_fn, prob=1.0)
+        segment = FusedAffineSegment([transform_h, transform_v], adapter)
 
-        bsz, n_ch, height, width = 1, 3, 8, 8
-        img = torch.rand(bsz, n_ch, height, width)
-        out = seg(img)
+        batch_size, num_channels, height, width = 1, 3, 8, 8
+        image = torch.rand(batch_size, num_channels, height, width)
+        image_output = segment(image)
 
         # Applying h+v flip should be equivalent to 180-deg rotation
-        # For a square image, this means pixel (x, y) -> (W-1-x, H-1-y)
+        # For a square image, this means pixel (coord_x, coord_y) -> (width-1-coord_x, height-1-coord_y)
         # Verify on a known pattern
-        assert out.shape == img.shape
+        assert image_output.shape == image.shape
 
         # The composed matrix should be the product of hflip and vflip
-        mtx = seg.last_matrix
+        mtx = segment.last_matrix
         assert mtx is not None
-        assert mtx.shape == (bsz, 3, 3)
+        assert mtx.shape == (batch_size, 3, 3)
 
 
 class TestBatchHeterogeneity:
-    """Verify p-masking produces per-sample variation across a batch."""
+    """Verify prob-masking produces per-sample variation across a batch."""
 
     def test_different_samples_different_active_masks(self):
-        """Manually verify that p-masking produces per-sample variation.
+        """Manually verify that prob-masking produces per-sample variation.
 
-        We use p=0.5 and a fixed seed such that some samples are active and some are not, then verify the outputs differ
-        across samples.
+        We use prob=0.5 and a fixed seed such that some samples are active and some are not, then verify the outputs
+        differ across samples.
 
         """
         adapter = _StubAdapter()
-        t = _StubTransform(_hflip_matrix_fn, p=0.5)
-        seg = FusedAffineSegment([t], adapter)
+        transform = _StubTransform(_hflip_matrix_fn, prob=0.5)
+        segment = FusedAffineSegment([transform], adapter)
 
-        bsz = 8
-        img = torch.rand(bsz, 1, 8, 8)
+        batch_size = 8
+        image = torch.rand(batch_size, 1, 8, 8)
 
-        out = seg(img)
+        image_output = segment(image)
 
         # At least one sample should differ from input, and at least one
         # should be unchanged (identity). Check per-sample max diff.
-        diffs = (out - img).abs().amax(dim=(1, 2, 3))
+        diffs = (image_output - image).abs().amax(dim=(1, 2, 3))
         has_changed = (diffs > 1e-4).any()
         has_unchanged = (diffs < 1e-4).any()
 
-        # With 8 samples and p=0.5 the probability of all-same is 2*(0.5^8)=0.8%.
+        # With 8 samples and prob=0.5 the probability of all-same is 2*(0.5^8)=0.8%.
         # If seed changes break this, the test documents expected heterogeneity.
         assert has_changed, "Expected at least one sample to be transformed"
         assert has_unchanged, "Expected at least one sample to remain unchanged"
@@ -165,23 +165,23 @@ class TestNearDegenerateScale:
     def test_scale_001_no_nan(self):
         """Scale factor 0.01 should invert without NaN."""
         adapter = _StubAdapter()
-        t = _StubTransform(_small_scale_matrix_fn, p=1.0)
-        seg = FusedAffineSegment([t], adapter)
+        transform = _StubTransform(_small_scale_matrix_fn, prob=1.0)
+        segment = FusedAffineSegment([transform], adapter)
 
-        img = torch.rand(2, 3, 16, 16)
-        out = seg(img)
+        image = torch.rand(2, 3, 16, 16)
+        image_output = segment(image)
 
-        assert not torch.isnan(out).any(), "Output contains NaN"
-        assert not torch.isinf(out).any(), "Output contains Inf"
+        assert not torch.isnan(image_output).any(), "Output contains NaN"
+        assert not torch.isinf(image_output).any(), "Output contains Inf"
 
         # Verify the inverse round-trip in float64 where det clamping
         # does not dominate.  Float32 det of scale=0.01 matrix is 1e-4,
         # which sits right at the eps*1e3 clamp boundary.
-        mtx = seg.last_matrix.double()
+        mtx = segment.last_matrix.double()
         mtx_inv = inv3x3(mtx)
         product = matmul3x3(mtx_inv, mtx)
-        mtx_i = torch.eye(3, dtype=torch.float64).unsqueeze(0).expand(2, -1, -1)
-        assert torch.allclose(product, mtx_i, atol=1e-8)
+        mtx_identity = torch.eye(3, dtype=torch.float64).unsqueeze(0).expand(2, -1, -1)
+        assert torch.allclose(product, mtx_identity, atol=1e-8)
 
 
 class TestNaNInfInput:
@@ -190,22 +190,22 @@ class TestNaNInfInput:
     def test_nan_input_propagates(self):
         """NaN in input should propagate through grid_sample without crash."""
         adapter = _StubAdapter()
-        t = _StubTransform(_identity_matrix_fn, p=1.0)
-        seg = FusedAffineSegment([t], adapter)
+        transform = _StubTransform(_identity_matrix_fn, prob=1.0)
+        segment = FusedAffineSegment([transform], adapter)
 
-        img = torch.full((1, 1, 4, 4), float("nan"))
-        out = seg(img)  # should not raise
-        assert out.shape == img.shape
+        image = torch.full((1, 1, 4, 4), float("nan"))
+        image_output = segment(image)  # should not raise
+        assert image_output.shape == image.shape
 
     def test_inf_input_propagates(self):
         """Inf in input should propagate through grid_sample without crash."""
         adapter = _StubAdapter()
-        t = _StubTransform(_identity_matrix_fn, p=1.0)
-        seg = FusedAffineSegment([t], adapter)
+        transform = _StubTransform(_identity_matrix_fn, prob=1.0)
+        segment = FusedAffineSegment([transform], adapter)
 
-        img = torch.full((1, 1, 4, 4), float("inf"))
-        out = seg(img)  # should not raise
-        assert out.shape == img.shape
+        image = torch.full((1, 1, 4, 4), float("inf"))
+        image_output = segment(image)  # should not raise
+        assert image_output.shape == image.shape
 
 
 class TestDeviceConsistency:
@@ -214,14 +214,14 @@ class TestDeviceConsistency:
     def test_cpu_device_consistency(self):
         """All intermediate matrices should live on the same device as the input."""
         adapter = _StubAdapter()
-        t = _StubTransform(_hflip_matrix_fn, p=1.0)
-        seg = FusedAffineSegment([t], adapter)
+        transform = _StubTransform(_hflip_matrix_fn, prob=1.0)
+        segment = FusedAffineSegment([transform], adapter)
 
-        img = torch.rand(2, 3, 8, 8, device=torch.device("cpu"))
-        out = seg(img)
+        image = torch.rand(2, 3, 8, 8, device=torch.device("cpu"))
+        image_output = segment(image)
 
-        assert out.device == img.device
-        assert seg.last_matrix.device == img.device
+        assert image_output.device == image.device
+        assert segment.last_matrix.device == image.device
 
 
 class TestBuildSegments:
@@ -230,8 +230,8 @@ class TestBuildSegments:
     def test_single_geometric_returns_one_segment(self):
         """Single geometric transform produces one FusedAffineSegment."""
         adapter = _StubAdapter()
-        t = _StubTransform(_hflip_matrix_fn, p=1.0)
-        result = build_segments([t], adapter)
+        transform = _StubTransform(_hflip_matrix_fn, prob=1.0)
+        result = build_segments([transform], adapter)
 
         assert len(result) == 1
         assert isinstance(result[0], FusedAffineSegment)
@@ -240,56 +240,56 @@ class TestBuildSegments:
     def test_two_geometric_fused_into_one_segment(self):
         """Two consecutive geometric transforms fuse into one segment."""
         adapter = _StubAdapter()
-        t1 = _StubTransform(_hflip_matrix_fn, p=1.0)
-        t2 = _StubTransform(_vflip_matrix_fn, p=1.0)
-        result = build_segments([t1, t2], adapter)
+        transform1 = _StubTransform(_hflip_matrix_fn, prob=1.0)
+        transform2 = _StubTransform(_vflip_matrix_fn, prob=1.0)
+        result = build_segments([transform1, transform2], adapter)
 
         assert len(result) == 1
         assert isinstance(result[0], FusedAffineSegment)
         assert len(result[0].transforms) == 2
 
     def test_geometric_barrier_breaks_segment(self):
-        """A SPATIAL_KERNEL transform breaks the fused segment."""
+        """Albu SPATIAL_KERNEL transform breaks the fused segment."""
         adapter = _StubAdapter()
-        t_geo = _StubTransform(_hflip_matrix_fn, p=1.0)
-        t_barrier = _BarrierTransform()
-        result = build_segments([t_geo, t_barrier], adapter)
+        transform_geo = _StubTransform(_hflip_matrix_fn, prob=1.0)
+        transform_barrier = _BarrierTransform()
+        result = build_segments([transform_geo, transform_barrier], adapter)
 
         assert len(result) == 2
         assert isinstance(result[0], FusedAffineSegment)
-        assert result[1] is t_barrier
+        assert result[1] is transform_barrier
 
     def test_geo_barrier_geo_produces_three_elements(self):
         """[geo, barrier, geo] produces [segment, barrier, segment]."""
         adapter = _StubAdapter()
-        t1 = _StubTransform(_hflip_matrix_fn, p=1.0)
-        t2 = _StubTransform(_vflip_matrix_fn, p=1.0)
-        t_barrier = _BarrierTransform()
-        result = build_segments([t1, t_barrier, t2], adapter)
+        transform1 = _StubTransform(_hflip_matrix_fn, prob=1.0)
+        transform2 = _StubTransform(_vflip_matrix_fn, prob=1.0)
+        transform_barrier = _BarrierTransform()
+        result = build_segments([transform1, transform_barrier, transform2], adapter)
 
         assert len(result) == 3
         assert isinstance(result[0], FusedAffineSegment)
-        assert result[1] is t_barrier
+        assert result[1] is transform_barrier
         assert isinstance(result[2], FusedAffineSegment)
 
     def test_pointwise_breaks_segment(self):
-        """A POINTWISE transform breaks the fused segment."""
+        """Albu POINTWISE transform breaks the fused segment."""
         adapter = _StubAdapter()
-        t_geo = _StubTransform(_hflip_matrix_fn, p=1.0)
-        t_pw = _PointwiseTransform()
-        result = build_segments([t_geo, t_pw, t_geo], adapter)
+        transform_geo = _StubTransform(_hflip_matrix_fn, prob=1.0)
+        transform_pw = _PointwiseTransform()
+        result = build_segments([transform_geo, transform_pw, transform_geo], adapter)
 
         assert len(result) == 3
         assert isinstance(result[0], FusedAffineSegment)
-        assert result[1] is t_pw
+        assert result[1] is transform_pw
         assert isinstance(result[2], FusedAffineSegment)
 
     def test_geometric_exact_fuses_with_interp(self):
         """GEOMETRIC_EXACT and GEOMETRIC_INTERP fuse into a single segment."""
         adapter = _StubAdapter()
-        t_interp = _StubTransform(_hflip_matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_INTERP)
-        t_exact = _StubTransform(_vflip_matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_EXACT)
-        result = build_segments([t_interp, t_exact], adapter)
+        transform_interp = _StubTransform(_hflip_matrix_fn, prob=1.0, category=TransformCategory.GEOMETRIC_INTERP)
+        transform_exact = _StubTransform(_hflip_matrix_fn, prob=1.0, category=TransformCategory.GEOMETRIC_EXACT)
+        result = build_segments([transform_interp, transform_exact], adapter)
 
         assert len(result) == 1
         assert isinstance(result[0], FusedAffineSegment)
@@ -304,13 +304,13 @@ class TestBuildSegments:
     def test_interpolation_and_padding_forwarded(self):
         """Interpolation and padding_mode kwargs are forwarded to the segment."""
         adapter = _StubAdapter()
-        t = _StubTransform(_hflip_matrix_fn, p=1.0)
-        result = build_segments([t], adapter, interpolation="bicubic", padding_mode="reflection")
+        transform = _StubTransform(_hflip_matrix_fn, prob=1.0)
+        result = build_segments([transform], adapter, interpolation="bicubic", padding_mode="reflection")
 
-        seg = result[0]
-        assert isinstance(seg, FusedAffineSegment)
-        assert seg.interpolation == "bicubic"
-        assert seg.padding_mode == "reflection"
+        segment = result[0]
+        assert isinstance(segment, FusedAffineSegment)
+        assert segment.interpolation == "bicubic"
+        assert segment.padding_mode == "reflection"
 
 
 class TestLastMatrixProperty:
@@ -319,19 +319,19 @@ class TestLastMatrixProperty:
     def test_none_before_forward(self):
         """last_matrix is None before any forward pass."""
         adapter = _StubAdapter()
-        t = _StubTransform(_hflip_matrix_fn, p=1.0)
-        seg = FusedAffineSegment([t], adapter)
-        assert seg.last_matrix is None
+        transform = _StubTransform(_hflip_matrix_fn, prob=1.0)
+        segment = FusedAffineSegment([transform], adapter)
+        assert segment.last_matrix is None
 
     def test_populated_after_forward(self):
         """last_matrix is populated with correct shape after forward."""
         adapter = _StubAdapter()
-        t = _StubTransform(_identity_matrix_fn, p=1.0)
-        seg = FusedAffineSegment([t], adapter)
-        seg(torch.rand(2, 3, 8, 8))
+        transform = _StubTransform(_identity_matrix_fn, prob=1.0)
+        segment = FusedAffineSegment([transform], adapter)
+        segment(torch.rand(2, 3, 8, 8))
 
-        assert seg.last_matrix is not None
-        assert seg.last_matrix.shape == (2, 3, 3)
+        assert segment.last_matrix is not None
+        assert segment.last_matrix.shape == (2, 3, 3)
 
 
 # ---------------------------------------------------------------------------
@@ -370,12 +370,12 @@ class _FlipAdapter:
         return image.flip(dims=self.exact_flip_dims(transform))
 
     def sample_params(self, transform, input_shape, device):
-        bsz = input_shape[0]
-        return {"_batch_size": torch.tensor([bsz])}
+        batch_size = input_shape[0]
+        return {"_batch_size": torch.tensor([batch_size])}
 
     def build_matrix(self, transform, params, height, width):
-        bsz = int(params["_batch_size"].item())
-        return torch.eye(3).unsqueeze(0).expand(bsz, -1, -1)
+        batch_size = int(params["_batch_size"].item())
+        return torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1)
 
     def call_nonfused(self, transform, image, **kwargs):
         return image
@@ -392,7 +392,7 @@ class TestExactAffineSegmentLossless:
     """Verify ExactAffineSegment applies lossless flips via tensor.flip."""
 
     def test_hflip_p1_matches_tensor_flip(self):
-        """HFlip with p=1.0 produces pixel-exact same result as image.flip(dims=[3])."""
+        """HFlip with prob=1.0 produces pixel-exact same result as image.flip(dims=[3])."""
         adapter = _FlipAdapter()
         t = _HFlipTransform(p=1.0)
         seg = ExactAffineSegment([t], adapter)
@@ -404,7 +404,7 @@ class TestExactAffineSegmentLossless:
         assert torch.equal(out, expected), "ExactAffineSegment HFlip should be pixel-exact"
 
     def test_vflip_p1_matches_tensor_flip(self):
-        """VFlip with p=1.0 produces pixel-exact same result as image.flip(dims=[2])."""
+        """VFlip with prob=1.0 produces pixel-exact same result as image.flip(dims=[2])."""
         adapter = _FlipAdapter()
         t = _VFlipTransform(p=1.0)
         seg = ExactAffineSegment([t], adapter)
@@ -417,10 +417,10 @@ class TestExactAffineSegmentLossless:
 
 
 class TestExactAffineSegmentP0:
-    """Verify p=0 leaves the image unchanged."""
+    """Verify prob=0 leaves the image unchanged."""
 
     def test_p0_output_equals_input(self):
-        """ExactAffineSegment with p=0 returns the input tensor unchanged."""
+        """ExactAffineSegment with prob=0 returns the input tensor unchanged."""
         adapter = _FlipAdapter()
         t = _HFlipTransform(p=0.0)
         seg = ExactAffineSegment([t], adapter)
@@ -428,7 +428,7 @@ class TestExactAffineSegmentP0:
         img = torch.rand(2, 3, 8, 8)
         out = seg(img)
 
-        assert torch.equal(out, img), "p=0 should leave image unchanged"
+        assert torch.equal(out, img), "prob=0 should leave image unchanged"
 
     def test_p0_skips_exact_apply_entirely(self):
         """Inactive exact transforms must not evaluate exact_apply."""
@@ -439,14 +439,14 @@ class TestExactAffineSegmentP0:
         img = torch.rand(2, 3, 8, 8)
         out = seg(img)
 
-        assert torch.equal(out, img), "p=0 should bypass exact_apply and leave image unchanged"
+        assert torch.equal(out, img), "prob=0 should bypass exact_apply and leave image unchanged"
 
 
 class TestExactAffineSegmentDoubleFlip:
-    """Verify HFlip then VFlip with p=1 composes correctly."""
+    """Verify HFlip then VFlip with prob=1 composes correctly."""
 
     def test_hflip_then_vflip(self):
-        """HFlip then VFlip with p=1 is same as image.flip(dims=[2, 3]) sequentially."""
+        """HFlip then VFlip with prob=1 is same as image.flip(dims=[2, 3]) sequentially."""
         adapter = _FlipAdapter()
         t_h = _HFlipTransform(p=1.0)
         t_v = _VFlipTransform(p=1.0)
@@ -461,16 +461,16 @@ class TestExactAffineSegmentDoubleFlip:
 
 
 class TestExactAffineSegmentPerSampleMask:
-    """Verify per-sample p=0.5 masking in ExactAffineSegment."""
+    """Verify per-sample prob=0.5 masking in ExactAffineSegment."""
 
     def test_p05_heterogeneous_batch(self):
-        """With B=8 and p=0.5, at least one sample changed, at least one unchanged."""
+        """With batch_size=8 and prob=0.5, at least one sample changed, at least one unchanged."""
         adapter = _FlipAdapter()
-        t = _HFlipTransform(p=0.5)
-        seg = ExactAffineSegment([t], adapter)
+        transform = _HFlipTransform(prob=0.5)
+        segment = ExactAffineSegment([transform], adapter)
 
-        bsz = 8
-        img = torch.rand(bsz, 1, 8, 8)
+        batch_size = 8
+        image = torch.rand(batch_size, 1, 8, 8)
 
         # Make the per-sample mask used inside ExactAffineSegment deterministic so that
         # some samples are flipped and some are not, avoiding flaky behavior.
@@ -481,20 +481,20 @@ class TestExactAffineSegmentPerSampleMask:
             device = kwargs.get("device")
             dtype = kwargs.get("dtype", torch.float32)
             # Intercept calls that generate a per-sample mask over the batch.
-            if len(size) >= 1 and size[0] == bsz:
+            if len(size) >= 1 and size[0] == batch_size:
                 base = torch.zeros(size, device=device, dtype=dtype)
                 mask = pattern.to(device=device, dtype=dtype)
-                view_shape = (bsz,) + (1,) * (base.ndim - 1)
+                view_shape = (batch_size,) + (1,) * (base.ndim - 1)
                 return base + mask.view(view_shape)
             return orig_rand(*size, **kwargs)
 
         try:
             torch.rand = _deterministic_rand
-            out = seg(img)
+            image_output = segment(image)
         finally:
             torch.rand = orig_rand
 
-        diffs = (out - img).abs().amax(dim=(1, 2, 3))
+        diffs = (image_output - image).abs().amax(dim=(1, 2, 3))
         has_changed = (diffs > 1e-6).any()
         has_unchanged = (diffs < 1e-6).any()
 
@@ -508,17 +508,17 @@ class TestExactAffineSegmentLastMatrix:
     def test_last_matrix_none_before_forward(self):
         """last_matrix is None before any forward pass."""
         adapter = _FlipAdapter()
-        t = _HFlipTransform(p=1.0)
-        seg = ExactAffineSegment([t], adapter)
-        assert seg.last_matrix is None
+        transform = _HFlipTransform(prob=1.0)
+        segment = ExactAffineSegment([transform], adapter)
+        assert segment.last_matrix is None
 
     def test_last_matrix_none_after_forward(self):
         """last_matrix remains None after forward (ExactAffineSegment has no matrix)."""
         adapter = _FlipAdapter()
-        t = _HFlipTransform(p=1.0)
-        seg = ExactAffineSegment([t], adapter)
-        seg(torch.rand(2, 3, 8, 8))
-        assert seg.last_matrix is None
+        transform = _HFlipTransform(prob=1.0)
+        segment = ExactAffineSegment([transform], adapter)
+        segment(torch.rand(2, 3, 8, 8))
+        assert segment.last_matrix is None
 
 
 class TestBuildSegmentsExactOnly:
@@ -527,9 +527,9 @@ class TestBuildSegmentsExactOnly:
     def test_exact_only_returns_exact_segment(self):
         """An EXACT-only run (no INTERP) produces an ExactAffineSegment, not FusedAffineSegment."""
         adapter = _StubAdapter()
-        t1 = _StubTransform(_hflip_matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_EXACT)
-        t2 = _StubTransform(_vflip_matrix_fn, p=1.0, category=TransformCategory.GEOMETRIC_EXACT)
-        result = build_segments([t1, t2], adapter)
+        transform1 = _StubTransform(_hflip_matrix_fn, prob=1.0, category=TransformCategory.GEOMETRIC_EXACT)
+        transform2 = _StubTransform(_vflip_matrix_fn, prob=1.0, category=TransformCategory.GEOMETRIC_EXACT)
+        result = build_segments([transform1, transform2], adapter)
 
         assert len(result) == 1
         assert isinstance(result[0], ExactAffineSegment)
@@ -540,45 +540,45 @@ class TestExactAffineSegmentSameOnBatch:
     """Verify ExactAffineSegment respects same_on_batch=True."""
 
     def test_same_on_batch_p1_all_flipped(self):
-        """With same_on_batch=True and p=1, every sample in the batch is flipped."""
+        """With same_on_batch=True and prob=1, every sample in the batch is flipped."""
 
         class _SameOnBatchHFlip:
-            p = 1.0
+            prob = 1.0
             same_on_batch = True
             _category = TransformCategory.GEOMETRIC_EXACT
             _flip_dims = (3,)
 
         adapter = _FlipAdapter()
-        seg = ExactAffineSegment([_SameOnBatchHFlip()], adapter)
+        segment = ExactAffineSegment([_SameOnBatchHFlip()], adapter)
 
-        img = torch.rand(4, 3, 8, 8)
-        out = seg(img)
+        image = torch.rand(4, 3, 8, 8)
+        image_output = segment(image)
 
-        assert torch.equal(out, img.flip(dims=[3]))
+        assert torch.equal(image_output, image.flip(dims=[3]))
 
     def test_same_on_batch_p0_none_flipped(self):
-        """With same_on_batch=True and p=0, no sample in the batch is flipped."""
+        """With same_on_batch=True and prob=0, no sample in the batch is flipped."""
 
         class _SameOnBatchHFlip:
-            p = 0.0
+            prob = 0.0
             same_on_batch = True
             _category = TransformCategory.GEOMETRIC_EXACT
             _flip_dims = (3,)
 
         adapter = _FlipAdapter()
-        seg = ExactAffineSegment([_SameOnBatchHFlip()], adapter)
+        segment = ExactAffineSegment([_SameOnBatchHFlip()], adapter)
 
-        img = torch.rand(4, 3, 8, 8)
-        out = seg(img)
+        image = torch.rand(4, 3, 8, 8)
+        image_output = segment(image)
 
-        assert torch.equal(out, img)
+        assert torch.equal(image_output, image)
 
 
 class TestBatchSizeOne:
-    """Verify B=1 forward pass works for both segment types."""
+    """Verify batch_size=1 forward pass works for both segment types."""
 
     def test_fused_affine_b1_shape(self):
-        """FusedAffineSegment with B=1 produces output of shape (1, C, H, W)."""
+        """FusedAffineSegment with batch_size=1 produces output of shape (1, num_channels, height, width)."""
         adapter = _StubAdapter()
         t = _StubTransform(_identity_matrix_fn, p=1.0)
         seg = FusedAffineSegment([t], adapter)
@@ -588,7 +588,7 @@ class TestBatchSizeOne:
         assert out.shape == (1, 3, 8, 8)
 
     def test_exact_segment_b1_shape(self):
-        """ExactAffineSegment with B=1 produces output of shape (1, C, H, W)."""
+        """ExactAffineSegment with batch_size=1 produces output of shape (1, num_channels, height, width)."""
         adapter = _FlipAdapter()
         t = _HFlipTransform(p=1.0)
         seg = ExactAffineSegment([t], adapter)
@@ -697,22 +697,22 @@ class TestProjectiveSegmentBuildSegments:
         from fuse_augmentations.affine._segment import ProjectiveSegment
 
         adapter = _StubAdapter()
-        proj = self._proj_transform()
-        seg = ProjectiveSegment([proj], adapter)
+        transform_projective = self._proj_transform()
+        segment = ProjectiveSegment([transform_projective], adapter)
 
-        img = torch.rand(2, 3, 8, 8)
+        image = torch.rand(2, 3, 8, 8)
         mask = torch.rand(2, 1, 8, 8)
-        result = seg(img, aux_targets={"mask": mask})
+        result = segment(image, aux_targets={"mask": mask})
 
         assert isinstance(result, tuple)
         assert len(result) == 2
-        out_img, out_aux = result
-        assert out_img.shape == img.shape
-        assert "mask" in out_aux
-        assert out_aux["mask"].shape == mask.shape
+        image_output, aux_output = result
+        assert image_output.shape == image.shape
+        assert "mask" in aux_output
+        assert aux_output["mask"].shape == mask.shape
         # Identity transform: image and mask should pass through unchanged
-        assert torch.allclose(out_img, img, atol=1e-5)
-        assert torch.allclose(out_aux["mask"], mask, atol=1e-5)
+        assert torch.allclose(image_output, image, atol=1e-5)
+        assert torch.allclose(aux_output["mask"], mask, atol=1e-5)
 
     def test_albu_projective_segment_raises_on_aux_targets(self):
         """AlbuProjectiveSegment raises RuntimeError when aux_targets is not None."""

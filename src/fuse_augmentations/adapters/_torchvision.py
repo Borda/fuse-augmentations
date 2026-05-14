@@ -182,17 +182,17 @@ class TorchVisionAdapter:
         input_shape: tuple[int, int, int, int],
         device: torch.device,
     ) -> dict[str, torch.Tensor]:
-        """Sample random parameters for a batch of B images.
+        """Sample random parameters for a batch of images.
 
         TorchVision v1 samples one parameter set per image, while TorchVision v2 samples one parameter set per
         input tensor. For batched v2 inputs, the returned tensors therefore have shape ``(1,)`` and are expanded
         later by the fused segment.
 
-        Flip transforms return a ``{"_batch_size": tensor([B])}`` sentinel.
+        Flip transforms return a ``{"_batch_size": tensor([batch_size])}`` sentinel.
 
         Args:
             transform: A TorchVision transform instance.
-            input_shape: ``(B, C, H, W)`` shape tuple.
+            input_shape: ``(batch_size, channels, height, width)`` shape tuple.
             device: Target device for the returned tensors.
 
         Returns:
@@ -200,11 +200,11 @@ class TorchVisionAdapter:
 
         """
         _check_expand(transform)
-        B, _C, H, W = input_shape  # noqa: N806
+        batch_size, _num_channels, height, width = input_shape
 
         # Flip transforms -- no sampled params, only need batch size
         if isinstance(transform, tuple(_HFLIP_TYPES_FS | _VFLIP_TYPES_FS)):
-            return {"_batch_size": torch.tensor([B], device=device, dtype=torch.int64)}
+            return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
 
         # RandomRotation
         if isinstance(transform, tuple(_ROTATION_TYPES_FS)):
@@ -214,7 +214,7 @@ class TorchVisionAdapter:
                     "angle_rad": torch.tensor([math.radians(angle_deg)], dtype=torch.float32, device=device),
                 }
             angles = []
-            for _ in range(B):
+            for _ in range(batch_size):
                 angle_deg = _sample_rotation_angle(transform)
                 angles.append(math.radians(angle_deg))
             return {
@@ -224,18 +224,23 @@ class TorchVisionAdapter:
         # RandomAffine
         if isinstance(transform, tuple(_AFFINE_TYPES_FS)):
             return _sample_affine_params(
-                transform, B, H, W, device, shared_across_batch=_is_torchvision_v2_transform(transform)
+                transform,
+                batch_size,
+                height,
+                width,
+                device,
+                shared_across_batch=_is_torchvision_v2_transform(transform),
             )
 
         # RandomPerspective
         if isinstance(transform, tuple(_PERSPECTIVE_TYPES_FS)):
             is_v2 = _is_torchvision_v2_transform(transform)
-            sample_count = 1 if is_v2 else B
+            sample_count = 1 if is_v2 else batch_size
             starts, ends = [], []
             for _ in range(sample_count):
-                sp, ep = type(transform).get_params(W, H, transform.distortion_scale)  # type: ignore[attr-defined]
-                starts.append(sp)  # list of 4 [x,y] pairs
-                ends.append(ep)
+                start_points, end_points = type(transform).get_params(width, height, transform.distortion_scale)  # type: ignore[attr-defined]
+                starts.append(start_points)  # list of 4 [x,y] pairs
+                ends.append(end_points)
             # Convert to (sample_count, 4, 2) tensors
             start_t = torch.tensor(starts, dtype=torch.float32, device=device)  # (count, 4, 2)
             end_t = torch.tensor(ends, dtype=torch.float32, device=device)
@@ -243,11 +248,13 @@ class TorchVisionAdapter:
 
         # ColorJitter
         if isinstance(transform, tuple(_COLOR_JITTER_TYPES_FS)):
-            return _sample_color_jitter_params(transform, B, device, _is_torchvision_v2_transform(transform))
+            return _sample_color_jitter_params(transform, batch_size, device, _is_torchvision_v2_transform(transform))
 
         # RandomResizedCrop
         if isinstance(transform, tuple(_CROP_RESIZE_TYPES_FS)):
-            return _sample_crop_resize_params(transform, B, H, W, device, _is_torchvision_v2_transform(transform))
+            return _sample_crop_resize_params(
+                transform, batch_size, height, width, device, _is_torchvision_v2_transform(transform)
+            )
 
         # Unknown -- return empty
         return {}
@@ -256,45 +263,45 @@ class TorchVisionAdapter:
     def build_matrix(
         transform: object,
         params: dict[str, torch.Tensor],
-        H: int,  # noqa: N803
-        W: int,  # noqa: N803
+        height: int,
+        width: int,
     ) -> torch.Tensor:
-        """Build a ``(B, 3, 3)`` pixel-space forward affine matrix.
+        """Build a (batch_size, 3, 3) pixel-space forward affine matrix.
 
         For ``RandomRotation``, composes center-rotate-uncenter via
         ``rotation_matrix``. For ``RandomAffine``, composes in the order:
         center-rotate-uncenter, then scale about center, then shear, then
-        translate. Note: uses ``(W-1)/2`` rotation centre (align_corners=True),
-        not TorchVision's native ``W/2`` — see ``TestAlignCornersOffset``.
+        translate. Note: uses ``(width-1)/2`` rotation centre (align_corners=True),
+        not TorchVision's native ``width/2`` — see ``TestAlignCornersOffset``.
 
         Flip transforms use ``hflip_matrix`` / ``vflip_matrix`` expanded to
-        batch size B.
+        batch size.
 
         Args:
             transform: A TorchVision transform instance.
             params: Parameter dict from ``sample_params()``.
-            H: Image height in pixels.
-            W: Image width in pixels.
+            height: Image height in pixels.
+            width: Image width in pixels.
 
         Returns:
-            ``(B, 3, 3)`` forward affine matrix in pixel coordinates.
+            ``(batch_size, 3, 3)`` forward affine matrix in pixel coordinates.
 
         """
         if isinstance(transform, tuple(_HFLIP_TYPES_FS)):
-            B = int(params["_batch_size"].item())  # noqa: N806
+            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
-            return hflip_matrix(W=W, batch_size=B, device=device, dtype=torch.float32)
+            return hflip_matrix(width=width, batch_size=batch_size, device=device, dtype=torch.float32)
 
         if isinstance(transform, tuple(_VFLIP_TYPES_FS)):
-            B = int(params["_batch_size"].item())  # noqa: N806
+            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
-            return vflip_matrix(H=H, batch_size=B, device=device, dtype=torch.float32)
+            return vflip_matrix(height=height, batch_size=batch_size, device=device, dtype=torch.float32)
 
         if isinstance(transform, tuple(_ROTATION_TYPES_FS)):
-            return rotation_matrix(params["angle_rad"], H=H, W=W)
+            return rotation_matrix(params["angle_rad"], height=height, width=width)
 
         if isinstance(transform, tuple(_AFFINE_TYPES_FS)):
-            return _build_affine_matrix(params, H, W)
+            return _build_affine_matrix(params, height, width)
 
         if isinstance(transform, tuple(_PERSPECTIVE_TYPES_FS)):
             return perspective_from_points(params["start_points"], params["end_points"])
@@ -341,10 +348,10 @@ class TorchVisionAdapter:
 
         Args:
             transform: A TorchVision GEOMETRIC_EXACT transform.
-            image: ``(B, C, H, W)`` input tensor.
+            image: ``(batch_size, channels, height, width)`` input tensor.
 
         Returns:
-            Transformed ``(B, C, H, W)`` tensor.
+            Transformed ``(batch_size, channels, height, width)`` tensor.
 
         """
         if isinstance(transform, tuple(_HFLIP_TYPES_FS)):
@@ -414,22 +421,22 @@ class TorchVisionAdapter:
         """Apply a TorchVision transform directly via its native forward method.
 
         TorchVision v1 transforms are applied per sample because they accept
-        ``(C, H, W)`` inputs. TorchVision v2 transforms are applied to the
-        whole ``(B, C, H, W)`` tensor to preserve batch-wide randomness.
+        ``(channels, height, width)`` inputs. TorchVision v2 transforms are applied to the
+        whole ``(batch_size, channels, height, width)`` tensor to preserve batch-wide randomness.
 
         Note:
-            The v1 path loops ``B`` times and calls ``torch.stack``, giving
-            O(B) allocations. For large batches prefer v2 transforms or use
+            The v1 path loops ``batch_size`` times and calls ``torch.stack``, giving
+            O(batch_size) allocations. For large batches prefer v2 transforms or use
             :meth:`~fuse_augmentations.Compose.from_params` to stay in the
             fused path and avoid passthrough entirely.
 
         Args:
             transform: A TorchVision transform instance.
-            image: ``(B, C, H, W)`` float32 image tensor.
+            image: ``(batch_size, channels, height, width)`` float32 image tensor.
             **kwargs: Unused; accepted for protocol compatibility.
 
         Returns:
-            Transformed ``(B, C, H, W)`` tensor on the same device as input.
+            Transformed ``(batch_size, channels, height, width)`` tensor on the same device as input.
 
         """
         if image.shape[0] == 0:
@@ -437,24 +444,24 @@ class TorchVisionAdapter:
 
         device = image.device
         dtype = image.dtype
-        B = image.shape[0]  # noqa: N806
+        batch_size = image.shape[0]
 
         if _is_torchvision_v2_transform(transform):
-            out = transform(image)  # type: ignore[operator]
-            return cast(torch.Tensor, out.to(device=device, dtype=dtype))
+            image_output = transform(image)  # type: ignore[operator]
+            return cast(torch.Tensor, image_output.to(device=device, dtype=dtype))
 
-        # v1 per-sample path: TV v1 transforms accept (C, H, W) input.
-        # For B=1, unsqueeze(0) creates a view — no data copy vs torch.stack.
-        if B == 1:
-            out = transform(image[0])  # type: ignore[operator]
-            return cast(torch.Tensor, out.unsqueeze(0).to(device=device, dtype=dtype))
+        # v1 per-sample path: TV v1 transforms accept (channels, height, width) input.
+        # For batch_size=1, unsqueeze(0) creates a view — no data copy vs torch.stack.
+        if batch_size == 1:
+            image_output = transform(image[0])  # type: ignore[operator]
+            return cast(torch.Tensor, image_output.unsqueeze(0).to(device=device, dtype=dtype))
 
-        results = []
-        for i in range(B):
-            out = transform(image[i])  # type: ignore[operator]
-            results.append(out)
+        ndarray_results = []
+        for idx_sample in range(batch_size):
+            image_output = transform(image[idx_sample])  # type: ignore[operator]
+            ndarray_results.append(image_output)
 
-        return torch.stack(results).to(device=device, dtype=dtype)
+        return torch.stack(ndarray_results).to(device=device, dtype=dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -464,9 +471,9 @@ class TorchVisionAdapter:
 
 def _sample_affine_params(
     transform: object,
-    B: int,  # noqa: N803
-    H: int,  # noqa: N803
-    W: int,  # noqa: N803
+    batch_size: int,
+    height: int,
+    width: int,
     device: torch.device,
     shared_across_batch: bool = False,
 ) -> dict[str, torch.Tensor]:
@@ -477,16 +484,16 @@ def _sample_affine_params(
 
     Args:
         transform: A TorchVision ``RandomAffine`` instance.
-        B: Batch size.
-        H: Image height.
-        W: Image width.
+        batch_size: Batch size.
+        height: Image height.
+        width: Image width.
         device: Target device for returned tensors.
         shared_across_batch: Whether TorchVision should sample one parameter
             set for the entire batch.
 
     Returns:
         Dict with keys ``angle_rad``, ``translate_x``, ``translate_y``,
-        ``scale``, ``shear_x_rad``, ``shear_y_rad`` as ``(B,)`` tensors.
+        ``scale``, ``shear_x_rad``, ``shear_y_rad`` as ``(batch_size,)`` tensors.
 
     """
     angles = []
@@ -496,20 +503,19 @@ def _sample_affine_params(
     shear_xs = []
     shear_ys = []
 
-    t = transform
-    sample_count = 1 if shared_across_batch else B
+    sample_count = 1 if shared_across_batch else batch_size
     for _ in range(sample_count):
-        angle, translations, sc, shear = type(t).get_params(  # type: ignore[attr-defined]
-            t.degrees,  # type: ignore[attr-defined]
-            t.translate,  # type: ignore[attr-defined]
-            t.scale,  # type: ignore[attr-defined]
-            t.shear,  # type: ignore[attr-defined]
-            img_size=(W, H),
+        angle, translations, scale_val, shear = type(transform).get_params(  # type: ignore[attr-defined]
+            transform.degrees,  # type: ignore[attr-defined]
+            transform.translate,  # type: ignore[attr-defined]
+            transform.scale,  # type: ignore[attr-defined]
+            transform.shear,  # type: ignore[attr-defined]
+            img_size=(width, height),
         )
         angles.append(math.radians(angle))
         translate_xs.append(float(translations[0]))
         translate_ys.append(float(translations[1]))
-        scales.append(float(sc))
+        scales.append(float(scale_val))
         shear_xs.append(math.radians(shear[0]))
         shear_ys.append(math.radians(shear[1]))
 
@@ -530,80 +536,80 @@ def _sample_rotation_angle(transform: object) -> float:
 
 def _build_affine_matrix(
     params: dict[str, torch.Tensor],
-    H: int,  # noqa: N803
-    W: int,  # noqa: N803
+    height: int,
+    width: int,
 ) -> torch.Tensor:
     """Compose full RandomAffine matrix matching TorchVision's semantics.
 
     TorchVision builds the forward affine as ``T * C * RSS * C^-1`` where
-    ``RSS = R(rot) * S(scale) * SHy(sy) * SHx(sx)`` is a single 2x2 block
+    ``RSS = R(rot) * S(scale) * SHy(scale_y) * SHx(scale_x)`` is a single 2x2 block
     centered once.  This function reproduces that composition in pixel
-    coordinates with center ``((W-1)/2, (H-1)/2)`` (align_corners=True).
+    coordinates with center ``((width-1)/2, (height-1)/2)`` (align_corners=True).
 
     The rotation centre intentionally differs from native TorchVision's
-    ``W/2`` centre — see ``TestAlignCornersOffset``.
+    ``width/2`` centre — see ``TestAlignCornersOffset``.
 
     Args:
         params: Canonical-unit parameter dict from ``_sample_affine_params``.
-        H: Image height.
-        W: Image width.
+        height: Image height.
+        width: Image width.
 
     Returns:
-        ``(B, 3, 3)`` composed forward matrix.
+        ``(batch_size, 3, 3)`` composed forward matrix.
 
     """
     # Determine batch size from any param
-    B = None  # noqa: N806
+    batch_size = None
     device = torch.device("cpu")
     dtype = torch.float32
-    for v in params.values():
-        if isinstance(v, torch.Tensor):
-            B = v.shape[0]  # noqa: N806
-            device = v.device
-            dtype = v.dtype
+    for param_value in params.values():
+        if isinstance(param_value, torch.Tensor):
+            batch_size = param_value.shape[0]
+            device = param_value.device
+            dtype = param_value.dtype
             break
-    if B is None:
+    if batch_size is None:
         return torch.eye(3, dtype=dtype, device=device).unsqueeze(0)
 
-    cx = (W - 1) / 2.0
-    cy = (H - 1) / 2.0
+    center_x = (width - 1) / 2.0
+    center_y = (height - 1) / 2.0
 
-    rot = params.get("angle_rad", torch.zeros(B, device=device, dtype=dtype))
-    sc = params.get("scale", torch.ones(B, device=device, dtype=dtype))
-    sx = params.get("shear_x_rad", torch.zeros(B, device=device, dtype=dtype))
-    sy = params.get("shear_y_rad", torch.zeros(B, device=device, dtype=dtype))
-    tx = params.get("translate_x", torch.zeros(B, device=device, dtype=dtype))
-    ty = params.get("translate_y", torch.zeros(B, device=device, dtype=dtype))
+    rot = params.get("angle_rad", torch.zeros(batch_size, device=device, dtype=dtype))
+    scale = params.get("scale", torch.ones(batch_size, device=device, dtype=dtype))
+    shear_x = params.get("shear_x_rad", torch.zeros(batch_size, device=device, dtype=dtype))
+    shear_y = params.get("shear_y_rad", torch.zeros(batch_size, device=device, dtype=dtype))
+    translation_x = params.get("translate_x", torch.zeros(batch_size, device=device, dtype=dtype))
+    translation_y = params.get("translate_y", torch.zeros(batch_size, device=device, dtype=dtype))
 
-    # RSS 2x2 block: R(rot) * S(scale) * SHy(sy) * SHx(sx)
+    # RSS 2x2 block: R(rot) * S(scale) * SHy(shear_y) * SHx(shear_x)
     # Matches TorchVision's _get_inverse_affine_matrix (functional.py L1037-1040)
-    cos_sy = torch.cos(sy)
-    tan_sx = torch.tan(sx)
-    cos_rot_sy = torch.cos(rot - sy)
-    sin_rot_sy = torch.sin(rot - sy)
+    cos_sy = torch.cos(shear_y)
+    tan_sx = torch.tan(shear_x)
+    cos_rot_sy = torch.cos(rot - shear_y)
+    sin_rot_sy = torch.sin(rot - shear_y)
     sin_rot = torch.sin(rot)
     cos_rot = torch.cos(rot)
 
-    a = sc * cos_rot_sy / cos_sy
-    b = sc * (-cos_rot_sy * tan_sx / cos_sy - sin_rot)
-    c = sc * sin_rot_sy / cos_sy
-    d = sc * (-sin_rot_sy * tan_sx / cos_sy + cos_rot)
+    m00 = scale * cos_rot_sy / cos_sy
+    m01 = scale * (-cos_rot_sy * tan_sx / cos_sy - sin_rot)
+    m10 = scale * sin_rot_sy / cos_sy
+    m11 = scale * (-sin_rot_sy * tan_sx / cos_sy + cos_rot)
 
-    # Forward matrix: M = T_translate * C * [[a,b],[c,d]] * C^-1
-    zeros = torch.zeros(B, device=device, dtype=dtype)
-    ones = torch.ones(B, device=device, dtype=dtype)
+    # Forward matrix: M = T_translate * C * [[m00,m01],[m10,m11]] * C^-1
+    zeros = torch.zeros(batch_size, device=device, dtype=dtype)
+    ones = torch.ones(batch_size, device=device, dtype=dtype)
 
-    row0 = torch.stack([a, b, cx * (1 - a) - cy * b + tx], dim=-1)
-    row1 = torch.stack([c, d, cy * (1 - d) - cx * c + ty], dim=-1)
+    row0 = torch.stack([m00, m01, center_x * (1 - m00) - center_y * m01 + translation_x], dim=-1)
+    row1 = torch.stack([m10, m11, center_y * (1 - m11) - center_x * m10 + translation_y], dim=-1)
     row2 = torch.stack([zeros, zeros, ones], dim=-1)
     return torch.stack([row0, row1, row2], dim=-2)
 
 
 def _sample_crop_resize_params(
     transform: object,
-    B: int,  # noqa: N803
-    H: int,  # noqa: N803
-    W: int,  # noqa: N803
+    batch_size: int,
+    height: int,
+    width: int,
     device: torch.device,
     shared_across_batch: bool = False,
 ) -> dict[str, torch.Tensor]:
@@ -614,25 +620,25 @@ def _sample_crop_resize_params(
 
     Args:
         transform: A TorchVision ``RandomResizedCrop`` instance.
-        B: Batch size.
-        H: Image height.
-        W: Image width.
+        batch_size: Batch size.
+        height: Image height.
+        width: Image width.
         device: Target device for returned tensors.
         shared_across_batch: Whether to sample one parameter set for the batch
             (v2 behaviour).
 
     Returns:
         Dict with keys ``crop_top``, ``crop_left``, ``crop_h``, ``crop_w``,
-        ``target_h``, ``target_w`` as ``(B,)`` or ``(1,)`` float32 tensors.
+        ``target_h``, ``target_w`` as ``(batch_size,)`` or ``(1,)`` float32 tensors.
 
     """
-    t = transform
-    target_h, target_w = t.size  # type: ignore[attr-defined]
-    sample_count = 1 if shared_across_batch else B
+    target_h_val, target_w_val = transform.size  # type: ignore[attr-defined]
+    sample_count = 1 if shared_across_batch else batch_size
 
     # get_params needs an image-like tensor for dimension extraction.
-    # v2 accepts (B, C, H, W); v1 accepts (C, H, W) -- use (1, H, W) for both.
-    dummy = torch.zeros(1, H, W)
+    # v2 accepts (batch_size, channels, height, width); v1 accepts (channels, height, width).
+    # Use (1, height, width) for both.
+    dummy = torch.zeros(1, height, width)
 
     tops: list[float] = []
     lefts: list[float] = []
@@ -640,23 +646,23 @@ def _sample_crop_resize_params(
     crop_ws: list[float] = []
 
     for _ in range(sample_count):
-        top, left, h, w = type(t).get_params(  # type: ignore[attr-defined]
+        top, left, crop_h, crop_w = type(transform).get_params(  # type: ignore[attr-defined]
             dummy,
-            scale=t.scale,  # type: ignore[attr-defined]
-            ratio=t.ratio,  # type: ignore[attr-defined]
+            scale=transform.scale,  # type: ignore[attr-defined]
+            ratio=transform.ratio,  # type: ignore[attr-defined]
         )
         tops.append(float(top))
         lefts.append(float(left))
-        crop_hs.append(float(h))
-        crop_ws.append(float(w))
+        crop_hs.append(float(crop_h))
+        crop_ws.append(float(crop_w))
 
     return {
         "crop_top": torch.tensor(tops, dtype=torch.float32, device=device),
         "crop_left": torch.tensor(lefts, dtype=torch.float32, device=device),
         "crop_h": torch.tensor(crop_hs, dtype=torch.float32, device=device),
         "crop_w": torch.tensor(crop_ws, dtype=torch.float32, device=device),
-        "target_h": torch.full((sample_count,), float(target_h), dtype=torch.float32, device=device),
-        "target_w": torch.full((sample_count,), float(target_w), dtype=torch.float32, device=device),
+        "target_h": torch.full((sample_count,), float(target_h_val), dtype=torch.float32, device=device),
+        "target_w": torch.full((sample_count,), float(target_w_val), dtype=torch.float32, device=device),
     }
 
 
@@ -669,7 +675,7 @@ _MIDPOINT = 0.5  # Fixed midpoint for contrast approximation
 
 def _sample_color_jitter_params(
     transform: object,
-    B: int,  # noqa: N803
+    batch_size: int,
     device: torch.device,
     shared_across_batch: bool = False,
 ) -> dict[str, torch.Tensor]:
@@ -682,7 +688,7 @@ def _sample_color_jitter_params(
 
     Args:
         transform: A TorchVision ``ColorJitter`` instance.
-        B: Batch size.
+        batch_size: Batch size.
         device: Target device for returned tensors.
         shared_across_batch: Whether to sample a single parameter set for the
             entire batch (v2 behaviour).
@@ -691,42 +697,43 @@ def _sample_color_jitter_params(
         Dict with keys ``brightness_factor``, ``contrast_factor``, and ``order``.
 
     """
-    t = transform
-    sample_count = 1 if shared_across_batch else B
-    bf_list: list[float] = []
-    cf_list: list[float] = []
-    orders_list: list[torch.Tensor] = []
+    sample_count = 1 if shared_across_batch else batch_size
+    brightness_list: list[float] = []
+    contrast_list: list[float] = []
+    order_tensors: list[torch.Tensor] = []
 
     for _ in range(sample_count):
-        fn_idx, bf, cf, _sf, _hf = type(t).get_params(  # type: ignore[attr-defined]
-            t.brightness,  # type: ignore[attr-defined]
-            t.contrast,  # type: ignore[attr-defined]
-            t.saturation,  # type: ignore[attr-defined]
-            t.hue,  # type: ignore[attr-defined]
+        function_indices, brightness_factor, contrast_factor, _saturation_factor, _hue_factor = type(
+            transform
+        ).get_params(  # type: ignore[attr-defined]
+            transform.brightness,  # type: ignore[attr-defined]
+            transform.contrast,  # type: ignore[attr-defined]
+            transform.saturation,  # type: ignore[attr-defined]
+            transform.hue,  # type: ignore[attr-defined]
         )
-        bf_list.append(float(bf) if bf is not None else 1.0)
-        cf_list.append(float(cf) if cf is not None else 1.0)
-        orders_list.append(fn_idx.to(device=device, dtype=torch.int64))
+        brightness_list.append(float(brightness_factor) if brightness_factor is not None else 1.0)
+        contrast_list.append(float(contrast_factor) if contrast_factor is not None else 1.0)
+        order_tensors.append(function_indices.to(device=device, dtype=torch.int64))
 
     return {
-        "brightness_factor": torch.tensor(bf_list, dtype=torch.float32, device=device),
-        "contrast_factor": torch.tensor(cf_list, dtype=torch.float32, device=device),
-        # shared_across_batch=True  → single order (N_ops,)
-        # shared_across_batch=False → per-sample order (B, N_ops)
-        "order": orders_list[0] if shared_across_batch else torch.stack(orders_list),
+        "brightness_factor": torch.tensor(brightness_list, dtype=torch.float32, device=device),
+        "contrast_factor": torch.tensor(contrast_list, dtype=torch.float32, device=device),
+        # shared_across_batch=True  → single order (num_ops,)
+        # shared_across_batch=False → per-sample order (batch_size, num_ops)
+        "order": order_tensors[0] if shared_across_batch else torch.stack(order_tensors),
     }
 
 
-def _make_eye4(B: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:  # noqa: N803
-    """Return ``(B, 4, 4)`` identity matrices."""
-    return torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
+def _make_eye4(batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Return ``(batch_size, 4, 4)`` identity matrices."""
+    return torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1).clone()
 
 
 def _build_color_jitter_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:
-    """Build ``(B, 4, 4)`` homogeneous matrix for TorchVision ColorJitter.
+    """Build ``(batch_size, 4, 4)`` homogeneous matrix for TorchVision ColorJitter.
 
-    Composes brightness (multiplicative: ``bf * c``) and contrast (midpoint-0.5
-    approximation: ``cf * c + (1-cf)*0.5``) in the sampled ``order``.
+    Composes brightness (multiplicative: ``brightness_factors * c``) and contrast (midpoint-0.5
+    approximation: ``contrast_factors * c + (1-contrast_factors)*0.5``) in the sampled ``order``.
     Saturation and hue steps are treated as identity.
 
     Args:
@@ -734,81 +741,82 @@ def _build_color_jitter_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:
             and ``order`` tensors.
 
     Returns:
-        ``(B, 4, 4)`` homogeneous color-space affine matrix.
+        ``(batch_size, 4, 4)`` homogeneous color-space affine matrix.
 
     """
-    bf = params["brightness_factor"]  # (B,)
-    cf = params["contrast_factor"]  # (B,)
-    order = params["order"]  # (N_ops,) shared or (B, N_ops) per-sample
-    B = bf.shape[0]  # noqa: N806
-    device = bf.device
-    dtype = bf.dtype
+    brightness_factors = params["brightness_factor"]  # (batch_size,)
+    contrast_factors = params["contrast_factor"]  # (batch_size,)
+    order = params["order"]  # (num_ops,) shared or (batch_size, num_ops) per-sample
+    batch_size = brightness_factors.shape[0]
+    device = brightness_factors.device
+    dtype = brightness_factors.dtype
 
-    acc = _make_eye4(B, device, dtype)
+    mtx_acc = _make_eye4(batch_size, device, dtype)
 
     if order.dim() == 1:
         # Shared order across the batch — original fast path.
-        for idx_t in order.tolist():
-            idx = int(idx_t)
-            if idx == 0:
-                # Brightness: multiplicative c' = bf * c
-                step = _make_eye4(B, device, dtype)
-                step[:, 0, 0] = bf
-                step[:, 1, 1] = bf
-                step[:, 2, 2] = bf
-            elif idx == 1:
-                # Contrast: midpoint approximation c' = cf * c + (1-cf)*0.5
-                step = _make_eye4(B, device, dtype)
-                step[:, 0, 0] = cf
-                step[:, 1, 1] = cf
-                step[:, 2, 2] = cf
-                bias = (1.0 - cf) * _MIDPOINT
-                step[:, 0, 3] = bias
-                step[:, 1, 3] = bias
-                step[:, 2, 3] = bias
+        for op_index in order.tolist():
+            operation_id = int(op_index)
+            if operation_id == 0:
+                # Brightness: multiplicative c' = brightness_factors * c
+                mtx_step = _make_eye4(batch_size, device, dtype)
+                mtx_step[:, 0, 0] = brightness_factors
+                mtx_step[:, 1, 1] = brightness_factors
+                mtx_step[:, 2, 2] = brightness_factors
+            elif operation_id == 1:
+                # Contrast: midpoint approximation c' = contrast_factors * c + (1-contrast_factors)*0.5
+                mtx_step = _make_eye4(batch_size, device, dtype)
+                mtx_step[:, 0, 0] = contrast_factors
+                mtx_step[:, 1, 1] = contrast_factors
+                mtx_step[:, 2, 2] = contrast_factors
+                bias = (1.0 - contrast_factors) * _MIDPOINT
+                mtx_step[:, 0, 3] = bias
+                mtx_step[:, 1, 3] = bias
+                mtx_step[:, 2, 3] = bias
             else:
-                # Saturation (idx=2) and hue (idx=3) treated as identity
+                # Saturation (operation_id=2) and hue (operation_id=3) treated as identity
                 continue
-            acc = torch.bmm(step, acc)
+            # Compose: mtx_acc = mtx_step @ mtx_acc
+            mtx_acc = torch.bmm(mtx_step, mtx_acc)
     else:
-        # Per-sample order (B, N_ops) — v1 ColorJitter samples order per image.
-        for b in range(B):
-            mat_b = _make_eye4(1, device, dtype)
-            for idx_t in order[b].tolist():
-                idx = int(idx_t)
-                if idx == 0:
-                    step_b = _make_eye4(1, device, dtype)
-                    step_b[:, 0, 0] = bf[b]
-                    step_b[:, 1, 1] = bf[b]
-                    step_b[:, 2, 2] = bf[b]
-                elif idx == 1:
-                    step_b = _make_eye4(1, device, dtype)
-                    step_b[:, 0, 0] = cf[b]
-                    step_b[:, 1, 1] = cf[b]
-                    step_b[:, 2, 2] = cf[b]
-                    bias_b = (1.0 - cf[b]) * _MIDPOINT
-                    step_b[:, 0, 3] = bias_b
-                    step_b[:, 1, 3] = bias_b
-                    step_b[:, 2, 3] = bias_b
+        # Per-sample order (batch_size, num_ops) — v1 ColorJitter samples order per image.
+        for b_idx in range(batch_size):
+            mtx_b = _make_eye4(1, device, dtype)
+            for op_index in order[b_idx].tolist():
+                operation_id = int(op_index)
+                if operation_id == 0:
+                    mtx_step_b = _make_eye4(1, device, dtype)
+                    mtx_step_b[:, 0, 0] = brightness_factors[b_idx]
+                    mtx_step_b[:, 1, 1] = brightness_factors[b_idx]
+                    mtx_step_b[:, 2, 2] = brightness_factors[b_idx]
+                elif operation_id == 1:
+                    mtx_step_b = _make_eye4(1, device, dtype)
+                    mtx_step_b[:, 0, 0] = contrast_factors[b_idx]
+                    mtx_step_b[:, 1, 1] = contrast_factors[b_idx]
+                    mtx_step_b[:, 2, 2] = contrast_factors[b_idx]
+                    bias_b = (1.0 - contrast_factors[b_idx]) * _MIDPOINT
+                    mtx_step_b[:, 0, 3] = bias_b
+                    mtx_step_b[:, 1, 3] = bias_b
+                    mtx_step_b[:, 2, 3] = bias_b
                 else:
                     continue
-                mat_b = torch.bmm(step_b, mat_b)
-            acc[b] = mat_b[0]
+                mtx_b = torch.bmm(mtx_step_b, mtx_b)
+            mtx_acc[b_idx] = mtx_b[0]
 
-    return acc
+    return mtx_acc
 
 
 # ---------------------------------------------------------------------------
-# NumPy-native matrix builders for B=1 cv2 warp fast path
+# NumPy-native matrix builders for batch_size=1 cv2 warp fast path
 # ---------------------------------------------------------------------------
 
 
 def _affine_matrix_np_b1_tv(
     params: dict[str, torch.Tensor],
-    cx: float,
-    cy: float,
+    center_x: float,
+    center_y: float,
 ) -> np.ndarray[Any, np.dtype[np.float64]]:
-    """Compose TorchVision-style affine matrix from canonical params (B=1, NumPy only).
+    """Compose TorchVision-style affine matrix from canonical params (batch_size=1, NumPy only).
 
     Implements the ``T * C * RSS * C^-1`` composition used by TorchVision's
     ``_get_inverse_affine_matrix``.  Extracts scalar values from ``params`` via
@@ -816,8 +824,8 @@ def _affine_matrix_np_b1_tv(
 
     Args:
         params: Canonical parameter dict from ``TorchVisionAdapter.sample_params``.
-        cx: Horizontal centre in pixels ``(W - 1) / 2``.
-        cy: Vertical centre in pixels ``(H - 1) / 2``.
+        center_x: Horizontal centre in pixels ``(width - 1) / 2``.
+        center_y: Vertical centre in pixels ``(height - 1) / 2``.
 
     Returns:
         ``(3, 3)`` float64 forward affine matrix in pixel coordinates.
@@ -826,28 +834,28 @@ def _affine_matrix_np_b1_tv(
     import numpy as np
 
     rot = float(params["angle_rad"].item()) if "angle_rad" in params else 0.0
-    sc = float(params["scale"].item()) if "scale" in params else 1.0
-    sx = float(params["shear_x_rad"].item()) if "shear_x_rad" in params else 0.0
-    sy = float(params["shear_y_rad"].item()) if "shear_y_rad" in params else 0.0
-    tx = float(params["translate_x"].item()) if "translate_x" in params else 0.0
-    ty = float(params["translate_y"].item()) if "translate_y" in params else 0.0
+    scale = float(params["scale"].item()) if "scale" in params else 1.0
+    shear_x = float(params["shear_x_rad"].item()) if "shear_x_rad" in params else 0.0
+    shear_y = float(params["shear_y_rad"].item()) if "shear_y_rad" in params else 0.0
+    translation_x = float(params["translate_x"].item()) if "translate_x" in params else 0.0
+    translation_y = float(params["translate_y"].item()) if "translate_y" in params else 0.0
 
-    cos_sy = np.cos(sy)
-    tan_sx = np.tan(sx)
-    cos_rot_sy = np.cos(rot - sy)
-    sin_rot_sy = np.sin(rot - sy)
+    cos_sy = np.cos(shear_y)
+    tan_sx = np.tan(shear_x)
+    cos_rot_sy = np.cos(rot - shear_y)
+    sin_rot_sy = np.sin(rot - shear_y)
     sin_rot = np.sin(rot)
     cos_rot = np.cos(rot)
 
-    a = sc * cos_rot_sy / cos_sy
-    b = sc * (-cos_rot_sy * tan_sx / cos_sy - sin_rot)
-    c = sc * sin_rot_sy / cos_sy
-    d = sc * (-sin_rot_sy * tan_sx / cos_sy + cos_rot)
+    m00 = scale * cos_rot_sy / cos_sy
+    m01 = scale * (-cos_rot_sy * tan_sx / cos_sy - sin_rot)
+    m10 = scale * sin_rot_sy / cos_sy
+    m11 = scale * (-sin_rot_sy * tan_sx / cos_sy + cos_rot)
 
     return np.array(
         [
-            [a, b, cx * (1.0 - a) - cy * b + tx],
-            [c, d, cy * (1.0 - d) - cx * c + ty],
+            [m00, m01, center_x * (1.0 - m00) - center_y * m01 + translation_x],
+            [m10, m11, center_y * (1.0 - m11) - center_x * m10 + translation_y],
             [0.0, 0.0, 1.0],
         ],
         dtype=np.float64,
@@ -857,14 +865,14 @@ def _affine_matrix_np_b1_tv(
 def build_matrix_numpy_b1_tv(
     transform: object,
     params: dict[str, torch.Tensor],
-    H: int,  # noqa: N803
-    W: int,  # noqa: N803
+    height: int,
+    width: int,
 ) -> np.ndarray[Any, np.dtype[np.float64]]:
-    """Return (3, 3) float64 pixel-space matrix for B=1, bypassing torch tensor creation.
+    """Return (3, 3) float64 pixel-space matrix for batch_size=1, bypassing torch tensor creation.
 
     Drop-in replacement for
-    ``TorchVisionAdapter.build_matrix(transform, params, H, W)[0].double().cpu().numpy()``
-    in the B=1 CPU cv2 warp path.  Extracts scalar values from ``params`` via
+    ``TorchVisionAdapter.build_matrix(transform, params, height, width)[0].double().cpu().numpy()``
+    in the batch_size=1 CPU cv2 warp path.  Extracts scalar values from ``params`` via
     ``.item()`` and computes the matrix directly in NumPy, avoiding the 8-12
     intermediate ``(1,)`` / ``(1, 3, 3)`` torch tensor allocations produced by
     the torch-based construction path.
@@ -872,8 +880,8 @@ def build_matrix_numpy_b1_tv(
     Args:
         transform: A TorchVision augmentation transform (type-dispatched).
         params: Canonical parameter dict from ``TorchVisionAdapter.sample_params``.
-        H: Image height in pixels.
-        W: Image width in pixels.
+        height: Image height in pixels.
+        width: Image width in pixels.
 
     Returns:
         ``(3, 3)`` float64 forward affine matrix in pixel coordinates.
@@ -881,14 +889,14 @@ def build_matrix_numpy_b1_tv(
     """
     import numpy as np
 
-    cx, cy = (W - 1) * 0.5, (H - 1) * 0.5
+    center_x, center_y = (width - 1) * 0.5, (height - 1) * 0.5
     ttype = type(transform)
 
     if ttype in _HFLIP_TYPES_FS:
-        return np.array([[-1.0, 0.0, float(W - 1)], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+        return np.array([[-1.0, 0.0, float(width - 1)], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
 
     if ttype in _VFLIP_TYPES_FS:
-        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, float(H - 1)], [0.0, 0.0, 1.0]], dtype=np.float64)
+        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, float(height - 1)], [0.0, 0.0, 1.0]], dtype=np.float64)
 
     if ttype in _ROTATION_TYPES_FS:
         angle_rad = float(params["angle_rad"].item())
@@ -896,27 +904,27 @@ def build_matrix_numpy_b1_tv(
         sin_a = np.sin(angle_rad)
         return np.array(
             [
-                [cos_a, -sin_a, cx * (1.0 - cos_a) + cy * sin_a],
-                [sin_a, cos_a, cy * (1.0 - cos_a) - cx * sin_a],
+                [cos_a, -sin_a, center_x * (1.0 - cos_a) + center_y * sin_a],
+                [sin_a, cos_a, center_y * (1.0 - cos_a) - center_x * sin_a],
                 [0.0, 0.0, 1.0],
             ],
             dtype=np.float64,
         )
 
     if ttype in _AFFINE_TYPES_FS:
-        return _affine_matrix_np_b1_tv(params, cx, cy)
+        return _affine_matrix_np_b1_tv(params, center_x, center_y)
 
     # Fallback: torch path for perspective, crop-resize, colour jitter, unknown types.
-    return TorchVisionAdapter.build_matrix(transform, params, H, W)[0].double().cpu().numpy()
+    return TorchVisionAdapter.build_matrix(transform, params, height, width)[0].double().cpu().numpy()
 
 
 def sample_and_build_matrix_numpy_b1_tv(
     transform: object,
     input_shape: tuple[int, int, int, int],
-    H: int,  # noqa: N803
-    W: int,  # noqa: N803
+    height: int,
+    width: int,
 ) -> np.ndarray[Any, np.dtype[np.float64]] | None:
-    """Sample params and build ``(3, 3)`` float64 matrix for B=1, entirely in numpy.
+    """Sample params and build ``(3, 3)`` float64 matrix for batch_size=1, entirely in numpy.
 
     Fuses :func:`TorchVisionAdapter.sample_params` + :func:`build_matrix_numpy_b1_tv`
     into a single call that invokes ``get_params`` directly, extracts scalar
@@ -932,10 +940,10 @@ def sample_and_build_matrix_numpy_b1_tv(
 
     Args:
         transform: A TorchVision augmentation transform (type-dispatched).
-        input_shape: ``(B, C, H, W)`` shape tuple (unused for TV; kept for
+        input_shape: ``(batch_size, channels, height, width)`` shape tuple (unused for TV; kept for
             interface compatibility with the Kornia fused builder).
-        H: Image height in pixels.
-        W: Image width in pixels.
+        height: Image height in pixels.
+        width: Image width in pixels.
 
     Returns:
         ``(3, 3)`` float64 forward affine matrix, or ``None`` if this type is
@@ -943,59 +951,59 @@ def sample_and_build_matrix_numpy_b1_tv(
 
     """
     ttype = type(transform)
-    cx, cy = (W - 1) * 0.5, (H - 1) * 0.5
+    center_x, center_y = (width - 1) * 0.5, (height - 1) * 0.5
 
     if ttype in _HFLIP_TYPES_FS:
-        return np.array([[-1.0, 0.0, float(W - 1)], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+        return np.array([[-1.0, 0.0, float(width - 1)], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
 
     if ttype in _VFLIP_TYPES_FS:
-        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, float(H - 1)], [0.0, 0.0, 1.0]], dtype=np.float64)
+        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, float(height - 1)], [0.0, 0.0, 1.0]], dtype=np.float64)
 
     if ttype in _ROTATION_TYPES_FS:
         angle_deg = float(ttype.get_params(transform.degrees))  # type: ignore[attr-defined]
         angle_rad = math.radians(angle_deg)
         cos_a = math.cos(angle_rad)
-        sin_a = math.sin(angle_rad)
+        sin_a = math.cos(angle_rad)
         return np.array(
             [
-                [cos_a, -sin_a, cx * (1.0 - cos_a) + cy * sin_a],
-                [sin_a, cos_a, cy * (1.0 - cos_a) - cx * sin_a],
+                [cos_a, -sin_a, center_x * (1.0 - cos_a) + center_y * sin_a],
+                [sin_a, cos_a, center_y * (1.0 - cos_a) - center_x * sin_a],
                 [0.0, 0.0, 1.0],
             ],
             dtype=np.float64,
         )
 
     if ttype in _AFFINE_TYPES_FS:
-        angle, translations, sc_val, shear = ttype.get_params(  # type: ignore[attr-defined]
+        angle, translations, scale_val, shear = ttype.get_params(  # type: ignore[attr-defined]
             transform.degrees,  # type: ignore[attr-defined]
             transform.translate,  # type: ignore[attr-defined]
             transform.scale,  # type: ignore[attr-defined]
             transform.shear,  # type: ignore[attr-defined]
-            img_size=(W, H),
+            img_size=(width, height),
         )
         rot = math.radians(float(angle))
-        tx = float(translations[0])
-        ty = float(translations[1])
-        sc = float(sc_val)
-        sx = math.radians(float(shear[0]))
-        sy = math.radians(float(shear[1]))
+        translation_x = float(translations[0])
+        translation_y = float(translations[1])
+        scale = float(scale_val)
+        shear_x = math.radians(float(shear[0]))
+        shear_y = math.radians(float(shear[1]))
 
-        cos_sy = math.cos(sy)
-        tan_sx = math.tan(sx)
-        cos_rot_sy = math.cos(rot - sy)
-        sin_rot_sy = math.sin(rot - sy)
+        cos_sy = math.cos(shear_y)
+        tan_sx = math.tan(shear_x)
+        cos_rot_sy = math.cos(rot - shear_y)
+        sin_rot_sy = math.sin(rot - shear_y)
         sin_rot = math.sin(rot)
         cos_rot = math.cos(rot)
 
-        a = sc * cos_rot_sy / cos_sy
-        b = sc * (-cos_rot_sy * tan_sx / cos_sy - sin_rot)
-        c = sc * sin_rot_sy / cos_sy
-        d = sc * (-sin_rot_sy * tan_sx / cos_sy + cos_rot)
+        m00 = scale * cos_rot_sy / cos_sy
+        m01 = scale * (-cos_rot_sy * tan_sx / cos_sy - sin_rot)
+        m10 = scale * sin_rot_sy / cos_sy
+        m11 = scale * (-sin_rot_sy * tan_sx / cos_sy + cos_rot)
 
         return np.array(
             [
-                [a, b, cx * (1.0 - a) - cy * b + tx],
-                [c, d, cy * (1.0 - d) - cx * c + ty],
+                [m00, m01, center_x * (1.0 - m00) - center_y * m01 + translation_x],
+                [m10, m11, center_y * (1.0 - m11) - center_x * m10 + translation_y],
                 [0.0, 0.0, 1.0],
             ],
             dtype=np.float64,

@@ -16,28 +16,28 @@ import torch
 
 
 def test_transform_spec_construction_and_equality() -> None:
-    """TransformSpec holds op, params, p; equality is value-based."""
+    """TransformSpec holds operation, params, prob; equality is value-based."""
     from fuse_augmentations import TransformSpec
 
-    spec = TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.8)
-    assert spec.op == "rotation"
+    spec = TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=0.8)
+    assert spec.operation == "rotation"
     assert spec.params == {"degrees": (-30.0, 30.0)}
-    assert spec.p == 0.8
+    assert spec.prob == 0.8
 
 
 def test_transform_spec_default_p() -> None:
-    """TransformSpec.p defaults to 1.0 when omitted."""
+    """TransformSpec.prob defaults to 1.0 when omitted."""
     from fuse_augmentations import TransformSpec
 
-    spec = TransformSpec(op="hflip", params={})
-    assert spec.p == 1.0
+    spec = TransformSpec(operation="hflip", params={})
+    assert spec.prob == 1.0
 
 
 def test_transform_spec_json_round_trip() -> None:
     """to_dict() / from_dict() round-trips through json.dumps / json.loads."""
     from fuse_augmentations import TransformSpec
 
-    original = TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.8)
+    original = TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=0.8)
     d = original.to_dict()
     json_str = json.dumps(d)
     loaded = TransformSpec.from_dict(json.loads(json_str))
@@ -48,9 +48,9 @@ def test_transform_spec_is_frozen() -> None:
     """TransformSpec is immutable (frozen dataclass)."""
     from fuse_augmentations import TransformSpec
 
-    spec = TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)})
+    spec = TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)})
     with pytest.raises((TypeError, AttributeError)):
-        spec.op = "hflip"  # type: ignore[misc]
+        spec.operation = "hflip"  # type: ignore[misc]
 
 
 def test_transform_spec_exported() -> None:
@@ -104,8 +104,8 @@ def test_from_config_kornia_rotation_hflip() -> None:
     from fuse_augmentations import Compose, TransformSpec
 
     specs = [
-        TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.8),
-        TransformSpec(op="hflip", params={}, p=0.5),
+        TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=0.8),
+        TransformSpec(operation="hflip", params={}, prob=0.5),
     ]
     pipe = Compose.from_config(specs, backend="kornia")
     x = torch.rand(2, 3, 64, 64)
@@ -130,8 +130,8 @@ def test_from_config_produces_fused_segment() -> None:
     from fuse_augmentations import Compose, TransformSpec
 
     specs = [
-        TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}),
-        TransformSpec(op="hflip", params={}),
+        TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}),
+        TransformSpec(operation="hflip", params={}),
     ]
     pipe = Compose.from_config(specs, backend="kornia")
     x = torch.rand(2, 3, 64, 64)
@@ -144,7 +144,7 @@ def test_from_config_torchvision() -> None:
     pytest.importorskip("torchvision")
     from fuse_augmentations import Compose, TransformSpec
 
-    specs = [TransformSpec(op="hflip", params={}, p=0.5)]
+    specs = [TransformSpec(operation="hflip", params={}, prob=0.5)]
     pipe = Compose.from_config(specs, backend="torchvision")
     x = torch.rand(2, 3, 32, 32)
     out = pipe(x)
@@ -161,8 +161,8 @@ def test_from_params_specs_overload_backend_free() -> None:
     from fuse_augmentations import Compose, TransformSpec
 
     specs = [
-        TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=1.0),
-        TransformSpec(op="hflip", params={}, p=0.5),
+        TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=1.0),
+        TransformSpec(operation="hflip", params={}, prob=0.5),
     ]
     pipe = Compose.from_params(specs=specs)
     x = torch.rand(2, 3, 64, 64)
@@ -184,7 +184,7 @@ def test_from_params_specs_and_kwargs_are_mutually_exclusive() -> None:
     """Passing both specs and keyword params raises ValueError."""
     from fuse_augmentations import Compose, TransformSpec
 
-    specs = [TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)})]
+    specs = [TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)})]
     with pytest.raises(ValueError, match="mutually exclusive"):
         Compose.from_params(specs=specs, rotation=(-30.0, 30.0))
 
@@ -195,25 +195,25 @@ def test_from_params_specs_and_kwargs_are_mutually_exclusive() -> None:
 
 
 def test_p_zero_transform_never_applied() -> None:
-    """A spec with p=0.0 is never applied — output matches identity-rotated input."""
+    """Albu spec with prob=0.0 is never applied — output matches identity-rotated input."""
     from fuse_augmentations import Compose, TransformSpec
 
-    # Only a large rotation (p=0.0) — should never change image
-    specs = [TransformSpec(op="rotation", params={"degrees": (-90.0, 90.0)}, p=0.0)]
+    # Only a large rotation (prob=0.0) — should never change image
+    specs = [TransformSpec(operation="rotation", params={"degrees": (-90.0, 90.0)}, prob=0.0)]
     pipe = Compose.from_params(specs=specs)
     x = torch.rand(2, 3, 64, 64)
     out = pipe(x)
-    assert torch.allclose(out, x, atol=1e-5), "p=0.0 transform should never be applied"
+    assert torch.allclose(out, x, atol=1e-5), "prob=0.0 transform should never be applied"
 
 
 def test_p_one_transform_always_applied_for_flip() -> None:
-    """A hflip spec with p=1.0 is always applied — output != input for non-symmetric images."""
+    """Albu hflip spec with prob=1.0 is always applied — output != input for non-symmetric images."""
     from fuse_augmentations import Compose, TransformSpec
 
     torch.manual_seed(42)
-    specs = [TransformSpec(op="hflip", params={}, p=1.0)]
+    specs = [TransformSpec(operation="hflip", params={}, prob=1.0)]
     pipe = Compose.from_params(specs=specs)
     x = torch.rand(2, 3, 32, 32)
     out = pipe(x)
-    # hflip with p=1.0 must produce flipped output
-    assert torch.allclose(out, x.flip(dims=[3])), "p=1.0 hflip must always flip"
+    # hflip with prob=1.0 must produce flipped output
+    assert torch.allclose(out, x.flip(dims=[3])), "prob=1.0 hflip must always flip"

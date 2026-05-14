@@ -51,12 +51,12 @@ def detect_backend(transforms: list[object]) -> Backend:
     """
     backends: set[Backend] = set()
 
-    for t in transforms:
-        module = type(t).__module__ or ""
+    for transform in transforms:
+        module = type(transform).__module__ or ""
         backend = _match_backend(module)
         if backend is None:
             warnings.warn(
-                f"Unrecognized transform {type(t).__name__!r}; treating as SPATIAL_KERNEL barrier.",
+                f"Unrecognized transform {type(transform).__name__!r}; treating as SPATIAL_KERNEL barrier.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -105,14 +105,14 @@ def detect_backends_per_transform(transforms: list[object]) -> list[Backend | No
 
     """
     result: list[Backend | None] = []
-    for t in transforms:
-        module = type(t).__module__ or ""
+    for transform in transforms:
+        module = type(transform).__module__ or ""
         backend = _match_backend(module)
         if backend is None:
-            backend = _match_backend_from_mro(type(t))
+            backend = _match_backend_from_mro(type(transform))
         if backend is None:
             warnings.warn(
-                f"Unrecognized transform {type(t).__name__!r}; treating as SPATIAL_KERNEL barrier.",
+                f"Unrecognized transform {type(transform).__name__!r}; treating as SPATIAL_KERNEL barrier.",
                 UserWarning,
                 stacklevel=2,
             )

@@ -7,8 +7,8 @@ is ``cx = (W-1)/2``, ``cy = (H-1)/2``.
 Example:
     >>> import torch
     >>> from fuse_augmentations.affine._matrix import rotation_matrix, matmul3x3, inv3x3
-    >>> M = rotation_matrix(torch.zeros(2), H=64, W=64)
-    >>> M.shape
+    >>> matrix = rotation_matrix(torch.zeros(2), height=64, width=64)
+    >>> matrix.shape
     torch.Size([2, 3, 3])
 
 """
@@ -18,238 +18,238 @@ from __future__ import annotations
 import torch
 
 
-def rotation_matrix(angle_rad: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: N803
-    """Build (B, 3, 3) pixel-space forward rotation matrix around image center.
+def rotation_matrix(angle_rad: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    """Build (batch_size, 3, 3) pixel-space forward rotation matrix around image center.
 
     Args:
-        angle_rad: Rotation angle in radians, shape ``(B,)``.
-        H: Image height in pixels.
-        W: Image width in pixels.
+        angle_rad: Rotation angle in radians, shape ``(batch_size,)``.
+        height: Image height in pixels.
+        width: Image width in pixels.
 
     Returns:
-        ``(B, 3, 3)`` forward rotation matrix in pixel coordinates.
+        ``(batch_size, 3, 3)`` forward rotation matrix in pixel coordinates.
 
     Example:
         >>> import torch
-        >>> M = rotation_matrix(torch.zeros(2), H=64, W=64)
-        >>> torch.allclose(M, torch.eye(3).unsqueeze(0).expand(2, -1, -1))
+        >>> matrix = rotation_matrix(torch.zeros(2), height=64, width=64)
+        >>> torch.allclose(matrix, torch.eye(3).unsqueeze(0).expand(2, -1, -1))
         True
 
     """
-    cx = (W - 1) / 2.0
-    cy = (H - 1) / 2.0
+    center_x = (width - 1) / 2.0
+    center_y = (height - 1) / 2.0
     cos_a = torch.cos(angle_rad)
     sin_a = torch.sin(angle_rad)
-    B = angle_rad.shape[0]  # noqa: N806
-    zeros = torch.zeros(B, device=angle_rad.device, dtype=angle_rad.dtype)
-    ones = torch.ones(B, device=angle_rad.device, dtype=angle_rad.dtype)
-    row0 = torch.stack([cos_a, -sin_a, cx * (1 - cos_a) + cy * sin_a], dim=-1)
-    row1 = torch.stack([sin_a, cos_a, cy * (1 - cos_a) - cx * sin_a], dim=-1)
+    batch_size = angle_rad.shape[0]
+    zeros = torch.zeros(batch_size, device=angle_rad.device, dtype=angle_rad.dtype)
+    ones = torch.ones(batch_size, device=angle_rad.device, dtype=angle_rad.dtype)
+    row0 = torch.stack([cos_a, -sin_a, center_x * (1 - cos_a) + center_y * sin_a], dim=-1)
+    row1 = torch.stack([sin_a, cos_a, center_y * (1 - cos_a) - center_x * sin_a], dim=-1)
     row2 = torch.stack([zeros, zeros, ones], dim=-1)
     return torch.stack([row0, row1, row2], dim=-2)
 
 
-def scale_matrix(sx: torch.Tensor, sy: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: N803
-    """Build (B, 3, 3) pixel-space forward scale matrix around image center.
+def scale_matrix(scale_x: torch.Tensor, scale_y: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    """Build (batch_size, 3, 3) pixel-space forward scale matrix around image center.
 
     Args:
-        sx: X scale factor, shape ``(B,)``. 1.0 = identity.
-        sy: Y scale factor, shape ``(B,)``. 1.0 = identity.
-        H: Image height in pixels.
-        W: Image width in pixels.
+        scale_x: X scale factor, shape ``(batch_size,)``. 1.0 = identity.
+        scale_y: Y scale factor, shape ``(batch_size,)``. 1.0 = identity.
+        height: Image height in pixels.
+        width: Image width in pixels.
 
     Returns:
-        ``(B, 3, 3)`` forward scale matrix.
+        ``(batch_size, 3, 3)`` forward scale matrix.
 
     Example:
         >>> import torch
-        >>> M = scale_matrix(torch.ones(1), torch.ones(1), H=64, W=64)
-        >>> torch.allclose(M, torch.eye(3).unsqueeze(0))
+        >>> matrix = scale_matrix(torch.ones(1), torch.ones(1), height=64, width=64)
+        >>> torch.allclose(matrix, torch.eye(3).unsqueeze(0))
         True
 
     """
-    cx = (W - 1) / 2.0
-    cy = (H - 1) / 2.0
-    B = sx.shape[0]  # noqa: N806
-    zeros = torch.zeros(B, device=sx.device, dtype=sx.dtype)
-    ones = torch.ones(B, device=sx.device, dtype=sx.dtype)
-    row0 = torch.stack([sx, zeros, cx * (1 - sx)], dim=-1)
-    row1 = torch.stack([zeros, sy, cy * (1 - sy)], dim=-1)
+    center_x = (width - 1) / 2.0
+    center_y = (height - 1) / 2.0
+    batch_size = scale_x.shape[0]
+    zeros = torch.zeros(batch_size, device=scale_x.device, dtype=scale_x.dtype)
+    ones = torch.ones(batch_size, device=scale_x.device, dtype=scale_x.dtype)
+    row0 = torch.stack([scale_x, zeros, center_x * (1 - scale_x)], dim=-1)
+    row1 = torch.stack([zeros, scale_y, center_y * (1 - scale_y)], dim=-1)
     row2 = torch.stack([zeros, zeros, ones], dim=-1)
     return torch.stack([row0, row1, row2], dim=-2)
 
 
-def shear_x_matrix(shear_x_tan: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: N803
-    """Build (B, 3, 3) pixel-space forward x-shear matrix around image center.
+def shear_x_matrix(shear_x_tan: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    """Build (batch_size, 3, 3) pixel-space forward x-shear matrix around image center.
 
     ``shear_x_tan`` is ``tan(shear_x_rad)`` - already converted from degrees
     by the adapter.
 
     Args:
-        shear_x_tan: Tangent of x-shear angle, shape ``(B,)``.
-        H: Image height in pixels.
-        W: Image width in pixels.
+        shear_x_tan: Tangent of x-shear angle, shape ``(batch_size,)``.
+        height: Image height in pixels.
+        width: Image width in pixels.
 
     Returns:
-        ``(B, 3, 3)`` forward x-shear matrix.
+        ``(batch_size, 3, 3)`` forward x-shear matrix.
 
     Example:
         >>> import torch
-        >>> M = shear_x_matrix(torch.zeros(1), H=64, W=64)
-        >>> torch.allclose(M, torch.eye(3).unsqueeze(0))
+        >>> matrix = shear_x_matrix(torch.zeros(1), height=64, width=64)
+        >>> torch.allclose(matrix, torch.eye(3).unsqueeze(0))
         True
 
     """
-    cy = (H - 1) / 2.0
-    B = shear_x_tan.shape[0]  # noqa: N806
-    zeros = torch.zeros(B, device=shear_x_tan.device, dtype=shear_x_tan.dtype)
-    ones = torch.ones(B, device=shear_x_tan.device, dtype=shear_x_tan.dtype)
-    row0 = torch.stack([ones, shear_x_tan, -cy * shear_x_tan], dim=-1)
+    center_y = (height - 1) / 2.0
+    batch_size = shear_x_tan.shape[0]
+    zeros = torch.zeros(batch_size, device=shear_x_tan.device, dtype=shear_x_tan.dtype)
+    ones = torch.ones(batch_size, device=shear_x_tan.device, dtype=shear_x_tan.dtype)
+    row0 = torch.stack([ones, shear_x_tan, -center_y * shear_x_tan], dim=-1)
     row1 = torch.stack([zeros, ones, zeros], dim=-1)
     row2 = torch.stack([zeros, zeros, ones], dim=-1)
     return torch.stack([row0, row1, row2], dim=-2)
 
 
-def shear_y_matrix(shear_y_tan: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: N803
-    """Build (B, 3, 3) pixel-space forward y-shear matrix around image center.
+def shear_y_matrix(shear_y_tan: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    """Build (batch_size, 3, 3) pixel-space forward y-shear matrix around image center.
 
     ``shear_y_tan`` is ``tan(shear_y_rad)`` - already converted from degrees
     by the adapter.
 
     Args:
-        shear_y_tan: Tangent of y-shear angle, shape ``(B,)``.
-        H: Image height in pixels.
-        W: Image width in pixels.
+        shear_y_tan: Tangent of y-shear angle, shape ``(batch_size,)``.
+        height: Image height in pixels.
+        width: Image width in pixels.
 
     Returns:
-        ``(B, 3, 3)`` forward y-shear matrix.
+        ``(batch_size, 3, 3)`` forward y-shear matrix.
 
     Example:
         >>> import torch
-        >>> M = shear_y_matrix(torch.zeros(1), H=64, W=64)
-        >>> torch.allclose(M, torch.eye(3).unsqueeze(0))
+        >>> matrix = shear_y_matrix(torch.zeros(1), height=64, width=64)
+        >>> torch.allclose(matrix, torch.eye(3).unsqueeze(0))
         True
 
     """
-    cx = (W - 1) / 2.0
-    B = shear_y_tan.shape[0]  # noqa: N806
-    zeros = torch.zeros(B, device=shear_y_tan.device, dtype=shear_y_tan.dtype)
-    ones = torch.ones(B, device=shear_y_tan.device, dtype=shear_y_tan.dtype)
+    center_x = (width - 1) / 2.0
+    batch_size = shear_y_tan.shape[0]
+    zeros = torch.zeros(batch_size, device=shear_y_tan.device, dtype=shear_y_tan.dtype)
+    ones = torch.ones(batch_size, device=shear_y_tan.device, dtype=shear_y_tan.dtype)
     row0 = torch.stack([ones, zeros, zeros], dim=-1)
-    row1 = torch.stack([shear_y_tan, ones, -cx * shear_y_tan], dim=-1)
+    row1 = torch.stack([shear_y_tan, ones, -center_x * shear_y_tan], dim=-1)
     row2 = torch.stack([zeros, zeros, ones], dim=-1)
     return torch.stack([row0, row1, row2], dim=-2)
 
 
-def translate_matrix(tx: torch.Tensor, ty: torch.Tensor) -> torch.Tensor:
-    """Build (B, 3, 3) pixel-space translation matrix.
+def translate_matrix(translation_x: torch.Tensor, translation_y: torch.Tensor) -> torch.Tensor:
+    """Build (batch_size, 3, 3) pixel-space translation matrix.
 
     Args:
-        tx: X translation in pixels, shape ``(B,)``.
-        ty: Y translation in pixels, shape ``(B,)``.
+        translation_x: X translation in pixels, shape ``(batch_size,)``.
+        translation_y: Y translation in pixels, shape ``(batch_size,)``.
 
     Returns:
-        ``(B, 3, 3)`` translation matrix.
+        ``(batch_size, 3, 3)`` translation matrix.
 
     Example:
         >>> import torch
-        >>> M = translate_matrix(torch.zeros(1), torch.zeros(1))
-        >>> torch.allclose(M, torch.eye(3).unsqueeze(0))
+        >>> matrix = translate_matrix(torch.zeros(1), torch.zeros(1))
+        >>> torch.allclose(matrix, torch.eye(3).unsqueeze(0))
         True
 
     """
-    B = tx.shape[0]  # noqa: N806
-    zeros = torch.zeros(B, device=tx.device, dtype=tx.dtype)
-    ones = torch.ones(B, device=tx.device, dtype=tx.dtype)
-    row0 = torch.stack([ones, zeros, tx], dim=-1)
-    row1 = torch.stack([zeros, ones, ty], dim=-1)
+    batch_size = translation_x.shape[0]
+    zeros = torch.zeros(batch_size, device=translation_x.device, dtype=translation_x.dtype)
+    ones = torch.ones(batch_size, device=translation_x.device, dtype=translation_x.dtype)
+    row0 = torch.stack([ones, zeros, translation_x], dim=-1)
+    row1 = torch.stack([zeros, ones, translation_y], dim=-1)
     row2 = torch.stack([zeros, zeros, ones], dim=-1)
     return torch.stack([row0, row1, row2], dim=-2)
 
 
-def hflip_matrix(W: int, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:  # noqa: N803
-    """Build (B, 3, 3) pixel-space horizontal flip matrix.
+def hflip_matrix(width: int, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Build (batch_size, 3, 3) pixel-space horizontal flip matrix.
 
     Args:
-        W: Image width in pixels.
-        batch_size: Batch size B.
+        width: Image width in pixels.
+        batch_size: Batch size.
         device: Target device.
         dtype: Target dtype.
 
     Returns:
-        ``(B, 3, 3)`` horizontal flip matrix.
+        ``(batch_size, 3, 3)`` horizontal flip matrix.
 
     Example:
         >>> import torch
-        >>> M = hflip_matrix(W=4, batch_size=1, device=torch.device("cpu"), dtype=torch.float32)
-        >>> M[0, 0, 0].item()
+        >>> matrix = hflip_matrix(width=4, batch_size=1, device=torch.device("cpu"), dtype=torch.float32)
+        >>> matrix[0, 0, 0].item()
         -1.0
-        >>> M[0, 0, 2].item()
+        >>> matrix[0, 0, 2].item()
         3.0
 
     """
-    M = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)  # noqa: N806
-    M[:, 0, 0] = -1.0
-    M[:, 0, 2] = float(W - 1)
-    M[:, 1, 1] = 1.0
-    M[:, 2, 2] = 1.0
-    return M
+    matrix = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)
+    matrix[:, 0, 0] = -1.0
+    matrix[:, 0, 2] = float(width - 1)
+    matrix[:, 1, 1] = 1.0
+    matrix[:, 2, 2] = 1.0
+    return matrix
 
 
-def vflip_matrix(H: int, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:  # noqa: N803
-    """Build (B, 3, 3) pixel-space vertical flip matrix.
+def vflip_matrix(height: int, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Build (batch_size, 3, 3) pixel-space vertical flip matrix.
 
     Args:
-        H: Image height in pixels.
-        batch_size: Batch size B.
+        height: Image height in pixels.
+        batch_size: Batch size.
         device: Target device.
         dtype: Target dtype.
 
     Returns:
-        ``(B, 3, 3)`` vertical flip matrix.
+        ``(batch_size, 3, 3)`` vertical flip matrix.
 
     Example:
         >>> import torch
-        >>> M = vflip_matrix(H=4, batch_size=1, device=torch.device("cpu"), dtype=torch.float32)
-        >>> M[0, 1, 1].item()
+        >>> matrix = vflip_matrix(height=4, batch_size=1, device=torch.device("cpu"), dtype=torch.float32)
+        >>> matrix[0, 1, 1].item()
         -1.0
-        >>> M[0, 1, 2].item()
+        >>> matrix[0, 1, 2].item()
         3.0
 
     """
-    M = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)  # noqa: N806
-    M[:, 0, 0] = 1.0
-    M[:, 1, 1] = -1.0
-    M[:, 1, 2] = float(H - 1)
-    M[:, 2, 2] = 1.0
-    return M
+    matrix = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)
+    matrix[:, 0, 0] = 1.0
+    matrix[:, 1, 1] = -1.0
+    matrix[:, 1, 2] = float(height - 1)
+    matrix[:, 2, 2] = 1.0
+    return matrix
 
 
-def matmul3x3(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:  # noqa: N803
+def matmul3x3(matrix_a: torch.Tensor, matrix_b: torch.Tensor) -> torch.Tensor:
     """Batch 3x3 matrix multiply.
 
     Delegates to ``torch.bmm``, which is both faster on eager CPU and fully
     supported by ``torch.compile``'s inductor backend.
 
     Args:
-        A: ``(B, 3, 3)`` left matrix.
-        B: ``(B, 3, 3)`` right matrix.
+        matrix_a: ``(B, 3, 3)`` left matrix.
+        matrix_b: ``(B, 3, 3)`` right matrix.
 
     Returns:
         ``(B, 3, 3)`` product ``A @ B``.
 
     Example:
         >>> import torch
-        >>> I = torch.eye(3).unsqueeze(0).expand(2, -1, -1)
-        >>> R = matmul3x3(I, I)
-        >>> torch.allclose(R, I)
+        >>> mtx_identity = torch.eye(3).unsqueeze(0).expand(2, -1, -1)
+        >>> mtx_result = matmul3x3(mtx_identity, mtx_identity)
+        >>> torch.allclose(mtx_result, mtx_identity)
         True
 
     """
-    return torch.bmm(A, B)
+    return torch.bmm(matrix_a, matrix_b)
 
 
-def inv3x3(M: torch.Tensor) -> torch.Tensor:  # noqa: N803
+def inv3x3(matrix: torch.Tensor) -> torch.Tensor:
     """Batch 3x3 matrix inverse.
 
     Uses ``torch.linalg.inv`` on the eager path (single LAPACK call, ~6x faster
@@ -258,10 +258,10 @@ def inv3x3(M: torch.Tensor) -> torch.Tensor:  # noqa: N803
     for near-singular matrices.
 
     Args:
-        M: ``(B, 3, 3)`` batch of matrices.
+        matrix: ``(batch_size, 3, 3)`` batch of matrices.
 
     Returns:
-        ``(B, 3, 3)`` batch of inverse matrices.
+        ``(batch_size, 3, 3)`` batch of inverse matrices.
 
     Raises:
         ValueError: If any matrix in the batch has a near-zero determinant
@@ -269,44 +269,44 @@ def inv3x3(M: torch.Tensor) -> torch.Tensor:  # noqa: N803
 
     Example:
         >>> import torch
-        >>> I = torch.eye(3).unsqueeze(0)
-        >>> torch.allclose(inv3x3(I), I)
+        >>> mtx_identity = torch.eye(3).unsqueeze(0)
+        >>> torch.allclose(inv3x3(mtx_identity), mtx_identity)
         True
 
     """
-    eps = torch.finfo(M.dtype).eps * 1e3
+    eps = torch.finfo(matrix.dtype).eps * 1e3
 
     if not _is_compiling():
         # Fast path: single LAPACK call, ~6x faster than Cramer's rule
-        det = torch.linalg.det(M)
+        det = torch.linalg.det(matrix)
         if (det.abs() < eps * 1e-3).any():
             msg = (
                 f"Near-singular matrix detected (min |det|={det.abs().min().item():.2e}). "
                 "Check for extreme scale values or degenerate transforms."
             )
             raise ValueError(msg)
-        return torch.linalg.inv(M)  # type: ignore[no-any-return]
+        return torch.linalg.inv(matrix)  # type: ignore[no-any-return]
 
     # Compile path: element-wise Cramer's rule for kernel fusion
-    a, b, c = M[:, 0, 0], M[:, 0, 1], M[:, 0, 2]
-    d, e, f = M[:, 1, 0], M[:, 1, 1], M[:, 1, 2]
-    g, h, i = M[:, 2, 0], M[:, 2, 1], M[:, 2, 2]
+    m00, m01, m02 = matrix[:, 0, 0], matrix[:, 0, 1], matrix[:, 0, 2]
+    m10, m11, m12 = matrix[:, 1, 0], matrix[:, 1, 1], matrix[:, 1, 2]
+    m20, m21, m22 = matrix[:, 2, 0], matrix[:, 2, 1], matrix[:, 2, 2]
 
-    det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+    det = m00 * (m11 * m22 - m12 * m21) - m01 * (m10 * m22 - m12 * m20) + m02 * (m10 * m21 - m11 * m20)
     # Compile-safe singularity guard: clamp |det| to eps, preserve sign
     det = det.sign() * det.abs().clamp(min=eps)
     inv_det = 1.0 / det
     adj = torch.stack(
         [
-            e * i - f * h,
-            c * h - b * i,
-            b * f - c * e,
-            f * g - d * i,
-            a * i - c * g,
-            c * d - a * f,
-            d * h - e * g,
-            b * g - a * h,
-            a * e - b * d,
+            m11 * m22 - m12 * m21,
+            m02 * m21 - m01 * m22,
+            m01 * m12 - m02 * m11,
+            m12 * m20 - m10 * m22,
+            m00 * m22 - m02 * m20,
+            m02 * m10 - m00 * m12,
+            m10 * m21 - m11 * m20,
+            m01 * m20 - m00 * m21,
+            m00 * m11 - m01 * m10,
         ],
         dim=-1,
     ).reshape(-1, 3, 3)
@@ -331,82 +331,82 @@ def _is_compiling() -> bool:
     return False
 
 
-def normalize_matrix(M: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: N803
-    """Apply normalization sandwich ``N @ M @ N_inv`` for affine_grid input.
+def normalize_matrix(matrix: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    """Apply normalization sandwich ``N @ matrix @ N_inv`` for affine_grid input.
 
     Converts a pixel-space matrix to normalized ``[-1, 1]`` space
-    with ``align_corners=True``. The matrix ``M`` is the composed forward
+    with ``align_corners=True``. The matrix ``matrix`` is the composed forward
     transform (src->dst). ``affine_grid`` interprets the normalized theta
     as the mapping that generates sampling coordinates for ``grid_sample``.
 
     The normalization matrix is::
 
-        N = [[2/(W-1), 0, -1], [0, 2/(H-1), -1], [0, 0, 1]]
+        mtx_normalize = [[2/(width-1), 0, -1], [0, 2/(height-1), -1], [0, 0, 1]]
 
     Args:
-        M: ``(B, 3, 3)`` pixel-space forward matrix.
-        H: Image height in pixels. Must be >= 2.
-        W: Image width in pixels. Must be >= 2.
+        matrix: ``(batch_size, 3, 3)`` pixel-space forward matrix.
+        height: Image height in pixels. Must be >= 2.
+        width: Image width in pixels. Must be >= 2.
 
     Returns:
-        ``(B, 3, 3)`` normalized matrix suitable for ``affine_grid``.
+        ``(batch_size, 3, 3)`` normalized matrix suitable for ``affine_grid``.
 
     Raises:
-        ValueError: If ``W == 1`` or ``H == 1`` (division by zero).
+        ValueError: If ``width == 1`` or ``height == 1`` (division by zero).
 
     Example:
         >>> import torch
-        >>> M_norm = normalize_matrix(torch.eye(3).unsqueeze(0), H=64, W=64)
-        >>> M_norm.shape
+        >>> mtx_norm = normalize_matrix(torch.eye(3).unsqueeze(0), height=64, width=64)
+        >>> mtx_norm.shape
         torch.Size([1, 3, 3])
 
     """
-    if W == 1:
-        msg = "W must be >= 2 for normalization (W=1 causes division by zero)"
+    if width == 1:
+        msg = "width must be >= 2 for normalization (width=1 causes division by zero)"
         raise ValueError(msg)
-    if H == 1:
-        msg = "H must be >= 2 for normalization (H=1 causes division by zero)"
+    if height == 1:
+        msg = "height must be >= 2 for normalization (height=1 causes division by zero)"
         raise ValueError(msg)
 
-    hw: float = (W - 1) / 2.0  # N_inv[0,0] = N_inv[0,2]
-    hh: float = (H - 1) / 2.0  # N_inv[1,1] = N_inv[1,2]
-    sx: float = 2.0 / (W - 1)  # N[0,0]
-    sy: float = 2.0 / (H - 1)  # N[1,1]
+    half_width: float = (width - 1) / 2.0  # N_inv[0,0] = N_inv[0,2]
+    half_height: float = (height - 1) / 2.0  # N_inv[1,1] = N_inv[1,2]
+    scale_x_norm: float = 2.0 / (width - 1)  # N[0,0]
+    scale_y_norm: float = 2.0 / (height - 1)  # N[1,1]
 
-    # Closed-form analytic expansion of N @ M @ N_inv.
+    # Closed-form analytic expansion of N @ matrix @ N_inv.
     # Avoids allocating two (B,3,3) intermediate matrices and two bmm calls.
     #
-    # Step 1 — tmp = N @ M, where N=[[sx,0,-1],[0,sy,-1],[0,0,1]]:
-    #   tmp[b, 0, j] = sx*M[b,0,j] - M[b,2,j]
-    #   tmp[b, 1, j] = sy*M[b,1,j] - M[b,2,j]
-    #   tmp[b, 2, j] = M[b,2,j]
+    # Step 1 — tmp = N @ matrix, where N=[[scale_x_norm,0,-1],[0,scale_y_norm,-1],[0,0,1]]:
+    #   tmp[b, 0, j] = scale_x_norm*matrix[b,0,j] - matrix[b,2,j]
+    #   tmp[b, 1, j] = scale_y_norm*matrix[b,1,j] - matrix[b,2,j]
+    #   tmp[b, 2, j] = matrix[b,2,j]
     #
-    # Step 2 — result = tmp @ N_inv, where N_inv=[[hw,0,hw],[0,hh,hh],[0,0,1]]:
-    #   result[b,i,0] = tmp[b,i,0]*hw
-    #   result[b,i,1] = tmp[b,i,1]*hh
-    #   result[b,i,2] = tmp[b,i,0]*hw + tmp[b,i,1]*hh + tmp[b,i,2]
-    result = torch.empty_like(M)
+    # Step 2 — result = tmp @ N_inv, where N_inv=[[half_width,0,half_width],[0,half_height,half_height],[0,0,1]]:
+    #   result[b,i,0] = tmp[b,i,0]*half_width
+    #   result[b,i,1] = tmp[b,i,1]*half_height
+    #   result[b,i,2] = tmp[b,i,0]*half_width + tmp[b,i,1]*half_height + tmp[b,i,2]
+    result = torch.empty_like(matrix)
 
-    # Row 0: tmp[0,j] = sx*M[0,j] - M[2,j]
-    t00 = sx * M[:, 0, 0] - M[:, 2, 0]
-    t01 = sx * M[:, 0, 1] - M[:, 2, 1]
-    t02 = sx * M[:, 0, 2] - M[:, 2, 2]
-    result[:, 0, 0] = t00 * hw
-    result[:, 0, 1] = t01 * hh
-    result[:, 0, 2] = t00 * hw + t01 * hh + t02
+    # Row 0: tmp[0,j] = scale_x_norm*matrix[0,j] - matrix[2,j]
+    t00 = scale_x_norm * matrix[:, 0, 0] - matrix[:, 2, 0]
+    t01 = scale_x_norm * matrix[:, 0, 1] - matrix[:, 2, 1]
+    t02 = scale_x_norm * matrix[:, 0, 2] - matrix[:, 2, 2]
+    result[:, 0, 0] = t00 * half_width
+    result[:, 0, 1] = t01 * half_height
+    result[:, 0, 2] = t00 * half_width + t01 * half_height + t02
 
-    # Row 1: tmp[1,j] = sy*M[1,j] - M[2,j]
-    t10 = sy * M[:, 1, 0] - M[:, 2, 0]
-    t11 = sy * M[:, 1, 1] - M[:, 2, 1]
-    t12 = sy * M[:, 1, 2] - M[:, 2, 2]
-    result[:, 1, 0] = t10 * hw
-    result[:, 1, 1] = t11 * hh
-    result[:, 1, 2] = t10 * hw + t11 * hh + t12
+    # Row 1: tmp[1,j] = scale_y_norm*matrix[1,j] - matrix[2,j]
+    t10 = scale_y_norm * matrix[:, 1, 0] - matrix[:, 2, 0]
+    t11 = scale_y_norm * matrix[:, 1, 1] - matrix[:, 2, 1]
+    t12 = scale_y_norm * matrix[:, 1, 2] - matrix[:, 2, 2]
+    result[:, 1, 0] = t10 * half_width
+    result[:, 1, 1] = t11 * half_height
+    result[:, 1, 2] = t10 * half_width + t11 * half_height + t12
 
-    # Row 2: tmp[2,j] = M[2,j] (N[2,:] = [0,0,1])
-    result[:, 2, 0] = M[:, 2, 0] * hw
-    result[:, 2, 1] = M[:, 2, 1] * hh
-    result[:, 2, 2] = M[:, 2, 0] * hw + M[:, 2, 1] * hh + M[:, 2, 2]
+    # Row 2: tmp[2,j] = matrix[2,j] (N[2,:] = [0,0,1])
+    result[:, 2, 0] = matrix[:, 2, 0] * half_width
+    result[:, 2, 1] = matrix[:, 2, 1] * half_height
+    result[:, 2, 2] = matrix[:, 2, 0] * half_width + matrix[:, 2, 1] * half_height + matrix[:, 2, 2]
 
     return result
 
@@ -426,20 +426,20 @@ def crop_resize_matrix(
         x_out = (x_in - left) * (target_w - 1) / (crop_w - 1)
         y_out = (y_in - top)  * (target_h - 1) / (crop_h - 1)
 
-    All inputs are per-sample ``(B,)`` tensors.  ``target_h``/``target_w`` are
+    All inputs are per-sample ``(batch_size,)`` tensors.  ``target_h``/``target_w`` are
     typically constant across the batch (fixed output size) but are accepted as
     tensors for API uniformity.
 
     Args:
-        top: Crop top coordinate in pixels, shape ``(B,)``.
-        left: Crop left coordinate in pixels, shape ``(B,)``.
-        crop_h: Crop height in pixels, shape ``(B,)``.
-        crop_w: Crop width in pixels, shape ``(B,)``.
-        target_h: Output height in pixels, shape ``(B,)``.
-        target_w: Output width in pixels, shape ``(B,)``.
+        top: Crop top coordinate in pixels, shape ``(batch_size,)``.
+        left: Crop left coordinate in pixels, shape ``(batch_size,)``.
+        crop_h: Crop height in pixels, shape ``(batch_size,)``.
+        crop_w: Crop width in pixels, shape ``(batch_size,)``.
+        target_h: Output height in pixels, shape ``(batch_size,)``.
+        target_w: Output width in pixels, shape ``(batch_size,)``.
 
     Returns:
-        ``(B, 3, 3)`` forward affine matrix in pixel coordinates.
+        ``(batch_size, 3, 3)`` forward affine matrix in pixel coordinates.
 
     Raises:
         ValueError: If any ``crop_h``, ``crop_w``, ``target_h``, or
@@ -449,9 +449,9 @@ def crop_resize_matrix(
     Example:
         >>> import torch
         >>> top = torch.zeros(1)
-        >>> M = crop_resize_matrix(top, top, torch.full((1,), 32.0), torch.full((1,), 32.0),
+        >>> matrix = crop_resize_matrix(top, top, torch.full((1,), 32.0), torch.full((1,), 32.0),
         ...                        torch.full((1,), 32.0), torch.full((1,), 32.0))
-        >>> torch.allclose(M, torch.eye(3).unsqueeze(0))
+        >>> torch.allclose(matrix, torch.eye(3).unsqueeze(0))
         True
 
     """
@@ -459,178 +459,191 @@ def crop_resize_matrix(
         msg = "crop_resize_matrix requires crop and target sizes > 1 for align_corners endpoint mapping"
         raise ValueError(msg)
 
-    sx = (target_w - 1.0) / (crop_w - 1.0)
-    sy = (target_h - 1.0) / (crop_h - 1.0)
-    tx = -left * sx
-    ty = -top * sy
+    scale_x = (target_w - 1.0) / (crop_w - 1.0)
+    scale_y = (target_h - 1.0) / (crop_h - 1.0)
+    translation_x = -left * scale_x
+    translation_y = -top * scale_y
     zeros = torch.zeros_like(top)
     ones = torch.ones_like(top)
-    row0 = torch.stack([sx, zeros, tx], dim=-1)
-    row1 = torch.stack([zeros, sy, ty], dim=-1)
+    row0 = torch.stack([scale_x, zeros, translation_x], dim=-1)
+    row1 = torch.stack([zeros, scale_y, translation_y], dim=-1)
     row2 = torch.stack([zeros, zeros, ones], dim=-1)
     return torch.stack([row0, row1, row2], dim=-2)
 
 
 def normalize_matrix_io(
-    M: torch.Tensor,  # noqa: N803
-    H_in: int,  # noqa: N803
-    W_in: int,  # noqa: N803
-    H_out: int,  # noqa: N803
-    W_out: int,  # noqa: N803
+    matrix: torch.Tensor,
+    height_in: int,
+    width_in: int,
+    height_out: int,
+    width_out: int,
 ) -> torch.Tensor:
     """Normalize a pixel-space inverse matrix for ``affine_grid`` when input and output sizes differ.
 
-    Applies the normalization sandwich ``N_in @ M @ N_out_inv`` where:
+    Applies the normalization sandwich ``N_in @ matrix @ N_out_inv`` where:
 
-    - ``N_in`` maps input pixel coords → input normalized ``[-1, 1]`` (uses ``H_in``, ``W_in``).
-    - ``N_out_inv`` maps output normalized ``[-1, 1]`` → output pixel coords (uses ``H_out``, ``W_out``).
+    - ``mtx_normalize_in`` maps input pixel coords → input normalized ``[-1, 1]`` (uses ``height_in``, ``width_in``).
+    - ``mtx_normalize_out_inv`` maps output normalized ``[-1, 1]`` → output pixel coords
+      (uses ``height_out``, ``width_out``).
 
     Use this instead of :func:`normalize_matrix` when the segment output size differs from the input
     size (e.g. for :class:`~fuse_augmentations.affine._segment.CropResizeSegment`).
 
     Args:
-        M: ``(B, 3, 3)`` pixel-space *inverse* matrix (output pixel → input pixel).
-        H_in: Input image height in pixels.  Must be >= 2.
-        W_in: Input image width in pixels.  Must be >= 2.
-        H_out: Output image height in pixels.  Must be >= 2.
-        W_out: Output image width in pixels.  Must be >= 2.
+        matrix: ``(batch_size, 3, 3)`` pixel-space *inverse* matrix (output pixel → input pixel).
+        height_in: Input image height in pixels.  Must be >= 2.
+        width_in: Input image width in pixels.  Must be >= 2.
+        height_out: Output image height in pixels.  Must be >= 2.
+        width_out: Output image width in pixels.  Must be >= 2.
 
     Returns:
-        ``(B, 3, 3)`` normalized matrix suitable for ``F.affine_grid`` with output size
-        ``[B, C, H_out, W_out]``.
+        ``(batch_size, 3, 3)`` normalized matrix suitable for ``F.affine_grid`` with output size
+        ``[batch_size, channels, height_out, width_out]``.
 
     Raises:
         ValueError: If any dimension is < 2.
 
     Example:
         >>> import torch
-        >>> M_inv = torch.eye(3).unsqueeze(0)
-        >>> M_norm = normalize_matrix_io(M_inv, H_in=64, W_in=64, H_out=32, W_out=32)
-        >>> M_norm.shape
+        >>> mtx_inv = torch.eye(3).unsqueeze(0)
+        >>> mtx_norm = normalize_matrix_io(mtx_inv, height_in=64, width_in=64, height_out=32, width_out=32)
+        >>> mtx_norm.shape
         torch.Size([1, 3, 3])
 
     """
-    for name, val in (("H_in", H_in), ("W_in", W_in), ("H_out", H_out), ("W_out", W_out)):
+    for name, val in (
+        ("height_in", height_in),
+        ("width_in", width_in),
+        ("height_out", height_out),
+        ("width_out", width_out),
+    ):
         if val < 2:
             msg = f"{name} must be >= 2 for normalization ({name}={val} causes division by zero)"
             raise ValueError(msg)
 
-    B = M.shape[0]  # noqa: N806
-    device = M.device
-    dtype = M.dtype
+    batch_size = matrix.shape[0]
+    device = matrix.device
+    dtype = matrix.dtype
 
     # N_in: input pixel → input normalized [-1, 1]
-    N = torch.zeros(B, 3, 3, device=device, dtype=dtype)  # noqa: N806
-    N[:, 0, 0] = 2.0 / (W_in - 1)
-    N[:, 0, 2] = -1.0
-    N[:, 1, 1] = 2.0 / (H_in - 1)
-    N[:, 1, 2] = -1.0
-    N[:, 2, 2] = 1.0
+    matrix_n = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)
+    matrix_n[:, 0, 0] = 2.0 / (width_in - 1)
+    matrix_n[:, 0, 2] = -1.0
+    matrix_n[:, 1, 1] = 2.0 / (height_in - 1)
+    matrix_n[:, 1, 2] = -1.0
+    matrix_n[:, 2, 2] = 1.0
 
     # N_out_inv: output normalized → output pixel
-    N_inv = torch.zeros(B, 3, 3, device=device, dtype=dtype)  # noqa: N806
-    N_inv[:, 0, 0] = (W_out - 1) / 2.0
-    N_inv[:, 0, 2] = (W_out - 1) / 2.0
-    N_inv[:, 1, 1] = (H_out - 1) / 2.0
-    N_inv[:, 1, 2] = (H_out - 1) / 2.0
-    N_inv[:, 2, 2] = 1.0
+    matrix_n_inv = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)
+    matrix_n_inv[:, 0, 0] = (width_out - 1) / 2.0
+    matrix_n_inv[:, 0, 2] = (width_out - 1) / 2.0
+    matrix_n_inv[:, 1, 1] = (height_out - 1) / 2.0
+    matrix_n_inv[:, 1, 2] = (height_out - 1) / 2.0
+    matrix_n_inv[:, 2, 2] = 1.0
 
-    # Sandwich: N_in @ M @ N_out_inv
-    return matmul3x3(matmul3x3(N, M), N_inv)
+    # Sandwich: N_in @ matrix @ N_out_inv
+    return matmul3x3(matmul3x3(matrix_n, matrix), matrix_n_inv)
 
 
 def perspective_from_points(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
-    """Build ``(B, 3, 3)`` homography from 4 point correspondences using DLT.
+    """Build ``(batch_size, 3, 3)`` homography from 4 point correspondences using DLT.
 
-    Solves the 8-unknown homography system for the finite transform ``H`` such
-    that ``dst ~ H @ src`` in homogeneous coordinates, with ``H[..., 2, 2]``
+    Solves the 8-unknown homography system for the finite transform ``mtx_homography`` such
+    that ``dst ~ mtx_homography @ src`` in homogeneous coordinates, with ``mtx_homography[..., 2, 2]``
     fixed to ``1``.
 
     Args:
-        src: Source points, shape ``(B, 4, 2)``, ``[x, y]`` order.
-        dst: Destination points, shape ``(B, 4, 2)``, ``[x, y]`` order.
+        src: Source points, shape ``(batch_size, 4, 2)``, ``[x, y]`` order.
+        dst: Destination points, shape ``(batch_size, 4, 2)``, ``[x, y]`` order.
 
     Returns:
-        ``(B, 3, 3)`` forward homography matrices normalised so that
+        ``(batch_size, 3, 3)`` forward homography matrices normalised so that
         ``H[..., 2, 2] = 1``.
 
     Example:
         >>> import torch
         >>> corners = torch.tensor([[[0., 0.], [1., 0.], [1., 1.], [0., 1.]]])
-        >>> H = perspective_from_points(corners, corners)
-        >>> torch.allclose(H, torch.eye(3).unsqueeze(0), atol=1e-5)
+        >>> mtx_homography = perspective_from_points(corners, corners)
+        >>> torch.allclose(mtx_homography, torch.eye(3).unsqueeze(0), atol=1e-5)
         True
 
     """
-    B, N, _ = src.shape  # N=4  # noqa: N806
-    if N != 4:
-        msg = f"perspective_from_points expects exactly 4 point pairs, got {N}"
+    batch_size, num_points, _ = src.shape  # num_points=4
+    if num_points != 4:
+        msg = f"perspective_from_points expects exactly 4 point pairs, got {num_points}"
         raise ValueError(msg)
 
-    xs, ys = src[..., 0], src[..., 1]  # (B, 4)
-    xd, yd = dst[..., 0], dst[..., 1]
-    zeros = torch.zeros_like(xs)
-    ones = torch.ones_like(xs)
+    src_x, src_y = src[..., 0], src[..., 1]  # (B, 4)
+    dst_x, dst_y = dst[..., 0], dst[..., 1]
+    zeros = torch.zeros_like(src_x)
+    ones = torch.ones_like(src_x)
     # Solve A @ h = b for h = [h11, h12, h13, h21, h22, h23, h31, h32].
-    row_x = torch.stack([xs, ys, ones, zeros, zeros, zeros, -(xd * xs), -(xd * ys)], dim=-1)  # (B,4,8)
-    row_y = torch.stack([zeros, zeros, zeros, xs, ys, ones, -(yd * xs), -(yd * ys)], dim=-1)  # (B,4,8)
-    A = torch.stack([row_x, row_y], dim=2).reshape(B, 2 * N, 8)  # noqa: N806
-    b = torch.stack([xd, yd], dim=2).reshape(B, 2 * N, 1)
-    h = torch.linalg.solve(A, b).squeeze(-1)
+    row_x = torch.stack(
+        [src_x, src_y, ones, zeros, zeros, zeros, -(dst_x * src_x), -(dst_x * src_y)], dim=-1
+    )  # (B,4,8)
+    row_y = torch.stack(
+        [zeros, zeros, zeros, src_x, src_y, ones, -(dst_y * src_x), -(dst_y * src_y)], dim=-1
+    )  # (B,4,8)
+    matrix_a = torch.stack([row_x, row_y], dim=2).reshape(batch_size, 2 * num_points, 8)
+    matrix_b = torch.stack([dst_x, dst_y], dim=2).reshape(batch_size, 2 * num_points, 1)
+    homography_params = torch.linalg.solve(matrix_a, matrix_b).squeeze(-1)
 
-    H = torch.empty((B, 3, 3), device=src.device, dtype=h.dtype)  # noqa: N806
-    H[..., 0, 0] = h[..., 0]
-    H[..., 0, 1] = h[..., 1]
-    H[..., 0, 2] = h[..., 2]
-    H[..., 1, 0] = h[..., 3]
-    H[..., 1, 1] = h[..., 4]
-    H[..., 1, 2] = h[..., 5]
-    H[..., 2, 0] = h[..., 6]
-    H[..., 2, 1] = h[..., 7]
-    H[..., 2, 2] = 1.0
-    return H.to(dtype=src.dtype)
+    matrix_h = torch.empty((batch_size, 3, 3), device=src.device, dtype=homography_params.dtype)
+    matrix_h[..., 0, 0] = homography_params[..., 0]
+    matrix_h[..., 0, 1] = homography_params[..., 1]
+    matrix_h[..., 0, 2] = homography_params[..., 2]
+    matrix_h[..., 1, 0] = homography_params[..., 3]
+    matrix_h[..., 1, 1] = homography_params[..., 4]
+    matrix_h[..., 1, 2] = homography_params[..., 5]
+    matrix_h[..., 2, 0] = homography_params[..., 6]
+    matrix_h[..., 2, 1] = homography_params[..., 7]
+    matrix_h[..., 2, 2] = 1.0
+    return matrix_h.to(dtype=src.dtype)
 
 
-def perspective_grid(M_inv_norm: torch.Tensor, H: int, W: int) -> torch.Tensor:  # noqa: N803
-    """Build ``(B, H, W, 2)`` sampling grid from a normalised 3x3 perspective matrix.
+def perspective_grid(matrix_inv_norm: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    """Build ``(batch_size, height, width, 2)`` sampling grid from a normalised 3x3 perspective matrix.
 
-    Unlike ``F.affine_grid`` (which uses a ``(B, 2, 3)`` theta), this handles
+    Unlike ``F.affine_grid`` (which uses a ``(batch_size, 2, 3)`` theta), this handles
     the full ``3x3`` case required by projective/perspective transforms by
-    applying perspective division: ``x' = tx/tw``, ``y' = ty/tw``.
+    applying perspective division: ``coord_x' = transformed_x/homogeneous_w``,
+    ``coord_y' = transformed_y/homogeneous_w``.
 
     No Python branching is used — the function is ``torch.compile``-friendly.
 
     Args:
-        M_inv_norm: ``(B, 3, 3)`` normalised inverse matrix in ``[-1, 1]`` space.
-        H: Image height.
-        W: Image width.
+        matrix_inv_norm: ``(batch_size, 3, 3)`` normalised inverse matrix in ``[-1, 1]`` space.
+        height: Image height.
+        width: Image width.
 
     Returns:
-        ``(B, H, W, 2)`` sampling grid for ``F.grid_sample`` with
+        ``(batch_size, height, width, 2)`` sampling grid for ``F.grid_sample`` with
         ``align_corners=True``.
 
     Example:
         >>> import torch
-        >>> grid = perspective_grid(torch.eye(3).unsqueeze(0), H=4, W=4)
+        >>> grid = perspective_grid(torch.eye(3).unsqueeze(0), height=4, width=4)
         >>> grid.shape
         torch.Size([1, 4, 4, 2])
 
     """
-    B = M_inv_norm.shape[0]  # noqa: N806
-    device = M_inv_norm.device
-    dtype = M_inv_norm.dtype
+    batch_size = matrix_inv_norm.shape[0]
+    device = matrix_inv_norm.device
+    dtype = matrix_inv_norm.dtype
 
-    xs = torch.linspace(-1.0, 1.0, W, device=device, dtype=dtype)  # (W,)
-    ys = torch.linspace(-1.0, 1.0, H, device=device, dtype=dtype)  # (H,)
-    grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")  # both (H, W)
-    ones = torch.ones(H, W, device=device, dtype=dtype)
-    coords = torch.stack([grid_x, grid_y, ones], dim=0).reshape(3, H * W)  # (3, H*W)
+    linspace_x = torch.linspace(-1.0, 1.0, width, device=device, dtype=dtype)  # (W,)
+    linspace_y = torch.linspace(-1.0, 1.0, height, device=device, dtype=dtype)  # (H,)
+    grid_y, grid_x = torch.meshgrid(linspace_y, linspace_x, indexing="ij")  # both (H, W)
+    ones = torch.ones(height, width, device=device, dtype=dtype)
+    coords = torch.stack([grid_x, grid_y, ones], dim=0).reshape(3, height * width)  # (3, H*W)
     # Batched matrix multiply: (B, 3, 3) @ (3, H*W) -> (B, 3, H*W)
-    coords_b = coords.unsqueeze(0).expand(B, -1, -1)
-    transformed = torch.bmm(M_inv_norm, coords_b)  # (B, 3, H*W)
-    tw = transformed[:, 2:3, :]  # (B, 1, H*W)
-    # Clamp tw away from zero (preserving sign) to avoid Inf/NaN in perspective division.
+    coords_b = coords.unsqueeze(0).expand(batch_size, -1, -1)
+    transformed = torch.bmm(matrix_inv_norm, coords_b)  # (B, 3, H*W)
+    homogeneous_w = transformed[:, 2:3, :]  # (B, 1, H*W)
+    # Clamp homogeneous_w away from zero (preserving sign) to avoid Inf/NaN in perspective division.
     eps = torch.finfo(dtype).eps
-    tw_clamped = torch.where(tw >= 0, torch.clamp(tw, min=eps), torch.clamp(tw, max=-eps))
-    xy = transformed[:, :2, :] / tw_clamped  # (B, 2, H*W)
-    return xy.permute(0, 2, 1).reshape(B, H, W, 2)
+    tw_clamped = torch.where(
+        homogeneous_w >= 0, torch.clamp(homogeneous_w, min=eps), torch.clamp(homogeneous_w, max=-eps)
+    )
+    normalized_coords = transformed[:, :2, :] / tw_clamped  # (B, 2, H*W)
+    return normalized_coords.permute(0, 2, 1).reshape(batch_size, height, width, 2)

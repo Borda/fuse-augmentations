@@ -6,7 +6,7 @@ are automatically validated.
 Each registered transform must satisfy:
 - ``adapter.category(instance)`` returns a ``TransformCategory`` member.
 - ``adapter.sample_params(instance, input_shape, device)`` returns a dict of tensors.
-- ``adapter.build_matrix(instance, params, H, W)`` returns a ``(B, 3, 3)`` tensor.
+- ``adapter.build_matrix(instance, params, height, width)`` returns a ``(batch_size, 3, 3)`` tensor.
 
 """
 
@@ -29,16 +29,16 @@ from fuse_augmentations.adapters._torchvision import (
 _CONSTRUCTOR_KWARGS: dict[str, dict] = {
     "RandomRotation": {"degrees": 30},
     "RandomAffine": {"degrees": 30},
-    "RandomHorizontalFlip": {"p": 1.0},
-    "RandomVerticalFlip": {"p": 1.0},
-    "RandomPerspective": {"distortion_scale": 0.3, "p": 1.0},
+    "RandomHorizontalFlip": {"prob": 1.0},
+    "RandomVerticalFlip": {"prob": 1.0},
+    "RandomPerspective": {"distortion_scale": 0.3, "prob": 1.0},
     "ColorJitter": {"brightness": 0.2},
     "RandomResizedCrop": {"size": (32, 32)},
 }
 
-BSZ, C, H, W = 2, 3, 32, 32
-DEVICE = torch.device("cpu")
-INPUT_SHAPE = (BSZ, C, H, W)
+BATCH_SIZE, CHANNELS, HEIGHT, WIDTH = 2, 3, 32, 32
+DEFAULT_DEVICE = torch.device("cpu")
+INPUT_SHAPE = (BATCH_SIZE, CHANNELS, HEIGHT, WIDTH)
 
 
 def _make_instance(cls: type) -> object:
@@ -49,7 +49,7 @@ def _make_instance(cls: type) -> object:
         if name.startswith(prefix):
             name = name[len(prefix) :]
             break
-    kwargs = _CONSTRUCTOR_KWARGS.get(name, {"p": 1.0})
+    kwargs = _CONSTRUCTOR_KWARGS.get(name, {"prob": 1.0})
     try:
         return cls(**kwargs)
     except TypeError:
@@ -88,7 +88,7 @@ class TestRegistryCoverage:
     def test_sample_params_returns_dict_of_tensors(self, adapter, transform_cls):
         """sample_params returns a dict with torch.Tensor values."""
         instance = _make_instance(transform_cls)
-        params = adapter.sample_params(instance, INPUT_SHAPE, DEVICE)
+        params = adapter.sample_params(instance, INPUT_SHAPE, DEFAULT_DEVICE)
         assert isinstance(params, dict), f"Expected dict, got {type(params)}"
         for key, val in params.items():
             assert isinstance(val, torch.Tensor), f"params[{key!r}] is {type(val).__name__}, expected Tensor"
@@ -99,10 +99,10 @@ class TestRegistryCoverage:
         ids=[cls.__name__ for cls in _TRANSFORM_REGISTRY],
     )
     def test_build_matrix_returns_b33_tensor(self, adapter, transform_cls):
-        """build_matrix returns a (B, 3, 3) tensor."""
+        """build_matrix returns a (batch_size, 3, 3) tensor."""
         instance = _make_instance(transform_cls)
-        params = adapter.sample_params(instance, INPUT_SHAPE, DEVICE)
-        mtx = adapter.build_matrix(instance, params, H, W)
+        params = adapter.sample_params(instance, INPUT_SHAPE, DEFAULT_DEVICE)
+        mtx = adapter.build_matrix(instance, params, HEIGHT, WIDTH)
         assert isinstance(mtx, torch.Tensor), f"Expected Tensor, got {type(mtx)}"
         assert mtx.ndim == 3, f"Expected 3D tensor, got {mtx.ndim}D"
         assert mtx.shape[1:] == (3, 3), f"Expected (*, 3, 3), got {mtx.shape}"
@@ -115,8 +115,8 @@ class TestRegistryCoverage:
     def test_build_matrix_no_nan_inf(self, adapter, transform_cls):
         """build_matrix output contains no NaN or Inf values."""
         instance = _make_instance(transform_cls)
-        params = adapter.sample_params(instance, INPUT_SHAPE, DEVICE)
-        mtx = adapter.build_matrix(instance, params, H, W)
+        params = adapter.sample_params(instance, INPUT_SHAPE, DEFAULT_DEVICE)
+        mtx = adapter.build_matrix(instance, params, HEIGHT, WIDTH)
         assert not torch.isnan(mtx).any(), f"NaN in build_matrix for {transform_cls.__name__}"
         assert not torch.isinf(mtx).any(), f"Inf in build_matrix for {transform_cls.__name__}"
 

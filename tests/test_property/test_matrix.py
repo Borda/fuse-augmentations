@@ -21,29 +21,29 @@ Invariants tested here:
 - **Scale group**: ``S(a,b) @ S(c,d) == S(a*c, b*d)`` for positive scale factors. Scale
   matrices compose multiplicatively, forming a group under multiplication.
 
-- **Normalize round-trip**: ``denormalize(normalize(M)) == M`` for arbitrary rotations and image
+- **Normalize round-trip**: ``denormalize(normalize(matrix)) == matrix`` for arbitrary rotations and image
   sizes. The pixel-space-to-normalized-space sandwich transform is exactly invertible.
 
-- **Determinant product rule**: ``det(A @ B @ ...) == det(A) * det(B) * ...`` for chains of
+- **Determinant product rule**: ``det(albu @ batch_size @ ...) == det(albu) * det(batch_size) * ...`` for chains of
   well-conditioned matrices. This is a fundamental property of matrix determinants and validates
   that ``matmul3x3`` preserves it numerically.
 
-- **Inverse round-trip**: ``inv(M) @ M == I`` for random well-conditioned matrices. The custom
+- **Inverse round-trip**: ``inv(matrix) @ matrix == I`` for random well-conditioned matrices. The custom
   ``inv3x3`` implementation is numerically accurate.
 
-- **Perspective from points**: ``H(src) ≈ dst`` for both pure translation and genuine
+- **Perspective from points**: ``height(src) ≈ dst`` for both pure translation and genuine
   per-corner projective distortions. The DLT homography correctly maps source corners to
   destination corners under perspective division.
 
-Example: the rotation group test generates random ``(a_deg, b_deg, H, W)`` tuples and checks::
+Example: the rotation group test generates random ``(a_deg, b_deg, height, width)`` tuples and checks::
 
-    Ra = rotation_matrix(radians(a_deg), H, W)
-    Rb = rotation_matrix(radians(b_deg), H, W)
-    Rab = rotation_matrix(radians(a_deg + b_deg), H, W)
+    Ra = rotation_matrix(radians(a_deg), height, width)
+    Rb = rotation_matrix(radians(b_deg), height, width)
+    Rab = rotation_matrix(radians(a_deg + b_deg), height, width)
     assert allclose(Rb @ Ra, Rab)
 
 If this property fails for any generated input, Hypothesis shrinks the counterexample to the
-smallest ``(a_deg, b_deg, H, W)`` that still triggers the failure, making the root cause obvious.
+smallest ``(a_deg, b_deg, height, width)`` that still triggers the failure, making the root cause obvious.
 
 """
 
@@ -64,149 +64,171 @@ from fuse_augmentations.affine._matrix import (
     vflip_matrix,
 )
 
-DTYPE = torch.float64
-DEVICE = torch.device("cpu")
+DEFAULT_DTYPE = torch.float64
+DEFAULT_DEVICE = torch.device("cpu")
 
 
-@given(W=integers(min_value=2, max_value=4096))
+@given(width=integers(min_value=2, max_value=4096))
 @settings(max_examples=50)
-def test_hflip_involution(W: int) -> None:
+def test_hflip_involution(width: int) -> None:
     """Hflip @ Hflip == identity for any width."""
-    M = hflip_matrix(W=W, batch_size=1, device=DEVICE, dtype=DTYPE)
-    product = matmul3x3(M, M)
-    I = torch.eye(3, dtype=DTYPE).unsqueeze(0)
-    assert torch.allclose(product, I, atol=1e-10)
+    mtx = hflip_matrix(width=width, batch_size=1, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE)
+    product = matmul3x3(mtx, mtx)
+    mtx_identity = torch.eye(3, dtype=DEFAULT_DTYPE).unsqueeze(0)
+    assert torch.allclose(product, mtx_identity, atol=1e-10)
 
 
-@given(H=integers(min_value=2, max_value=4096))
+@given(height=integers(min_value=2, max_value=4096))
 @settings(max_examples=50)
-def test_vflip_involution(H: int) -> None:
+def test_vflip_involution(height: int) -> None:
     """Vflip @ Vflip == identity for any height."""
-    M = vflip_matrix(H=H, batch_size=1, device=DEVICE, dtype=DTYPE)
-    product = matmul3x3(M, M)
-    I = torch.eye(3, dtype=DTYPE).unsqueeze(0)
-    assert torch.allclose(product, I, atol=1e-10)
+    mtx = vflip_matrix(height=height, batch_size=1, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE)
+    product = matmul3x3(mtx, mtx)
+    mtx_identity = torch.eye(3, dtype=DEFAULT_DTYPE).unsqueeze(0)
+    assert torch.allclose(product, mtx_identity, atol=1e-10)
 
 
 @given(
     a_deg=floats(min_value=-180, max_value=180),
     b_deg=floats(min_value=-180, max_value=180),
-    H=integers(min_value=2, max_value=512),
-    W=integers(min_value=2, max_value=512),
+    height=integers(min_value=2, max_value=512),
+    width=integers(min_value=2, max_value=512),
 )
 @settings(max_examples=100)
-def test_rotation_group(a_deg: float, b_deg: float, H: int, W: int) -> None:
+def test_rotation_group(a_deg: float, b_deg: float, height: int, width: int) -> None:
     """R(a) @ R(b) == R(a+b) for arbitrary angles and image sizes."""
-    a_rad = torch.tensor([math.radians(a_deg)], dtype=DTYPE)
-    b_rad = torch.tensor([math.radians(b_deg)], dtype=DTYPE)
-    Ra = rotation_matrix(a_rad, H=H, W=W)
-    Rb = rotation_matrix(b_rad, H=H, W=W)
-    Rab = rotation_matrix(a_rad + b_rad, H=H, W=W)
-    composed = matmul3x3(Rb, Ra)
-    assert torch.allclose(composed, Rab, atol=1e-6)
+    a_rad = torch.tensor([math.radians(a_deg)], dtype=DEFAULT_DTYPE)
+    b_rad = torch.tensor([math.radians(b_deg)], dtype=DEFAULT_DTYPE)
+    mtx_ra = rotation_matrix(a_rad, height=height, width=width)
+    mtx_rb = rotation_matrix(b_rad, height=height, width=width)
+    mtx_rab = rotation_matrix(a_rad + b_rad, height=height, width=width)
+    mtx_composed = matmul3x3(mtx_rb, mtx_ra)
+    assert torch.allclose(mtx_composed, mtx_rab, atol=1e-6)
 
 
 @given(
-    a=floats(min_value=0.01, max_value=100.0),
-    b=floats(min_value=0.01, max_value=100.0),
-    c=floats(min_value=0.01, max_value=100.0),
-    d=floats(min_value=0.01, max_value=100.0),
-    H=integers(min_value=2, max_value=512),
-    W=integers(min_value=2, max_value=512),
+    scale_a=floats(min_value=0.01, max_value=100.0),
+    scale_b=floats(min_value=0.01, max_value=100.0),
+    scale_c=floats(min_value=0.01, max_value=100.0),
+    scale_d=floats(min_value=0.01, max_value=100.0),
+    height=integers(min_value=2, max_value=512),
+    width=integers(min_value=2, max_value=512),
 )
 @settings(max_examples=100)
-def test_scale_group(a: float, b: float, c: float, d: float, H: int, W: int) -> None:
+def test_scale_group(scale_a: float, scale_b: float, scale_c: float, scale_d: float, height: int, width: int) -> None:
     """S(a,b) @ S(c,d) == S(a*c, b*d) for arbitrary scale factors."""
-    S1 = scale_matrix(torch.tensor([a], dtype=DTYPE), torch.tensor([b], dtype=DTYPE), H=H, W=W)
-    S2 = scale_matrix(torch.tensor([c], dtype=DTYPE), torch.tensor([d], dtype=DTYPE), H=H, W=W)
-    S_composed = scale_matrix(torch.tensor([a * c], dtype=DTYPE), torch.tensor([b * d], dtype=DTYPE), H=H, W=W)
-    product = matmul3x3(S2, S1)
-    assert torch.allclose(product, S_composed, atol=1e-6)
+    mtx_s1 = scale_matrix(
+        torch.tensor([scale_a], dtype=DEFAULT_DTYPE),
+        torch.tensor([scale_b], dtype=DEFAULT_DTYPE),
+        height=height,
+        width=width,
+    )
+    mtx_s2 = scale_matrix(
+        torch.tensor([scale_c], dtype=DEFAULT_DTYPE),
+        torch.tensor([scale_d], dtype=DEFAULT_DTYPE),
+        height=height,
+        width=width,
+    )
+    mtx_s_composed = scale_matrix(
+        torch.tensor([scale_a * scale_c], dtype=DEFAULT_DTYPE),
+        torch.tensor([scale_b * scale_d], dtype=DEFAULT_DTYPE),
+        height=height,
+        width=width,
+    )
+    product = matmul3x3(mtx_s2, mtx_s1)
+    assert torch.allclose(product, mtx_s_composed, atol=1e-6)
 
 
 @given(
-    H=integers(min_value=2, max_value=512),
-    W=integers(min_value=2, max_value=512),
+    height=integers(min_value=2, max_value=512),
+    width=integers(min_value=2, max_value=512),
     angle_deg=floats(min_value=-180, max_value=180),
 )
 @settings(max_examples=50)
-def test_normalize_round_trip(H: int, W: int, angle_deg: float) -> None:
-    """Denormalize(normalize(M)) recovers M for arbitrary rotations and sizes."""
-    angle_rad = torch.tensor([math.radians(angle_deg)], dtype=DTYPE)
-    M = rotation_matrix(angle_rad, H=H, W=W)
-    M_inv = inv3x3(M)
-    M_norm = normalize_matrix(M_inv, H=H, W=W)
+def test_normalize_round_trip(height: int, width: int, angle_deg: float) -> None:
+    """Denormalize(normalize(matrix)) recovers matrix for arbitrary rotations and sizes."""
+    angle_rad = torch.tensor([math.radians(angle_deg)], dtype=DEFAULT_DTYPE)
+    mtx = rotation_matrix(angle_rad, height=height, width=width)
+    mtx_inv = inv3x3(mtx)
+    mtx_norm = normalize_matrix(mtx_inv, height=height, width=width)
 
     # Denormalize: N_inv @ M_norm @ N
-    N = torch.zeros(1, 3, 3, dtype=DTYPE)
-    N[0, 0, 0] = 2.0 / (W - 1)
-    N[0, 0, 2] = -1.0
-    N[0, 1, 1] = 2.0 / (H - 1)
-    N[0, 1, 2] = -1.0
-    N[0, 2, 2] = 1.0
+    mtx_n = torch.zeros(1, 3, 3, dtype=DEFAULT_DTYPE)
+    mtx_n[0, 0, 0] = 2.0 / (width - 1)
+    mtx_n[0, 0, 2] = -1.0
+    mtx_n[0, 1, 1] = 2.0 / (height - 1)
+    mtx_n[0, 1, 2] = -1.0
+    mtx_n[0, 2, 2] = 1.0
 
-    N_inv = inv3x3(N)
-    recovered = matmul3x3(matmul3x3(N_inv, M_norm), N)
-    assert torch.allclose(recovered, M_inv, atol=1e-6)
+    mtx_n_inv = inv3x3(mtx_n)
+    recovered = matmul3x3(matmul3x3(mtx_n_inv, mtx_norm), mtx_n)
+    assert torch.allclose(recovered, mtx_inv, atol=1e-6)
 
 
 @given(
-    n=integers(min_value=2, max_value=10),
+    num_matrices=integers(min_value=2, max_value=10),
     seed=integers(min_value=0, max_value=10000),
 )
 @settings(max_examples=50)
-def test_determinant_product(n: int, seed: int) -> None:
-    """Det(A @ B @ ...) == det(A) * det(B) * ...
+def test_determinant_product(num_matrices: int, seed: int) -> None:
+    """Det(albu @ batch_size @ ...) == det(albu) * det(batch_size) * ...
 
     for random well-conditioned matrices.
 
     """
     torch.manual_seed(seed)
-    matrices = [torch.randn(1, 3, 3, dtype=DTYPE) + 3.0 * torch.eye(3, dtype=DTYPE).unsqueeze(0) for _ in range(n)]
+    matrices = [
+        torch.randn(1, 3, 3, dtype=DEFAULT_DTYPE) + 3.0 * torch.eye(3, dtype=DEFAULT_DTYPE).unsqueeze(0)
+        for _ in range(num_matrices)
+    ]
 
     # Compose
-    acc = matrices[0]
-    for i in range(1, n):
-        acc = matmul3x3(matrices[i], acc)
+    mtx_acc = matrices[0]
+    for idx in range(1, num_matrices):
+        mtx_acc = matmul3x3(matrices[idx], mtx_acc)
 
-    det_product = torch.ones(1, dtype=DTYPE)
-    for m in matrices:
-        det_product *= torch.det(m[0])
+    det_product = torch.ones(1, dtype=DEFAULT_DTYPE)
+    for mtx in matrices:
+        det_product *= torch.det(mtx[0])
 
-    det_composed = torch.det(acc[0])
+    det_composed = torch.det(mtx_acc[0])
     assert torch.allclose(det_composed, det_product, atol=1e-4)
 
 
 @given(seed=integers(min_value=0, max_value=10000))
 @settings(max_examples=100)
 def test_inverse_round_trip(seed: int) -> None:
-    """Inv(M) @ M == I for random well-conditioned matrices."""
+    """Inv(matrix) @ matrix == I for random well-conditioned matrices."""
     torch.manual_seed(seed)
-    M = torch.randn(1, 3, 3, dtype=DTYPE) + 5.0 * torch.eye(3, dtype=DTYPE).unsqueeze(0)
-    M_inv = inv3x3(M)
-    product = matmul3x3(M_inv, M)
-    I = torch.eye(3, dtype=DTYPE).unsqueeze(0)
-    assert torch.allclose(product, I, atol=1e-8)
+    mtx = torch.randn(1, 3, 3, dtype=DEFAULT_DTYPE) + 5.0 * torch.eye(3, dtype=DEFAULT_DTYPE).unsqueeze(0)
+    mtx_inv = inv3x3(mtx)
+    product = matmul3x3(mtx_inv, mtx)
+    mtx_identity = torch.eye(3, dtype=DEFAULT_DTYPE).unsqueeze(0)
+    assert torch.allclose(product, mtx_identity, atol=1e-8)
 
 
 @given(
-    dx=floats(min_value=-20, max_value=20, allow_nan=False),
-    dy=floats(min_value=-20, max_value=20, allow_nan=False),
-    W=integers(min_value=10, max_value=128),
-    H=integers(min_value=10, max_value=128),
+    delta_x=floats(min_value=-20, max_value=20, allow_nan=False),
+    delta_y=floats(min_value=-20, max_value=20, allow_nan=False),
+    width=integers(min_value=10, max_value=128),
+    height=integers(min_value=10, max_value=128),
 )
 @settings(max_examples=100)
-def test_perspective_from_points_maps_src_to_dst(dx: float, dy: float, H: int, W: int) -> None:
-    """H(src) ~ dst: computed homography maps source corners to destination corners (translation)."""
-    src = torch.tensor([[[0.0, 0.0], [float(W), 0.0], [float(W), float(H)], [0.0, float(H)]]], dtype=DTYPE)
-    dst = src + torch.tensor([dx, dy], dtype=DTYPE)
-    Hmat = perspective_from_points(src, dst)
-    ones = torch.ones(1, 4, 1, dtype=DTYPE)
+def test_perspective_from_points_maps_src_to_dst(delta_x: float, delta_y: float, height: int, width: int) -> None:
+    """Height(src) ~ dst: computed homography maps source corners to destination corners (translation)."""
+    src = torch.tensor(
+        [[[0.0, 0.0], [float(width), 0.0], [float(width), float(height)], [0.0, float(height)]]], dtype=DEFAULT_DTYPE
+    )
+    dst = src + torch.tensor([delta_x, delta_y], dtype=DEFAULT_DTYPE)
+    mtx_homography = perspective_from_points(src, dst)
+    ones = torch.ones(1, 4, 1, dtype=DEFAULT_DTYPE)
     src_h = torch.cat([src, ones], dim=-1)
-    projected = (Hmat @ src_h.transpose(-1, -2)).transpose(-1, -2)
-    w = projected[..., 2:3]
-    xy_out = projected[..., :2] / w
-    assert torch.allclose(xy_out, dst, atol=1e-3), f"Homography didn't map src->dst correctly for dx={dx}, dy={dy}"
+    projected = (mtx_homography @ src_h.transpose(-1, -2)).transpose(-1, -2)
+    homogeneous_w = projected[..., 2:3]
+    xy_out = projected[..., :2] / homogeneous_w
+    assert torch.allclose(xy_out, dst, atol=1e-3), (
+        f"Homography didn't map src->dst correctly for delta_x={delta_x}, delta_y={delta_y}"
+    )
 
 
 _corner_offset = tuples(
@@ -217,32 +239,34 @@ _corner_offset = tuples(
 
 @given(
     offsets=lists(_corner_offset, min_size=4, max_size=4),
-    W=integers(min_value=20, max_value=128),
-    H=integers(min_value=20, max_value=128),
+    width=integers(min_value=20, max_value=128),
+    height=integers(min_value=20, max_value=128),
 )
 @settings(max_examples=100)
 def test_perspective_from_points_projective_distortion(
     offsets: list[tuple[float, float]],
-    H: int,
-    W: int,
+    height: int,
+    width: int,
 ) -> None:
-    """H(src) ~ dst: DLT handles genuine per-corner projective distortions.
+    """Height(src) ~ dst: DLT handles genuine per-corner projective distortions.
 
-    Unlike the translation test (which only exercises the affine columns of H), this test applies an independent (dx,
-    dy) offset to each corner, forcing the DLT to use the non-linear terms and exercise the full 8 degrees of freedom of
-    the homography.
+    Unlike the translation test (which only exercises the affine columns of height), this test applies an independent
+    (dx, dy) offset to each corner, forcing the DLT to use the non-linear terms and exercise the full 8 degrees of
+    freedom of the homography.
 
     """
-    src = torch.tensor([[[0.0, 0.0], [float(W), 0.0], [float(W), float(H)], [0.0, float(H)]]], dtype=DTYPE)
+    src = torch.tensor(
+        [[[0.0, 0.0], [float(width), 0.0], [float(width), float(height)], [0.0, float(height)]]], dtype=DEFAULT_DTYPE
+    )
     dst = src.clone()
-    for i, (dx, dy) in enumerate(offsets):
-        dst[0, i, 0] += dx
-        dst[0, i, 1] += dy
+    for idx, (delta_x, delta_y) in enumerate(offsets):
+        dst[0, idx, 0] += delta_x
+        dst[0, idx, 1] += delta_y
 
-    Hmat = perspective_from_points(src, dst)
-    ones = torch.ones(1, 4, 1, dtype=DTYPE)
+    mtx_homography = perspective_from_points(src, dst)
+    ones = torch.ones(1, 4, 1, dtype=DEFAULT_DTYPE)
     src_h = torch.cat([src, ones], dim=-1)
-    projected = (Hmat @ src_h.transpose(-1, -2)).transpose(-1, -2)
-    w = projected[..., 2:3]
-    xy_out = projected[..., :2] / w
+    projected = (mtx_homography @ src_h.transpose(-1, -2)).transpose(-1, -2)
+    homogeneous_w = projected[..., 2:3]
+    xy_out = projected[..., :2] / homogeneous_w
     assert torch.allclose(xy_out, dst, atol=1e-3), f"Homography didn't map src->dst correctly for offsets={offsets}"

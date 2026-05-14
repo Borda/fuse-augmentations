@@ -63,8 +63,8 @@ import torchvision.transforms.v2 as tv
 
 NUM_WARMUP: int = 20
 NUM_REPEATS: int = 100
-IMAGE_H: int = 256
-IMAGE_W: int = 256
+IMAGE_HEIGHT: int = 256
+IMAGE_WIDTH: int = 256
 
 RESULTS_DIR = Path(__file__).parent / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
@@ -72,7 +72,7 @@ RESULTS_DIR.mkdir(exist_ok=True)
 print(
     f"Platform: {platform.system()} {platform.machine()}"
     f"  |  torch {torch.__version__}"
-    f"  |  image {IMAGE_H}×{IMAGE_W}"
+    f"  |  image {IMAGE_HEIGHT}×{IMAGE_WIDTH}"
     f"  |  warmup={NUM_WARMUP}  repeats={NUM_REPEATS}"
 )
 
@@ -89,8 +89,8 @@ print(
 np.random.seed(0)
 torch.manual_seed(0)
 
-image_np: np.ndarray = np.random.randint(0, 256, (IMAGE_H, IMAGE_W, 3), dtype=np.uint8)
-image_tensor: torch.Tensor = torch.rand(1, 3, IMAGE_H, IMAGE_W)  # BCHW float32
+image_np: np.ndarray = np.random.randint(0, 256, (IMAGE_HEIGHT, IMAGE_WIDTH, 3), dtype=np.uint8)
+image_tensor: torch.Tensor = torch.rand(1, 3, IMAGE_HEIGHT, IMAGE_WIDTH)  # BCHW float32
 
 print(f"alb input  : {image_np.shape}  {image_np.dtype}")
 print(f"tensor input: {tuple(image_tensor.shape)}  {image_tensor.dtype}")
@@ -99,24 +99,24 @@ print(f"tensor input: {tuple(image_tensor.shape)}  {image_tensor.dtype}")
 
 
 def _bench(
-    fn: Callable[[], object],
+    func: Callable[[], object],
     n_warmup: int = NUM_WARMUP,
     n_repeats: int = NUM_REPEATS,
 ) -> float:
     """Return mean wall-clock time per call in milliseconds."""
     for _ in range(n_warmup):
-        fn()
-    t0 = time.perf_counter()
+        func()
+    t_start = time.perf_counter()
     for _ in range(n_repeats):
-        fn()
-    return (time.perf_counter() - t0) * 1_000 / n_repeats
+        func()
+    return (time.perf_counter() - t_start) * 1_000 / n_repeats
 
 
 def _alb(transform: A.BasicTransform) -> Callable[[], object]:
     """Wrap an alb transform into a zero-arg callable on ``image_np``."""
 
-    def _run(_t: A.BasicTransform = transform) -> np.ndarray:
-        return _t(image=image_np)["image"]  # type: ignore[return-value]
+    def _run(_transform: A.BasicTransform = transform) -> np.ndarray:
+        return _transform(image_np)["image"]  # type: ignore[return-value]
 
     return _run
 
@@ -124,8 +124,8 @@ def _alb(transform: A.BasicTransform) -> Callable[[], object]:
 def _tensor(transform: object) -> Callable[[], object]:
     """Wrap a kornia/TV transform into a zero-arg callable on ``image_tensor``."""
 
-    def _run(_t: object = transform) -> torch.Tensor:
-        return _t(image_tensor)  # type: ignore[operator]
+    def _run(_transform: object = transform) -> torch.Tensor:
+        return _transform(image_tensor)  # type: ignore[operator]
 
     return _run
 
@@ -150,7 +150,7 @@ def _is_notebook() -> bool:
 #
 # **`FUSION_OPS`** — realistic N-op chains grown by adding one primitive at a time:
 # Rotate → +HFlip → +Shear → +Scale → +Translate → +VFlip (chains 2–6).
-# Each op appears exactly once per chain to avoid bias stacking.
+# Each operation appears exactly once per chain to avoid bias stacking.
 # `*_prims` = N separate primitive calls; `*_affine` = single combined Affine (fuse-aug output).
 # `k_affine` / `tv_affine` = `None` for all chains: `RandomAffine` cannot encode a flip.
 
@@ -159,7 +159,7 @@ def _is_notebook() -> bool:
 
 @dataclasses.dataclass(kw_only=True)
 class BenchOp:
-    """One benchmark row: a named op with an optional callable per backend × kind.
+    """One benchmark row: a named ``op`` with an optional callable per backend × kind.
 
     ``*_prims`` = dedicated primitive (or N×separate for fusion ops).
     ``*_affine`` = generic Affine doing the same effect (or 1×combined for fusion ops).
@@ -422,17 +422,17 @@ _BACKENDS: list[str] = ["alb", "kornia", "tv"]
 
 
 def _section_pivot(section_key: str) -> pd.DataFrame | None:
-    """Return a (op) x (backend, prim|affine) pivot for one section; None if empty."""
+    """Return a (op_name) x (backend, prim|affine) pivot for one section; None if empty."""
     rows = [r for r in results if r["section"] == section_key and r["backend"] in _BACKENDS]
     long = [
-        {"op": r["op"], "backend": r["backend"], "kind": kind, "ms": r[col]}
+        {"op_name": r["op_name"], "backend": r["backend"], "kind": kind, "ms": r[col]}
         for r in rows
         for kind, col in (("prims", "prims_ms"), ("affine", "affine_ms"))
         if r[col] is not None
     ]
     if not long:
         return None
-    return pd.DataFrame(long).pivot_table(index="op", columns=["backend", "kind"], values="ms", aggfunc="first")
+    return pd.DataFrame(long).pivot_table(index="op_name", columns=["backend", "kind"], values="ms", aggfunc="first")
 
 
 def _show_combined_table(title: str) -> None:
@@ -444,7 +444,7 @@ def _show_combined_table(title: str) -> None:
 
 
 def _nb_combined(title: str) -> None:
-    """Notebook path: pandas Styler with (section, op) MultiIndex rows."""
+    """Notebook path: pandas Styler with (section, op_name) MultiIndex rows."""
     from IPython.display import display  # type: ignore[import-untyped]
 
     frames: list[pd.DataFrame] = []
@@ -546,7 +546,7 @@ def _term_combined(title: str) -> None:
 # ## Benchmark execution
 #
 # Each callable is warmed up `NUM_WARMUP` times, then timed over `NUM_REPEATS` calls.
-# Wall-clock mean in milliseconds is stored per `(section, backend, op, kind)`.
+# Wall-clock mean in milliseconds is stored per `(section, backend, op_name, kind)`.
 
 # %% ── 5  Run benchmarks ──────────────────────────────────────────────────────
 
@@ -567,7 +567,7 @@ def _run_ops(section: str, ops: list[BenchOp]) -> None:
                 results.append({
                     "section": section,
                     "backend": backend,
-                    "op": op.name,
+                    "op_name": op.name,
                     "prims_ms": n,
                     "affine_ms": f,
                 })
@@ -606,7 +606,7 @@ out_path.write_text(
             "meta": {
                 "platform": platform.platform(),
                 "torch": torch.__version__,
-                "image": f"{IMAGE_H}x{IMAGE_W}",
+                "image": f"{IMAGE_HEIGHT}x{IMAGE_WIDTH}",
                 "warmup": NUM_WARMUP,
                 "repeats": NUM_REPEATS,
             },

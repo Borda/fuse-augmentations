@@ -19,8 +19,8 @@ Example:
     >>> import torch
     >>> from fuse_augmentations._compose import Compose
     >>> pipe = Compose([])
-    >>> x = torch.zeros(1, 3, 8, 8)
-    >>> pipe(x).shape
+    >>> image = torch.zeros(1, 3, 8, 8)
+    >>> pipe(image).shape
     torch.Size([1, 3, 8, 8])
 """
 
@@ -141,8 +141,9 @@ class FusedCompose(nn.Module):
         output_backend: Target output format. ``"numpy"`` (or its alias
             ``"numpy_hwc"``) converts the primary image output to a NumPy
             ``ndarray`` with channel-last layout: batched inputs of shape
-            ``(B, C, H, W)`` become ``(B, H, W, C)``, while unbatched inputs
-            of shape ``(C, H, W)`` become ``(H, W, C)`` (i.e. the batch
+            ``(batch_size, channels, height, width)`` become ``(batch_size, height, width, channels)``,
+            while unbatched inputs of shape ``(channels, height, width)`` become
+            ``(height, width, channels)`` (i.e. the batch
             dimension is implicit/squeezed). ``"torch"`` or ``None`` keeps
             the native ``torch.Tensor`` output. Conversion applies only to
             single-tensor output; when ``data_keys`` is active and a tuple is
@@ -176,7 +177,7 @@ class FusedCompose(nn.Module):
             segments = []
         else:
             per_backends = detect_backends_per_transform(transforms)
-            unique_backends = {b for b in per_backends if b is not None}
+            unique_backends = {backend_name for backend_name in per_backends if backend_name is not None}
 
             if len(unique_backends) <= 1:
                 # Single-backend fast path (backward compatible)
@@ -274,7 +275,7 @@ class FusedCompose(nn.Module):
             self._single_exact_fast = (adapter, self._segments[0].transforms[0])
 
         # Single-transform FusedAffineSegment fast path: bypass the segment's
-        # nn.Module.__call__ for single-op GEOMETRIC_INTERP pipelines (a-group
+        # nn.Module.__call__ for single-transform GEOMETRIC_INTERP pipelines (a-group
         # rotate/scale/shear).  Saves ~10-15 us vs going through the segment
         # Module machinery.  Guards:
         # - Single segment, single transform (prevents cv2-path regression from
@@ -305,7 +306,7 @@ class FusedCompose(nn.Module):
         # Pre-cached B=1 CPU float32 identity for _last_transform_matrix in fast paths.
         self._eye_1x3x3_f32: Tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0)
 
-        # Single-op Albumentations direct fast path: for pipelines with exactly
+        # Single-transform Albumentations direct fast path: for pipelines with exactly
         # one AlbuFusedAffineSegment containing one transform, bypass
         # _forward_albu_native entirely.  Saves ~5-10 us/call: 4 lazy imports,
         # function call overhead, forward_numpy dispatch, and segment isinstance loop.
@@ -490,22 +491,24 @@ class FusedCompose(nn.Module):
         if self._is_albu_native and "image" in kwargs and isinstance(kwargs["image"], np.ndarray):
             return self._forward_albu_native(kwargs["image"])
 
-        # Single-op tensor fast paths: bypass nn.Module.__call__ overhead
+        # Single-transform tensor fast paths: bypass nn.Module.__call__ overhead
         # (~10-15 us from hook dispatch, _call_impl indirection) for the
-        # common single-tensor, single-op case.  Guards: exactly 1 positional
+        # common single-tensor, single-transform case.  Guards: exactly 1 positional
         # arg, no kwargs, data_keys is None (single-tensor mode).
         if len(args) == 1 and not kwargs and self.data_keys is None:
-            _sef = self._single_exact_fast
-            if _sef is not None:
-                image = _sef[0].call_nonfused(_sef[1], cast(Tensor, args[0]))
+            _exact_fast = self._single_exact_fast
+            if _exact_fast is not None:
+                image = _exact_fast[0].call_nonfused(_exact_fast[1], cast(Tensor, args[0]))
                 return self._convert_primary_output(image)
 
-            _sffs = self._single_fused_fast_seg
-            if _sffs is not None:
-                image = _sffs[0].call_nonfused(_sffs[1], cast(Tensor, args[0]))
-                _bsz = image.shape[0]
-                _e = self._eye_1x3x3_f32
-                self._last_transform_matrix = _e if _bsz == 1 else _e.expand(_bsz, -1, -1).clone()
+            _fused_fast = self._single_fused_fast_seg
+            if _fused_fast is not None:
+                image = _fused_fast[0].call_nonfused(_fused_fast[1], cast(Tensor, args[0]))
+                _batch_size = image.shape[0]
+                _mtx_eye = self._eye_1x3x3_f32
+                self._last_transform_matrix = (
+                    _mtx_eye if _batch_size == 1 else _mtx_eye.expand(_batch_size, -1, -1).clone()
+                )
                 return self._convert_primary_output(image)
 
         return super().__call__(*args, **kwargs)
@@ -538,8 +541,8 @@ class FusedCompose(nn.Module):
         if _tags is not None:
             from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
 
-            for i, seg in enumerate(self._segments):
-                tag = _tags[i]
+            for idx_segment, seg in enumerate(self._segments):
+                tag = _tags[idx_segment]
                 if tag == 0:  # AlbuFusedAffineSegment
                     img_hwc = seg.forward_numpy(img_hwc)  # type: ignore[attr-defined]
                     self._last_transform_matrix = seg.last_matrix  # type: ignore[attr-defined]
@@ -689,21 +692,21 @@ class FusedCompose(nn.Module):
         # nn.Module.__call__ and probability machinery by calling the native
         # adapter directly.  Only safe for single-tensor mode (no aux_targets)
         # because ExactAffineSegment has no last_matrix to propagate.
-        _sef = self._single_exact_fast
-        if _sef is not None and aux_targets is None:
-            image = _sef[0].call_nonfused(_sef[1], image)
+        _exact_fast = self._single_exact_fast
+        if _exact_fast is not None and aux_targets is None:
+            image = _exact_fast[0].call_nonfused(_exact_fast[1], image)
             return self._convert_primary_output(image)
 
         # Single-transform FusedAffineSegment fast path: same bypass for
-        # single-op GEOMETRIC_INTERP pipelines (a-group rotate/scale/shear).
-        # Sets _last_transform_matrix to identity — the single-op path always
+        # single-transform GEOMETRIC_INTERP pipelines (a-group rotate/scale/shear).
+        # Sets _last_transform_matrix to identity — the single-transform path always
         # returns identity regardless (no matrix reconstruction for a-group).
-        _sffs = self._single_fused_fast_seg
-        if _sffs is not None and aux_targets is None:
-            image = _sffs[0].call_nonfused(_sffs[1], image)
-            _bsz = image.shape[0]
-            _e = self._eye_1x3x3_f32
-            self._last_transform_matrix = _e if _bsz == 1 else _e.expand(_bsz, -1, -1).clone()
+        _fast_seg = self._single_fused_fast_seg
+        if _fast_seg is not None and aux_targets is None:
+            image = _fast_seg[0].call_nonfused(_fast_seg[1], image)
+            _batch_size = image.shape[0]
+            _mtx_eye = self._eye_1x3x3_f32
+            self._last_transform_matrix = _mtx_eye if _batch_size == 1 else _mtx_eye.expand(_batch_size, -1, -1).clone()
             return self._convert_primary_output(image)
 
         for seg in self._segments:
@@ -785,16 +788,16 @@ class FusedCompose(nn.Module):
         # because data_keys is set and has >1 entry)
         _aux: dict[str, torch.Tensor] = aux_targets or {}
         result_list: list[torch.Tensor] = []
-        for i, key in enumerate(self.data_keys):
-            if i == 0:
+        for idx, key in enumerate(self.data_keys):
+            if idx == 0:
                 result_list.append(image)
             else:
-                result_list.append(_aux.get(key, args[i]))
+                result_list.append(_aux.get(key, args[idx]))
         return tuple(result_list)
 
     @property
     def transform_matrix(self) -> torch.Tensor | None:
-        """Return the ``(B, 3, 3)`` composed matrix for the last fused segment.
+        """Return the ``(batch_size, 3, 3)`` composed matrix for the last fused segment.
 
         This is the composed forward transform matrix produced by the last
         fused geometric segment executed in the most recent :meth:`forward`
@@ -834,9 +837,9 @@ class FusedCompose(nn.Module):
         for seg in self._segments:
             if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment, ProjectiveSegment, AlbuProjectiveSegment)):
                 # n transforms fused → 1 warp, saving n-1 passes.
-                n = len(seg.transforms)
-                if n > 1:
-                    total += n - 1
+                num_transforms = len(seg.transforms)
+                if num_transforms > 1:
+                    total += num_transforms - 1
                 continue
 
             if isinstance(seg, ExactAffineSegment):
@@ -849,9 +852,9 @@ class FusedCompose(nn.Module):
 
             if isinstance(seg, FusedColorSegment):
                 # n color ops fused → 1 matrix multiply, saving n-1 passes.
-                n = len(seg.transforms)
-                if n > 1:
-                    total += n - 1
+                num_transforms = len(seg.transforms)
+                if num_transforms > 1:
+                    total += num_transforms - 1
         return total
 
     @property
@@ -867,22 +870,22 @@ class FusedCompose(nn.Module):
         parts: list[str] = []
         for seg in self._segments:
             if isinstance(seg, (ProjectiveSegment, AlbuProjectiveSegment)):
-                names = [type(t).__name__ for t in seg.transforms]
+                names = [type(transform).__name__ for transform in seg.transforms]
                 parts.append(f"projective({', '.join(names)})")
                 continue
 
             if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment)):
-                names = [type(t).__name__ for t in seg.transforms]
+                names = [type(transform).__name__ for transform in seg.transforms]
                 parts.append(f"fused({', '.join(names)})")
                 continue
 
             if isinstance(seg, ExactAffineSegment):
-                names = [type(t).__name__ for t in seg.transforms]
+                names = [type(transform).__name__ for transform in seg.transforms]
                 parts.append(f"exact({', '.join(names)})")
                 continue
 
             if isinstance(seg, FusedColorSegment):
-                names = [type(t).__name__ for t in seg.transforms]
+                names = [type(transform).__name__ for transform in seg.transforms]
                 parts.append(f"color({', '.join(names)})")
                 continue
 
@@ -950,49 +953,49 @@ class FusedCompose(nn.Module):
         descriptors: list[SegmentDescriptor] = []
         for seg in self._segments:
             if isinstance(seg, (ProjectiveSegment, AlbuProjectiveSegment)):
-                names = tuple(type(t).__name__ for t in seg.transforms)
-                n = len(names) - 1 if len(names) > 1 else 0
+                names = tuple(type(transform).__name__ for transform in seg.transforms)
+                num_saved = len(names) - 1 if len(names) > 1 else 0
                 descriptors.append(
                     SegmentDescriptor(
                         kind="projective",
                         transforms=names,
-                        n_warps_saved=n,
+                        n_warps_saved=num_saved,
                         backend=_resolve_backend(seg),
                     )
                 )
                 continue
             if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment)):
-                names = tuple(type(t).__name__ for t in seg.transforms)
-                n = len(names) - 1 if len(names) > 1 else 0
+                names = tuple(type(transform).__name__ for transform in seg.transforms)
+                num_saved = len(names) - 1 if len(names) > 1 else 0
                 descriptors.append(
                     SegmentDescriptor(
                         kind="fused",
                         transforms=names,
-                        n_warps_saved=n,
+                        n_warps_saved=num_saved,
                         backend=_resolve_backend(seg),
                     )
                 )
                 continue
             if isinstance(seg, ExactAffineSegment):
-                names = tuple(type(t).__name__ for t in seg.transforms)
-                n = len(names)  # Each flip saves 1 warp vs grid_sample
+                names = tuple(type(transform).__name__ for transform in seg.transforms)
+                num_saved = len(names)  # Each flip saves 1 warp vs grid_sample
                 descriptors.append(
                     SegmentDescriptor(
                         kind="exact",
                         transforms=names,
-                        n_warps_saved=n,
+                        n_warps_saved=num_saved,
                         backend=_resolve_backend(seg),
                     )
                 )
                 continue
             if isinstance(seg, FusedColorSegment):
-                names = tuple(type(t).__name__ for t in seg.transforms)
-                n = len(names) - 1 if len(names) > 1 else 0
+                names = tuple(type(transform).__name__ for transform in seg.transforms)
+                num_saved = len(names) - 1 if len(names) > 1 else 0
                 descriptors.append(
                     SegmentDescriptor(
                         kind="color",
                         transforms=names,
-                        n_warps_saved=n,
+                        n_warps_saved=num_saved,
                         backend=_resolve_backend(seg),
                     )
                 )
@@ -1033,9 +1036,9 @@ class FusedCompose(nn.Module):
     ) -> FusedCompose:
         """Create a FusedCompose pipeline from a list of TransformSpec objects.
 
-        Resolves each spec's op name to the corresponding backend transform
-        class, instantiates it with the spec's params and p, then builds the
-        pipeline via ``cls(transforms, ...)``.
+        Resolves each spec's operation to the corresponding backend transform
+        class, instantiates it with the spec's params and per-sample probability,
+        then builds the pipeline via ``cls(transforms, ...)``.
 
         Args:
             specs: List of :class:`TransformSpec` objects describing the
@@ -1055,14 +1058,14 @@ class FusedCompose(nn.Module):
 
         Raises:
             ValueError: If ``backend`` is not in :data:`~fuse_augmentations._resolver.SUPPORTED_BACKENDS`,
-                or if a spec's ``op`` is not supported by the chosen backend.
+                or if a spec's operation is not supported by the chosen backend.
                 This validation applies even when ``specs`` is empty.
 
         Example:
             >>> import torch
             >>> from fuse_augmentations._compose import FusedCompose
             >>> from fuse_augmentations._types import TransformSpec
-            >>> spec = TransformSpec(op="hflip", params={}, p=0.5)
+            >>> spec = TransformSpec(operation="hflip", params={}, prob=0.5)
             >>> pipe = FusedCompose.from_config([spec], backend="kornia")
             >>> pipe(torch.zeros(1, 3, 8, 8)).shape
             torch.Size([1, 3, 8, 8])
@@ -1086,22 +1089,25 @@ class FusedCompose(nn.Module):
 
         transforms: list[object] = []
         for spec in specs:
-            if "p" in spec.params:
-                msg = f"TransformSpec.params must not include 'p'; use TransformSpec.p for op {spec.op!r} instead."
+            if "prob" in spec.params:
+                msg = (
+                    f"TransformSpec.params must not include 'prob'; "
+                    f"use TransformSpec.prob for operation {spec.operation!r} instead."
+                )
                 raise ValueError(msg)
-            if spec.op not in SUPPORTED_OPS:
-                msg = f"unknown op {spec.op!r}; supported: {sorted(SUPPORTED_OPS)}"
+            if spec.operation not in SUPPORTED_OPS:
+                msg = f"unknown operation {spec.operation!r}; supported: {sorted(SUPPORTED_OPS)}"
                 raise ValueError(msg)
-            op_name = cast("OpStr", spec.op)
+            op_name = cast("OpStr", spec.operation)
             tfm_cls = resolve_op(op_name, backend)
             kwargs = translate_params(op_name, backend, dict(spec.params))
             # Most backends accept p= for per-transform probability.
             # Some (e.g. TorchVision rotation) don't; pass it and let
             # the backend ignore it via **kwargs or TypeError fallback.
             try:
-                tfm = tfm_cls(**kwargs, p=spec.p)
+                tfm = tfm_cls(**kwargs, p=spec.prob)
             except TypeError as exc:
-                # Re-raise unless this is specifically a rejected p= keyword.
+                # Re-raise unless this is specifically a rejected p keyword.
                 # Constructor errors about other kwargs/types must not be masked.
                 exc_msg = str(exc).lower()
                 is_p_keyword_rejection = "'p'" in exc_msg and (
@@ -1111,16 +1117,16 @@ class FusedCompose(nn.Module):
                     raise
                 # Backend class does not accept p= (e.g. TorchVision RandomRotation)
                 tfm = tfm_cls(**kwargs)
-                # Attach p as attribute so the fused engine can read it
+                # Attach prob as attribute so the fused engine can read it
                 p_set = False
                 with contextlib.suppress(AttributeError, TypeError):
-                    tfm.p = spec.p
+                    tfm.prob = spec.prob
                     p_set = True
-                if not p_set and spec.p != 1.0:
+                if not p_set and spec.prob != 1.0:
                     warnings.warn(
-                        f"TransformSpec.p={spec.p!r} for op {spec.op!r} could not be applied to "
+                        f"TransformSpec.prob={spec.prob!r} for operation {spec.operation!r} could not be applied to "
                         f"{tfm_cls.__name__!r} (backend does not accept p= and attribute is read-only). "
-                        "The transform will always be applied (p=1.0 effective).",
+                        "The transform will always be applied (prob=1.0 effective).",
                         UserWarning,
                         stacklevel=3,
                     )
@@ -1357,13 +1363,13 @@ class FusedCompose(nn.Module):
         transforms: list[object] = []
 
         if has_affine:
-            transforms.append(_DirectParamTransform(param_specs, p=1.0))
+            transforms.append(_DirectParamTransform(param_specs, prob=1.0))
 
         if hflip_p > 0.0:
-            transforms.append(_DirectFlipTransform(flip_type="hflip", p=hflip_p))
+            transforms.append(_DirectFlipTransform(flip_type="hflip", prob=hflip_p))
 
         if vflip_p > 0.0:
-            transforms.append(_DirectFlipTransform(flip_type="vflip", p=vflip_p))
+            transforms.append(_DirectFlipTransform(flip_type="vflip", prob=vflip_p))
 
         # Build instance bypassing detect_backend
         instance = cls.__new__(cls)
@@ -1414,20 +1420,20 @@ class FusedCompose(nn.Module):
         transforms: list[object] = []
 
         for spec in specs:
-            if spec.op in ("hflip", "vflip"):
+            if spec.operation in ("hflip", "vflip"):
                 transforms.append(
-                    _DirectFlipTransform(flip_type=spec.op, p=spec.p),  # type: ignore[arg-type]
+                    _DirectFlipTransform(flip_type=spec.operation, prob=spec.prob),  # type: ignore[arg-type]
                 )
-            elif spec.op in op_to_param_key:
-                param_key = op_to_param_key[spec.op]
+            elif spec.operation in op_to_param_key:
+                param_key = op_to_param_key[spec.operation]
                 # Resolve and validate one numeric range for this op.
                 param_value = cls._extract_param_range_from_spec(spec)
                 param_specs = {param_key: param_value}
                 transforms.append(
-                    _DirectParamTransform(param_specs, p=spec.p),
+                    _DirectParamTransform(param_specs, prob=spec.prob),
                 )
             else:
-                msg = f"Unsupported op for from_params: {spec.op!r}"
+                msg = f"Unsupported op for from_params: {spec.operation!r}"
                 raise ValueError(msg)
 
         if not transforms:
@@ -1471,7 +1477,7 @@ class FusedCompose(nn.Module):
             "translate_y": ("pixels", "translate_y"),
         }
 
-        allowed_keys = op_to_allowed_keys.get(spec.op, ())
+        allowed_keys = op_to_allowed_keys.get(spec.operation, ())
         for key in allowed_keys:
             if key in spec.params:
                 value = spec.params[key]
@@ -1482,10 +1488,10 @@ class FusedCompose(nn.Module):
                     and isinstance(value[1], (int, float))
                 ):
                     return float(value[0]), float(value[1])
-                msg = f"Invalid range for {spec.op!r}: expected tuple[float, float] in params[{key!r}]"
+                msg = f"Invalid range for {spec.operation!r}: expected tuple[float, float] in params[{key!r}]"
                 raise ValueError(msg)
 
-        msg = f"Missing required range for {spec.op!r}; expected one of keys: {allowed_keys}"
+        msg = f"Missing required range for {spec.operation!r}; expected one of keys: {allowed_keys}"
         raise ValueError(msg)
 
     @staticmethod
@@ -1535,14 +1541,14 @@ class FusedCompose(nn.Module):
             ("scale", scale),
         ]:
             if value is not None:
-                op, param_key = _kwarg_to_op[kwarg_name]
-                specs.append(TransformSpec(op=op, params={param_key: value}, p=1.0))
+                op_name, param_key = _kwarg_to_op[kwarg_name]
+                specs.append(TransformSpec(operation=op_name, params={param_key: value}, prob=1.0))
 
         # Flip params
         if hflip_p > 0.0:
-            specs.append(TransformSpec(op="hflip", params={}, p=hflip_p))
+            specs.append(TransformSpec(operation="hflip", params={}, prob=hflip_p))
         if vflip_p > 0.0:
-            specs.append(TransformSpec(op="vflip", params={}, p=vflip_p))
+            specs.append(TransformSpec(operation="vflip", params={}, prob=vflip_p))
 
         return specs
 
@@ -1630,27 +1636,27 @@ def _build_mixed_segments(
     # Keyed by positional index (stable across pickle) rather than id()
     # or object identity (which break after deserialization).
     transform_adapters: dict[int, TransformAdapter] = {}
-    for idx, (_tfm, bk) in enumerate(zip(transforms, per_backends, strict=True)):
-        if bk is not None:
-            transform_adapters[idx] = _get_adapter(bk)
+    for idx_tfm, (_tfm, backend_name) in enumerate(zip(transforms, per_backends, strict=True)):
+        if backend_name is not None:
+            transform_adapters[idx_tfm] = _get_adapter(backend_name)
 
     # Group consecutive transforms by backend
     groups: list[tuple[Backend | None, list[object]]] = []
-    for tfm, bk in zip(transforms, per_backends, strict=True):
-        if groups and groups[-1][0] == bk:
+    for tfm, backend_name in zip(transforms, per_backends, strict=True):
+        if groups and groups[-1][0] == backend_name:
             groups[-1][1].append(tfm)
         else:
-            groups.append((bk, [tfm]))
+            groups.append((backend_name, [tfm]))
 
     # Build segments per group
     all_segments: list[object] = []
-    for bk, group_transforms in groups:
-        if bk is None:
+    for backend_name, group_transforms in groups:
+        if backend_name is None:
             # Unrecognised transforms — emit as passthrough
             all_segments.extend(group_transforms)
             continue
 
-        adapter = _get_adapter(bk)
+        adapter = _get_adapter(backend_name)
         if reorder == ReorderPolicy.POINTWISE:
             group_transforms = reorder_pointwise(group_transforms, adapter)
         elif reorder == ReorderPolicy.AGGRESSIVE:
@@ -1660,14 +1666,14 @@ def _build_mixed_segments(
             adapter,
             interpolation,
             padding_mode,
-            use_numpy=(bk == Backend.ALBUMENTATIONS),
+            use_numpy=(backend_name == Backend.ALBUMENTATIONS),
         )
         all_segments.extend(group_segments)
 
     # Primary adapter: first recognised backend, used as fallback for _adapter.
     # This function is only reachable when len(unique_backends) > 1, which
     # guarantees at least one non-None backend exists.
-    primary_backend = next((b for b in per_backends if b is not None), None)
+    primary_backend = next((backend_name for backend_name in per_backends if backend_name is not None), None)
     if primary_backend is None:
         raise ValueError(
             "_build_mixed_segments called with no recognised backends. "
@@ -1771,9 +1777,9 @@ class _DirectParamTransform:
 
     """
 
-    def __init__(self, param_specs: dict[str, tuple[float, float]], p: float = 1.0) -> None:
+    def __init__(self, param_specs: dict[str, tuple[float, float]], prob: float = 1.0) -> None:
         self.param_specs = param_specs
-        self.p = p
+        self.prob = prob
         self.same_on_batch = False
 
 
@@ -1784,9 +1790,9 @@ class _DirectFlipTransform:
 
     """
 
-    def __init__(self, flip_type: Literal["hflip", "vflip"], p: float = 0.5) -> None:
+    def __init__(self, flip_type: Literal["hflip", "vflip"], prob: float = 0.5) -> None:
         self.flip_type: Literal["hflip", "vflip"] = flip_type
-        self.p = p
+        self.prob = prob
         self.same_on_batch = False
 
 
@@ -1813,51 +1819,55 @@ class _DirectParamAdapter:
         device: torch.device,
     ) -> dict[str, torch.Tensor]:
         """Sample random parameters from the stored ranges."""
-        B = input_shape[0]  # noqa: N806
+        batch_size = input_shape[0]
 
         if isinstance(transform, _DirectFlipTransform):
-            return {"_batch_size": torch.tensor([B], device=device, dtype=torch.int64)}
+            return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
 
         if isinstance(transform, _DirectParamTransform):
             specs = transform.param_specs
             result: dict[str, torch.Tensor] = {}
 
             if "rotation" in specs:
-                lo, hi = specs["rotation"]
-                lo_rad, hi_rad = math.radians(lo), math.radians(hi)
-                result["angle_rad"] = torch.empty(B, device=device).uniform_(lo_rad, hi_rad)
+                low, high = specs["rotation"]
+                low_rad, high_rad = math.radians(low), math.radians(high)
+                result["angle_rad"] = torch.empty(batch_size, device=device).uniform_(low_rad, high_rad)
 
             # Scale: if uniform 'scale' is set, use it for both axes
             # Individual scale_x/scale_y override uniform scale
-            sx_range = specs.get("scale_x") or specs.get("scale")
-            sy_range = specs.get("scale_y") or specs.get("scale")
-            if sx_range is not None and sy_range is not None:
-                result["scale_x"] = torch.empty(B, device=device).uniform_(*sx_range)
-                result["scale_y"] = torch.empty(B, device=device).uniform_(*sy_range)
-            if sx_range is not None and sy_range is None:
-                result["scale_x"] = torch.empty(B, device=device).uniform_(*sx_range)
-                result["scale_y"] = torch.ones(B, device=device)
-            if sy_range is not None and sx_range is None:
-                result["scale_x"] = torch.ones(B, device=device)
-                result["scale_y"] = torch.empty(B, device=device).uniform_(*sy_range)
+            scale_x_range = specs.get("scale_x") or specs.get("scale")
+            scale_y_range = specs.get("scale_y") or specs.get("scale")
+            if scale_x_range is not None and scale_y_range is not None:
+                result["scale_x"] = torch.empty(batch_size, device=device).uniform_(*scale_x_range)
+                result["scale_y"] = torch.empty(batch_size, device=device).uniform_(*scale_y_range)
+            if scale_x_range is not None and scale_y_range is None:
+                result["scale_x"] = torch.empty(batch_size, device=device).uniform_(*scale_x_range)
+                result["scale_y"] = torch.ones(batch_size, device=device)
+            if scale_y_range is not None and scale_x_range is None:
+                result["scale_x"] = torch.ones(batch_size, device=device)
+                result["scale_y"] = torch.empty(batch_size, device=device).uniform_(*scale_y_range)
 
             if "shear_x" in specs:
-                lo, hi = specs["shear_x"]
-                result["shear_x_rad"] = torch.empty(B, device=device).uniform_(math.radians(lo), math.radians(hi))
+                low, high = specs["shear_x"]
+                result["shear_x_rad"] = torch.empty(batch_size, device=device).uniform_(
+                    math.radians(low), math.radians(high)
+                )
 
             if "shear_y" in specs:
-                lo, hi = specs["shear_y"]
-                result["shear_y_rad"] = torch.empty(B, device=device).uniform_(math.radians(lo), math.radians(hi))
+                low, high = specs["shear_y"]
+                result["shear_y_rad"] = torch.empty(batch_size, device=device).uniform_(
+                    math.radians(low), math.radians(high)
+                )
 
             if "translate_x" in specs or "translate_y" in specs:
                 if "translate_x" in specs:
-                    result["translate_x"] = torch.empty(B, device=device).uniform_(*specs["translate_x"])
+                    result["translate_x"] = torch.empty(batch_size, device=device).uniform_(*specs["translate_x"])
                 else:
-                    result["translate_x"] = torch.zeros(B, device=device)
+                    result["translate_x"] = torch.zeros(batch_size, device=device)
                 if "translate_y" in specs:
-                    result["translate_y"] = torch.empty(B, device=device).uniform_(*specs["translate_y"])
+                    result["translate_y"] = torch.empty(batch_size, device=device).uniform_(*specs["translate_y"])
                 else:
-                    result["translate_y"] = torch.zeros(B, device=device)
+                    result["translate_y"] = torch.zeros(batch_size, device=device)
 
             return result
 
@@ -1867,56 +1877,58 @@ class _DirectParamAdapter:
     def build_matrix(
         transform: object,
         params: dict[str, torch.Tensor],
-        H: int,  # noqa: N803
-        W: int,  # noqa: N803
+        height: int,
+        width: int,
     ) -> torch.Tensor:
-        """Build a (B, 3, 3) forward affine matrix from sampled params."""
+        """Build a (batch_size, 3, 3) forward affine matrix from sampled params."""
         if isinstance(transform, _DirectFlipTransform):
-            B = int(params["_batch_size"].item())  # noqa: N806
+            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
             if transform.flip_type == "hflip":
-                return hflip_matrix(W=W, batch_size=B, device=device, dtype=torch.float32)
-            return vflip_matrix(H=H, batch_size=B, device=device, dtype=torch.float32)
+                return hflip_matrix(width=width, batch_size=batch_size, device=device, dtype=torch.float32)
+            return vflip_matrix(height=height, batch_size=batch_size, device=device, dtype=torch.float32)
 
         if isinstance(transform, _DirectParamTransform):
             # Determine batch size and device from any param
-            B = None  # type: ignore[assignment]  # noqa: N806
+            batch_size = None
             device = torch.device("cpu")
             dtype = torch.float32
-            for v in params.values():
-                if isinstance(v, torch.Tensor):
-                    B = v.shape[0]  # noqa: N806
-                    device = v.device
-                    dtype = v.dtype
+            for param_value in params.values():
+                if isinstance(param_value, torch.Tensor):
+                    batch_size = param_value.shape[0]
+                    device = param_value.device
+                    dtype = param_value.dtype
                     break
-            if B is None:
+            if batch_size is None:
                 return torch.eye(3, dtype=dtype, device=device).unsqueeze(0)
 
-            acc = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
+            mtx_acc = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1).clone()
 
             if "angle_rad" in params:
-                acc = matmul3x3(rotation_matrix(params["angle_rad"], H=H, W=W), acc)
+                mtx_acc = matmul3x3(rotation_matrix(params["angle_rad"], height=height, width=width), mtx_acc)
 
             if "scale_x" in params and "scale_y" in params:
-                acc = matmul3x3(scale_matrix(params["scale_x"], params["scale_y"], H=H, W=W), acc)
+                mtx_acc = matmul3x3(
+                    scale_matrix(params["scale_x"], params["scale_y"], height=height, width=width), mtx_acc
+                )
 
             if "shear_x_rad" in params:
                 shear_x_tan = torch.tan(params["shear_x_rad"])
-                acc = matmul3x3(shear_x_matrix(shear_x_tan, H=H, W=W), acc)
+                mtx_acc = matmul3x3(shear_x_matrix(shear_x_tan, height=height, width=width), mtx_acc)
 
             if "shear_y_rad" in params:
                 shear_y_tan = torch.tan(params["shear_y_rad"])
-                acc = matmul3x3(shear_y_matrix(shear_y_tan, H=H, W=W), acc)
+                mtx_acc = matmul3x3(shear_y_matrix(shear_y_tan, height=height, width=width), mtx_acc)
 
             if "translate_x" in params and "translate_y" in params:
-                acc = matmul3x3(translate_matrix(params["translate_x"], params["translate_y"]), acc)
+                mtx_acc = matmul3x3(translate_matrix(params["translate_x"], params["translate_y"]), mtx_acc)
 
-            return acc
+            return mtx_acc
 
         msg = (
             f"_DirectParamAdapter.build_matrix: no recognized param keys in {list(params.keys())}. "
             "This is a bug — either sample_params() returned unexpected keys or the transform "
-            "was constructed with an unknown op name."
+            "was constructed with an unknown operation name."
         )
         raise RuntimeError(msg)
 

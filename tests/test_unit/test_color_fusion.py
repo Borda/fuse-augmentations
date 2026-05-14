@@ -4,7 +4,7 @@ FusedColorSegment, and adapter build_color_matrix implementations.
 Covers:
 - from_params(specs=..., backend=...) delegation to from_config semantics
 - build_segments folding of POINTWISE_LINEAR ops into FusedColorSegment
-- Adapter build_color_matrix returning (B, 4, 4) homogeneous color matrices
+- Adapter build_color_matrix returning (batch_size, 4, 4) homogeneous color matrices
 - FusedColorSegment forward edge cases (non-RGB, aux_targets)
 - _try_build_color_matrix probe robustness
 - scale_x/scale_y ValueError guard when backend= is set
@@ -33,10 +33,10 @@ class TestFromParamsBackend:
         from fuse_augmentations._compose import FusedCompose
         from fuse_augmentations._types import TransformSpec
 
-        specs = [TransformSpec(op="hflip", params={}, p=0.5)]
+        specs = [TransformSpec(operation="hflip", params={}, prob=0.5)]
         pipe = FusedCompose.from_params(specs=specs, backend="kornia")
-        x = torch.zeros(2, 3, 32, 32)
-        out = pipe(x)
+        image = torch.zeros(2, 3, 32, 32)
+        out = pipe(image)
         assert out.shape == torch.Size([2, 3, 32, 32])
 
     def test_from_params_specs_with_backend_same_segments_as_from_config(self):
@@ -46,8 +46,8 @@ class TestFromParamsBackend:
         from fuse_augmentations._types import TransformSpec
 
         specs = [
-            TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=1.0),
-            TransformSpec(op="hflip", params={}, p=0.5),
+            TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=1.0),
+            TransformSpec(operation="hflip", params={}, prob=0.5),
         ]
         pipe_params = FusedCompose.from_params(specs=specs, backend="kornia")
         pipe_config = FusedCompose.from_config(specs, backend="kornia")
@@ -66,14 +66,14 @@ class TestFromParamsBackend:
 
         specs = [
             TransformSpec(
-                op="rotation",
+                operation="rotation",
                 params={"degrees": (-15.0, 15.0), "same_on_batch": True},
-                p=1.0,
+                prob=1.0,
             )
         ]
         pipe = FusedCompose.from_params(specs=specs, backend="kornia")
-        x = torch.zeros(2, 3, 32, 32)
-        out = pipe(x)
+        image = torch.zeros(2, 3, 32, 32)
+        out = pipe(image)
         assert out.shape == torch.Size([2, 3, 32, 32])
 
     def test_from_params_unknown_backend_native_kwarg_raises(self):
@@ -84,9 +84,9 @@ class TestFromParamsBackend:
 
         specs = [
             TransformSpec(
-                op="rotation",
+                operation="rotation",
                 params={"degrees": (-15.0, 15.0), "totally_unknown_kwarg": 42},
-                p=1.0,
+                prob=1.0,
             )
         ]
         with pytest.raises((ValueError, TypeError)):
@@ -97,8 +97,8 @@ class TestFromParamsBackend:
         from fuse_augmentations._compose import FusedCompose
 
         pipe = FusedCompose.from_params(rotation=(-30.0, 30.0), hflip_p=0.5)
-        x = torch.zeros(2, 3, 32, 32)
-        out = pipe(x)
+        image = torch.zeros(2, 3, 32, 32)
+        out = pipe(image)
         assert out.shape == torch.Size([2, 3, 32, 32])
 
 
@@ -121,60 +121,60 @@ class TestFusedColorSegment:
 
         class _PLTransform:
             _category = TransformCategory.POINTWISE_LINEAR
-            p = 1.0
+            prob = 1.0
 
         class _PLAdapter:
-            def category(self, t):
+            def category(self, transform):
                 return TransformCategory.POINTWISE_LINEAR
 
-            def sample_params(self, t, shape, device):
+            def sample_params(self, transform, shape, device):
                 return {"_batch_size": torch.tensor([shape[0]])}
 
-            def build_matrix(self, t, params, H, W):
-                B = int(params["_batch_size"].item())
-                return torch.eye(3).unsqueeze(0).expand(B, -1, -1).clone()
+            def build_matrix(self, transform, params, height, width):
+                batch_size = int(params["_batch_size"].item())
+                return torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1).clone()
 
-            def build_color_matrix(self, t, params):
-                B = int(params["_batch_size"].item())
-                return torch.eye(4).unsqueeze(0).expand(B, -1, -1).clone()
+            def build_color_matrix(self, transform, params):
+                batch_size = int(params["_batch_size"].item())
+                return torch.eye(4).unsqueeze(0).expand(batch_size, -1, -1).clone()
 
-            def call_nonfused(self, t, image, **kw):
+            def call_nonfused(self, transform, image, **kwargs):
                 return image
 
-        t1, t2 = _PLTransform(), _PLTransform()
+        transform1, transform2 = _PLTransform(), _PLTransform()
         adapter = _PLAdapter()
-        segs = build_segments([t1, t2], adapter, "bilinear", "zeros")
-        color_segs = [s for s in segs if isinstance(s, FusedColorSegment)]
-        assert len(color_segs) == 1, f"Expected 1 FusedColorSegment, got segments: {segs}"
+        segments = build_segments([transform1, transform2], adapter, "bilinear", "zeros")
+        color_segments = [segment for segment in segments if isinstance(segment, FusedColorSegment)]
+        assert len(color_segments) == 1, f"Expected 1 FusedColorSegment, got segments: {segments}"
 
     def test_fused_color_segment_forward_returns_correct_shape(self):
-        """FusedColorSegment.forward returns (B, C, H, W) matching input."""
+        """FusedColorSegment.forward returns (batch_size, channels, height, width) matching input."""
         from fuse_augmentations._types import TransformCategory
         from fuse_augmentations.affine._segment import FusedColorSegment
 
         class _IdentityPLTransform:
             _category = TransformCategory.POINTWISE_LINEAR
-            p = 1.0
+            prob = 1.0
 
         class _IdentityPLAdapter:
-            def category(self, t):
+            def category(self, transform):
                 return TransformCategory.POINTWISE_LINEAR
 
-            def sample_params(self, t, shape, device):
+            def sample_params(self, transform, shape, device):
                 return {"_batch_size": torch.tensor([shape[0]])}
 
-            def build_color_matrix(self, t, params):
-                B = int(params["_batch_size"].item())
-                return torch.eye(4).unsqueeze(0).expand(B, -1, -1).clone()
+            def build_color_matrix(self, transform, params):
+                batch_size = int(params["_batch_size"].item())
+                return torch.eye(4).unsqueeze(0).expand(batch_size, -1, -1).clone()
 
-            def call_nonfused(self, t, image, **kw):
+            def call_nonfused(self, transform, image, **kwargs):
                 return image
 
-        t = _IdentityPLTransform()
-        seg = FusedColorSegment([t], _IdentityPLAdapter())
-        x = torch.rand(2, 3, 16, 16)
-        out = seg(x)
-        assert out.shape == x.shape
+        transform = _IdentityPLTransform()
+        segment = FusedColorSegment([transform], _IdentityPLAdapter())
+        image = torch.rand(2, 3, 16, 16)
+        image_output = segment(image)
+        assert image_output.shape == image.shape
 
     def test_fused_color_segment_identity_matrix_preserves_image(self):
         """Applying identity color matrices does not alter pixel values."""
@@ -183,27 +183,27 @@ class TestFusedColorSegment:
 
         class _IdentityPLTransform:
             _category = TransformCategory.POINTWISE_LINEAR
-            p = 1.0
+            prob = 1.0
 
         class _IdentityPLAdapter:
-            def category(self, t):
+            def category(self, transform):
                 return TransformCategory.POINTWISE_LINEAR
 
-            def sample_params(self, t, shape, device):
+            def sample_params(self, transform, shape, device):
                 return {"_batch_size": torch.tensor([shape[0]])}
 
-            def build_color_matrix(self, t, params):
-                B = int(params["_batch_size"].item())
-                return torch.eye(4).unsqueeze(0).expand(B, -1, -1).clone()
+            def build_color_matrix(self, transform, params):
+                batch_size = int(params["_batch_size"].item())
+                return torch.eye(4).unsqueeze(0).expand(batch_size, -1, -1).clone()
 
-            def call_nonfused(self, t, image, **kw):
+            def call_nonfused(self, transform, image, **kwargs):
                 return image
 
-        t = _IdentityPLTransform()
-        seg = FusedColorSegment([t], _IdentityPLAdapter())
-        x = torch.rand(2, 3, 16, 16)
-        out = seg(x)
-        torch.testing.assert_close(out, x)
+        transform = _IdentityPLTransform()
+        segment = FusedColorSegment([transform], _IdentityPLAdapter())
+        image = torch.rand(2, 3, 16, 16)
+        image_output = segment(image)
+        torch.testing.assert_close(image_output, image)
 
     def test_build_segments_fallback_to_passthrough_when_adapter_raises(self):
         """If any adapter in a POINTWISE_LINEAR run raises NotImplementedError, fall back to passthrough."""
@@ -212,43 +212,43 @@ class TestFusedColorSegment:
 
         class _PLTransform:
             _category = TransformCategory.POINTWISE_LINEAR
-            p = 1.0
+            prob = 1.0
 
         class _NoColorMatrixAdapter:
-            def category(self, t):
+            def category(self, transform):
                 return TransformCategory.POINTWISE_LINEAR
 
-            def sample_params(self, t, shape, device):
+            def sample_params(self, transform, shape, device):
                 return {}
 
-            def build_matrix(self, t, params, H, W):
+            def build_matrix(self, transform, params, height, width):
                 return torch.eye(3).unsqueeze(0)
 
-            def build_color_matrix(self, t, params):
+            def build_color_matrix(self, transform, params):
                 raise NotImplementedError
 
-            def call_nonfused(self, t, image, **kw):
+            def call_nonfused(self, transform, image, **kwargs):
                 return image
 
-        t1, t2 = _PLTransform(), _PLTransform()
+        transform1, transform2 = _PLTransform(), _PLTransform()
         adapter = _NoColorMatrixAdapter()
-        segs = build_segments([t1, t2], adapter, "bilinear", "zeros")
-        color_segs = [s for s in segs if isinstance(s, FusedColorSegment)]
+        segments = build_segments([transform1, transform2], adapter, "bilinear", "zeros")
+        color_segments = [segment for segment in segments if isinstance(segment, FusedColorSegment)]
         # Fallback: no FusedColorSegment, transforms left as passthrough
-        assert len(color_segs) == 0
+        assert len(color_segments) == 0
 
     def test_build_segments_kornia_color_jitter_sat_hue_passthrough(self):
         """Kornia ColorJitter with active saturation/hue must not be fused."""
         pytest.importorskip("kornia")
-        import kornia.augmentation as K
+        import kornia.augmentation as kornia_aug
 
         from fuse_augmentations.adapters._kornia import KorniaAdapter
         from fuse_augmentations.affine._segment import FusedColorSegment, build_segments
 
-        t = K.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=1.0)
-        segs = build_segments([t], KorniaAdapter(), "bilinear", "zeros")
-        assert not any(isinstance(seg, FusedColorSegment) for seg in segs)
-        assert segs == [t]
+        transform = kornia_aug.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=1.0)
+        segments = build_segments([transform], KorniaAdapter(), "bilinear", "zeros")
+        assert not any(isinstance(segment, FusedColorSegment) for segment in segments)
+        assert segments == [transform]
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +257,7 @@ class TestFusedColorSegment:
 
 
 class TestAdapterBuildColorMatrix:
-    """Each adapter exposes build_color_matrix returning (B, 4, 4) tensors."""
+    """Each adapter exposes build_color_matrix returning (batch_size, 4, 4) tensors."""
 
     def test_kornia_adapter_has_build_color_matrix(self):
         """KorniaAdapter.build_color_matrix exists as a callable."""
@@ -267,28 +267,28 @@ class TestAdapterBuildColorMatrix:
         assert callable(getattr(KorniaAdapter, "build_color_matrix", None))
 
     def test_kornia_random_brightness_returns_4x4(self):
-        """KorniaAdapter.build_color_matrix for RandomBrightness returns (B, 4, 4)."""
+        """KorniaAdapter.build_color_matrix for RandomBrightness returns (batch_size, 4, 4)."""
         kornia = pytest.importorskip("kornia")  # noqa: F841
-        import kornia.augmentation as K
+        import kornia.augmentation as kornia_aug
 
         from fuse_augmentations.adapters._kornia import KorniaAdapter
 
         B = 3
-        transform = K.RandomBrightness(brightness=(0.5, 1.5), p=1.0)
+        transform = kornia_aug.RandomBrightness(brightness=(0.5, 1.5), p=1.0)
         adapter = KorniaAdapter()
         params = adapter.sample_params(transform, (B, 3, 32, 32), torch.device("cpu"))
         mat = adapter.build_color_matrix(transform, params)
         assert mat.shape == (B, 4, 4), f"Expected ({B}, 4, 4), got {mat.shape}"
 
     def test_kornia_color_jitter_returns_4x4(self):
-        """KorniaAdapter.build_color_matrix for ColorJitter returns (B, 4, 4)."""
+        """KorniaAdapter.build_color_matrix for ColorJitter returns (batch_size, 4, 4)."""
         kornia = pytest.importorskip("kornia")  # noqa: F841
-        import kornia.augmentation as K
+        import kornia.augmentation as kornia_aug
 
         from fuse_augmentations.adapters._kornia import KorniaAdapter
 
         B = 2
-        transform = K.ColorJitter(brightness=0.2, contrast=0.2, p=1.0)
+        transform = kornia_aug.ColorJitter(brightness=0.2, contrast=0.2, p=1.0)
         adapter = KorniaAdapter()
         params = adapter.sample_params(transform, (B, 3, 32, 32), torch.device("cpu"))
         mat = adapter.build_color_matrix(transform, params)
@@ -297,12 +297,12 @@ class TestAdapterBuildColorMatrix:
     def test_kornia_color_jitter_with_sat_hue_raises_not_implemented(self):
         """ColorJitter with active saturation/hue is intentionally not fused."""
         pytest.importorskip("kornia")
-        import kornia.augmentation as K
+        import kornia.augmentation as kornia_aug
 
         from fuse_augmentations.adapters._kornia import KorniaAdapter
 
         B = 2
-        transform = K.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=1.0)
+        transform = kornia_aug.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=1.0)
         adapter = KorniaAdapter()
         params = adapter.sample_params(transform, (B, 3, 32, 32), torch.device("cpu"))
 
@@ -326,19 +326,19 @@ class TestAdapterBuildColorMatrix:
     def test_build_color_matrix_last_row_is_homogeneous(self):
         """build_color_matrix bottom row is [0, 0, 0, 1] for all batch items."""
         kornia = pytest.importorskip("kornia")  # noqa: F841
-        import kornia.augmentation as K
+        import kornia.augmentation as kornia_aug
 
         from fuse_augmentations.adapters._kornia import KorniaAdapter
 
-        B = 4
-        transform = K.RandomBrightness(brightness=(0.8, 1.2), p=1.0)
+        batch_size = 4
+        transform = kornia_aug.RandomBrightness(brightness=(0.8, 1.2), p=1.0)
         adapter = KorniaAdapter()
-        params = adapter.sample_params(transform, (B, 3, 32, 32), torch.device("cpu"))
+        params = adapter.sample_params(transform, (batch_size, 3, 32, 32), torch.device("cpu"))
         mat = adapter.build_color_matrix(transform, params)
 
         expected_last_row = torch.tensor([0.0, 0.0, 0.0, 1.0])
-        for b in range(B):
-            torch.testing.assert_close(mat[b, 3, :], expected_last_row)
+        for idx_sample in range(batch_size):
+            torch.testing.assert_close(mat[idx_sample, 3, :], expected_last_row)
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +375,7 @@ class TestFusedColorSegmentEdgeCases:
         return FusedColorSegment([t], _IdentityAdapter())
 
     def test_forward_non_3channel_falls_back_to_passthrough(self):
-        """FusedColorSegment falls back to sequential passthrough for non-RGB (C != 3) inputs."""
+        """FusedColorSegment falls back to sequential passthrough for non-RGB (num_channels != 3) inputs."""
         seg = self._make_identity_seg()
         # 1-channel mask input
         x = torch.rand(2, 1, 16, 16)
@@ -454,7 +454,7 @@ class TestTryBuildColorMatrixProbe:
     def test_runtime_error_returns_false(self):
         """RuntimeError from build_color_matrix → False (not classified as supported).
 
-        A RuntimeError (e.g. GPU OOM, device mismatch) must NOT be silently treated as "method exists but needs real
+        albu RuntimeError (e.g. GPU OOM, device mismatch) must NOT be silently treated as "method exists but needs real
         params" — it is classified as unsupported.
 
         """

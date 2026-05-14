@@ -139,7 +139,7 @@ lint.per-file-ignores."tests/**/*.py" = [
   "ANN",   # No type annotations required in tests
   "D",     # No docstrings required in tests
   "E741",  # Ambiguous variable name (I for identity matrix)
-  "N",     # Naming conventions relaxed in tests (H, W, M, etc.)
+  "N",     # Naming conventions relaxed in tests (H, W, B, etc.)
   "PT006", # parametrize argument style is relaxed
   "S101",  # Use of `assert` detected
 ]

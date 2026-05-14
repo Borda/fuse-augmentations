@@ -10,7 +10,7 @@ matrix in the same convention as ``affine._matrix``. The adapter reads this
 matrix directly instead of reconstructing it from raw angle/scale/shear values.
 
 ``A.Perspective`` is also supported and mapped to
-``TransformCategory.PROJECTIVE``. Its sampled ``matrix`` key is treated as a
+``TransformCategory.PROJECTIVE``. Its sampled transform matrix is treated as a
 forward pixel-space homography and consumed by
 ``AlbuProjectiveSegment`` rather than the affine fusion path.
 
@@ -51,28 +51,28 @@ if not _ALBUMENTATIONS_AVAILABLE:
 # ---------------------------------------------------------------------------
 
 
-def hflip_matrix_np(W: int) -> NDArray[np.float64]:  # noqa: N803
+def hflip_matrix_np(width: int) -> NDArray[np.float64]:
     """Build a (3, 3) pixel-space forward horizontal flip matrix.
 
-    Maps ``x' = W - 1 - x``, ``y' = y``.
+    Maps ``x' = width - 1 - x``, ``y' = y``.
 
     Args:
-        W: Image width in pixels.
+        width: Image width in pixels.
 
     Returns:
         ``(3, 3)`` float64 forward horizontal flip matrix.
 
     Example:
-        >>> M = hflip_matrix_np(W=4)
-        >>> M[0].tolist()
+        >>> mtx = hflip_matrix_np(width=4)
+        >>> mtx[0].tolist()
         [-1.0, 0.0, 3.0]
-        >>> M[1].tolist()
+        >>> mtx[1].tolist()
         [0.0, 1.0, 0.0]
 
     """
     return np.array(
         [
-            [-1.0, 0.0, float(W - 1)],
+            [-1.0, 0.0, float(width - 1)],
             [0.0, 1.0, 0.0],
             [0.0, 0.0, 1.0],
         ],
@@ -80,29 +80,29 @@ def hflip_matrix_np(W: int) -> NDArray[np.float64]:  # noqa: N803
     )
 
 
-def vflip_matrix_np(H: int) -> NDArray[np.float64]:  # noqa: N803
+def vflip_matrix_np(height: int) -> NDArray[np.float64]:
     """Build a (3, 3) pixel-space forward vertical flip matrix.
 
-    Maps ``x' = x``, ``y' = H - 1 - y``.
+    Maps ``x' = x``, ``y' = height - 1 - y``.
 
     Args:
-        H: Image height in pixels.
+        height: Image height in pixels.
 
     Returns:
         ``(3, 3)`` float64 forward vertical flip matrix.
 
     Example:
-        >>> M = vflip_matrix_np(H=4)
-        >>> M[1].tolist()
+        >>> mtx = vflip_matrix_np(height=4)
+        >>> mtx[1].tolist()
         [0.0, -1.0, 3.0]
-        >>> M[0].tolist()
+        >>> mtx[0].tolist()
         [1.0, 0.0, 0.0]
 
     """
     return np.array(
         [
             [1.0, 0.0, 0.0],
-            [0.0, -1.0, float(H - 1)],
+            [0.0, -1.0, float(height - 1)],
             [0.0, 0.0, 1.0],
         ],
         dtype=np.float64,
@@ -187,8 +187,9 @@ class AlbumentationsAdapter:
     routed through the projective segment path instead of affine fusion.
 
     Requires ``albumentations >= 2.0``. The adapter reads the pre-built
-    ``matrix`` key from ``get_params_dependent_on_data()`` rather than
-    reconstructing affine or projective matrices from raw parameters.
+    ``matrix`` key returned by affine-style transforms and ``Perspective``
+    rather than reconstructing affine or projective matrices from raw
+    parameters.
 
     Example:
         >>> adapter = AlbumentationsAdapter()
@@ -227,48 +228,48 @@ class AlbumentationsAdapter:
         input_shape: tuple[int, int, int, int],
         device: torch.device,
     ) -> dict[str, torch.Tensor]:
-        """Sample random parameters for a batch of B images.
+        """Sample random parameters for a batch of images.
 
         For ``GEOMETRIC_INTERP`` and ``PROJECTIVE`` transforms, calls
         ``get_params_dependent_on_data()`` once per sample and stacks the
-        resulting ``matrix`` arrays into a ``(B, 3, 3)`` tensor. A dummy
-        ``(H, W, 1)`` float32 array is passed so the transform can compute
+        resulting ``matrix`` arrays into a ``(batch_size, 3, 3)`` tensor. A dummy
+        ``(height, width, 1)`` float32 array is passed so the transform can compute
         center coordinates without reading actual pixel data.
 
-        For flip transforms, returns a ``{"_batch_size": tensor([B])}``
+        For flip transforms, returns a ``{"_batch_size": tensor([batch_size])}``
         sentinel so ``build_matrix()`` knows the required output shape.
 
         Args:
             transform: An Albumentations transform instance.
-            input_shape: ``(B, C, H, W)`` shape tuple.
+            input_shape: ``(batch_size, channels, height, width)`` shape tuple.
             device: Target device for the returned tensors.
 
         Returns:
-            Dict of parameter tensors. ``"matrix"`` key holds ``(B, 3, 3)``
+            Dict of parameter tensors. ``"matrix"`` key holds ``(batch_size, 3, 3)``
             for interpolated affine transforms and projective transforms;
             ``"_batch_size"`` for flips.
 
         """
-        B, _C, H, W = input_shape  # noqa: N806
+        batch_size, _channels, height, width = input_shape
 
         if _is_albu_instance(transform, _POINTWISE_TYPES):
             # Non-linear color op (e.g. HueSaturationValue): passthrough — no affine matrix.
-            return {"_batch_size": torch.tensor([B], device=device, dtype=torch.int64)}
+            return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
         if _is_albu_instance(transform, _HFLIP_TYPES | _VFLIP_TYPES):
-            return {"_batch_size": torch.tensor([B], device=device, dtype=torch.int64)}
+            return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
         if _is_albu_instance(transform, _EXACT_DISCRETE_TYPES):
             result: dict[str, torch.Tensor] = {
-                "_batch_size": torch.tensor([B], device=device, dtype=torch.int64),
+                "_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64),
             }
             same_on_batch = bool(getattr(transform, "same_on_batch", False))
 
             if TRANSFORM_REGISTRY and isinstance(transform, _RandomRotate90):
                 if same_on_batch:
                     factor = int(transform.get_params()["factor"]) % 4
-                    result["k90"] = torch.full((B,), factor, device=device, dtype=torch.int64)
+                    result["k90"] = torch.full((batch_size,), factor, device=device, dtype=torch.int64)
                     return result
                 result["k90"] = torch.tensor(
-                    [int(transform.get_params()["factor"]) % 4 for _ in range(B)],
+                    [int(transform.get_params()["factor"]) % 4 for _ in range(batch_size)],
                     device=device,
                     dtype=torch.int64,
                 )
@@ -277,10 +278,12 @@ class AlbumentationsAdapter:
             if TRANSFORM_REGISTRY and isinstance(transform, _D4):
                 if same_on_batch:
                     elem = str(transform.get_params()["group_element"])
-                    result["d4_code"] = torch.full((B,), _D4_ELEM_TO_CODE[elem], device=device, dtype=torch.int64)
+                    result["d4_code"] = torch.full(
+                        (batch_size,), _D4_ELEM_TO_CODE[elem], device=device, dtype=torch.int64
+                    )
                     return result
                 result["d4_code"] = torch.tensor(
-                    [_D4_ELEM_TO_CODE[str(transform.get_params()["group_element"])] for _ in range(B)],
+                    [_D4_ELEM_TO_CODE[str(transform.get_params()["group_element"])] for _ in range(batch_size)],
                     device=device,
                     dtype=torch.int64,
                 )
@@ -290,15 +293,15 @@ class AlbumentationsAdapter:
 
         # POINTWISE_LINEAR (color transforms): sample alpha/beta per batch element
         if _is_albu_instance(transform, _COLOR_TYPES):
-            return _sample_color_params(transform, B, device)
+            return _sample_color_params(transform, batch_size, device)
 
         # CROP_RESIZE_FIXED: extract crop_coords from get_params_dependent_on_data
         if _is_albu_instance(transform, _CROP_RESIZE_TYPES):
-            return _sample_crop_resize_params(transform, B, H, W, device)
+            return _sample_crop_resize_params(transform, batch_size, height, width, device)
 
         # GEOMETRIC_INTERP: extract the pre-built matrix B times (once per sample)
         if _is_albu_instance(transform, _INTERP_TYPES) or _is_albu_instance(transform, _ALL_REGISTRY_TYPES):
-            matrices = _sample_matrices(transform, B, H, W)  # (B, 3, 3) float64 ndarray
+            matrices = _sample_matrices(transform, batch_size, height, width)  # (B, 3, 3) float64 ndarray
             return {
                 "matrix": torch.tensor(matrices, dtype=torch.float32, device=device),
             }
@@ -310,73 +313,85 @@ class AlbumentationsAdapter:
     def build_matrix(
         transform: object,
         params: dict[str, torch.Tensor],
-        H: int,  # noqa: N803
-        W: int,  # noqa: N803
+        height: int,
+        width: int,
     ) -> torch.Tensor:
-        """Build a ``(B, 3, 3)`` pixel-space forward geometric matrix.
+        """Build a (batch_size, 3, 3) pixel-space forward geometric matrix.
 
         For ``GEOMETRIC_INTERP`` and ``PROJECTIVE`` transforms, returns the
         pre-sampled ``params["matrix"]`` tensor directly (it was already
         stacked in ``sample_params()``).
 
         For flip transforms, constructs the appropriate constant matrix using
-        inline NumPy helpers and expands it to batch size B.
+        inline NumPy helpers and expands it to batch size.
 
         Args:
             transform: An Albumentations transform instance.
             params: Parameter dict from ``sample_params()``.
-            H: Image height in pixels.
-            W: Image width in pixels.
+            height: Image height in pixels.
+            width: Image width in pixels.
 
         Returns:
-            ``(B, 3, 3)`` forward affine matrix or homography in pixel
+            ``(batch_size, 3, 3)`` forward affine matrix or homography in pixel
             coordinates, depending on the transform category.
 
         """
         if _is_albu_instance(transform, _POINTWISE_TYPES):
             # Non-linear color op: no spatial change → identity matrix.
-            B = int(params["_batch_size"].item())  # noqa: N806
+            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
-            return torch.eye(3, dtype=torch.float32, device=device).unsqueeze(0).expand(B, -1, -1).clone()
+            return torch.eye(3, dtype=torch.float32, device=device).unsqueeze(0).expand(batch_size, -1, -1).clone()
 
         if _is_albu_instance(transform, _HFLIP_TYPES):
-            B = int(params["_batch_size"].item())  # noqa: N806
+            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
-            M_np = hflip_matrix_np(W=W)  # noqa: N806
-            return torch.tensor(M_np, dtype=torch.float32, device=device).unsqueeze(0).expand(B, -1, -1).clone()
+            matrix_np = hflip_matrix_np(width=width)
+            return (
+                torch
+                .tensor(matrix_np, dtype=torch.float32, device=device)
+                .unsqueeze(0)
+                .expand(batch_size, -1, -1)
+                .clone()
+            )
 
         if _is_albu_instance(transform, _VFLIP_TYPES):
-            B = int(params["_batch_size"].item())  # noqa: N806
+            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
-            M_np = vflip_matrix_np(H=H)  # noqa: N806
-            return torch.tensor(M_np, dtype=torch.float32, device=device).unsqueeze(0).expand(B, -1, -1).clone()
+            matrix_np = vflip_matrix_np(height=height)
+            return (
+                torch
+                .tensor(matrix_np, dtype=torch.float32, device=device)
+                .unsqueeze(0)
+                .expand(batch_size, -1, -1)
+                .clone()
+            )
 
         if _is_albu_instance(transform, _EXACT_DISCRETE_TYPES):
-            B = int(params["_batch_size"].item())  # noqa: N806
+            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
             dtype = torch.float32
 
             if _is_albu_instance(transform, frozenset({_RandomRotate90})):
                 k90 = params.get("k90")
                 if k90 is None:
-                    k90 = torch.zeros(B, device=device, dtype=torch.int64)
-                if H != W and bool(((k90 == 1) | (k90 == 3)).any().item()):
+                    k90 = torch.zeros(batch_size, device=device, dtype=torch.int64)
+                if height != width and bool(((k90 == 1) | (k90 == 3)).any().item()):
                     msg = (
                         "RandomRotate90 with k in {1, 3} changes spatial dimensions "
-                        f"({H}x{W}). Mixed affine fusion requires shape-preserving ops."
+                        f"({height}x{width}). Mixed affine fusion requires shape-preserving ops."
                     )
                     raise RuntimeError(msg)
                 angles = k90.to(dtype=dtype) * (torch.pi / 2.0)
-                return rotation_matrix(angles, H=H, W=W)
+                return rotation_matrix(angles, height=height, width=width)
 
             if _is_albu_instance(transform, frozenset({_Transpose})):
-                return _transpose_matrix(H=H, W=W, batch_size=B, device=device, dtype=dtype)
+                return _transpose_matrix(height=height, width=width, batch_size=batch_size, device=device, dtype=dtype)
 
             if _is_albu_instance(transform, frozenset({_D4})):
                 d4_code = params.get("d4_code")
                 if d4_code is None:
-                    d4_code = torch.zeros(B, device=device, dtype=torch.int64)
-                return _d4_matrix(d4_code, H=H, W=W, device=device, dtype=dtype)
+                    d4_code = torch.zeros(batch_size, device=device, dtype=torch.int64)
+                return _d4_matrix(d4_code, height=height, width=width, device=device, dtype=dtype)
 
         if _is_albu_instance(transform, _CROP_RESIZE_TYPES):
             return crop_resize_matrix(
@@ -426,10 +441,10 @@ class AlbumentationsAdapter:
 
         Args:
             transform: An Albumentations GEOMETRIC_EXACT transform.
-            image: ``(B, C, H, W)`` input tensor.
+            image: ``(batch_size, channels, height, width)`` input tensor.
 
         Returns:
-            Transformed ``(B, C, H, W)`` tensor.
+            Transformed ``(batch_size, channels, height, width)`` tensor.
 
         Raises:
             RuntimeError: If a discrete op would change spatial dimensions
@@ -450,7 +465,7 @@ class AlbumentationsAdapter:
         transform: object,
         params: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        """Build a ``(B, 4, 4)`` homogeneous color-space affine matrix.
+        """Build a ``(batch_size, 4, 4)`` homogeneous color-space affine matrix.
 
         Maps the linear color transform ``c' = alpha * c + beta`` to the 4x4
         homogeneous form ``[[M, b], [0^T, 1]]``.
@@ -458,7 +473,7 @@ class AlbumentationsAdapter:
         Supported transforms:
 
         - ``RandomBrightnessContrast``: ``c' = alpha * c + beta``
-          Matrix: ``M = alpha * I₃``, ``b = (beta, beta, beta)``.
+          Matrix: ``M = alpha * identity_3x3``, ``b = (beta, beta, beta)``.
 
         Args:
             transform: An Albumentations color transform instance.
@@ -485,59 +500,59 @@ class AlbumentationsAdapter:
     ) -> torch.Tensor:
         """Apply an Albumentations transform directly via its native forward method.
 
-        Converts the ``(B, C, H, W)`` tensor to ``(H, W, C)`` numpy arrays
+        Converts the ``(batch_size, channels, height, width)`` tensor to ``(height, width, channels)`` numpy arrays
         per sample, calls the transform, and converts the results back.
 
         Args:
             transform: An Albumentations transform instance.
-            image: ``(B, C, H, W)`` float32 image tensor.
+            image: ``(batch_size, channels, height, width)`` float32 image tensor.
             **kwargs: Unused; accepted for protocol compatibility.
 
         Returns:
-            Transformed ``(B, C, H, W)`` tensor on the same device as input.
+            Transformed ``(batch_size, channels, height, width)`` tensor on the same device as input.
 
         """
         device = image.device
         dtype = image.dtype
-        B = image.shape[0]  # noqa: N806
+        batch_size = image.shape[0]
 
-        results = []
-        for i in range(B):
-            # (C, H, W) → (H, W, C) numpy
-            img_np = image[i].permute(1, 2, 0).cpu().numpy()
-            out_np = transform(image=img_np)["image"]  # type: ignore[operator]
-            # (H, W, C) → (C, H, W) tensor
-            results.append(torch.as_tensor(np.ascontiguousarray(out_np).copy()).permute(2, 0, 1))
+        ndarray_results = []
+        for idx_sample in range(batch_size):
+            # (channels, height, width) → (height, width, channels) numpy
+            image_np = image[idx_sample].permute(1, 2, 0).cpu().numpy()
+            output_np = transform(image=image_np)["image"]  # type: ignore[operator]
+            # (height, width, channels) → (channels, height, width) tensor
+            ndarray_results.append(torch.as_tensor(np.ascontiguousarray(output_np).copy()).permute(2, 0, 1))
 
-        return torch.stack(results).to(device=device, dtype=dtype)
+        return torch.stack(ndarray_results).to(device=device, dtype=dtype)
 
     @staticmethod
-    def call_nonfused_numpy(transform: object, img_hwc: NDArray[Any]) -> NDArray[Any]:
+    def call_nonfused_numpy(transform: object, image_hwc: NDArray[Any]) -> NDArray[Any]:
         """Apply a non-fused Albumentations transform to a single HWC NumPy image.
 
         Calls the transform via its native Albumentations dict API
-        (``transform(image=img_hwc)["image"]``) without any tensor conversion.
+        (``transform(image=image_hwc)["image"]``) without any tensor conversion.
         Used by :meth:`~fuse_augmentations._compose.FusedCompose._forward_albu_native`
         to apply passthrough transforms in the Albumentations native I/O path.
 
         Args:
             transform: Any Albumentations transform instance.
-            img_hwc: ``(H, W, C)`` NumPy array.
+            image_hwc: ``(height, width, channels)`` NumPy array.
 
         Returns:
-            Transformed ``(H, W, C)`` NumPy array.
+            Transformed ``(height, width, channels)`` NumPy array.
 
         Examples:
             >>> import numpy as np
             >>> import albumentations as A
             >>> from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
-            >>> img = np.zeros((8, 8, 3), dtype=np.uint8)
-            >>> out = AlbumentationsAdapter.call_nonfused_numpy(A.GaussianBlur(p=1.0), img)
+            >>> image = np.zeros((8, 8, 3), dtype=np.uint8)
+            >>> out = AlbumentationsAdapter.call_nonfused_numpy(A.GaussianBlur(p=1.0), image)
             >>> out.shape
             (8, 8, 3)
 
         """
-        return transform(image=img_hwc)["image"]  # type: ignore[operator,no-any-return]
+        return transform(image=image_hwc)["image"]  # type: ignore[operator,no-any-return]
 
 
 # ---------------------------------------------------------------------------
@@ -583,34 +598,36 @@ def _apply_discrete_exact(
 
     Args:
         transform: An Albumentations discrete exact transform.
-        image: ``(B, C, H, W)`` input tensor.
+        image: ``(batch_size, channels, height, width)`` input tensor.
 
     Returns:
-        Transformed ``(B, C, H, W)`` tensor.
+        Transformed ``(batch_size, channels, height, width)`` tensor.
 
     """
     ttype = type(transform)
-    bsz = int(image.shape[0])
+    batch_size = int(image.shape[0])
     same_on_batch = bool(getattr(transform, "same_on_batch", False))
 
     if TRANSFORM_REGISTRY and ttype is _RandomRotate90:
         if same_on_batch:
             params = transform.get_params()  # type: ignore[attr-defined]
-            k = int(params["factor"]) % 4
-            if k in (1, 3):
+            num_rotations = int(params["factor"]) % 4
+            if num_rotations in (1, 3):
                 _check_square_for_shape_changing_op(image, "RandomRotate90")
-            return torch.rot90(image, k=k, dims=[2, 3])
+            return torch.rot90(image, k=num_rotations, dims=[2, 3])
 
-        if bsz == 0:
+        if batch_size == 0:
             return image
-        out = image.clone()
-        for i in range(bsz):
+        image_output = image.clone()
+        for idx_sample in range(batch_size):
             params = transform.get_params()  # type: ignore[attr-defined]
-            k = int(params["factor"]) % 4
-            if k in (1, 3):
-                _check_square_for_shape_changing_op(image, "RandomRotate90")
-            out[i : i + 1] = torch.rot90(image[i : i + 1], k=k, dims=[2, 3])
-        return out
+            num_rotations = int(params["factor"]) % 4
+            if num_rotations in (1, 3):
+                _check_square_for_shape_changing_op(image[idx_sample : idx_sample + 1], "RandomRotate90")
+            image_output[idx_sample : idx_sample + 1] = torch.rot90(
+                image[idx_sample : idx_sample + 1], k=num_rotations, dims=[2, 3]
+            )
+        return image_output
 
     if TRANSFORM_REGISTRY and ttype is _Transpose:
         _check_square_for_shape_changing_op(image, "Transpose")
@@ -622,30 +639,30 @@ def _apply_discrete_exact(
             elem = _convert_normalize_d4_elem(params["group_element"])
             return _apply_d4_element(image, elem)
 
-        if bsz == 0:
+        if batch_size == 0:
             return image
-        out = image.clone()
-        for i in range(bsz):
+        image_output = image.clone()
+        for idx_sample in range(batch_size):
             params = transform.get_params()  # type: ignore[attr-defined]
             elem = _convert_normalize_d4_elem(params["group_element"])
-            out[i : i + 1] = _apply_d4_element(image[i : i + 1], elem)
-        return out
+            image_output[idx_sample : idx_sample + 1] = _apply_d4_element(image[idx_sample : idx_sample + 1], elem)
+        return image_output
 
     msg = f"Cannot apply discrete exact op for {ttype.__name__!r}"
     raise TypeError(msg)
 
 
 def _transpose_matrix(
-    H: int,  # noqa: N803
-    W: int,  # noqa: N803
+    height: int,
+    width: int,
     batch_size: int,
     device: torch.device,
     dtype: torch.dtype,
 ) -> torch.Tensor:
     """Build the forward pixel-space matrix for transpose."""
-    if H != W:
+    if height != width:
         msg = (
-            f"Transpose changes spatial dimensions on non-square images ({H}x{W})."
+            f"Transpose changes spatial dimensions on non-square images ({height}x{width})."
             f" Mixed affine fusion requires shape-preserving ops."
         )
         raise RuntimeError(msg)
@@ -658,28 +675,28 @@ def _transpose_matrix(
 
 def _d4_matrix(
     d4_code: torch.Tensor,
-    H: int,  # noqa: N803
-    W: int,  # noqa: N803
+    height: int,
+    width: int,
     device: torch.device,
     dtype: torch.dtype,
 ) -> torch.Tensor:
     """Build forward pixel-space matrices for D4 group elements."""
     batch_size = int(d4_code.shape[0])
-    if H != W:
+    if height != width:
         _shape_changing = frozenset({_D4_ELEM_TO_CODE["r90"], _D4_ELEM_TO_CODE["r270"], _D4_ELEM_TO_CODE["hvt"]})
         for code in d4_code.tolist():
             elem = _D4_CODE_TO_ELEM[int(code)]
             if int(code) in _shape_changing:
                 msg = (
                     f"D4 element {elem!r} changes spatial dimensions on non-square images "
-                    f"({H}x{W}). Mixed affine fusion requires shape-preserving ops. "
+                    f"({height}x{width}). Mixed affine fusion requires shape-preserving ops. "
                     "Use square images for exact discrete transforms."
                 )
                 raise RuntimeError(msg)
     out = torch.empty(batch_size, 3, 3, device=device, dtype=dtype)
-    base_h = hflip_matrix(W=W, batch_size=1, device=device, dtype=dtype)
-    base_v = vflip_matrix(H=H, batch_size=1, device=device, dtype=dtype)
-    base_t = _transpose_matrix(H=H, W=W, batch_size=1, device=device, dtype=dtype)
+    base_h = hflip_matrix(width=width, batch_size=1, device=device, dtype=dtype)
+    base_v = vflip_matrix(height=height, batch_size=1, device=device, dtype=dtype)
+    base_t = _transpose_matrix(height=height, width=width, batch_size=1, device=device, dtype=dtype)
 
     for idx, code in enumerate(d4_code.tolist()):
         elem = _D4_CODE_TO_ELEM[int(code)]
@@ -687,13 +704,19 @@ def _d4_matrix(
             out[idx] = torch.eye(3, device=device, dtype=dtype)
             continue
         if elem == "r90":
-            out[idx] = rotation_matrix(torch.tensor([torch.pi / 2.0], device=device, dtype=dtype), H=H, W=W)[0]
+            out[idx] = rotation_matrix(
+                torch.tensor([torch.pi / 2.0], device=device, dtype=dtype), height=height, width=width
+            )[0]
             continue
         if elem == "r180":
-            out[idx] = rotation_matrix(torch.tensor([torch.pi], device=device, dtype=dtype), H=H, W=W)[0]
+            out[idx] = rotation_matrix(
+                torch.tensor([torch.pi], device=device, dtype=dtype), height=height, width=width
+            )[0]
             continue
         if elem == "r270":
-            out[idx] = rotation_matrix(torch.tensor([3.0 * torch.pi / 2.0], device=device, dtype=dtype), H=H, W=W)[0]
+            out[idx] = rotation_matrix(
+                torch.tensor([3.0 * torch.pi / 2.0], device=device, dtype=dtype), height=height, width=width
+            )[0]
             continue
         if elem == "h":
             out[idx] = base_h[0]
@@ -725,15 +748,15 @@ def _convert_normalize_d4_elem(elem: object) -> _D4Elem:
 
 
 def _apply_d4_element(image: torch.Tensor, elem: _D4Elem) -> torch.Tensor:
-    """Apply a single D4 group element to a (B, C, H, W) tensor.
+    """Apply a single D4 group element to a (batch_size, channels, height, width) tensor.
 
     Args:
-        image: ``(B, C, H, W)`` input tensor.
+        image: ``(batch_size, channels, height, width)`` input tensor.
         elem: D4 group element name (``"e"``, ``"r90"``, ``"r180"``,
             ``"r270"``, ``"h"``, ``"v"``, ``"t"``, ``"hvt"``).
 
     Returns:
-        Transformed ``(B, C, H, W)`` tensor.
+        Transformed ``(batch_size, channels, height, width)`` tensor.
 
     """
     if elem == "e":
@@ -762,9 +785,9 @@ def _apply_d4_element(image: torch.Tensor, elem: _D4Elem) -> torch.Tensor:
 
 def _sample_crop_resize_params(
     transform: object,
-    B: int,  # noqa: N803
-    H: int,  # noqa: N803
-    W: int,  # noqa: N803
+    batch_size: int,
+    height: int,
+    width: int,
     device: torch.device,
 ) -> dict[str, torch.Tensor]:
     """Sample crop coordinates from ``RandomResizedCrop`` for B images.
@@ -775,9 +798,9 @@ def _sample_crop_resize_params(
 
     Args:
         transform: An Albumentations ``RandomResizedCrop`` instance.
-        B: Batch size.
-        H: Image height in pixels (used to bound crop coordinates).
-        W: Image width in pixels (used to bound crop coordinates).
+        batch_size: Batch size.
+        height: Image height in pixels (used to bound crop coordinates).
+        width: Image width in pixels (used to bound crop coordinates).
         device: Target device for returned tensors.
 
     Returns:
@@ -785,13 +808,13 @@ def _sample_crop_resize_params(
         ``crop_w``, ``target_h``, ``target_w`` as ``(B,)`` float32 tensors.
 
     """
-    dummy = np.empty((H, W, 1), dtype=np.float32)  # shape is all that matters; values unused
+    dummy = np.empty((height, width, 1), dtype=np.float32)  # shape is all that matters; values unused
     data = {"image": dummy}
     tops: list[float] = []
     lefts: list[float] = []
     crop_hs: list[float] = []
     crop_ws: list[float] = []
-    for _ in range(B):
+    for _ in range(batch_size):
         base = transform.get_params()  # type: ignore[attr-defined]
         base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
         full = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]
@@ -806,8 +829,8 @@ def _sample_crop_resize_params(
         "crop_left": torch.tensor(lefts, dtype=torch.float32, device=device),
         "crop_h": torch.tensor(crop_hs, dtype=torch.float32, device=device),
         "crop_w": torch.tensor(crop_ws, dtype=torch.float32, device=device),
-        "target_h": torch.full((B,), float(target_h), dtype=torch.float32, device=device),
-        "target_w": torch.full((B,), float(target_w), dtype=torch.float32, device=device),
+        "target_h": torch.full((batch_size,), float(target_h), dtype=torch.float32, device=device),
+        "target_w": torch.full((batch_size,), float(target_w), dtype=torch.float32, device=device),
     }
 
 
@@ -818,36 +841,40 @@ def _sample_crop_resize_params(
 _DUMMY_IMAGE_CACHE: dict[tuple[int, int], NDArray[np.float32]] = {}
 
 
-def _sample_matrices(transform: object, B: int, H: int, W: int) -> NDArray[np.float64]:  # noqa: N803
-    """Call ``get_params_dependent_on_data()`` B times, stack into (B, 3, 3).
+def _sample_matrices(transform: object, batch_size: int, height: int, width: int) -> NDArray[np.float64]:
+    """Call ``get_params_dependent_on_data()`` batch_size times, stack into (batch_size, 3, 3).
 
-    A dummy ``(H, W, 1)`` float32 image is passed so the transform can
+    A dummy ``(height, width, 1)`` float32 image is passed so the transform can
     compute center coordinates. No actual pixel data is read.
 
     Args:
         transform: An Albumentations interpolated affine or projective transform.
-        B: Batch size.
-        H: Image height.
-        W: Image width.
+        batch_size: Batch size.
+        height: Image height.
+        width: Image width.
 
     Returns:
         ``(B, 3, 3)`` float64 array of forward pixel-space matrices.
 
     """
-    _key = (H, W)
+    _key = (height, width)
     dummy = _DUMMY_IMAGE_CACHE.get(_key)
     if dummy is None:
-        dummy = np.empty((H, W, 1), dtype=np.float32)
+        dummy = np.empty((height, width, 1), dtype=np.float32)
         _DUMMY_IMAGE_CACHE[_key] = dummy
     data = {"image": dummy}
-    matrices = np.empty((B, 3, 3), dtype=np.float64)
-    for i in range(B):
+    matrices = np.empty((batch_size, 3, 3), dtype=np.float64)
+    for idx in range(batch_size):
         base = transform.get_params()  # type: ignore[attr-defined]
         # update_transform_params adds "shape" (and interpolation/fill keys) needed
         # by get_params_dependent_on_data to compute center coordinates etc.
         base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
         full = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]
-        matrices[i] = full["matrix"]
+        if "matrix" in full:
+            matrices[idx] = full["matrix"]
+        else:
+            msg = f"{type(transform).__name__} did not return 'matrix' from get_params_dependent_on_data()"
+            raise KeyError(msg)
     return matrices
 
 
@@ -858,7 +885,7 @@ def _sample_matrices(transform: object, B: int, H: int, W: int) -> NDArray[np.fl
 
 def _sample_color_params(
     transform: object,
-    B: int,  # noqa: N803
+    batch_size: int,
     device: torch.device,
 ) -> dict[str, torch.Tensor]:
     """Sample alpha/beta from ``RandomBrightnessContrast`` for B images.
@@ -869,7 +896,7 @@ def _sample_color_params(
 
     Args:
         transform: An Albumentations ``RandomBrightnessContrast`` instance.
-        B: Batch size.
+        batch_size: Batch size.
         device: Target device for returned tensors.
 
     Returns:
@@ -880,7 +907,7 @@ def _sample_color_params(
     data = {"image": dummy}
     alphas: list[float] = []
     betas: list[float] = []
-    for _ in range(B):
+    for _idx in range(batch_size):
         base = transform.get_params()  # type: ignore[attr-defined]
         base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
         full = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]
@@ -893,24 +920,24 @@ def _sample_color_params(
 
 
 def _build_brightness_contrast_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:
-    """Build ``(B, 4, 4)`` for Albumentations ``RandomBrightnessContrast``.
+    """Build ``(batch_size, 4, 4)`` for Albumentations ``RandomBrightnessContrast``.
 
     The transform applies ``c' = alpha * c + beta`` per channel.
-    Matrix: ``M = alpha * I₃``, ``b = (beta, beta, beta)``.
+    Matrix: ``M = alpha * identity_3x3``, ``b = (beta, beta, beta)``.
 
     Args:
-        params: Dict with ``"alpha"`` (B,) and ``"beta"`` (B,) tensors.
+        params: Dict with ``"alpha"`` (batch_size,) and ``"beta"`` (batch_size,) tensors.
 
     Returns:
-        ``(B, 4, 4)`` homogeneous color-space affine matrix.
+        ``(batch_size, 4, 4)`` homogeneous color-space affine matrix.
 
     """
-    alpha = params["alpha"]  # (B,)
-    beta = params["beta"]  # (B,)
-    B = alpha.shape[0]  # noqa: N806
+    alpha = params["alpha"]  # (batch_size,)
+    beta = params["beta"]  # (batch_size,)
+    batch_size = alpha.shape[0]
     device = alpha.device
     dtype = alpha.dtype
-    mat = torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
+    mat = torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1).clone()
     mat[:, 0, 0] = alpha
     mat[:, 1, 1] = alpha
     mat[:, 2, 2] = alpha

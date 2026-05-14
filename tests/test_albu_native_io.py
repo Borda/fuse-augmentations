@@ -1,7 +1,7 @@
 """Albumentations native I/O parity tests.
 
 Verifies that FusedCompose accepts the same dict-input calling convention as
-A.Compose (``pipeline(image=ndarray)``), returning a dict with an ``"image"``
+albu.Compose (``pipeline(image=ndarray)``), returning a dict with an ``"image"``
 key containing a HWC NumPy array — while leaving the existing BCHW tensor path
 completely unchanged.
 
@@ -33,7 +33,7 @@ skip_no_albu = pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="albumen
 
 @skip_no_albu
 def test_fused_compose_albu_accepts_hwc_numpy_dict_uint8():
-    """FusedCompose must accept uint8 HWC NumPy dict like A.Compose."""
+    """FusedCompose must accept uint8 HWC NumPy dict like albu.Compose."""
     img = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
     transforms = [A.Rotate(limit=30, p=1.0), A.HorizontalFlip(p=1.0)]
     fused = Compose(copy.deepcopy(transforms))
@@ -101,7 +101,7 @@ def test_empty_pipeline_dict_input():
 
 @skip_no_albu
 def test_grayscale_hwc1_dict_input():
-    """(H, W, 1) single-channel input must be handled."""
+    """(height, width, 1) single-channel input must be handled."""
     img = np.random.randint(0, 255, (64, 64, 1), dtype=np.uint8)
     pipe = Compose([A.Rotate(limit=30, p=1.0)])
     out = pipe(image=img)
@@ -110,9 +110,9 @@ def test_grayscale_hwc1_dict_input():
 
 @skip_no_albu
 def test_fused_plus_passthrough_dict_input():
-    """Mixed fused-geometric + passthrough colour op via dict input."""
+    """Mixed fused-geometric + passthrough colour op_name via dict input."""
     img = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
-    # A.Rotate is fused (AlbuFusedAffineSegment); A.GaussianBlur is a passthrough
+    # albu.Rotate is fused (AlbuFusedAffineSegment); albu.GaussianBlur is a passthrough
     # (_PassthroughSegment with AlbumentationsAdapter).
     pipe = Compose([A.Rotate(limit=30, p=1.0), A.GaussianBlur(p=1.0)])
     out = pipe(image=img)

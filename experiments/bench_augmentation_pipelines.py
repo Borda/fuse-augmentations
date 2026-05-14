@@ -101,13 +101,13 @@ log = logging.getLogger(__name__)
 
 NUM_WARMUP: int = 20
 NUM_REPEATS: int = 100
-IMAGE_H: int = 256
-IMAGE_W: int = 256
+IMAGE_HEIGHT: int = 256
+IMAGE_WIDTH: int = 256
 
 RESULTS_DIR = Path(__file__).parent / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
 
-print(f"Torch {torch.__version__} | image: {IMAGE_H}x{IMAGE_W} | warmup={NUM_WARMUP} repeats={NUM_REPEATS}")
+print(f"Torch {torch.__version__} | image: {IMAGE_HEIGHT}x{IMAGE_WIDTH} | warmup={NUM_WARMUP} repeats={NUM_REPEATS}")
 
 # %% [markdown]
 # ## 1 — Synthetic scene image
@@ -123,58 +123,62 @@ print(f"Torch {torch.__version__} | image: {IMAGE_H}x{IMAGE_W} | warmup={NUM_WAR
 # %% ── 1  Synthetic scene image ───────────────────────────────────────────────
 
 
-def _draw_triangle(img: np.ndarray, r0: int, r1: int, c0: int, c1: int, pad: int, color: np.ndarray) -> None:
-    """Fill a triangle (apex top-centre, base at bottom) into a quadrant of ``img``."""
-    apex_r, apex_c = r0 + pad, (c0 + c1) // 2
-    base_r = r1 - pad
-    base_c0, base_c1 = c0 + pad, c1 - pad
-    for row in range(apex_r, base_r + 1):
-        t = (row - apex_r) / max(base_r - apex_r, 1)
-        left = int(apex_c + t * (base_c0 - apex_c))
-        right = int(apex_c + t * (base_c1 - apex_c))
-        img[row, left : right + 1] = color
+def _draw_triangle(image: np.ndarray, row0: int, row1: int, col0: int, col1: int, pad: int, color: np.ndarray) -> None:
+    """Fill a triangle (apex top-centre, base at bottom) into a quadrant of ``image``."""
+    apex_row, apex_col = row0 + pad, (col0 + col1) // 2
+    base_row = row1 - pad
+    base_col0, base_col1 = col0 + pad, col1 - pad
+    for row in range(apex_row, base_row + 1):
+        progress = (row - apex_row) / max(base_row - apex_row, 1)
+        left = int(apex_col + progress * (base_col0 - apex_col))
+        right = int(apex_col + progress * (base_col1 - apex_col))
+        image[row, left : right + 1] = color
 
 
-def _draw_circle(img: np.ndarray, r0: int, r1: int, c0: int, c1: int, pad: int, color: np.ndarray) -> None:
-    """Fill a circle centred in a quadrant of ``img``."""
-    cr, cc = (r0 + r1) // 2, (c0 + c1) // 2
-    radius = min(r1 - r0, c1 - c0) // 2 - pad
-    rows_g, cols_g = np.ogrid[r0:r1, c0:c1]
-    mask = (rows_g - cr) ** 2 + (cols_g - cc) ** 2 <= radius**2
-    img[r0:r1, c0:c1][mask] = color
+def _draw_circle(image: np.ndarray, row0: int, row1: int, col0: int, col1: int, pad: int, color: np.ndarray) -> None:
+    """Fill a circle centred in a quadrant of ``image``."""
+    center_row, center_col = (row0 + row1) // 2, (col0 + col1) // 2
+    radius = min(row1 - row0, col1 - col0) // 2 - pad
+    rows_grid, cols_grid = np.ogrid[row0:row1, col0:col1]
+    mask = (rows_grid - center_row) ** 2 + (cols_grid - center_col) ** 2 <= radius**2
+    image[row0:row1, col0:col1][mask] = color
 
 
-def _draw_rectangle(img: np.ndarray, r0: int, r1: int, c0: int, c1: int, pad: int, color: np.ndarray) -> None:
-    """Fill a rectangle (inset by extra padding) into a quadrant of ``img``."""
-    rpad = pad + pad // 2
-    img[r0 + rpad : r1 - rpad, c0 + rpad : c1 - rpad] = color
+def _draw_rectangle(image: np.ndarray, row0: int, row1: int, col0: int, col1: int, pad: int, color: np.ndarray) -> None:
+    """Fill a rectangle (inset by extra padding) into a quadrant of ``image``."""
+    rect_pad = pad + pad // 2
+    image[row0 + rect_pad : row1 - rect_pad, col0 + rect_pad : col1 - rect_pad] = color
 
 
-def _draw_star(img: np.ndarray, r0: int, r1: int, c0: int, c1: int, pad: int, color: np.ndarray) -> None:
-    """Fill a 5-pointed star centred in a quadrant of ``img`` using scanline fill."""
-    sr, sc = (r0 + r1) // 2, (c0 + c1) // 2
-    outer = min(r1 - r0, c1 - c0) // 2 - pad
-    inner = outer // 2
-    n_pts = 5
-    angles_o = [np.pi / 2 + 2 * np.pi * k / n_pts for k in range(n_pts)]
-    angles_i = [a + np.pi / n_pts for a in angles_o]
-    all_cols = [sc + int(outer * np.cos(a)) for a in angles_o] + [sc + int(inner * np.cos(a)) for a in angles_i]
-    all_rows = [sr - int(outer * np.sin(a)) for a in angles_o] + [sr - int(inner * np.sin(a)) for a in angles_i]
-    order = [idx for k in range(n_pts) for idx in (k, k + n_pts)]
-    poly_r = [all_rows[i] for i in order]
-    poly_c = [all_cols[i] for i in order]
-    min_r, max_r = min(poly_r), max(poly_r)
-    n = len(poly_r)
-    for row in range(max(r0, min_r), min(r1, max_r + 1)):
-        xs = []
-        for i in range(n):
-            r_a, r_b = poly_r[i], poly_r[(i + 1) % n]
-            c_a, c_b = poly_c[i], poly_c[(i + 1) % n]
-            if (r_a <= row < r_b) or (r_b <= row < r_a):
-                xs.append(int(c_a + (row - r_a) / (r_b - r_a) * (c_b - c_a)))
-        if len(xs) >= 2:
-            xs.sort()
-            img[row, xs[0] : xs[-1] + 1] = color
+def _draw_star(image: np.ndarray, row0: int, row1: int, col0: int, col1: int, pad: int, color: np.ndarray) -> None:
+    """Fill a 5-pointed star centred in a quadrant of ``image`` using scanline fill."""
+    center_row, center_col = (row0 + row1) // 2, (col0 + col1) // 2
+    outer_radius = min(row1 - row0, col1 - col0) // 2 - pad
+    inner_radius = outer_radius // 2
+    num_points = 5
+    angles_outer = [np.pi / 2 + 2 * np.pi * idx / num_points for idx in range(num_points)]
+    angles_inner = [angle + np.pi / num_points for angle in angles_outer]
+    all_cols = [center_col + int(outer_radius * np.cos(angle)) for angle in angles_outer] + [
+        center_col + int(inner_radius * np.cos(angle)) for angle in angles_inner
+    ]
+    all_rows = [center_row - int(outer_radius * np.sin(angle)) for angle in angles_outer] + [
+        center_row - int(inner_radius * np.sin(angle)) for angle in angles_inner
+    ]
+    point_order = [idx for idx_pt in range(num_points) for idx in (idx_pt, idx_pt + num_points)]
+    poly_rows = [all_rows[idx] for idx in point_order]
+    poly_cols = [all_cols[idx] for idx in point_order]
+    min_row, max_row = min(poly_rows), max(poly_rows)
+    num_poly_points = len(poly_rows)
+    for row in range(max(row0, min_row), min(row1, max_row + 1)):
+        x_intersects = []
+        for idx in range(num_poly_points):
+            row_a, row_b = poly_rows[idx], poly_rows[(idx + 1) % num_poly_points]
+            col_a, col_b = poly_cols[idx], poly_cols[(idx + 1) % num_poly_points]
+            if (row_a <= row < row_b) or (row_b <= row < row_a):
+                x_intersects.append(int(col_a + (row - row_a) / (row_b - row_a) * (col_b - col_a)))
+        if len(x_intersects) >= 2:
+            x_intersects.sort()
+            image[row, x_intersects[0] : x_intersects[-1] + 1] = color
 
 
 def _synthetic_scene(width: int, height: int) -> np.ndarray:
@@ -192,21 +196,21 @@ def _synthetic_scene(width: int, height: int) -> np.ndarray:
         NumPy array of shape ``(height, width, 3)`` with ``dtype=uint8``.
 
     """
-    img = np.full((height, width, 3), 255, dtype=np.uint8)
-    cy, cx = height // 2, width // 2
-    img[cy - 1 : cy + 1, :] = [220, 20, 20]  # horizontal grid line
-    img[:, cx - 1 : cx + 1] = [220, 20, 20]  # vertical grid line
+    image = np.full((height, width, 3), 255, dtype=np.uint8)
+    center_y, center_x = height // 2, width // 2
+    image[center_y - 1 : center_y + 1, :] = [220, 20, 20]  # horizontal grid line
+    image[:, center_x - 1 : center_x + 1] = [220, 20, 20]  # vertical grid line
 
     pad = width // 16
-    _draw_triangle(img, 0, cy, 0, cx, pad, np.array([30, 100, 220], dtype=np.uint8))
-    _draw_circle(img, 0, cy, cx, width, pad, np.array([40, 180, 60], dtype=np.uint8))
-    _draw_rectangle(img, cy, height, 0, cx, pad, np.array([230, 130, 20], dtype=np.uint8))
-    _draw_star(img, cy, height, cx, width, pad, np.array([140, 40, 200], dtype=np.uint8))
-    return img
+    _draw_triangle(image, 0, center_y, 0, center_x, pad, np.array([30, 100, 220], dtype=np.uint8))
+    _draw_circle(image, 0, center_y, center_x, width, pad, np.array([40, 180, 60], dtype=np.uint8))
+    _draw_rectangle(image, center_y, height, 0, center_x, pad, np.array([230, 130, 20], dtype=np.uint8))
+    _draw_star(image, center_y, height, center_x, width, pad, np.array([140, 40, 200], dtype=np.uint8))
+    return image
 
 
 torch.manual_seed(42)
-image_np: np.ndarray = _synthetic_scene(IMAGE_W, IMAGE_H)  # HWC uint8
+image_np: np.ndarray = _synthetic_scene(IMAGE_WIDTH, IMAGE_HEIGHT)  # HWC uint8
 image_tensor: torch.Tensor = (
     torch.from_numpy(image_np).permute(2, 0, 1).float().div(255.0).unsqueeze(0)
 )  # (1, C, H, W) float32
@@ -223,7 +227,7 @@ print(
 # Runners are zero-argument callables that apply the pipeline to the pre-allocated image.
 #
 # - **Native**: backend's own sequential compose class (`K.AugmentationSequential` /
-#   `tv.Compose` / `A.Compose`) — each transform runs its own `grid_sample` / pixel op.
+#   `tv.Compose` / `A.Compose`) — each transform runs its own `grid_sample` / per-pixel operation.
 # - **Fused**: `fuse_aug.Compose` wrapping the same transforms — consecutive fusible ops
 #   are grouped and their affine matrices composed before a single `grid_sample` call.
 

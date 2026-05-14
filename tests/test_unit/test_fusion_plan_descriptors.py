@@ -37,36 +37,36 @@ class TestFusionPlanDescriptorsKornia:
         pytest.importorskip("kornia", reason="kornia required")
 
     def test_single_fused_segment(self):
-        import kornia.augmentation as K
+        import kornia.augmentation as kornia_aug
 
         from fuse_augmentations import Compose
 
-        pipe = Compose([K.RandomRotation(degrees=30, p=1.0)])
+        pipe = Compose([kornia_aug.RandomRotation(degrees=30, p=1.0)])
         descriptors = pipe.fusion_plan_descriptors
         assert len(descriptors) == 1
         assert descriptors[0].kind == "fused"
         assert "RandomRotation" in descriptors[0].transforms
 
     def test_exact_segment_kind(self):
-        import kornia.augmentation as K
+        import kornia.augmentation as kornia_aug
 
         from fuse_augmentations import Compose
 
-        pipe = Compose([K.RandomHorizontalFlip(p=1.0)])
+        pipe = Compose([kornia_aug.RandomHorizontalFlip(p=1.0)])
         descriptors = pipe.fusion_plan_descriptors
         assert len(descriptors) == 1
         assert descriptors[0].kind == "exact"
 
     def test_n_warps_saved_for_fused_segment(self):
-        import kornia.augmentation as K
+        import kornia.augmentation as kornia_aug
 
         from fuse_augmentations import Compose
 
         # 3 transforms in one fused segment -> 2 warps saved
         pipe = Compose([
-            K.RandomRotation(degrees=30, p=1.0),
-            K.RandomAffine(degrees=0, p=1.0),
-            K.RandomRotation(degrees=15, p=1.0),
+            kornia_aug.RandomRotation(degrees=30, p=1.0),
+            kornia_aug.RandomAffine(degrees=0, p=1.0),
+            kornia_aug.RandomRotation(degrees=15, p=1.0),
         ])
         descriptors = pipe.fusion_plan_descriptors
         fused = [d for d in descriptors if d.kind == "fused"]

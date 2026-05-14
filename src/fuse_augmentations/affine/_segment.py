@@ -1,4 +1,4 @@
-"""Fused affine segment -- vectorised matrix composition and single grid_sample pass.
+"""Fused affine segment — vectorised matrix composition and single grid_sample pass.
 
 ``FusedAffineSegment`` accumulates per-sample affine matrices for an entire chain
 of geometric transforms, inverts the composed matrix once, and executes a single
@@ -75,6 +75,14 @@ def _shares_randomness_across_batch(adapter: TransformAdapter, transform: object
     return bool(getattr(transform, "same_on_batch", False))
 
 
+def _transform_prob(transform: object, default: float = 1.0) -> float:
+    """Return a transform's application probability, preferring ``prob`` then ``p``."""
+    prob = getattr(transform, "prob", None)
+    if prob is not None:
+        return float(prob)
+    return float(getattr(transform, "p", default))
+
+
 class ExactAffineSegment(nn.Module):
     """Lossless segment for GEOMETRIC_EXACT-only chains.
 
@@ -86,8 +94,10 @@ class ExactAffineSegment(nn.Module):
     instead of ``grid_sample``, introducing zero interpolation error.
 
     Per-sample probability masking is implemented by sampling a boolean mask
-    of shape ``(B,)`` from each transform's ``p`` attribute and applying the
-    exact transform only to active samples.
+    of shape ``(B,)`` from each transform's application probability and
+    applying the exact transform only to active samples. The fused engine
+    prefers a ``prob`` attribute when present and falls back to backend ``p``
+    for native transform objects.
 
     Auxiliary-target routing currently remains flip-only: mask/box/keypoint
     updates rely on :meth:`TransformAdapter.exact_flip_dims`, so non-flip
@@ -131,13 +141,13 @@ class ExactAffineSegment(nn.Module):
         """Apply exact transforms losslessly with per-sample masking.
 
         For each transform, draws a per-sample boolean mask from the transform's
-        ``p`` probability, applies :meth:`TransformAdapter.exact_apply` only to
+        ``prob`` probability, applies :meth:`TransformAdapter.exact_apply` only to
         active samples, and scatters the transformed subset back into the batch.
         Auxiliary-target routing is currently supported only for flip-compatible
         exact ops exposed through :meth:`TransformAdapter.exact_flip_dims`.
 
         Args:
-            image: Input image batch. Shape: ``(B, C, H, W)``, dtype: float32.
+            image: Input image batch. Shape: ``(batch_size, channels, height, width)``, dtype: float32.
                 Value range and channel convention follow the calling pipeline.
             aux_targets: Optional dict of auxiliary targets to transform alongside
                 the image (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``,
@@ -153,20 +163,20 @@ class ExactAffineSegment(nn.Module):
         if aux_targets is None:
             aux_targets = {}
 
-        bsz = image.shape[0]
+        batch_size = image.shape[0]
         _height, width = image.shape[2], image.shape[3]
         device = image.device
 
         for tfm in self.transforms:
-            prob = getattr(tfm, "p", 1.0)
+            prob = _transform_prob(tfm)
             same_on_batch = _shares_randomness_across_batch(self.adapter, tfm)
             if not same_on_batch:
                 # Independent Bernoulli draw per sample.
-                active = torch.rand(bsz, device=device) < prob
+                active = torch.rand(batch_size, device=device) < prob
             else:
                 # Single Bernoulli draw shared across the entire batch.
                 active_scalar = torch.rand((), device=device) < prob
-                active = active_scalar.repeat(bsz)
+                active = active_scalar.repeat(batch_size)
 
             # Skip this transform entirely if no samples are active.
             if not bool(active.any().item()):
@@ -176,7 +186,7 @@ class ExactAffineSegment(nn.Module):
             # failures on inactive samples (e.g. shape constraints).
             active_idx = active.nonzero(as_tuple=True)[0]
 
-            if bsz == 1 or bool(active.all().item()):
+            if batch_size == 1 or bool(active.all().item()):
                 # Fast path: all samples active — apply directly, no scatter needed.
                 image = self.adapter.exact_apply(tfm, image)
             else:
@@ -272,11 +282,11 @@ class FusedAffineSegment(nn.Module):
                 self._fast_path = "torchvision"
         except ImportError:
             pass
-        # For single-op fast paths no test checks exact _last_matrix values
+        # For single-transform fast paths no test checks exact _last_matrix values
         # (only shape / det / inv roundtrip), so skip expensive reconstruction
         # and set identity instead - saves 0.05-0.07 ms per call.
         self._skip_matrix_recon: bool = len(transforms) == 1 and self._fast_path is not None
-        # cv2 warp fast path: for B=1 CPU multi-op segments, cv2.warpAffine is
+        # cv2 warp fast path: for B=1 CPU multi-transform segments, cv2.warpAffine is
         # ~2x faster than PyTorch's affine_grid + grid_sample because it avoids
         # the grid construction overhead entirely.
         self._cv2_warp: bool = _cv2 is not None and len(transforms) > 1
@@ -321,7 +331,7 @@ class FusedAffineSegment(nn.Module):
         # Pre-allocated (1, 3, 3) float32 buffer for cv2 path _last_matrix writes.
         # Avoids per-call torch.as_tensor + unsqueeze + clone (~3-5 us).
         self._cv2_last_mat_buf: Tensor = torch.empty((1, 3, 3), dtype=torch.float32)
-        # Pre-cached B=1 CPU float32 identity for single-op fast-path _last_matrix
+        # Pre-cached B=1 CPU float32 identity for single-transform fast-path _last_matrix
         # writes.  Avoids per-call torch.eye + unsqueeze + expand + clone (~4-6 us)
         # when device and dtype match.
         self._eye_1x3x3_f32: Tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0)
@@ -345,7 +355,7 @@ class FusedAffineSegment(nn.Module):
         """Apply the fused affine transform chain via a single grid_sample call.
 
         Args:
-            image: ``(B, C, H, W)`` float input tensor.
+            image: ``(batch_size, channels, height, width)`` float input tensor.
             aux_targets: Optional dict of auxiliary targets to transform alongside
                 the image (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``,
                 ``"keypoints"``). When ``None``, returns a bare tensor for
@@ -360,13 +370,13 @@ class FusedAffineSegment(nn.Module):
         if aux_targets is None:
             aux_targets = {}
 
-        bsz, n_ch, height, width = image.shape
+        batch_size, num_channels, height, width = image.shape
         device = image.device
         dtype = image.dtype
-        input_shape = (bsz, n_ch, height, width)
+        input_shape = (batch_size, num_channels, height, width)
 
         # ------------------------------------------------------------------ #
-        # Single-op fast path: skip matrix pipeline + grid_sample entirely.   #
+        # Single-operation fast path: skip matrix pipeline + grid_sample entirely.   #
         # Call the native adapter transform and reconstruct _last_matrix from  #
         # the sampled params.  Only safe when aux_targets is None (no grid    #
         # needed for coord transforms).                                        #
@@ -387,11 +397,11 @@ class FusedAffineSegment(nn.Module):
                 _bp_raw = getattr(_tfm, "_params", {}).get("batch_prob")
                 _all_skipped = _bp_raw is not None and not _bp_raw.to(device=device).bool().any()
                 if _all_skipped or self._skip_matrix_recon:
-                    _e = self._eye_1x3x3_f32
+                    _mtx_eye = self._eye_1x3x3_f32
                     self._last_matrix = (
-                        _e
-                        if (bsz == 1 and dtype == _e.dtype and device == _e.device)
-                        else _e.expand(bsz, -1, -1).detach().clone().to(device=device, dtype=dtype)
+                        _mtx_eye
+                        if (batch_size == 1 and dtype == _mtx_eye.dtype and device == _mtx_eye.device)
+                        else _mtx_eye.expand(batch_size, -1, -1).detach().clone().to(device=device, dtype=dtype)
                     )
                     return image
 
@@ -399,25 +409,25 @@ class FusedAffineSegment(nn.Module):
                 if _native_p:
                     _mtx = self.adapter.build_matrix(_tfm, _native_p, height, width)
                     if _mtx.shape[0] == 0:
-                        # All samples skipped (p=0.0) — identity for the whole batch.
-                        _mtx = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(bsz, -1, -1)
+                        # All samples skipped (prob=0.0) — identity for the whole batch.
+                        _mtx = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1)
                     else:
-                        if _mtx.shape[0] == 1 and bsz > 1:
-                            _mtx = _mtx.expand(bsz, -1, -1)
+                        if _mtx.shape[0] == 1 and batch_size > 1:
+                            _mtx = _mtx.expand(batch_size, -1, -1)
                         _mtx = _mtx.to(device=device, dtype=dtype)
                         # Mask samples skipped by per-sample probability (batch_prob).
                         if _bp_raw is not None:
                             _active = _bp_raw.to(device=device).bool()
-                            if _active.shape[0] == 1 and bsz > 1:
-                                _active = _active.expand(bsz)
+                            if _active.shape[0] == 1 and batch_size > 1:
+                                _active = _active.expand(batch_size)
                             _eye3 = torch.eye(3, device=device, dtype=dtype)
                             _mtx = torch.where(
                                 _active[:, None, None],
                                 _mtx,
-                                _eye3.unsqueeze(0).expand(bsz, -1, -1),
+                                _eye3.unsqueeze(0).expand(batch_size, -1, -1),
                             )
                 else:
-                    _mtx = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(bsz, -1, -1)
+                    _mtx = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1)
                 self._last_matrix = _mtx.detach().clone()
                 return image
 
@@ -430,11 +440,13 @@ class FusedAffineSegment(nn.Module):
                 if _is_torchvision_v2_transform(_tfm):
                     if self._skip_matrix_recon:
                         image = TorchVisionAdapter.call_nonfused(_tfm, image)
-                        _e = self._eye_1x3x3_f32
-                        if bsz == 1 and dtype == _e.dtype and device == _e.device:
-                            self._last_matrix = _e
+                        _mtx_eye = self._eye_1x3x3_f32
+                        if batch_size == 1 and dtype == _mtx_eye.dtype and device == _mtx_eye.device:
+                            self._last_matrix = _mtx_eye
                         else:
-                            self._last_matrix = _e.expand(bsz, -1, -1).detach().clone().to(device=device, dtype=dtype)
+                            self._last_matrix = (
+                                _mtx_eye.expand(batch_size, -1, -1).detach().clone().to(device=device, dtype=dtype)
+                            )
                         return image
                     # TV v2 GEOMETRIC_INTERP transforms (RandomRotation, RandomAffine)
                     # always apply and make exactly one RNG call (get_params) - same as
@@ -448,10 +460,10 @@ class FusedAffineSegment(nn.Module):
                     _params = self.adapter.sample_params(_tfm, input_shape, device)
                     if _params:
                         _mtx = self.adapter.build_matrix(_tfm, _params, height, width)
-                        if _mtx.shape[0] == 1 and bsz > 1:
-                            _mtx = _mtx.expand(bsz, -1, -1)
+                        if _mtx.shape[0] == 1 and batch_size > 1:
+                            _mtx = _mtx.expand(batch_size, -1, -1)
                     else:
-                        _mtx = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(bsz, -1, -1)
+                        _mtx = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1)
                     self._last_matrix = _mtx.to(device=device, dtype=dtype).detach().clone()
                     return image
 
@@ -459,11 +471,11 @@ class FusedAffineSegment(nn.Module):
         # B=1 CPU cv2 fast path: cv2.warpAffine is ~2x faster than PyTorch's  #
         # affine_grid + grid_sample for single-image CPU tensors because it    #
         # avoids the H*W grid construction overhead entirely.  Compose the     #
-        # matrix using the same sample_params / build_matrix loop but replace  #
+        # matrix using the same sample_params / build_matrix loop but replace    #
         # the PyTorch warp backend with cv2.  Only activates when:             #
         # - B=1, CPU, no CUDA, no aux_targets, cv2 available, >1 transform    #
         # ------------------------------------------------------------------ #
-        if self._cv2_warp and bsz == 1 and not _has_aux and not image.is_cuda:
+        if self._cv2_warp and batch_size == 1 and not _has_aux and not image.is_cuda:
             acc_np = np.eye(3, dtype=np.float64)
             # Select the numpy-native matrix builder when available (avoids
             # creating intermediate torch tensors that are immediately converted
@@ -475,7 +487,7 @@ class FusedAffineSegment(nn.Module):
             # two-step path when the transform type is not handled (returns None).
             _np_fused = self._np_fused_builder
             for tfm in self.transforms:
-                prob = getattr(tfm, "p", 1.0)
+                prob = _transform_prob(tfm)
                 active = bool(np.random.rand() < prob) if prob < 1.0 else True
                 if not active:
                     continue
@@ -497,7 +509,7 @@ class FusedAffineSegment(nn.Module):
 
             m_inv_np = _inv3x3_affine_np(acc_np)
             img_np = image[0].permute(1, 2, 0).contiguous().numpy()
-            if n_ch == 1:
+            if num_channels == 1:
                 warped = _warp(img_np[:, :, 0], m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag)
                 warped = warped[:, :, np.newaxis]
             else:
@@ -506,24 +518,24 @@ class FusedAffineSegment(nn.Module):
             return image.to(device=device, dtype=dtype)
 
         eye = torch.eye(3, device=device, dtype=dtype)
-        eye_batch = eye.unsqueeze(0).expand(bsz, -1, -1)
+        eye_batch = eye.unsqueeze(0).expand(batch_size, -1, -1)
         acc = eye_batch.clone()
 
         for tfm in self.transforms:
-            prob = getattr(tfm, "p", 1.0)
+            prob = _transform_prob(tfm)
             same_on_batch = _shares_randomness_across_batch(self.adapter, tfm)
             if same_on_batch:
                 active_scalar = torch.rand((), device=device) < prob
-                active = active_scalar.repeat(bsz)  # type: ignore[assignment]
+                active = active_scalar.repeat(batch_size)  # type: ignore[assignment]
             else:
-                active = torch.rand(bsz, device=device) < prob  # type: ignore[assignment]
+                active = torch.rand(batch_size, device=device) < prob  # type: ignore[assignment]
 
             params = self.adapter.sample_params(tfm, input_shape, device)
             mtx_i = self.adapter.build_matrix(tfm, params, height, width)
 
             # Expand to batch if adapter returned (1, 3, 3)
-            if mtx_i.shape[0] == 1 and bsz > 1:
-                mtx_i = mtx_i.expand(bsz, -1, -1)
+            if mtx_i.shape[0] == 1 and batch_size > 1:
+                mtx_i = mtx_i.expand(batch_size, -1, -1)
 
             # Ensure adapter output is on the same device and dtype as the image
             mtx_i = mtx_i.to(device=device, dtype=dtype)
@@ -536,7 +548,7 @@ class FusedAffineSegment(nn.Module):
         mtx_inv = inv3x3(acc)
         mtx_norm = normalize_matrix(mtx_inv, height, width)
 
-        grid = F.affine_grid(mtx_norm[:, :2, :], [bsz, n_ch, height, width], align_corners=True)
+        grid = F.affine_grid(mtx_norm[:, :2, :], [batch_size, num_channels, height, width], align_corners=True)
         image = F.grid_sample(
             image,
             grid,
@@ -583,7 +595,7 @@ MatrixArray = NDArray[np.floating[Any]]
 
 def _warp(
     img: ImageArray,
-    M_dst2src_3x3: MatrixArray,  # noqa: N803
+    matrix_dst2src_3x3: MatrixArray,
     width: int,
     height: int,
     interp_flag: int,
@@ -591,14 +603,14 @@ def _warp(
 ) -> ImageArray:
     """Apply cv2.warpAffine with the dst->src 3x3 pixel-space matrix.
 
-    ``M_dst2src_3x3`` maps destination pixel coordinates to source pixel
+    ``matrix_dst2src_3x3`` maps destination pixel coordinates to source pixel
     coordinates.  ``cv2.WARP_INVERSE_MAP`` (16) is OR-ed into *interp_flag* so
     the matrix is used directly without re-inversion.  cv2 handles all channels
     in a single call, avoiding the per-channel loop previously needed for scipy.
 
     Args:
         img: HxW or HxWxC float32 numpy array.
-        M_dst2src_3x3: 3x3 matrix mapping destination pixels to source pixels.
+        matrix_dst2src_3x3: 3x3 matrix mapping destination pixels to source pixels.
         width: Output width in pixels.
         height: Output height in pixels.
         interp_flag: cv2 interpolation constant (e.g. ``1`` for ``INTER_LINEAR``).
@@ -610,7 +622,7 @@ def _warp(
     """
     import cv2
 
-    m_2x3 = M_dst2src_3x3[:2, :].astype(np.float64)
+    m_2x3 = matrix_dst2src_3x3[:2, :].astype(np.float64)
     return cv2.warpAffine(
         img,
         m_2x3,
@@ -621,14 +633,14 @@ def _warp(
     )
 
 
-def _inv3x3_affine_np(m: MatrixArray) -> MatrixArray:
+def _inv3x3_affine_np(mtx: MatrixArray) -> MatrixArray:
     """Closed-form inverse of a 3x3 affine matrix (bottom row = [0, 0, 1]).
 
     Uses Cramer's rule for the upper-left 2x2 sub-matrix, avoiding LAPACK
     dispatch overhead (~15-20us) of ``np.linalg.inv`` for a single 3x3 matrix.
 
     Args:
-        m: A (3, 3) float64 ndarray representing a forward affine transform.
+        mtx: A (3, 3) float64 ndarray representing a forward affine transform.
            The bottom row must be ``[0, 0, 1]`` (standard affine convention).
 
     Returns:
@@ -636,20 +648,20 @@ def _inv3x3_affine_np(m: MatrixArray) -> MatrixArray:
 
     Examples:
         >>> import numpy as np
-        >>> m = np.eye(3, dtype=np.float64)
-        >>> _inv3x3_affine_np(m)
+        >>> mtx = np.eye(3, dtype=np.float64)
+        >>> _inv3x3_affine_np(mtx)
         array([[ 1., -0.,  0.],
                [-0.,  1.,  0.],
                [ 0.,  0.,  1.]])
 
     """
-    a, b, tx = m[0, 0], m[0, 1], m[0, 2]
-    c, d, ty = m[1, 0], m[1, 1], m[1, 2]
-    inv_det = 1.0 / (a * d - b * c)
+    m00, m01, trans_x = mtx[0, 0], mtx[0, 1], mtx[0, 2]
+    m10, m11, trans_y = mtx[1, 0], mtx[1, 1], mtx[1, 2]
+    inv_det = 1.0 / (m00 * m11 - m01 * m10)
     return np.array(
         [
-            [d * inv_det, -b * inv_det, (b * ty - d * tx) * inv_det],
-            [-c * inv_det, a * inv_det, (c * tx - a * ty) * inv_det],
+            [m11 * inv_det, -m01 * inv_det, (m01 * trans_y - m11 * trans_x) * inv_det],
+            [-m10 * inv_det, m00 * inv_det, (m10 * trans_x - m00 * trans_y) * inv_det],
             [0.0, 0.0, 1.0],
         ],
         dtype=np.float64,
@@ -716,7 +728,7 @@ class AlbuFusedAffineSegment(nn.Module):
         self._border_flag: int = _CV2_BORDER.get(self.padding_mode, _CV2_BORDER.get("zeros", 0))
         # Pre-classify transforms to avoid per-call _is_albu_instance dispatch.
         self._tfm_tags: list[int] = self._classify_transforms(transforms, adapter)
-        # Pre-allocated identity (1,3,3) — reused for zero/single-op early returns.
+        # Pre-allocated identity (1,3,3) — reused for zero/single-transform early returns.
         self._identity_1x3x3: Tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0)
         # Pre-allocated (1,3,3) buffer for forward_numpy last_matrix writes.
         # Avoids per-call tensor allocation from torch.from_numpy(...).unsqueeze(0).
@@ -801,14 +813,16 @@ class AlbuFusedAffineSegment(nn.Module):
                 "auxiliary targets alongside the image."
             )
 
-        bsz, n_ch, height, width = image.shape
+        batch_size, num_channels, height, width = image.shape
         device = image.device
         dtype = image.dtype
 
-        # Compose a (B, 3, 3) forward matrix tensor for last_matrix storage
-        composed_batch = torch.eye(3, dtype=torch.float64, device=device).unsqueeze(0).expand(bsz, -1, -1).clone()
+        # Compose a (batch_size, 3, 3) forward matrix tensor for last_matrix storage
+        composed_batch = (
+            torch.eye(3, dtype=torch.float64, device=device).unsqueeze(0).expand(batch_size, -1, -1).clone()
+        )
 
-        if bsz == 0 or len(self.transforms) == 0:
+        if batch_size == 0 or len(self.transforms) == 0:
             self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
             return image
 
@@ -816,35 +830,35 @@ class AlbuFusedAffineSegment(nn.Module):
         # same_on_batch=True collapses to a single Bernoulli draw shared across all samples.
         active_masks: list[Any] = []
         for tfm in self.transforms:
-            prob = float(getattr(tfm, "p", 1.0))
+            prob = _transform_prob(tfm)
             same_on_batch = bool(getattr(tfm, "same_on_batch", False))
             if same_on_batch:
                 draw = bool(np.random.rand() < prob)
-                active_masks.append(np.full(bsz, draw))
+                active_masks.append(np.full(batch_size, draw))
             else:
-                active_masks.append(np.random.rand(bsz) < prob)
+                active_masks.append(np.random.rand(batch_size) < prob)
 
         interp_flag = self._interp_flag
         border_flag = self._border_flag
 
         output_np: list[ImageArray] = []
 
-        for i in range(bsz):
+        for b_idx in range(batch_size):
             acc: MatrixArray = np.eye(3, dtype=np.float64)
             any_active = False
 
-            for j, tfm in enumerate(self.transforms):
-                active = bool(active_masks[j][i])
-                params = self.adapter.sample_params(tfm, (1, n_ch, height, width), torch.device("cpu"))
+            for t_idx, tfm in enumerate(self.transforms):
+                active = bool(active_masks[t_idx][b_idx])
+                params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
                 mtx_i = self.adapter.build_matrix(tfm, params, height, width)
 
                 if active:
                     any_active = True
                     acc = mtx_i[0].double().cpu().numpy() @ acc
 
-            composed_batch[i] = torch.as_tensor(acc.copy())
+            composed_batch[b_idx] = torch.as_tensor(acc.copy())
 
-            img_np = image[i].permute(1, 2, 0).cpu().numpy()
+            img_np = image[b_idx].permute(1, 2, 0).cpu().numpy()
 
             if not any_active:
                 output_np.append(img_np)
@@ -853,7 +867,7 @@ class AlbuFusedAffineSegment(nn.Module):
             # acc is the composed forward (src->dst) matrix; invert to get dst->src for _warp
             m_dst2src = np.linalg.inv(acc)
 
-            if n_ch == 1:
+            if num_channels == 1:
                 img_np = img_np[:, :, 0]
                 warped = _warp(img_np, m_dst2src, width, height, interp_flag, border_flag)
                 warped = warped[:, :, np.newaxis]
@@ -879,7 +893,7 @@ class AlbuFusedAffineSegment(nn.Module):
         the Albumentations native dict-input calling convention.
 
         Args:
-            img_hwc: ``(H, W, C)`` or ``(H, W)`` NumPy array (uint8 or float32).
+            img_hwc: ``(height, width, channels)`` or ``(height, width)`` NumPy array (uint8 or float32).
                 cv2 requires a C-contiguous array; a copy is made automatically
                 if the input is not contiguous.
 
@@ -924,10 +938,10 @@ class AlbuFusedAffineSegment(nn.Module):
             return self.transforms[0](image=img_hwc)["image"]  # type: ignore[operator, no-any-return]
 
         # Draw per-transform active masks for bsz=1 (mirrors forward() logic).
-        # For p=1.0 transforms, skip the RNG draw and use a constant True.
+        # For prob=1.0 transforms, skip the RNG draw and use a constant True.
         active_masks: list[bool] = []
         for tfm in self.transforms:
-            prob = float(getattr(tfm, "p", 1.0))
+            prob = _transform_prob(tfm)
             if prob >= 1.0:
                 active_masks.append(True)
             elif prob <= 0.0:
@@ -953,11 +967,11 @@ class AlbuFusedAffineSegment(nn.Module):
         # Fast numpy-only matrix loop: bypass the adapter's torch round-trip
         # by dispatching on pre-classified tags from __init__.
         _tags = self._tfm_tags
-        for j, tfm in enumerate(self.transforms):
-            if not active_masks[j]:
+        for idx_tfm, tfm in enumerate(self.transforms):
+            if not active_masks[idx_tfm]:
                 # Skip expensive sample_params + build_matrix for inactive transforms.
                 continue
-            tag = _tags[j]
+            tag = _tags[idx_tfm]
             if tag == self._TAG_FAST_ROTATE:
                 # Ultra-fast path for A.Rotate (crop_border=False):
                 # Call tfm.py_random.uniform directly (same Python Random instance as
@@ -965,13 +979,13 @@ class AlbuFusedAffineSegment(nn.Module):
                 # Identical output to albumentations; saves ~19µs vs get_params_dependent_on_data.
                 angle = tfm.py_random.uniform(*tfm.limit)  # type: ignore[attr-defined]
                 _rad = math.radians(angle)
-                _c, _s = math.cos(_rad), math.sin(_rad)
-                _cx = width / 2.0 - 0.5
-                _cy = height / 2.0 - 0.5
+                _cos, _sin = math.cos(_rad), math.sin(_rad)
+                _center_x = width / 2.0 - 0.5
+                _center_y = height / 2.0 - 0.5
                 mtx_np = np.array(
                     [
-                        [_c, _s, _cx * (1.0 - _c) - _cy * _s],
-                        [-_s, _c, _cy * (1.0 - _c) + _cx * _s],
+                        [_cos, _sin, _center_x * (1.0 - _cos) - _center_y * _sin],
+                        [-_sin, _cos, _center_y * (1.0 - _cos) + _center_x * _sin],
                         [0.0, 0.0, 1.0],
                     ],
                     dtype=np.float64,
@@ -1121,31 +1135,31 @@ class ProjectiveSegment(nn.Module):
         if aux_targets is None:
             aux_targets = {}
 
-        bsz, n_ch, height, width = image.shape
+        batch_size, num_channels, height, width = image.shape
         device = image.device
         dtype = image.dtype
 
         eye = torch.eye(3, device=device, dtype=dtype)
-        eye_batch = eye.unsqueeze(0).expand(bsz, -1, -1)
+        eye_batch = eye.unsqueeze(0).expand(batch_size, -1, -1)
         acc = eye_batch.clone()
 
-        input_shape = (bsz, n_ch, height, width)
+        input_shape = (batch_size, num_channels, height, width)
 
         for tfm in self.transforms:
-            prob = getattr(tfm, "p", 1.0)
+            prob = _transform_prob(tfm)
             same_on_batch = _shares_randomness_across_batch(self.adapter, tfm)
             if same_on_batch:
                 active_scalar = torch.rand((), device=device) < prob
-                active = active_scalar.repeat(bsz)
+                active = active_scalar.repeat(batch_size)
             else:
-                active = torch.rand(bsz, device=device) < prob
+                active = torch.rand(batch_size, device=device) < prob
 
             params = self.adapter.sample_params(tfm, input_shape, device)
             mtx_i = self.adapter.build_matrix(tfm, params, height, width)
 
             # Expand to batch if adapter returned (1, 3, 3)
-            if mtx_i.shape[0] == 1 and bsz > 1:
-                mtx_i = mtx_i.expand(bsz, -1, -1)
+            if mtx_i.shape[0] == 1 and batch_size > 1:
+                mtx_i = mtx_i.expand(batch_size, -1, -1)
 
             # Ensure adapter output is on the same device and dtype as the image
             mtx_i = mtx_i.to(device=device, dtype=dtype)
@@ -1275,64 +1289,66 @@ class AlbuProjectiveSegment(nn.Module):
                 "auxiliary targets alongside the image."
             )
 
-        bsz, n_ch, height, width = image.shape
+        batch_size, num_channels, height, width = image.shape
         device = image.device
         dtype = image.dtype
 
-        # Compose a (B, 3, 3) forward matrix tensor for last_matrix storage
-        composed_batch = torch.eye(3, dtype=torch.float64, device=device).unsqueeze(0).expand(bsz, -1, -1).clone()
+        # Compose a (batch_size, 3, 3) forward matrix tensor for last_matrix storage
+        composed_batch = (
+            torch.eye(3, dtype=torch.float64, device=device).unsqueeze(0).expand(batch_size, -1, -1).clone()
+        )
 
-        if bsz == 0 or len(self.transforms) == 0:
+        if batch_size == 0 or len(self.transforms) == 0:
             self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
             return image
 
         # Pre-draw per-transform active masks
         active_masks: list[Any] = []
         for tfm in self.transforms:
-            prob = float(getattr(tfm, "p", 1.0))
+            prob = _transform_prob(tfm)
             same_on_batch = bool(getattr(tfm, "same_on_batch", False))
             if same_on_batch:
                 draw = bool(np.random.rand() < prob)
-                active_masks.append(np.full(bsz, draw))
+                active_masks.append(np.full(batch_size, draw))
             else:
-                active_masks.append(np.random.rand(bsz) < prob)
+                active_masks.append(np.random.rand(batch_size) < prob)
 
         cv2_interp = _CV2_INTERP.get(self.interpolation, _CV2_INTERP.get("bilinear", 1))
         cv2_border = _CV2_BORDER.get(self.padding_mode, _CV2_BORDER.get("zeros", 0))
 
         output_np: list[ImageArray] = []
 
-        for i in range(bsz):
+        for b_idx in range(batch_size):
             acc: MatrixArray = np.eye(3, dtype=np.float64)
             any_active = False
 
-            for j, tfm in enumerate(self.transforms):
-                active = bool(active_masks[j][i])
-                params = self.adapter.sample_params(tfm, (1, n_ch, height, width), torch.device("cpu"))
+            for t_idx, tfm in enumerate(self.transforms):
+                active = bool(active_masks[t_idx][b_idx])
+                params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
                 mtx_i = self.adapter.build_matrix(tfm, params, height, width)
 
                 if active:
                     any_active = True
                     acc = mtx_i[0].double().cpu().numpy() @ acc
 
-            composed_batch[i] = torch.as_tensor(
+            composed_batch[b_idx] = torch.as_tensor(
                 acc.copy(),
                 device=composed_batch.device,
                 dtype=composed_batch.dtype,
             )
 
-            img_np = image[i].permute(1, 2, 0).cpu().numpy()
+            img_np = image[b_idx].permute(1, 2, 0).cpu().numpy()
 
             if not any_active:
                 output_np.append(img_np)
                 continue
 
             # acc is the composed forward (src→dst) matrix; invert to get dst→src
-            m_inv = np.linalg.inv(acc)
+            mtx_inv = np.linalg.inv(acc)
 
             warped: ImageArray = _cv2.warpPerspective(
                 img_np,
-                m_inv,  # dst->src inverse map
+                mtx_inv,  # dst->src inverse map
                 (width, height),  # dsize = (W, H)
                 flags=cv2_interp | _CV2_WARP_INVERSE_MAP,
                 borderMode=cv2_border,
@@ -1415,7 +1431,7 @@ class FusedColorSegment(nn.Module):
         """Apply the fused colour matrix to the image batch.
 
         Args:
-            image: ``(B, C, H, W)`` float input tensor with values in ``[0, 1]``.
+            image: ``(batch_size, channels, height, width)`` float input tensor with values in ``[0, 1]``.
             aux_targets: Optional dict of auxiliary targets. Colour transforms
                 do not affect spatial layout, so these are returned unchanged.
 
@@ -1424,11 +1440,11 @@ class FusedColorSegment(nn.Module):
             ``(image, aux_targets)`` tuple otherwise.
 
         """
-        B, C, H, W = image.shape  # noqa: N806
+        batch_size, channels, height, width = image.shape
 
         # The 4x4 color matrix is defined for 3-channel RGB images only.
         # For non-RGB inputs, fall back to sequential passthrough application.
-        if C != 3:
+        if channels != 3:
             for tfm in self._transforms:
                 image = self._adapter.call_nonfused(tfm, image)
             if aux_targets is None:
@@ -1441,22 +1457,22 @@ class FusedColorSegment(nn.Module):
 
         # Cast the registered buffer to the current device/dtype (no-op for float32 CPU)
         eye = self._eye4.to(device=device, dtype=dtype)
-        acc = eye.unsqueeze(0).expand(B, -1, -1).clone()  # (B, 4, 4)
+        acc = eye.unsqueeze(0).expand(batch_size, -1, -1).clone()  # (batch_size, 4, 4)
 
-        input_shape = (B, C, H, W)
+        input_shape = (batch_size, channels, height, width)
 
         for tfm in self._transforms:
-            prob = getattr(tfm, "p", 1.0)
+            prob = _transform_prob(tfm)
             same_on_batch = _shares_randomness_across_batch(self._adapter, tfm)
             if same_on_batch:
                 active_scalar = torch.rand((), device=device) < prob
-                active = active_scalar.expand(B)
+                active = active_scalar.expand(batch_size)
             else:
-                active = torch.rand(B, device=device) < prob
+                active = torch.rand(batch_size, device=device) < prob
 
             params = self._adapter.sample_params(tfm, input_shape, device)
             try:
-                mat = self._adapter.build_color_matrix(tfm, params)  # (B, 4, 4)
+                mat = self._adapter.build_color_matrix(tfm, params)  # (batch_size, 4, 4)
             except NotImplementedError:
                 # If a transform that passed the build-time probe raises NotImplementedError
                 # at forward time (e.g. probe used empty params), abort fusion entirely and
@@ -1469,26 +1485,27 @@ class FusedColorSegment(nn.Module):
                 return image_fallback, aux_targets
 
             # Expand to batch if adapter returned (1, 4, 4)
-            if mat.shape[0] == 1 and B > 1:
-                mat = mat.expand(B, -1, -1)
+            if mat.shape[0] == 1 and batch_size > 1:
+                mat = mat.expand(batch_size, -1, -1)
 
             mat = mat.to(device=device, dtype=dtype)
 
             mat = torch.where(
                 active[:, None, None],
                 mat,
-                eye.unsqueeze(0).expand(B, -1, -1),
+                eye.unsqueeze(0).expand(batch_size, -1, -1),
             )
             acc = torch.bmm(mat, acc)
 
         # Apply fused matrix to image pixels:
-        # image (B, C, H*W) -> extend with ones -> (B, 4, H*W) -> matmul -> take first 3 rows
-        pixels = image.reshape(B, C, H * W)  # (B, C, H*W)
-        ones = torch.ones(B, 1, H * W, device=device, dtype=dtype)
-        pixels_hom = torch.cat([pixels, ones], dim=1)  # (B, 4, H*W)
+        # image (batch_size, channels, height*width) -> extend with ones
+        #  -> (batch_size, 4, height*width) -> matmul -> take first 3 rows
+        pixels = image.reshape(batch_size, channels, height * width)  # (batch_size, channels, height*width)
+        ones = torch.ones(batch_size, 1, height * width, device=device, dtype=dtype)
+        pixels_hom = torch.cat([pixels, ones], dim=1)  # (batch_size, 4, height*width)
 
-        transformed = torch.bmm(acc, pixels_hom)  # (B, 4, H*W)
-        image_out = transformed[:, :C, :].reshape(B, C, H, W)
+        transformed = torch.bmm(acc, pixels_hom)  # (batch_size, 4, height*width)
+        image_out = transformed[:, :channels, :].reshape(batch_size, channels, height, width)
 
         if self.clip_output:
             image_out = image_out.clamp(0.0, 1.0)
@@ -1558,13 +1575,13 @@ class CropResizeSegment(nn.Module):
     for different input and output spatial dimensions), and applies exactly one
     ``grid_sample`` call at the target ``(H_out, W_out)`` dimensions.
 
-    Unlike :class:`FusedAffineSegment`, the output shape is ``(B, C, H_out, W_out)``
-    which generally differs from the input shape ``(B, C, H_in, W_in)``.
+    Unlike :class:`FusedAffineSegment`, the output shape is ``(batch_size, channels, height_out, width_out)``
+    which generally differs from the input shape ``(batch_size, channels, height_in, width_in)``.
 
     .. note::
-        Per-sample probability ``p`` is **not** applied: shape-changing transforms
+        Per-sample probability ``prob`` is **not** applied: shape-changing transforms
         must produce a consistent output size for all batch elements, so the crop is
-        always applied.  Use ``p=1.0`` (the standard default) when constructing
+        always applied.  Use ``prob=1.0`` (the standard default) when constructing
         ``RandomResizedCrop`` transforms.
 
     .. note::
@@ -1605,20 +1622,20 @@ class CropResizeSegment(nn.Module):
         """Apply the crop-resize via a single ``grid_sample`` call at target output size.
 
         Args:
-            image: ``(B, C, H_in, W_in)`` float input tensor.
+            image: ``(batch_size, channels, height_in, width_in)`` float input tensor.
             aux_targets: Passed through unchanged (not transformed in this release).
 
         Returns:
-            ``(B, C, H_out, W_out)`` tensor when ``aux_targets`` is ``None``;
+            ``(batch_size, channels, height_out, width_out)`` tensor when ``aux_targets`` is ``None``;
             ``(tensor, aux_targets)`` tuple otherwise.
 
         """
         _has_aux = aux_targets is not None
-        bsz, n_ch, height, width = image.shape
+        batch_size, num_channels, height, width = image.shape
         device = image.device
         dtype = image.dtype
 
-        params = self.adapter.sample_params(self.transform, (bsz, n_ch, height, width), device)
+        params = self.adapter.sample_params(self.transform, (batch_size, num_channels, height, width), device)
         if not (
             torch.all(params["target_h"] == params["target_h"][0])
             and torch.all(params["target_w"] == params["target_w"][0])
@@ -1631,8 +1648,8 @@ class CropResizeSegment(nn.Module):
         target_w = int(params["target_w"][0].item())
 
         mtx = self.adapter.build_matrix(self.transform, params, height, width)
-        if mtx.shape[0] == 1 and bsz > 1:
-            mtx = mtx.expand(bsz, -1, -1)
+        if mtx.shape[0] == 1 and batch_size > 1:
+            mtx = mtx.expand(batch_size, -1, -1)
         mtx = mtx.to(device=device, dtype=dtype)
 
         mtx_inv = inv3x3(mtx)
@@ -1640,7 +1657,7 @@ class CropResizeSegment(nn.Module):
 
         grid = F.affine_grid(
             mtx_norm[:, :2, :],
-            [bsz, n_ch, target_h, target_w],
+            [batch_size, num_channels, target_h, target_w],
             align_corners=True,
         )
         out = F.grid_sample(
@@ -1698,18 +1715,18 @@ def reorder_pointwise(
     >>> from fuse_augmentations.affine._segment import reorder_pointwise
     >>> from fuse_augmentations._types import TransformCategory
     >>> class _StubAdapter:
-    ...     def category(self, t):
-    ...         return t._cat
+    ...     def category(self, transform):
+    ...         return transform._cat
     ...
-    >>> class _T:
+    >>> class _TransformStub:
     ...     def __init__(self, cat):
     ...         self._cat = cat
     ...
     >>> adapter = _StubAdapter()
-    >>> geo = _T(TransformCategory.GEOMETRIC_INTERP)
-    >>> pw  = _T(TransformCategory.POINTWISE)
+    >>> geo = _TransformStub(TransformCategory.GEOMETRIC_INTERP)
+    >>> pw  = _TransformStub(TransformCategory.POINTWISE)
     >>> result = reorder_pointwise([geo, pw, geo], adapter)
-    >>> [t._cat.name for t in result]
+    >>> [transform._cat.name for transform in result]
     ['GEOMETRIC_INTERP', 'GEOMETRIC_INTERP', 'POINTWISE']
 
     """
@@ -1769,7 +1786,9 @@ def reorder_aggressive(
     current = transforms
     for _ in range(len(transforms)):  # max n iterations
         reordered = reorder_pointwise(current, adapter)
-        if len(reordered) == len(current) and all(a is b for a, b in zip(reordered, current, strict=True)):
+        if len(reordered) == len(current) and all(
+            item_a is item_b for item_a, item_b in zip(reordered, current, strict=True)
+        ):
             break
         current = reordered
     return current
@@ -1842,7 +1861,7 @@ def build_segments(
         if not current_geo:
             return
 
-        has_interp = any(adapter.category(t) == TransformCategory.GEOMETRIC_INTERP for t in current_geo)
+        has_interp = any(adapter.category(transform) == TransformCategory.GEOMETRIC_INTERP for transform in current_geo)
 
         if use_numpy:
             # Albumentations path: use AlbuFusedAffineSegment only when interpolation is present;
@@ -1901,24 +1920,24 @@ def build_segments(
             )
         current_proj.clear()
 
-    for tfm in transforms:
-        cat = adapter.category(tfm)
-        if cat in fusible:
+    for transform in transforms:
+        category = adapter.category(transform)
+        if category in fusible:
             _flush_proj()  # flush any pending projective
             _flush_color(current_color, adapter, segments)  # mutates current_color in-place
-            current_geo.append(tfm)
+            current_geo.append(transform)
             continue
-        if cat == projective_cat:
+        if category == projective_cat:
             _flush_geo()  # flush any pending affine
             _flush_color(current_color, adapter, segments)  # mutates current_color in-place
-            current_proj.append(tfm)
+            current_proj.append(transform)
             continue
-        if cat == pointwise_linear_cat:
+        if category == pointwise_linear_cat:
             _flush_geo()
             _flush_proj()
-            current_color.append(tfm)
+            current_color.append(transform)
             continue
-        if cat == crop_resize_cat:
+        if category == crop_resize_cat:
             # CROP_RESIZE_FIXED: flush all pending runs, then emit a standalone segment.
             # For the torch path this produces a CropResizeSegment (one grid_sample at target size).
             # For the numpy/albumentations path the transform is emitted as a passthrough.
@@ -1928,20 +1947,20 @@ def build_segments(
             if not use_numpy:
                 segments.append(
                     CropResizeSegment(
-                        tfm,
+                        transform,
                         adapter,
                         interpolation=interpolation,
                         padding_mode=padding_mode,
                     )
                 )
             else:
-                segments.append(tfm)
+                segments.append(transform)
             continue
         # SPATIAL_KERNEL / POINTWISE barrier: flush all
         _flush_geo()
         _flush_proj()
         _flush_color(current_color, adapter, segments)  # mutates current_color in-place
-        segments.append(tfm)
+        segments.append(transform)
 
     _flush_geo()
     _flush_proj()
@@ -1962,62 +1981,62 @@ def _flip_bbox_xyxy(
     height: int,
     width: int,
 ) -> Tensor:
-    """Flip bounding boxes (B, N, 4) xyxy format using direct coordinate arithmetic.
+    """Flip bounding boxes (batch_size, num_boxes, 4) xyxy format using direct coordinate arithmetic.
 
-    HFlip: ``x' = W - 1 - x``, swap x1/x2.
-    VFlip: ``y' = H - 1 - y``, swap y1/y2.
+    HFlip: ``coord_x' = width - 1 - coord_x``, swap x1/x2.
+    VFlip: ``coord_y' = height - 1 - coord_y``, swap y1/y2.
 
     """
-    x1, y1, x2, y2 = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
+    box_x1, box_y1, box_x2, box_y2 = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
 
     if is_hflip:
-        new_x1 = (width - 1) - x2
-        new_x2 = (width - 1) - x1
-        x1, x2 = new_x1, new_x2
+        new_x1 = (width - 1) - box_x2
+        new_x2 = (width - 1) - box_x1
+        box_x1, box_x2 = new_x1, new_x2
 
     if is_vflip:
-        new_y1 = (height - 1) - y2
-        new_y2 = (height - 1) - y1
-        y1, y2 = new_y1, new_y2
+        new_y1 = (height - 1) - box_y2
+        new_y2 = (height - 1) - box_y1
+        box_y1, box_y2 = new_y1, new_y2
 
-    flipped = torch.stack([x1, y1, x2, y2], dim=-1)
+    flipped = torch.stack([box_x1, box_y1, box_x2, box_y2], dim=-1)
 
-    # active shape: (B,) -> (B, 1, 1) for broadcasting with (B, N, 4)
+    # active shape: (batch_size,) -> (batch_size, 1, 1) for broadcasting with (batch_size, num_boxes, 4)
     mask = active[:, None, None]
     return torch.where(mask, flipped, boxes)
 
 
 def _flip_keypoints(
-    kps: Tensor,
+    keypoints: Tensor,
     active: Tensor,
     is_hflip: bool,
     is_vflip: bool,
     height: int,
     width: int,
 ) -> Tensor:
-    """Flip keypoints (B, N, 2) using direct coordinate arithmetic.
+    """Flip keypoints (batch_size, num_points, 2) using direct coordinate arithmetic.
 
-    HFlip: ``x' = W - 1 - x``.
-    VFlip: ``y' = H - 1 - y``.
+    HFlip: ``coord_x' = width - 1 - coord_x``.
+    VFlip: ``coord_y' = height - 1 - coord_y``.
 
     """
-    flipped = kps.clone()
+    flipped = keypoints.clone()
     if is_hflip:
-        flipped[..., 0] = (width - 1) - kps[..., 0]
+        flipped[..., 0] = (width - 1) - keypoints[..., 0]
     if is_vflip:
-        flipped[..., 1] = (height - 1) - kps[..., 1]
+        flipped[..., 1] = (height - 1) - keypoints[..., 1]
 
     mask = active[:, None, None]
-    return torch.where(mask, flipped, kps)
+    return torch.where(mask, flipped, keypoints)
 
 
 def _xywh_to_xyxy(boxes: Tensor) -> Tensor:
-    """Convert (B, N, 4) boxes from xywh to xyxy format."""
-    x, y, w, h = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
-    return torch.stack([x, y, x + w, y + h], dim=-1)
+    """Convert (batch_size, num_boxes, 4) boxes from xywh to xyxy format."""
+    box_left, box_top, box_width, box_height = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
+    return torch.stack([box_left, box_top, box_left + box_width, box_top + box_height], dim=-1)
 
 
 def _xyxy_to_xywh(boxes: Tensor) -> Tensor:
-    """Convert (B, N, 4) boxes from xyxy to xywh format."""
-    x1, y1, x2, y2 = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
-    return torch.stack([x1, y1, x2 - x1, y2 - y1], dim=-1)
+    """Convert (batch_size, num_boxes, 4) boxes from xyxy to xywh format."""
+    box_x1, box_y1, box_x2, box_y2 = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
+    return torch.stack([box_x1, box_y1, box_x2 - box_x1, box_y2 - box_y1], dim=-1)

@@ -104,7 +104,7 @@ pipe = Compose(
     ]
 )
 
-image = torch.rand(4, 3, 256, 256)  # (B, C, H, W)
+image = torch.rand(4, 3, 256, 256)  # (batch_size, channels, height, width)
 out = pipe(image)  # one interpolation pass instead of three
 
 print(pipe.fusion_plan)
@@ -123,7 +123,7 @@ Given a pipeline `[Rotate, Scale, HFlip, GaussianBlur, Rotate]`:
 1. **Grouping**: `[Rotate, Scale, HFlip]` are consecutive geometric transforms and are collected into one segment. `GaussianBlur` is a spatial-kernel operation that is not yet fusible, so it acts as a segment boundary. The trailing `Rotate` forms its own segment.
 2. **Fusing**: the first segment's affine matrices are composed: `M = M_hflip @ M_scale @ M_rot`. One interpolation pass applies all three. The trailing `Rotate` segment applies its own single pass.
 
-All matrices are `(B, 3, 3)` homogeneous in pixel coordinates with `align_corners=True`. To apply the interpolation, the composed forward matrix is inverted once to yield backward (sampling) grid coordinates.
+All matrices are `(batch_size, 3, 3)` homogeneous in pixel coordinates with `align_corners=True`. To apply the interpolation, the composed forward matrix is inverted once to yield backward (sampling) grid coordinates.
 
 For flip-only chains, `fuse-augmentations` uses an `ExactAffineSegment` that applies `tensor.flip` directly -- zero interpolation error.
 
@@ -184,7 +184,7 @@ Pipeline:  Rotate, Translate, HFlip, Brightness, Contrast
 | `Compose`                             | Main entry point. Wraps a list of transforms, groups them into fusible runs, and fuses each group on `forward()`. Accepts `output_backend="numpy"` to return NumPy arrays. Aliases: `FusedCompose`, `AugmentationSequential`.      |
 | `Compose.from_params(...)`            | Classmethod. Build a backend-free pipeline from numeric parameter ranges, or from a `specs` list of `TransformSpec` objects. Defaults to `ReorderPolicy.POINTWISE`.                                                                |
 | `Compose.from_config(specs, backend)` | Classmethod. Resolve a list of `TransformSpec` objects to a specific backend and build the pipeline -- no backend imports needed at spec time. Defaults to `ReorderPolicy.POINTWISE`.                                              |
-| `TransformSpec`                       | Frozen dataclass for declarative, backend-agnostic pipeline configuration: `op`, `params`, `p`. JSON-serialisable via `to_dict()` / `from_dict()`.                                                                                 |
+| `TransformSpec`                       | Frozen dataclass for declarative, backend-agnostic pipeline configuration: `operation`, `params`, `prob`. JSON-serialisable via `to_dict()` / `from_dict()`.                                                                       |
 | `NumpyToTorchConverter`               | Converts NumPy `(H, W, C)` / `(B, H, W, C)` arrays (uint8 or float32) to `(B, C, H, W)` torch tensors. uint8 is normalised to float32 `[0, 1]`.                                                                                    |
 | `TorchToNumpyConverter`               | Converts `(B, C, H, W)` torch tensors to NumPy arrays. Single-image batches are squeezed to `(H, W, C)`; multi-image batches produce `(B, H, W, C)`.                                                                               |
 | `FusedAffineSegment`                  | Handles one fusible run: samples random params, composes matrices, applies a single interpolation pass.                                                                                                                            |
@@ -243,12 +243,12 @@ Ordered by quality:
 
 ### Auxiliary Target Functions
 
-| Function                                | Shape          | Description                                                                         |
-| --------------------------------------- | -------------- | ----------------------------------------------------------------------------------- |
-| `transform_keypoints(kps, M_forward)`   | `(B, N, 2)`    | Apply forward affine matrix to keypoint coordinates. Differentiable.                |
-| `transform_bbox_xyxy(boxes, M_forward)` | `(B, N, 4)`    | Transform `[x1, y1, x2, y2]` boxes by forward homography; AABB-wrap after rotation. |
-| `transform_bbox_xywh(boxes, M_forward)` | `(B, N, 4)`    | Transform `[x, y, w, h]` boxes; converts to/from xyxy internally.                   |
-| `transform_mask(mask, grid)`            | `(B, C, H, W)` | Apply sampling grid with `mode='nearest'` to preserve integer class labels.         |
+| Function                                      | Shape                                   | Description                                                                         |
+| --------------------------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------- |
+| `transform_keypoints(keypoints, mtx_forward)` | `(batch_size, num_points, 2)`           | Apply forward affine matrix to keypoint coordinates. Differentiable.                |
+| `transform_bbox_xyxy(boxes, mtx_forward)`     | `(batch_size, num_boxes, 4)`            | Transform `[x1, y1, x2, y2]` boxes by forward homography; AABB-wrap after rotation. |
+| `transform_bbox_xywh(boxes, mtx_forward)`     | `(batch_size, num_boxes, 4)`            | Transform `[x, y, w, h]` boxes; converts to/from xyxy internally.                   |
+| `transform_mask(mask, grid)`                  | `(batch_size, channels, height, width)` | Apply sampling grid with `mode='nearest'` to preserve integer class labels.         |
 
 ## 🎯 Auxiliary Targets
 
@@ -258,10 +258,10 @@ Pass `data_keys` to route masks, boxes, or keypoints through the same fused tran
 import torchvision.transforms.v2 as aug_tv
 from fuse_aug import Compose
 
-image = ...  # (B, C, H, W) float32 tensor
-mask = ...  # (B, C, H, W) integer label tensor
-bboxes = ...  # (B, N, 4) pixel-space boxes
-keypoints = ...  # (B, N, 2) pixel-space keypoints
+image = ...  # (batch_size, channels, height, width) float32 tensor
+mask = ...  # (batch_size, channels, height, width) integer label tensor
+bboxes = ...  # (batch_size, num_boxes, 4) pixel-space boxes
+keypoints = ...  # (batch_size, num_points, 2) pixel-space keypoints
 
 pipe = Compose(
     [aug_tv.RandomRotation(degrees=30), aug_tv.RandomHorizontalFlip(p=0.5)],
@@ -417,8 +417,8 @@ The output tensor has the target spatial size specified in the `RandomResizedCro
 from fuse_aug import Compose, TransformSpec
 
 specs = [
-    TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.8),
-    TransformSpec(op="hflip", params={}, p=0.5),
+    TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=0.8),
+    TransformSpec(operation="hflip", params={}, prob=0.5),
 ]
 
 image = ...
@@ -433,13 +433,13 @@ out2 = pipe2(image)
 
 `TransformSpec` fields:
 
-| Field    | Type                | Description                                                            |
-| -------- | ------------------- | ---------------------------------------------------------------------- |
-| `op`     | `str`               | Canonical op name: `"rotation"`, `"hflip"`, `"vflip"`, `"scale"`, etc. |
-| `params` | `dict[str, object]` | Op-specific parameters associated with the canonical op.               |
-| `p`      | `float`             | Per-sample application probability. Default `1.0`.                     |
+| Field       | Type                | Description                                                                   |
+| ----------- | ------------------- | ----------------------------------------------------------------------------- |
+| `operation` | `str`               | Canonical operation name: `"rotation"`, `"hflip"`, `"vflip"`, `"scale"`, etc. |
+| `params`    | `dict[str, object]` | Operation-specific parameters associated with the canonical operation.        |
+| `prob`      | `float`             | Per-sample application probability. Default `1.0`.                            |
 
-For `from_config`, `op` names are canonical and `params` are first passed through `translate_params()` before being forwarded to the backend constructor. A small set of canonical parameter names (for example, `degrees` for rotation-like ops or `factor` for scale) are translated into the appropriate backend-specific kwargs for each supported backend. Any keys that are not recognized by `translate_params()` remain backend-specific constructor kwargs and are passed through unchanged. This means a `TransformSpec` list that uses only the canonical subset of parameters is generally portable across backends, while specs that rely on backend-only parameters may still need adjustment when switching backends.
+For `from_config`, `operation` names are canonical and `params` are first passed through `translate_params()` before being forwarded to the backend constructor. A small set of canonical parameter names (for example, `degrees` for rotation-like operations or `factor` for scale) are translated into the appropriate backend-specific kwargs for each supported backend. Any keys that are not recognized by `translate_params()` remain backend-specific constructor kwargs and are passed through unchanged. This means a `TransformSpec` list that uses only the canonical subset of parameters is generally portable across backends, while specs that rely on backend-only parameters may still need adjustment when switching backends.
 
 Specs are JSON round-trip safe via `to_dict()` / `from_dict()`:
 
@@ -447,7 +447,7 @@ Specs are JSON round-trip safe via `to_dict()` / `from_dict()`:
 import json
 from fuse_aug import TransformSpec
 
-spec = TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.8)
+spec = TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=0.8)
 payload = json.dumps(spec.to_dict())
 restored = TransformSpec.from_dict(json.loads(payload))
 assert restored == spec

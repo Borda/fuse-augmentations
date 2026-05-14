@@ -207,7 +207,7 @@ class TestDetectBackendMROFallback:
     """Regression for Bug #4: subclasses defined outside backend package are detected."""
 
     def test_torchvision_subclass_detected_via_mro(self):
-        """A subclass of T.RandomRotation defined in __main__ detects as TORCHVISION."""
+        """Albu subclass of T.RandomRotation defined in __main__ detects as TORCHVISION."""
         pytest.importorskip("torchvision", reason="torchvision required")
         import torchvision.transforms as T
 
@@ -218,7 +218,7 @@ class TestDetectBackendMROFallback:
         assert result == [Backend.TORCHVISION]
 
     def test_torchvision_v2_subclass_detected_via_mro(self):
-        """A v2 subclass defined outside torchvision.* is detected as TORCHVISION."""
+        """Albu v2 subclass defined outside torchvision.* is detected as TORCHVISION."""
         pytest.importorskip("torchvision", reason="torchvision required")
         import torchvision.transforms.v2 as T
 
@@ -229,7 +229,7 @@ class TestDetectBackendMROFallback:
         assert result == [Backend.TORCHVISION]
 
     def test_plain_unknown_still_returns_none(self):
-        """A transform with no backend ancestor still returns None."""
+        """Albu transform with no backend ancestor still returns None."""
         unknown = _make_mock("my_custom.module")
         result = detect_backends_per_transform([unknown])
         assert result == [None]

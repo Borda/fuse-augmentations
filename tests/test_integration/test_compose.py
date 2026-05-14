@@ -24,22 +24,22 @@ class TestSingleTransformNoFusion:
     """Validate behavior for one-transform pipelines."""
 
     def test_n_warps_saved_zero(self):
-        """A single GEOMETRIC_INTERP transform saves zero warps (no fusion)."""
+        """Albu single GEOMETRIC_INTERP transform saves zero warps (no fusion)."""
         pipe = Compose([RandomRotation(30, p=1.0)])
         assert pipe.n_warps_saved == 0
 
     def test_n_warps_saved_exact(self):
-        """A single GEOMETRIC_EXACT transform saves 1 warp (no grid_sample at all)."""
+        """Albu single GEOMETRIC_EXACT transform saves 1 warp (no grid_sample at all)."""
         pipe = Compose([RandomHorizontalFlip(p=1.0)])
         assert pipe.n_warps_saved == 1
 
     def test_forward_runs(self):
         """Single transform Compose produces valid output."""
         pipe = Compose([RandomHorizontalFlip(p=1.0)])
-        x = torch.rand(1, 3, 8, 8)
-        out = pipe(x)
-        assert out.shape == x.shape
-        assert not torch.isnan(out).any()
+        image = torch.rand(1, 3, 8, 8)
+        image_output = pipe(image)
+        assert image_output.shape == image.shape
+        assert not torch.isnan(image_output).any()
 
 
 class TestMixedBackend:
@@ -69,11 +69,11 @@ class TestSerialization:
         pipe = Compose([RandomHorizontalFlip(p=1.0)])
         loaded = pickle.loads(pickle.dumps(pipe))  # noqa: S301
 
-        x = torch.rand(1, 3, 8, 8)
+        image = torch.rand(1, 3, 8, 8)
         torch.manual_seed(42)
-        out1 = pipe(x)
+        out1 = pipe(image)
         torch.manual_seed(42)
-        out2 = loaded(x)
+        out2 = loaded(image)
         assert torch.allclose(out1, out2)
 
     def test_torch_save_load(self):
@@ -161,10 +161,10 @@ class TestPassthroughPath:
             RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
             RandomRotation(degrees=15, p=1.0),
         ])
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
-        assert out.shape == x.shape
-        assert not torch.isnan(out).any()
+        image = torch.rand(2, 3, 32, 32)
+        image_output = pipe(image)
+        assert image_output.shape == image.shape
+        assert not torch.isnan(image_output).any()
 
     def test_spatial_kernel_passthrough_segments(self):
         """GaussianBlur between two geometric transforms breaks into 3 segments."""
@@ -216,13 +216,13 @@ class TestForwardMultiTransform:
     """Validate end-to-end forward pass for multi-transform pipelines."""
 
     def test_three_transform_forward(self):
-        """Three-transform pipeline produces valid (B,C,H,W) output."""
+        """Three-transform pipeline produces valid (batch_size, channels, height, width) output."""
         pipe = Compose([
             RandomRotation(30, p=1.0),
             RandomAffine(0, scale=(0.8, 1.2), p=1.0),
             RandomHorizontalFlip(p=1.0),
         ])
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
-        assert out.shape == x.shape
-        assert not torch.isnan(out).any()
+        image = torch.rand(2, 3, 32, 32)
+        image_output = pipe(image)
+        assert image_output.shape == image.shape
+        assert not torch.isnan(image_output).any()

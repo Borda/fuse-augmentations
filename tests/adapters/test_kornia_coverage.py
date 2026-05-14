@@ -8,7 +8,7 @@ Each registered transform must satisfy:
   matching the registry value.
 - ``adapter.sample_params(instance, input_shape, device)`` returns a dict
   (possibly empty) with ``torch.Tensor`` values (or sentinel ``_batch_size``).
-- ``adapter.build_matrix(instance, params, H, W)`` returns a ``(B, 3, 3)``
+- ``adapter.build_matrix(instance, params, height, width)`` returns a ``(batch_size, 3, 3)``
   ``torch.Tensor``.
 
 """
@@ -32,31 +32,31 @@ from fuse_augmentations.adapters._kornia import (  # noqa: E402
 # Default constructor kwargs per transform class for instantiation.
 # Extend this dict when new transforms are added to the registry.
 _CONSTRUCTOR_KWARGS: dict[str, dict] = {
-    "RandomRotation": {"degrees": 30, "p": 1.0},
-    "RandomAffine": {"degrees": 30, "p": 1.0},
-    "RandomHorizontalFlip": {"p": 1.0},
-    "RandomVerticalFlip": {"p": 1.0},
-    "RandomPerspective": {"distortion_scale": 0.3, "p": 1.0},
+    "RandomRotation": {"degrees": 30, "prob": 1.0},
+    "RandomAffine": {"degrees": 30, "prob": 1.0},
+    "RandomHorizontalFlip": {"prob": 1.0},
+    "RandomVerticalFlip": {"prob": 1.0},
+    "RandomPerspective": {"distortion_scale": 0.3, "prob": 1.0},
     # Future entries:
-    "RandomShear": {"shear": (10.0, 10.0), "p": 1.0},
-    "RandomTranslate": {"translate": (0.3, 0.3), "p": 1.0},
-    "RandomRotation90": {"times": (0, 3), "p": 1.0},
-    "RandomResizedCrop": {"size": (32, 32), "p": 1.0},
+    "RandomShear": {"shear": (10.0, 10.0), "prob": 1.0},
+    "RandomTranslate": {"translate": (0.3, 0.3), "prob": 1.0},
+    "RandomRotation90": {"times": (0, 3), "prob": 1.0},
+    "RandomResizedCrop": {"size": (32, 32), "prob": 1.0},
 }
 
-BSZ, C, H, W = 2, 3, 32, 32
-DEVICE = torch.device("cpu")
-INPUT_SHAPE = (BSZ, C, H, W)
+BATCH_SIZE, CHANNELS, HEIGHT, WIDTH = 2, 3, 32, 32
+DEFAULT_DEVICE = torch.device("cpu")
+INPUT_SHAPE = (BATCH_SIZE, CHANNELS, HEIGHT, WIDTH)
 
 
 def _make_instance(cls: type) -> object:
     """Instantiate a registered transform class with default kwargs."""
     name = cls.__name__
-    kwargs = _CONSTRUCTOR_KWARGS.get(name, {"p": 1.0})
+    kwargs = _CONSTRUCTOR_KWARGS.get(name, {"prob": 1.0})
     try:
         return cls(**kwargs)
     except TypeError:
-        # Fallback: try with just p=1.0
+        # Fallback: try with just prob=1.0
         return cls(p=1.0)
 
 
@@ -92,7 +92,7 @@ class TestRegistryCoverage:
     def test_sample_params_returns_dict_of_tensors(self, adapter, transform_cls):
         """sample_params returns a dict with torch.Tensor values."""
         instance = _make_instance(transform_cls)
-        params = adapter.sample_params(instance, INPUT_SHAPE, DEVICE)
+        params = adapter.sample_params(instance, INPUT_SHAPE, DEFAULT_DEVICE)
         assert isinstance(params, dict), f"Expected dict, got {type(params)}"
         for key, val in params.items():
             assert isinstance(val, torch.Tensor), f"params[{key!r}] is {type(val).__name__}, expected Tensor"
@@ -103,10 +103,10 @@ class TestRegistryCoverage:
         ids=[cls.__name__ for cls in TRANSFORM_REGISTRY],
     )
     def test_build_matrix_returns_b33_tensor(self, adapter, transform_cls):
-        """build_matrix returns a (B, 3, 3) tensor."""
+        """build_matrix returns a (batch_size, 3, 3) tensor."""
         instance = _make_instance(transform_cls)
-        params = adapter.sample_params(instance, INPUT_SHAPE, DEVICE)
-        mtx = adapter.build_matrix(instance, params, H, W)
+        params = adapter.sample_params(instance, INPUT_SHAPE, DEFAULT_DEVICE)
+        mtx = adapter.build_matrix(instance, params, HEIGHT, WIDTH)
         assert isinstance(mtx, torch.Tensor), f"Expected Tensor, got {type(mtx)}"
         assert mtx.ndim == 3, f"Expected 3D tensor, got {mtx.ndim}D"
         assert mtx.shape[1:] == (3, 3), f"Expected (*, 3, 3), got {mtx.shape}"
@@ -119,8 +119,8 @@ class TestRegistryCoverage:
     def test_build_matrix_no_nan_inf(self, adapter, transform_cls):
         """build_matrix output contains no NaN or Inf values."""
         instance = _make_instance(transform_cls)
-        params = adapter.sample_params(instance, INPUT_SHAPE, DEVICE)
-        mtx = adapter.build_matrix(instance, params, H, W)
+        params = adapter.sample_params(instance, INPUT_SHAPE, DEFAULT_DEVICE)
+        mtx = adapter.build_matrix(instance, params, HEIGHT, WIDTH)
         assert not torch.isnan(mtx).any(), f"NaN in build_matrix for {transform_cls.__name__}"
         assert not torch.isinf(mtx).any(), f"Inf in build_matrix for {transform_cls.__name__}"
 
@@ -131,10 +131,10 @@ class TestRegistryCoverage:
             pytest.skip("RandomRotation90 not available in installed kornia version")
         instance = _make_instance(transform_cls)
 
-        params = adapter.sample_params(instance, INPUT_SHAPE, DEVICE)
+        params = adapter.sample_params(instance, INPUT_SHAPE, DEFAULT_DEVICE)
 
         assert "k90" in params
-        assert params["k90"].shape == (BSZ,)
+        assert params["k90"].shape == (BATCH_SIZE,)
         assert params["k90"].dtype == torch.int64
 
 

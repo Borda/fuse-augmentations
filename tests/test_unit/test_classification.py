@@ -9,9 +9,9 @@ from fuse_augmentations._backend import Backend, detect_backend
 
 def _make_mock(module_path: str):
     """Create a mock object whose type has a specific __module__."""
-    ns = {"__module__": module_path, "__qualname__": "MockTransform"}
-    cls = type("MockTransform", (), ns)
-    return cls()
+    namespace = {"__module__": module_path, "__qualname__": "MockTransform"}
+    mock_class = type("MockTransform", (), namespace)
+    return mock_class()
 
 
 class TestMixedBackends:
@@ -35,23 +35,23 @@ class TestUnknownBackends:
     def test_all_unknown_returns_unknown_with_warning(self):
         """All-unknown transforms return Backend.UNKNOWN and emit a warning."""
         unknown_mock = _make_mock("my_custom_lib.transforms")
-        with warnings.catch_warnings(record=True) as w:
+        with warnings.catch_warnings(record=True) as record:
             warnings.simplefilter("always")
             result = detect_backend([unknown_mock])
         assert result == Backend.UNKNOWN
-        assert len(w) == 1
-        assert "Unrecognized transform" in str(w[0].message)
+        assert len(record) == 1
+        assert "Unrecognized transform" in str(record[0].message)
 
     def test_known_plus_unknown_emits_warning_returns_known(self):
         """Known + unknown mix returns the known Backend enum member with a warning."""
         kornia_mock = _make_mock("kornia.augmentation")
         unknown_mock = _make_mock("custom_lib.stuff")
-        with warnings.catch_warnings(record=True) as w:
+        with warnings.catch_warnings(record=True) as record:
             warnings.simplefilter("always")
             result = detect_backend([kornia_mock, unknown_mock])
         assert result == Backend.KORNIA
-        assert len(w) == 1
-        assert "Unrecognized transform" in str(w[0].message)
+        assert len(record) == 1
+        assert "Unrecognized transform" in str(record[0].message)
 
 
 class TestSingleKnownBackends:
@@ -72,6 +72,6 @@ class TestSingleKnownBackends:
 
     def test_multiple_kornia_transforms(self):
         """Multiple kornia transforms still detected as Backend.KORNIA."""
-        m1 = _make_mock("kornia.augmentation._2d.geometric")
-        m2 = _make_mock("kornia.augmentation._2d.intensity")
-        assert detect_backend([m1, m2]) == Backend.KORNIA
+        mock1 = _make_mock("kornia.augmentation._2d.geometric")
+        mock2 = _make_mock("kornia.augmentation._2d.intensity")
+        assert detect_backend([mock1, mock2]) == Backend.KORNIA

@@ -25,12 +25,12 @@ from fuse_augmentations import Compose  # noqa: E402
 
 pytestmark = pytest.mark.integration
 
-H, W, C = 16, 16, 3
+HEIGHT, WIDTH, CHANNELS = 16, 16, 3
 
 
-def _rand_image(B: int = 2) -> torch.Tensor:
+def _rand_image(batch_size: int = 2) -> torch.Tensor:
     torch.manual_seed(0)
-    return torch.rand(B, C, H, W)
+    return torch.rand(batch_size, CHANNELS, HEIGHT, WIDTH)
 
 
 # ---------------------------------------------------------------------------
@@ -40,14 +40,14 @@ def _rand_image(B: int = 2) -> torch.Tensor:
 
 class TestMixedBackendSmoke:
     def test_mixed_forward_does_not_raise(self):
-        """A mixed TorchVision + Kornia pipeline does not raise on construction or forward."""
-        img = _rand_image()
+        """Albu mixed TorchVision + Kornia pipeline does not raise on construction or forward."""
+        image = _rand_image()
         pipe = Compose([
             T.RandomRotation(degrees=30),
             KColorJitter(brightness=0.2, contrast=0.3, saturation=0.2, hue=0.3, p=1.0),
         ])
-        out = pipe(img)
-        assert out is not None
+        image_output = pipe(image)
+        assert image_output is not None
 
 
 # ---------------------------------------------------------------------------
@@ -58,23 +58,23 @@ class TestMixedBackendSmoke:
 class TestMixedGeometricColor:
     def test_mixed_torchvision_geometric_kornia_color(self):
         """TorchVision geometric + Kornia color produces valid output with preserved shape."""
-        img = _rand_image()
+        image = _rand_image()
         pipe = Compose([
             T.RandomRotation(degrees=30),
             KColorJitter(brightness=0.2, contrast=0.3, saturation=0.2, hue=0.3, p=1.0),
         ])
-        out = pipe(img)
-        assert out.shape == img.shape
+        image_output = pipe(image)
+        assert image_output.shape == image.shape
 
     def test_mixed_output_shape_preserved(self):
-        """Batch shape (B, C, H, W) is preserved through a mixed pipeline."""
-        img = _rand_image(B=2)
+        """Batch shape (batch_size, channels, height, width) is preserved through a mixed pipeline."""
+        image = _rand_image(batch_size=2)
         pipe = Compose([
             T.RandomRotation(degrees=15),
             KColorJitter(brightness=0.1, p=1.0),
         ])
-        out = pipe(img)
-        assert out.shape == (2, C, H, W)
+        image_output = pipe(image)
+        assert image_output.shape == (2, CHANNELS, HEIGHT, WIDTH)
 
 
 # ---------------------------------------------------------------------------
@@ -132,17 +132,17 @@ class TestMixedGeometricSegments:
         )
 
         # Each single-transform segment saves 0 warps on its own
-        img = _rand_image()
-        out = pipe(img)
-        assert out.shape == img.shape
+        image = _rand_image()
+        image_output = pipe(image)
+        assert image_output.shape == image.shape
 
 
 class TestMixedBackendDataKeys:
     def test_data_keys_mask_shape_preserved(self):
         """Mixed TV+Kornia pipeline with data_keys=["input", "mask"] preserves mask shape."""
         torch.manual_seed(0)
-        img = torch.rand(2, 1, H, W, dtype=torch.float32)
-        mask = torch.rand(2, 1, H, W, dtype=torch.float32)
+        image = torch.rand(2, 1, HEIGHT, WIDTH, dtype=torch.float32)
+        mask = torch.rand(2, 1, HEIGHT, WIDTH, dtype=torch.float32)
         pipe = Compose(
             [
                 T.RandomHorizontalFlip(p=1.0),
@@ -150,8 +150,8 @@ class TestMixedBackendDataKeys:
             ],
             data_keys=["input", "mask"],
         )
-        _img_out, mask_out = pipe(img, mask)
-        assert mask_out.shape == mask.shape, f"Expected mask shape {mask.shape}, got {mask_out.shape}"
+        _image_out, mask_output = pipe(image, mask)
+        assert mask_output.shape == mask.shape, f"Expected mask shape {mask.shape}, got {mask_output.shape}"
 
 
 class TestMixedBackendDuplicateTransform:

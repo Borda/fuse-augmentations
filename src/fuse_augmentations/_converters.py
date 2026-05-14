@@ -1,8 +1,8 @@
 """Concrete BackendConverter implementations for cross-backend output.
 
 Provides converters between PyTorch tensors and NumPy arrays, preserving the
-``(B, C, H, W)`` pipeline invariant on the torch side and converting to/from
-``(B, H, W, C)`` HWC layout on the NumPy side.
+``(batch_size, channels, height, width)`` pipeline invariant on the torch side and converting to/from
+``(batch_size, height, width, channels)`` HWC layout on the NumPy side.
 
 """
 
@@ -17,9 +17,9 @@ if TYPE_CHECKING:
 
 
 class NumpyToTorchConverter:
-    """Convert NumPy ``(H, W, C)`` or ``(B, H, W, C)`` arrays to ``(B, C, H, W)`` torch tensors.
+    """Convert NumPy HWC/BHWC arrays to ``(batch_size, channels, height, width)`` torch tensors.
 
-    All pipeline outputs are ``(B, C, H, W)`` ``torch.Tensor`` regardless of backend.
+    All pipeline outputs are ``(batch_size, channels, height, width)`` ``torch.Tensor`` regardless of backend.
     ``uint8`` inputs are normalised to ``float32`` in ``[0, 1]``; ``float32`` inputs
     are passed through unchanged.
 
@@ -35,11 +35,11 @@ class NumpyToTorchConverter:
 
         Args:
             array: NumPy array in channel-last layout:
-                ``(H, W)``, ``(H, W, C)``, or ``(B, H, W, C)``.
+                ``(height, width)``, ``(height, width, channels)``, or ``(batch_size, height, width, channels)``.
 
         Returns:
-            ``torch.float32`` tensor of shape ``(1, 1, H, W)`` for 2-D input,
-            ``(1, C, H, W)`` for 3-D input, or ``(B, C, H, W)`` for 4-D input.
+            ``torch.float32`` tensor of shape ``(1, 1, height, width)`` for 2-D input,
+            ``(1, channels, height, width)`` for 3-D input, or ``(batch_size, channels, height, width)`` for 4-D input.
 
         Raises:
             ValueError: If ``array`` is not 2-D/3-D/4-D, or if a 3-D input is
@@ -53,11 +53,11 @@ class NumpyToTorchConverter:
         elif tensor.ndim == 3:
             # Treat 3-D arrays as single-image HWC by default so arbitrary
             # channel counts round-trip cleanly. Batched grayscale must be
-            # passed explicitly as (B, H, W, 1) to avoid ambiguity.
+            # passed explicitly as (batch_size, height, width, 1) to avoid ambiguity.
             if tensor.shape[-1] == 0:
                 msg = (
-                    f"Ambiguous 3-D array shape {tuple(tensor.shape)}; expected channel-last (H, W, C) "
-                    "with a non-empty channel axis. For batched grayscale, pass (B, H, W, 1)."
+                    f"Ambiguous 3-D array shape {tuple(tensor.shape)}; expected channel-last (height, width, channels) "
+                    "with a non-empty channel axis. For batched grayscale, pass (batch_size, height, width, 1)."
                 )
                 raise ValueError(msg)
             # (H, W, C) -> (1, H, W, C)
@@ -72,15 +72,15 @@ class NumpyToTorchConverter:
             # Keep the pipeline invariant: image tensors are float32.
             tensor = tensor.to(torch.float32)
 
-        # (B, H, W, C) -> (B, C, H, W)
+        # (batch_size, height, width, channels) -> (batch_size, channels, height, width)
         return tensor.permute(0, 3, 1, 2)
 
 
 class TorchToNumpyConverter:
-    """Convert ``(B, C, H, W)`` torch tensors to NumPy ``(H, W, C)`` or ``(B, H, W, C)`` arrays.
+    """Convert ``(batch_size, channels, height, width)`` torch tensors to NumPy HWC/BHWC arrays.
 
-    Single-image batches ``(1, C, H, W)`` are squeezed to ``(H, W, C)`` for
-    convenience. Multi-image batches produce ``(B, H, W, C)``.
+    Single-image batches ``(1, channels, height, width)`` are squeezed to ``(height, width, channels)`` for
+    convenience. Multi-image batches produce ``(batch_size, height, width, channels)``.
 
     """
 
@@ -93,24 +93,24 @@ class TorchToNumpyConverter:
         """Convert a torch tensor (BCHW) to a NumPy array (HWC or BHWC).
 
         Args:
-            tensor: ``torch.Tensor`` of shape ``(B, C, H, W)``.
+            tensor: ``torch.Tensor`` of shape ``(batch_size, channels, height, width)``.
 
         Returns:
-            NumPy ``ndarray`` of shape ``(H, W, C)`` when ``B == 1``, or
-            ``(B, H, W, C)`` otherwise. Dtype is preserved (typically ``float32``).
+            NumPy ``ndarray`` of shape ``(height, width, channels)`` when ``batch_size == 1``, or
+            ``(batch_size, height, width, channels)`` otherwise. Dtype is preserved (typically ``float32``).
 
         Raises:
-            ValueError: If ``tensor`` is not a 4-D ``(B, C, H, W)`` tensor.
+            ValueError: If ``tensor`` is not a 4-D ``(batch_size, channels, height, width)`` tensor.
 
         """
         import numpy as np_mod
 
         if tensor.ndim != 4:
-            msg = f"Expected 4-D tensor (B, C, H, W), got shape {tuple(tensor.shape)}"
+            msg = f"Expected 4-D tensor (batch_size, channels, height, width), got shape {tuple(tensor.shape)}"
             raise ValueError(msg)
 
-        arr = tensor.detach().cpu().permute(0, 2, 3, 1).contiguous().numpy()
-        if arr.shape[0] == 1:
-            # (1, H, W, C) -> (H, W, C)
-            arr = np_mod.squeeze(arr, axis=0)
-        return arr
+        ndarray_out = tensor.detach().cpu().permute(0, 2, 3, 1).contiguous().numpy()
+        if ndarray_out.shape[0] == 1:
+            # (1, height, width, channels) -> (height, width, channels)
+            ndarray_out = np_mod.squeeze(ndarray_out, axis=0)
+        return ndarray_out

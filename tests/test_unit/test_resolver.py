@@ -37,13 +37,13 @@ class TestSupportedConstants:
         assert backend in SUPPORTED_BACKENDS, f"'{backend}' should be in SUPPORTED_BACKENDS"
 
     @pytest.mark.parametrize(
-        "op",
+        "op_name",
         ["rotation", "hflip", "vflip"],
     )
-    def test_supported_ops_minimum_ops(self, op):
+    def test_supported_ops_minimum_ops(self, op_name):
         from fuse_augmentations._resolver import SUPPORTED_OPS
 
-        assert op in SUPPORTED_OPS, f"'{op}' should be in SUPPORTED_OPS"
+        assert op_name in SUPPORTED_OPS, f"'{op_name}' should be in SUPPORTED_OPS"
 
     def test_supported_ops_not_empty(self):
         from fuse_augmentations._resolver import SUPPORTED_OPS
@@ -61,20 +61,26 @@ class TestResolveOpKornia:
     def test_rotation_returns_callable(self):
         from fuse_augmentations._resolver import resolve_op
 
-        cls = resolve_op("rotation", "kornia")
-        assert callable(cls), f"resolve_op('rotation', 'kornia') should return callable, got {type(cls)}"
+        transform_class = resolve_op("rotation", "kornia")
+        assert callable(transform_class), (
+            f"resolve_op('rotation', 'kornia') should return callable, got {type(transform_class)}"
+        )
 
     def test_hflip_returns_callable(self):
         from fuse_augmentations._resolver import resolve_op
 
-        cls = resolve_op("hflip", "kornia")
-        assert callable(cls), f"resolve_op('hflip', 'kornia') should return callable, got {type(cls)}"
+        transform_class = resolve_op("hflip", "kornia")
+        assert callable(transform_class), (
+            f"resolve_op('hflip', 'kornia') should return callable, got {type(transform_class)}"
+        )
 
     def test_vflip_returns_callable(self):
         from fuse_augmentations._resolver import resolve_op
 
-        cls = resolve_op("vflip", "kornia")
-        assert callable(cls), f"resolve_op('vflip', 'kornia') should return callable, got {type(cls)}"
+        transform_class = resolve_op("vflip", "kornia")
+        assert callable(transform_class), (
+            f"resolve_op('vflip', 'kornia') should return callable, got {type(transform_class)}"
+        )
 
 
 class TestResolveOpTorchVision:
@@ -87,14 +93,14 @@ class TestResolveOpTorchVision:
     def test_hflip_returns_callable(self):
         from fuse_augmentations._resolver import resolve_op
 
-        cls = resolve_op("hflip", "torchvision")
-        assert callable(cls)
+        transform_class = resolve_op("hflip", "torchvision")
+        assert callable(transform_class)
 
     def test_rotation_returns_callable(self):
         from fuse_augmentations._resolver import resolve_op
 
-        cls = resolve_op("rotation", "torchvision")
-        assert callable(cls)
+        transform_class = resolve_op("rotation", "torchvision")
+        assert callable(transform_class)
 
 
 class TestResolveOpAlbumentations:
@@ -130,7 +136,7 @@ class TestResolveOpErrors:
         """resolve_op is case-sensitive: 'Rotation' != 'rotation'."""
         from fuse_augmentations._resolver import resolve_op
 
-        with pytest.raises(ValueError, match="unknown op"):
+        with pytest.raises(ValueError, match="unknown op_name"):
             resolve_op("Rotation", "kornia")
 
     def test_case_sensitive_backend(self):
@@ -143,7 +149,7 @@ class TestResolveOpErrors:
     def test_empty_op_string(self):
         from fuse_augmentations._resolver import resolve_op
 
-        with pytest.raises(ValueError, match="unknown op"):
+        with pytest.raises(ValueError, match="unknown op_name"):
             resolve_op("", "kornia")
 
     def test_empty_backend_string(self):
@@ -197,7 +203,7 @@ class TestResolveOpBackendGap:
         pytest.importorskip("torchvision")
         from fuse_augmentations._resolver import resolve_op
 
-        with pytest.raises(ValueError, match="does not support op"):
+        with pytest.raises(ValueError, match="does not support op_name"):
             resolve_op("rotation90", "torchvision")
 
     def test_rotation90_in_supported_ops_but_not_albumentations_shear(self) -> None:
@@ -218,14 +224,14 @@ class TestResolveOpBackendGap:
         pytest.importorskip("torchvision")
         from fuse_augmentations._resolver import resolve_op
 
-        with pytest.raises(ValueError, match="does not support op"):
+        with pytest.raises(ValueError, match="does not support op_name"):
             resolve_op("shear", "torchvision")
 
     def test_translate_not_in_torchvision_raises_value_error(self) -> None:
         pytest.importorskip("torchvision")
         from fuse_augmentations._resolver import resolve_op
 
-        with pytest.raises(ValueError, match="does not support op"):
+        with pytest.raises(ValueError, match="does not support op_name"):
             resolve_op("translate", "torchvision")
 
 
@@ -296,7 +302,7 @@ class TestTranslateParams:
     def test_unknown_op_raises_value_error(self) -> None:
         from fuse_augmentations._resolver import translate_params
 
-        with pytest.raises(ValueError, match="unknown op"):
+        with pytest.raises(ValueError, match="unknown op_name"):
             translate_params("nonexistent", "kornia", {})
 
     def test_unknown_backend_raises_value_error(self) -> None:

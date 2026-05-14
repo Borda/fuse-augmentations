@@ -20,14 +20,14 @@ class TestEmptyPipeline:
     def test_shape_preserved(self):
         """Empty Compose returns input unchanged with correct shape."""
         pipe = Compose([])
-        x = torch.zeros(1, 3, 8, 8)
-        assert pipe(x).shape == torch.Size([1, 3, 8, 8])
+        image = torch.zeros(1, 3, 8, 8)
+        assert pipe(image).shape == torch.Size([1, 3, 8, 8])
 
     def test_values_unchanged(self):
         """Empty Compose returns exactly the same tensor."""
         pipe = Compose([])
-        x = torch.rand(2, 3, 16, 16)
-        assert torch.equal(pipe(x), x)
+        image = torch.rand(2, 3, 16, 16)
+        assert torch.equal(pipe(image), image)
 
     def test_fusion_plan(self):
         """Empty pipeline reports 'empty' fusion plan."""
@@ -101,8 +101,8 @@ class TestNNModuleIntegration:
         """Compose works correctly in eval mode."""
         pipe = Compose([])
         pipe.eval()
-        x = torch.zeros(1, 3, 4, 4)
-        assert torch.equal(pipe(x), x)
+        image = torch.zeros(1, 3, 4, 4)
+        assert torch.equal(pipe(image), image)
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ class TestNWarpsSavedWithPolicy:
         assert pipe.n_warps_saved == 2, f"3 ops fused into 1 segment should save 2 warps, got {pipe.n_warps_saved}"
 
     def test_barrier_prevents_fusion(self):
-        """A SPATIAL_KERNEL barrier between two geometric ops prevents fusion; n_warps_saved is 0."""
+        """Albu SPATIAL_KERNEL barrier between two geometric ops prevents fusion; n_warps_saved is 0."""
         from kornia.augmentation import RandomAffine, RandomGaussianBlur, RandomRotation
 
         pipe = Compose(

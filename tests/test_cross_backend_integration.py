@@ -14,33 +14,37 @@ Each test verifies:
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import torch
 
-np = pytest.importorskip("numpy")
+HEIGHT, WIDTH, CHANNELS, BATCH_SIZE = 16, 16, 3, 2
 
 
-H, W, C, B = 16, 16, 3, 2
-
-
-def _rand_image(batch: int = B) -> torch.Tensor:
+def _rand_image(batch: int = BATCH_SIZE) -> torch.Tensor:
     torch.manual_seed(42)
-    return torch.rand(batch, C, H, W)
+    return torch.rand(batch, CHANNELS, HEIGHT, WIDTH)
 
 
-def _assert_valid_numpy(arr: np.ndarray, batch: int = B) -> None:
+def _assert_valid_numpy(ndarray_out: np.ndarray, batch: int = BATCH_SIZE) -> None:
     """Assert numpy output has correct shape, dtype, and value range."""
     if batch == 1:
-        assert arr.shape == (H, W, C), f"Expected (H,W,C)=({H},{W},{C}), got {arr.shape}"
+        assert ndarray_out.shape == (HEIGHT, WIDTH, CHANNELS), (
+            f"Expected (H,W,C)=({HEIGHT},{WIDTH},{CHANNELS}), got {ndarray_out.shape}"
+        )
     else:
-        assert arr.shape == (batch, H, W, C), f"Expected (B,H,W,C)=({batch},{H},{W},{C}), got {arr.shape}"
-    assert arr.dtype == np.float32, f"Expected float32, got {arr.dtype}"
-    assert np.isfinite(arr).all(), "Output contains NaN or Inf"
+        assert ndarray_out.shape == (batch, HEIGHT, WIDTH, CHANNELS), (
+            f"Expected (B,H,W,C)=({batch},{HEIGHT},{WIDTH},{CHANNELS}), got {ndarray_out.shape}"
+        )
+    assert ndarray_out.dtype == np.float32, f"Expected float32, got {ndarray_out.dtype}"
+    assert np.isfinite(ndarray_out).all(), "Output contains NaN or Inf"
 
 
-def _assert_valid_torch(tensor: torch.Tensor, batch: int = B) -> None:
+def _assert_valid_torch(tensor: torch.Tensor, batch: int = BATCH_SIZE) -> None:
     """Assert torch output has correct shape, dtype, and value range."""
-    assert tensor.shape == (batch, C, H, W), f"Expected (B,C,H,W)=({batch},{C},{H},{W}), got {tensor.shape}"
+    assert tensor.shape == (batch, CHANNELS, HEIGHT, WIDTH), (
+        f"Expected (B,C,H,W)=({batch},{CHANNELS},{HEIGHT},{WIDTH}), got {tensor.shape}"
+    )
     assert tensor.dtype == torch.float32, f"Expected float32, got {tensor.dtype}"
     assert torch.isfinite(tensor).all(), "Output contains NaN or Inf"
 

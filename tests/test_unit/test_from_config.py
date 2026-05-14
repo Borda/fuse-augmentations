@@ -25,28 +25,28 @@ class TestFromConfigBasicKornia:
     def test_single_rotation_produces_output(self):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=1.0)]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=1.0)]
         pipe = Compose.from_config(specs, backend="kornia")
-        x = torch.rand(2, 3, 64, 64)
-        out = pipe(x)
+        image = torch.rand(2, 3, 64, 64)
+        out = pipe(image)
         assert out.shape == torch.Size([2, 3, 64, 64])
 
     def test_two_geometric_specs_fuse(self):
         from fuse_augmentations import TransformSpec
 
         specs = [
-            TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}),
-            TransformSpec(op="hflip", params={}),
+            TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}),
+            TransformSpec(operation="hflip", params={}),
         ]
         pipe = Compose.from_config(specs, backend="kornia")
-        x = torch.rand(2, 3, 64, 64)
-        pipe(x)
+        image = torch.rand(2, 3, 64, 64)
+        pipe(image)
         assert pipe.n_warps_saved >= 1, f"Expected fusion, got plan: {pipe.fusion_plan}"
 
     def test_returns_fused_compose_instance(self):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="hflip", params={}, p=0.5)]
+        specs = [TransformSpec(operation="hflip", params={}, prob=0.5)]
         pipe = Compose.from_config(specs, backend="kornia")
         assert isinstance(pipe, FusedCompose), f"Expected FusedCompose, got {type(pipe).__name__}"
 
@@ -54,8 +54,8 @@ class TestFromConfigBasicKornia:
         from fuse_augmentations import TransformSpec
 
         specs = [
-            TransformSpec(op="rotation", params={"degrees": (-15.0, 15.0)}),
-            TransformSpec(op="hflip", params={}, p=0.5),
+            TransformSpec(operation="rotation", params={"degrees": (-15.0, 15.0)}),
+            TransformSpec(operation="hflip", params={}, prob=0.5),
         ]
         pipe = Compose.from_config(specs, backend="kornia")
         descriptors = pipe.fusion_plan_descriptors
@@ -65,10 +65,10 @@ class TestFromConfigBasicKornia:
     def test_output_no_nan(self):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-45.0, 45.0)}, p=1.0)]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-45.0, 45.0)}, prob=1.0)]
         pipe = Compose.from_config(specs, backend="kornia")
-        x = torch.rand(4, 3, 32, 32)
-        out = pipe(x)
+        image = torch.rand(4, 3, 32, 32)
+        out = pipe(image)
         assert not torch.isnan(out).any(), "from_config pipeline produced NaN values"
 
 
@@ -77,21 +77,21 @@ class TestFromConfigEmptySpecs:
 
     def test_empty_specs_identity(self):
         pipe = Compose.from_config([], backend="kornia")
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
-        assert out.shape == x.shape
-        assert torch.allclose(out, x), "Empty specs should produce identity pipeline"
+        image = torch.rand(2, 3, 32, 32)
+        out = pipe(image)
+        assert out.shape == image.shape
+        assert torch.allclose(out, image), "Empty specs should produce identity pipeline"
 
     def test_empty_specs_returns_fused_compose(self):
         pipe = Compose.from_config([], backend="kornia")
         assert isinstance(pipe, FusedCompose)
 
     def test_empty_specs_forwards_output_backend(self) -> None:
-        np = pytest.importorskip("numpy")
+        import numpy as np
 
         pipe = Compose.from_config([], backend="kornia", output_backend="numpy")
-        x = torch.rand(1, 3, 32, 32)
-        out = pipe(x)
+        image = torch.rand(1, 3, 32, 32)
+        out = pipe(image)
         assert isinstance(out, np.ndarray)
         assert out.shape == (32, 32, 3)
 
@@ -102,7 +102,7 @@ class TestFromConfigErrors:
     def test_invalid_backend_raises_value_error(self):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-10.0, 10.0)})]
         with pytest.raises(ValueError, match="unknown backend"):
             Compose.from_config(specs, backend="nonexistent_backend")
 
@@ -111,58 +111,58 @@ class TestFromConfigErrors:
             Compose.from_config([], backend="nonexistent_backend")
 
     def test_invalid_op_raises_at_construction(self):
-        """Invalid op name should raise ValueError at construction, not at forward time."""
+        """Invalid operation name should raise ValueError at construction, not at forward time."""
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="definitely_not_a_real_op", params={})]
-        with pytest.raises(ValueError, match="unknown op"):
+        specs = [TransformSpec(operation="definitely_not_a_real_op", params={})]
+        with pytest.raises(ValueError, match="unknown operation"):
             Compose.from_config(specs, backend="kornia")
 
     def test_params_cannot_shadow_transform_probability(self) -> None:
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="hflip", params={"p": 0.1}, p=0.5)]
-        with pytest.raises(ValueError, match="must not include 'p'"):
+        specs = [TransformSpec(operation="hflip", params={"prob": 0.1}, prob=0.5)]
+        with pytest.raises(ValueError, match="must not include 'prob'"):
             Compose.from_config(specs, backend="kornia")
 
 
 class TestFromConfigProbability:
-    """Per-transform probability via TransformSpec.p."""
+    """Per-transform probability via TransformSpec.prob."""
 
     def test_p_zero_never_applied(self):
-        """p=0.0 large rotation should produce output identical to input."""
+        """prob=0.0 large rotation should produce output identical to input."""
         pytest.importorskip("kornia")
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-90.0, 90.0)}, p=0.0)]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-90.0, 90.0)}, prob=0.0)]
         pipe = Compose.from_config(specs, backend="kornia")
-        x = torch.rand(2, 3, 64, 64)
-        out = pipe(x)
-        assert torch.allclose(out, x, atol=1e-5), "p=0.0 transform should never be applied"
+        image = torch.rand(2, 3, 64, 64)
+        out = pipe(image)
+        assert torch.allclose(out, image, atol=1e-5), "prob=0.0 transform should never be applied"
 
     def test_p_one_hflip_always_applied(self):
-        """p=1.0 hflip should always flip the image."""
+        """prob=1.0 hflip should always flip the image."""
         from fuse_augmentations import TransformSpec
 
         pytest.importorskip("kornia")
         torch.manual_seed(42)
-        specs = [TransformSpec(op="hflip", params={}, p=1.0)]
+        specs = [TransformSpec(operation="hflip", params={}, prob=1.0)]
         pipe = Compose.from_config(specs, backend="kornia")
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
-        expected = x.flip(dims=[3])
-        assert torch.allclose(out, expected, atol=1e-5), "p=1.0 hflip must always flip"
+        image = torch.rand(2, 3, 32, 32)
+        out = pipe(image)
+        expected = image.flip(dims=[3])
+        assert torch.allclose(out, expected, atol=1e-5), "prob=1.0 hflip must always flip"
 
-    @pytest.mark.parametrize("p", [0.0, 0.5, 1.0], ids=["p=0.0", "p=0.5", "p=1.0"])
-    def test_p_values_produce_valid_shape(self, p):
+    @pytest.mark.parametrize("p_value", [0.0, 0.5, 1.0], ids=["prob=0.0", "prob=0.5", "prob=1.0"])
+    def test_p_values_produce_valid_shape(self, p_value):
         from fuse_augmentations import TransformSpec
 
         pytest.importorskip("kornia")
-        specs = [TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=p)]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=p_value)]
         pipe = Compose.from_config(specs, backend="kornia")
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
-        assert out.shape == x.shape
+        image = torch.rand(2, 3, 32, 32)
+        out = pipe(image)
+        assert out.shape == image.shape
 
 
 class TestFromConfigTorchVision:
@@ -175,32 +175,32 @@ class TestFromConfigTorchVision:
     def test_hflip_works(self):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="hflip", params={}, p=0.5)]
+        specs = [TransformSpec(operation="hflip", params={}, prob=0.5)]
         pipe = Compose.from_config(specs, backend="torchvision")
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
+        image = torch.rand(2, 3, 32, 32)
+        out = pipe(image)
         assert out.shape == torch.Size([2, 3, 32, 32])
 
     def test_rotation_works(self):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-15.0, 15.0)})]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-15.0, 15.0)})]
         pipe = Compose.from_config(specs, backend="torchvision")
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
+        image = torch.rand(2, 3, 32, 32)
+        out = pipe(image)
         assert out.shape == torch.Size([2, 3, 32, 32])
 
     def test_scale_uses_zero_degree_affine_default(self) -> None:
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="scale", params={"scale": (0.8, 1.2)})]
+        specs = [TransformSpec(operation="scale", params={"scale": (0.8, 1.2)})]
         pipe = Compose.from_config(specs, backend="torchvision")
         transform = pipe.original_transforms[0]
         assert transform.degrees == [0.0, 0.0]
         assert transform.scale == (0.8, 1.2)
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
-        assert out.shape == x.shape
+        image = torch.rand(2, 3, 32, 32)
+        out = pipe(image)
+        assert out.shape == image.shape
 
 
 class TestFromConfigAlbumentations:
@@ -213,16 +213,16 @@ class TestFromConfigAlbumentations:
     def test_hflip_works(self):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="hflip", params={}, p=0.5)]
+        specs = [TransformSpec(operation="hflip", params={}, prob=0.5)]
         pipe = Compose.from_config(specs, backend="albumentations")
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
+        image = torch.rand(2, 3, 32, 32)
+        out = pipe(image)
         assert out.shape == torch.Size([2, 3, 32, 32])
 
     def test_rotation_translates_canonical_degrees_to_limit(self) -> None:
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-10.0, 10.0)})]
         pipe = Compose.from_config(specs, backend="albumentations")
         transform = pipe.original_transforms[0]
         assert transform.limit == (-10.0, 10.0)
@@ -230,7 +230,7 @@ class TestFromConfigAlbumentations:
     def test_affine_translates_canonical_degrees_to_rotate(self) -> None:
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="affine", params={"degrees": (-5.0, 5.0), "scale": (0.9, 1.1)})]
+        specs = [TransformSpec(operation="affine", params={"degrees": (-5.0, 5.0), "scale": (0.9, 1.1)})]
         pipe = Compose.from_config(specs, backend="albumentations")
         transform = pipe.original_transforms[0]
         assert transform.rotate == (-5.0, 5.0)
@@ -247,7 +247,7 @@ class TestFromConfigScaleKornia:
     def test_scale_uses_zero_degree_affine_default(self) -> None:
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="scale", params={"scale": (0.8, 1.2)})]
+        specs = [TransformSpec(operation="scale", params={"scale": (0.8, 1.2)})]
         pipe = Compose.from_config(specs, backend="kornia")
         transform = pipe.original_transforms[0]
         assert "degrees=0.0" in repr(transform)
@@ -267,7 +267,7 @@ class TestFromConfigDataKeys:
     def test_data_keys_input_mask(self):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-15.0, 15.0)})]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-15.0, 15.0)})]
         pipe = Compose.from_config(specs, backend="kornia", data_keys=["input", "mask"])
         img = torch.rand(2, 3, 32, 32)
         mask = torch.randint(0, 3, (2, 1, 32, 32)).float()
@@ -290,7 +290,7 @@ class TestFromConfigInterpolationPadding:
     def test_interpolation_modes(self, interpolation):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-10.0, 10.0)})]
         pipe = Compose.from_config(specs, backend="kornia", interpolation=interpolation)
         x = torch.rand(2, 3, 32, 32)
         out = pipe(x)
@@ -300,7 +300,7 @@ class TestFromConfigInterpolationPadding:
     def test_padding_modes(self, padding_mode):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-10.0, 10.0)})]
         pipe = Compose.from_config(specs, backend="kornia", padding_mode=padding_mode)
         x = torch.rand(2, 3, 32, 32)
         out = pipe(x)
@@ -308,17 +308,17 @@ class TestFromConfigInterpolationPadding:
 
 
 class TestFromConfigUserWarning:
-    """UserWarning emitted when spec.p != 1.0 and the backend cannot set p= on the transform."""
+    """UserWarning emitted when spec.prob != 1.0 and the backend cannot set p= on the transform."""
 
     def test_p_not_applied_emits_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """UserWarning fires when p≠1.0 and backend transform has no settable p attribute."""
+        """UserWarning fires when prob≠1.0 and backend transform has no settable prob attribute."""
         import warnings
 
         import fuse_augmentations._resolver as resolver_mod
         from fuse_augmentations import Compose, TransformSpec
 
         class _NoPTransform:
-            """Mock: explicitly rejects p= kwarg, has no settable p attribute (slots)."""
+            """Mock: explicitly rejects p= kwarg, has no settable prob attribute (slots)."""
 
             __slots__ = ()
 
@@ -332,7 +332,7 @@ class TestFromConfigUserWarning:
         monkeypatch.setattr(resolver_mod, "resolve_op", _mock_resolve)
         monkeypatch.setattr(resolver_mod, "SUPPORTED_BACKENDS", frozenset({"mock_backend"}))
 
-        specs = [TransformSpec(op="hflip", params={}, p=0.5)]
+        specs = [TransformSpec(operation="hflip", params={}, prob=0.5)]
         with warnings.catch_warnings(record=True) as recorded:
             warnings.simplefilter("always")
             with contextlib.suppress(ValueError, Exception):
@@ -353,6 +353,6 @@ class TestFromConfigBackendGap:
         pytest.importorskip("torchvision")
         from fuse_augmentations import Compose, TransformSpec
 
-        specs = [TransformSpec(op="rotation90", params={}, p=1.0)]
-        with pytest.raises(ValueError, match="does not support op"):
+        specs = [TransformSpec(operation="rotation90", params={}, prob=1.0)]
+        with pytest.raises(ValueError, match="does not support op_name"):
             Compose.from_config(specs, backend="torchvision")

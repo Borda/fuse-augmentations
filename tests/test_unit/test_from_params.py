@@ -44,7 +44,7 @@ class TestFromParamsRotation:
     """Rotation parameter produces valid output."""
 
     def test_rotation_shape_preserved(self):
-        """from_params(rotation=(-30, 30)) preserves (B, C, H, W) shape."""
+        """from_params(rotation=(-30, 30)) preserves (batch_size, num_channels, height, width) shape."""
         pipe = Compose.from_params(rotation=(-30.0, 30.0))
         x = torch.rand(2, 3, 16, 16)
         out = pipe(x)
@@ -69,7 +69,7 @@ class TestFromParamsScale:
     """Scale parameter produces valid output."""
 
     def test_scale_shape_preserved(self):
-        """from_params(scale=(0.8, 1.2)) preserves (B, C, H, W) shape."""
+        """from_params(scale=(0.8, 1.2)) preserves (batch_size, num_channels, height, width) shape."""
         pipe = Compose.from_params(scale=(0.8, 1.2))
         x = torch.rand(2, 3, 16, 16)
         out = pipe(x)

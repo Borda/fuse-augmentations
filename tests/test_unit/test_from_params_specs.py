@@ -19,70 +19,70 @@ class TestFromParamsSpecsBasic:
     def test_backend_free_single_spec(self):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=1.0)]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=1.0)]
         pipe = Compose.from_params(specs=specs)
-        x = torch.rand(2, 3, 64, 64)
-        out = pipe(x)
+        image = torch.rand(2, 3, 64, 64)
+        out = pipe(image)
         assert out.shape == torch.Size([2, 3, 64, 64])
 
     def test_multiple_specs_different_ops(self):
         from fuse_augmentations import TransformSpec
 
         specs = [
-            TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=1.0),
-            TransformSpec(op="hflip", params={}, p=0.5),
+            TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=1.0),
+            TransformSpec(operation="hflip", params={}, prob=0.5),
         ]
         pipe = Compose.from_params(specs=specs)
-        x = torch.rand(2, 3, 64, 64)
-        out = pipe(x)
+        image = torch.rand(2, 3, 64, 64)
+        out = pipe(image)
         assert out.shape == torch.Size([2, 3, 64, 64])
 
     def test_specs_with_hflip_and_vflip(self):
         from fuse_augmentations import TransformSpec
 
         specs = [
-            TransformSpec(op="hflip", params={}, p=0.5),
-            TransformSpec(op="vflip", params={}, p=0.5),
+            TransformSpec(operation="hflip", params={}, prob=0.5),
+            TransformSpec(operation="vflip", params={}, prob=0.5),
         ]
         pipe = Compose.from_params(specs=specs)
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
-        assert out.shape == x.shape
+        image = torch.rand(2, 3, 32, 32)
+        out = pipe(image)
+        assert out.shape == image.shape
 
     def test_specs_with_scale(self):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="scale", params={"factor": (0.8, 1.2)}, p=1.0)]
+        specs = [TransformSpec(operation="scale", params={"factor": (0.8, 1.2)}, prob=1.0)]
         pipe = Compose.from_params(specs=specs)
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
-        assert out.shape == x.shape
+        image = torch.rand(2, 3, 32, 32)
+        out = pipe(image)
+        assert out.shape == image.shape
 
     def test_specs_with_shear(self):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="shear_x", params={"degrees": (-10.0, 10.0)}, p=1.0)]
+        specs = [TransformSpec(operation="shear_x", params={"degrees": (-10.0, 10.0)}, prob=1.0)]
         pipe = Compose.from_params(specs=specs)
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
-        assert out.shape == x.shape
+        image = torch.rand(2, 3, 32, 32)
+        out = pipe(image)
+        assert out.shape == image.shape
 
     def test_returns_fused_compose(self):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-10.0, 10.0)})]
         pipe = Compose.from_params(specs=specs)
         assert isinstance(pipe, FusedCompose), f"Expected FusedCompose, got {type(pipe).__name__}"
 
     def test_rotation_spec_with_degrees_param(self):
-        """Verify that op='rotation' with params={'degrees': (-30, 30)} is accepted."""
+        """Verify that operation='rotation' with params={'degrees': (-30, 30)} is accepted."""
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.8)]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=0.8)]
         pipe = Compose.from_params(specs=specs)
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
-        assert out.shape == x.shape
+        image = torch.rand(2, 3, 32, 32)
+        out = pipe(image)
+        assert out.shape == image.shape
 
 
 class TestFromParamsSpecsEmpty:
@@ -90,10 +90,10 @@ class TestFromParamsSpecsEmpty:
 
     def test_empty_specs_identity_output(self):
         pipe = Compose.from_params(specs=[])
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
-        assert out.shape == x.shape
-        torch.testing.assert_close(out, x, atol=1e-5, rtol=1e-5)
+        image = torch.rand(2, 3, 32, 32)
+        out = pipe(image)
+        assert out.shape == image.shape
+        torch.testing.assert_close(out, image, atol=1e-5, rtol=1e-5)
 
     def test_empty_specs_returns_fused_compose(self):
         pipe = Compose.from_params(specs=[])
@@ -105,9 +105,9 @@ class TestFromParamsSpecsNone:
 
     def test_specs_none_with_rotation(self):
         pipe = Compose.from_params(specs=None, rotation=(-30.0, 30.0))
-        x = torch.rand(2, 3, 32, 32)
-        out = pipe(x)
-        assert out.shape == x.shape
+        image = torch.rand(2, 3, 32, 32)
+        out = pipe(image)
+        assert out.shape == image.shape
 
     def test_specs_none_with_hflip(self):
         pipe = Compose.from_params(specs=None, hflip_p=1.0)
@@ -141,7 +141,7 @@ class TestFromParamsSpecsMutualExclusion:
     def test_specs_with_kwarg_raises_value_error(self, kwargs):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-10.0, 10.0)})]
         with pytest.raises(ValueError, match="mutually exclusive"):
             Compose.from_params(specs=specs, **kwargs)
 
@@ -156,7 +156,7 @@ class TestFromParamsSpecsMutualExclusion:
     def test_specs_with_non_default_flip_kwarg_still_raises_value_error(self, kwargs):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-10.0, 10.0)})]
         with pytest.raises(ValueError, match="mutually exclusive"):
             Compose.from_params(specs=specs, **kwargs)
 
@@ -167,30 +167,30 @@ class TestFromParamsSpecsProbability:
     def test_p_zero_never_applied(self):
         from fuse_augmentations import TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-90.0, 90.0)}, p=0.0)]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-90.0, 90.0)}, prob=0.0)]
         pipe = Compose.from_params(specs=specs)
-        x = torch.rand(2, 3, 64, 64)
-        out = pipe(x)
-        assert torch.allclose(out, x, atol=1e-5), "p=0.0 transform should never be applied"
+        image = torch.rand(2, 3, 64, 64)
+        out = pipe(image)
+        assert torch.allclose(out, image, atol=1e-5), "prob=0.0 transform should never be applied"
 
     def test_p_one_always_applied(self):
         from fuse_augmentations import TransformSpec
 
         torch.manual_seed(42)
-        specs = [TransformSpec(op="hflip", params={}, p=1.0)]
+        specs = [TransformSpec(operation="hflip", params={}, prob=1.0)]
         pipe = Compose.from_params(specs=specs)
         x = torch.rand(2, 3, 32, 32)
         out = pipe(x)
         expected = x.flip(dims=[3])
-        assert torch.allclose(out, expected, atol=1e-5), "p=1.0 hflip must always flip"
+        assert torch.allclose(out, expected, atol=1e-5), "prob=1.0 hflip must always flip"
 
     def test_mixed_probabilities_shape_preserved(self):
         from fuse_augmentations import TransformSpec
 
         specs = [
-            TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=0.5),
-            TransformSpec(op="hflip", params={}, p=0.3),
-            TransformSpec(op="vflip", params={}, p=0.7),
+            TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=0.5),
+            TransformSpec(operation="hflip", params={}, prob=0.3),
+            TransformSpec(operation="vflip", params={}, prob=0.7),
         ]
         pipe = Compose.from_params(specs=specs)
         x = torch.rand(4, 3, 32, 32)
@@ -201,13 +201,13 @@ class TestFromParamsSpecsProbability:
         from fuse_augmentations import TransformSpec
 
         specs = [
-            TransformSpec(op="rotation", params={"degrees": (-90.0, 90.0)}, p=0.0),
-            TransformSpec(op="hflip", params={}, p=0.0),
+            TransformSpec(operation="rotation", params={"degrees": (-90.0, 90.0)}, prob=0.0),
+            TransformSpec(operation="hflip", params={}, prob=0.0),
         ]
         pipe = Compose.from_params(specs=specs)
         x = torch.rand(2, 3, 32, 32)
         out = pipe(x)
-        assert torch.allclose(out, x, atol=1e-5), "All p=0.0 should produce identity"
+        assert torch.allclose(out, x, atol=1e-5), "All prob=0.0 should produce identity"
 
 
 class TestFromParamsSpecsRegression:
@@ -263,7 +263,9 @@ class TestFromParamsSpecsShapeEquivalence:
         from fuse_augmentations import TransformSpec
 
         pipe_kw = Compose.from_params(rotation=(-30.0, 30.0))
-        pipe_spec = Compose.from_params(specs=[TransformSpec(op="rotation", params={"degrees": (-30.0, 30.0)}, p=1.0)])
+        pipe_spec = Compose.from_params(
+            specs=[TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=1.0)]
+        )
         x = torch.rand(2, 3, 32, 32)
         out_kw = pipe_kw(x)
         out_spec = pipe_spec(x)
@@ -273,7 +275,7 @@ class TestFromParamsSpecsShapeEquivalence:
         from fuse_augmentations import TransformSpec
 
         pipe_kw = Compose.from_params(hflip_p=0.5)
-        pipe_spec = Compose.from_params(specs=[TransformSpec(op="hflip", params={}, p=0.5)])
+        pipe_spec = Compose.from_params(specs=[TransformSpec(operation="hflip", params={}, prob=0.5)])
         x = torch.rand(2, 3, 32, 32)
         out_kw = pipe_kw(x)
         out_spec = pipe_spec(x)
@@ -287,33 +289,33 @@ class TestFromParamsSpecsValidation:
         from fuse_augmentations import TransformSpec
 
         with pytest.raises(ValueError, match="Missing required range"):
-            Compose.from_params(specs=[TransformSpec(op="rotation", params={})])
+            Compose.from_params(specs=[TransformSpec(operation="rotation", params={})])
 
     def test_invalid_rotation_range_type_raises_value_error(self):
         from fuse_augmentations import TransformSpec
 
         with pytest.raises(ValueError, match="Invalid range"):
-            Compose.from_params(specs=[TransformSpec(op="rotation", params={"degrees": [-30.0, 30.0]})])
+            Compose.from_params(specs=[TransformSpec(operation="rotation", params={"degrees": [-30.0, 30.0]})])
 
 
 class TestFromParamsSpecsUnsupportedOp:
-    """from_params(specs=...) with ops not in the backend-free op set."""
+    """from_params(specs=...) with operations not in the backend-free set."""
 
     def test_unsupported_op_raises_value_error(self) -> None:
         """Perspective is valid in from_config but not in backend-free from_params."""
 
         from fuse_augmentations import Compose, TransformSpec
 
-        specs = [TransformSpec(op="perspective", params={"distortion_scale": 0.5}, p=1.0)]
-        with pytest.raises(ValueError, match="Unsupported op for from_params"):
+        specs = [TransformSpec(operation="perspective", params={"distortion_scale": 0.5}, prob=1.0)]
+        with pytest.raises(ValueError, match="Unsupported op_name for from_params"):
             Compose.from_params(specs=specs)
 
     def test_affine_not_supported_in_backend_free_raises(self) -> None:
-        """Affine op is not directly supported in backend-free mode."""
+        """Affine operation is not directly supported in backend-free mode."""
         from fuse_augmentations import Compose, TransformSpec
 
-        specs = [TransformSpec(op="affine", params={}, p=1.0)]
-        with pytest.raises(ValueError, match="Unsupported op for from_params"):
+        specs = [TransformSpec(operation="affine", params={}, prob=1.0)]
+        with pytest.raises(ValueError, match="Unsupported op_name for from_params"):
             Compose.from_params(specs=specs)
 
 
@@ -324,7 +326,7 @@ class TestFromParamsSpecsOrderingWithReservedParams:
         """Brightness check (NotImplementedError) fires before specs mutual-exclusivity (ValueError)."""
         from fuse_augmentations import Compose, TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-10.0, 10.0)})]
         with pytest.raises(NotImplementedError):
             Compose.from_params(specs=specs, brightness=0.5)
 
@@ -332,6 +334,6 @@ class TestFromParamsSpecsOrderingWithReservedParams:
         """Contrast check (NotImplementedError) fires before specs mutual-exclusivity (ValueError)."""
         from fuse_augmentations import Compose, TransformSpec
 
-        specs = [TransformSpec(op="rotation", params={"degrees": (-10.0, 10.0)})]
+        specs = [TransformSpec(operation="rotation", params={"degrees": (-10.0, 10.0)})]
         with pytest.raises(NotImplementedError):
             Compose.from_params(specs=specs, contrast=0.3)

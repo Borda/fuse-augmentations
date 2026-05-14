@@ -17,7 +17,7 @@ def _full_adapter_methods():
     return {
         "category": lambda self, transform: TransformCategory.SPATIAL_KERNEL,
         "sample_params": lambda self, transform, input_shape, device: {},
-        "build_matrix": lambda self, transform, params, H, W: torch.eye(3).unsqueeze(0),
+        "build_matrix": lambda self, transform, params, height, width: torch.eye(3).unsqueeze(0),
         "exact_flip_dims": lambda self, transform: [],
         "exact_apply": lambda self, transform, image: image,
         "call_nonfused": lambda self, transform, image, **kwargs: image,
@@ -49,7 +49,7 @@ class TestTransformCategory:
 
     def test_member_names(self):
         """TransformCategory member names match the spec."""
-        assert {m.name for m in TransformCategory} == {
+        assert {member.name for member in TransformCategory} == {
             "GEOMETRIC_INTERP",
             "GEOMETRIC_EXACT",
             "POINTWISE",
@@ -86,7 +86,7 @@ class TestReorderPolicy:
 
     def test_member_names(self):
         """ReorderPolicy member names match the spec."""
-        assert {m.name for m in ReorderPolicy} == {"NONE", "POINTWISE", "AGGRESSIVE"}
+        assert {member.name for member in ReorderPolicy} == {"NONE", "POINTWISE", "AGGRESSIVE"}
 
     @pytest.mark.parametrize("member", list(ReorderPolicy))
     def test_value_is_str(self, member):
@@ -195,10 +195,10 @@ class TestTransformAdapterProtocol:
     """TransformAdapter @runtime_checkable Protocol -- isinstance contract."""
 
     def test_conforming_class_passes_isinstance(self):
-        """A class implementing all seven methods satisfies TransformAdapter."""
+        """Albu class implementing all seven methods satisfies TransformAdapter."""
         methods = _full_adapter_methods()
-        _DummyAdapter = type("_DummyAdapter", (), methods)
-        assert isinstance(_DummyAdapter(), TransformAdapter), (
+        DummyAdapter = type("DummyAdapter", (), methods)
+        assert isinstance(DummyAdapter(), TransformAdapter), (
             "An object with all seven required methods should be an instance of TransformAdapter"
         )
 
@@ -218,8 +218,8 @@ class TestTransformAdapterProtocol:
         """Dropping any single required method makes the object fail the Protocol check."""
         methods = _full_adapter_methods()
         del methods[missing_method]
-        _Incomplete = type("_Incomplete", (), methods)
-        assert not isinstance(_Incomplete(), TransformAdapter), (
+        IncompleteAdapter = type("IncompleteAdapter", (), methods)
+        assert not isinstance(IncompleteAdapter(), TransformAdapter), (
             f"Object missing '{missing_method}' should not be an instance of TransformAdapter"
         )
 

@@ -11,7 +11,7 @@ Measures the geometric mean of native/fused boost ratios across 45 cases:
 
 - **d-group AGGRESSIVE** (15 cases): interleaved geo+colour chains x 3 backends,
   measured under ``ReorderPolicy.AGGRESSIVE`` so all geo ops are grouped before
-  fusion. Theoretical ceiling = ``nb_geom``x (bounded in practice by colour-op time).
+  fusion. Theoretical ceiling = ``nb_geom``x (bounded in practice by colour operation time).
 
 Score = geometric_mean(all 45 boost ratios).
 Direction: higher is better.
@@ -49,30 +49,30 @@ import torchvision.transforms.v2 as tv
 from fuse_aug import Compose as FuseCompose
 from fuse_aug import ReorderPolicy
 
-WARMUP: int = 10
-REPS: int = 50
-_IMG: torch.Tensor = torch.zeros(1, 3, 256, 256)
-_IMG_NP: np.ndarray = np.zeros((256, 256, 3), dtype=np.uint8)
+WARMUP_REPS: int = 10
+NUM_REPEATS: int = 50
+_IMAGE_TENSOR: torch.Tensor = torch.zeros(1, 3, 256, 256)
+_IMAGE_NDARRAY: np.ndarray = np.zeros((256, 256, 3), dtype=np.uint8)
 
 
-def _bench(fn: object) -> float:
+def _bench(func: object) -> float:
     """Return mean ms per call for BCHW tensor input (warmup + REPS timed repetitions)."""
-    for _ in range(WARMUP):
-        fn(_IMG)  # type: ignore[operator]
-    t0 = time.perf_counter()
-    for _ in range(REPS):
-        fn(_IMG)  # type: ignore[operator]
-    return (time.perf_counter() - t0) / REPS * 1000.0
+    for _ in range(WARMUP_REPS):
+        func(_IMAGE_TENSOR)  # type: ignore[operator]
+    t_start = time.perf_counter()
+    for _ in range(NUM_REPEATS):
+        func(_IMAGE_TENSOR)  # type: ignore[operator]
+    return (time.perf_counter() - t_start) / NUM_REPEATS * 1000.0
 
 
-def _bench_albu(fn: object) -> float:
+def _bench_albu(func: object) -> float:
     """Return mean ms per call for Albumentations dict-input (warmup + REPS timed repetitions)."""
-    for _ in range(WARMUP):
-        fn(image=_IMG_NP)  # type: ignore[operator]
-    t0 = time.perf_counter()
-    for _ in range(REPS):
-        fn(image=_IMG_NP)  # type: ignore[operator]
-    return (time.perf_counter() - t0) / REPS * 1000.0
+    for _ in range(WARMUP_REPS):
+        func(image=_IMAGE_NDARRAY)  # type: ignore[operator]
+    t_start = time.perf_counter()
+    for _ in range(NUM_REPEATS):
+        func(image=_IMAGE_NDARRAY)  # type: ignore[operator]
+    return (time.perf_counter() - t_start) / NUM_REPEATS * 1000.0
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ _CASES: list[tuple[str, int, list, list]] = [
             tv.RandomRotation(5),
         ],
     ),
-    # b05: 5 pure-warp ops (no flips, all p=1.0) — fixed-cost architecture demo.
+    # b05: 5 pure-warp ops (no flips, all prob=1.0) — fixed-cost architecture demo.
     (
         "b05_geom_5_warp",
         5,
@@ -277,68 +277,68 @@ def main() -> None:
     boosts: list[float] = []
 
     # ── a-group + b-group: Kornia and TorchVision ────────────────────────────
-    for _label, _nb_geom, k_tfms, tv_tfms in _CASES:
+    for _label, _num_geometric_ops, k_tfms, tv_tfms in _CASES:
         for _backend, tfms, native_fn in [
-            ("kornia", k_tfms, lambda t: K.AugmentationSequential(*t)),
-            ("torchvision", tv_tfms, lambda t: tv.Compose(t)),
+            ("kornia", k_tfms, lambda transform_list: K.AugmentationSequential(*transform_list)),
+            ("torchvision", tv_tfms, lambda transform_list: tv.Compose(transform_list)),
         ]:
             native = native_fn(copy.deepcopy(tfms))
             fused = FuseCompose(copy.deepcopy(tfms))
-            native(_IMG)
-            fused(_IMG)
-            n_ms = _bench(native)
-            f_ms = _bench(fused)
-            boosts.append(n_ms / f_ms if f_ms > 0 else 0.0)
+            native(_IMAGE_TENSOR)
+            fused(_IMAGE_TENSOR)
+            native_ms = _bench(native)
+            fused_ms = _bench(fused)
+            boosts.append(native_ms / fused_ms if fused_ms > 0 else 0.0)
 
     # ── a-group + b-group: Albumentations (dict-input path) ─────────────────
-    for _label, _nb_geom, albu_tfms in _ALBU_CASES:
+    for _label, _num_geometric_ops, albu_tfms in _ALBU_CASES:
         native = A.Compose(copy.deepcopy(albu_tfms))
         fused = FuseCompose(copy.deepcopy(albu_tfms))
-        native(image=_IMG_NP)
-        fused(image=_IMG_NP)
-        n_ms = _bench_albu(native)
-        f_ms = _bench_albu(fused)
-        boosts.append(n_ms / f_ms if f_ms > 0 else 0.0)
+        native(image=_IMAGE_NDARRAY)
+        fused(image=_IMAGE_NDARRAY)
+        native_ms = _bench_albu(native)
+        fused_ms = _bench_albu(fused)
+        boosts.append(native_ms / fused_ms if fused_ms > 0 else 0.0)
 
     # ── d-group AGGRESSIVE: Kornia, TorchVision, Albumentations ─────────────
-    for _label, _nb_geom, alb_tfms, k_tfms, tv_tfms in _MIXED_AGR_CASES:
+    for _label, _num_geometric_ops, alb_tfms, k_tfms, tv_tfms in _MIXED_AGR_CASES:
         # Kornia
         native_k = K.AugmentationSequential(*copy.deepcopy(k_tfms))
         fused_k = FuseCompose(copy.deepcopy(k_tfms), reorder=ReorderPolicy.AGGRESSIVE)
-        native_k(_IMG)
-        fused_k(_IMG)
-        n_ms = _bench(native_k)
-        f_ms = _bench(fused_k)
-        boosts.append(n_ms / f_ms if f_ms > 0 else 0.0)
+        native_k(_IMAGE_TENSOR)
+        fused_k(_IMAGE_TENSOR)
+        native_ms = _bench(native_k)
+        fused_ms = _bench(fused_k)
+        boosts.append(native_ms / fused_ms if fused_ms > 0 else 0.0)
 
         # TorchVision
         native_tv = tv.Compose(copy.deepcopy(tv_tfms))
         fused_tv = FuseCompose(copy.deepcopy(tv_tfms), reorder=ReorderPolicy.AGGRESSIVE)
-        native_tv(_IMG)
-        fused_tv(_IMG)
-        n_ms = _bench(native_tv)
-        f_ms = _bench(fused_tv)
-        boosts.append(n_ms / f_ms if f_ms > 0 else 0.0)
+        native_tv(_IMAGE_TENSOR)
+        fused_tv(_IMAGE_TENSOR)
+        native_ms = _bench(native_tv)
+        fused_ms = _bench(fused_tv)
+        boosts.append(native_ms / fused_ms if fused_ms > 0 else 0.0)
 
         # Albumentations
         native_alb = A.Compose(copy.deepcopy(alb_tfms))
         fused_alb = FuseCompose(copy.deepcopy(alb_tfms), reorder=ReorderPolicy.AGGRESSIVE)
-        native_alb(image=_IMG_NP)
-        fused_alb(image=_IMG_NP)
-        n_ms = _bench_albu(native_alb)
-        f_ms = _bench_albu(fused_alb)
-        boosts.append(n_ms / f_ms if f_ms > 0 else 0.0)
+        native_alb(image=_IMAGE_NDARRAY)
+        fused_alb(image=_IMAGE_NDARRAY)
+        native_ms = _bench_albu(native_alb)
+        fused_ms = _bench_albu(fused_alb)
+        boosts.append(native_ms / fused_ms if fused_ms > 0 else 0.0)
 
     score = statistics.geometric_mean(boosts)
 
-    # Theoretical ceiling: geomean(nb_geom per case across all backends).
-    # Each sequence contributes its nb_geom once per backend (3 backends total).
-    all_nb_geom = (
-        [nb for _, nb, _, _ in _CASES] * 2  # kornia + torchvision
-        + [nb for _, nb, _ in _ALBU_CASES]  # albumentations
-        + [nb for _, nb, _, _, _ in _MIXED_AGR_CASES] * 3  # d-group: k + tv + alb
+    # Theoretical ceiling: geomean(num_geometric_ops per case across all backends).
+    # Each sequence contributes its num_geometric_ops once per backend (3 backends total).
+    all_num_geometric_ops = (
+        [num_geometric_ops for _, num_geometric_ops, _, _ in _CASES] * 2  # kornia + torchvision
+        + [num_geometric_ops for _, num_geometric_ops, _ in _ALBU_CASES]  # albumentations
+        + [num_geometric_ops for _, num_geometric_ops, _, _, _ in _MIXED_AGR_CASES] * 3  # d-group: k + tv + alb
     )
-    theoretical_target = statistics.geometric_mean(all_nb_geom)
+    theoretical_target = statistics.geometric_mean(all_num_geometric_ops)
 
     print(f"real_score={score:.4f}")
     print(f"theoretical_target={theoretical_target:.4f}")

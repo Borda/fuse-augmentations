@@ -174,9 +174,9 @@ class TestSampleParamsRotation:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_angle_rad_shape(self, adapter):
-        B = 4
-        params = adapter.sample_params(_StubRotation(), (B, 3, 64, 64), torch.device("cpu"))
-        assert params["angle_rad"].shape == (B,)
+        batch_size = 4
+        params = adapter.sample_params(_StubRotation(), (batch_size, 3, 64, 64), torch.device("cpu"))
+        assert params["angle_rad"].shape == (batch_size,)
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_angle_rad_dtype(self, adapter):
@@ -203,9 +203,9 @@ class TestSampleParamsAffine:
     @pytest.mark.usefixtures("_register_stubs")
     @pytest.mark.parametrize("key", ["angle_rad", "translate_x", "translate_y", "scale", "shear_x_rad", "shear_y_rad"])
     def test_affine_param_shapes(self, adapter, key):
-        B = 3
-        params = adapter.sample_params(_StubAffine(), (B, 3, 64, 64), torch.device("cpu"))
-        assert params[key].shape == (B,)
+        batch_size = 3
+        params = adapter.sample_params(_StubAffine(), (batch_size, 3, 64, 64), torch.device("cpu"))
+        assert params[key].shape == (batch_size,)
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_affine_values_from_stub(self, adapter):
@@ -246,10 +246,10 @@ class TestBuildMatrixRotation:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_shape(self, adapter):
-        B, H, W = 3, 64, 64
-        params = adapter.sample_params(_StubRotation(), (B, 3, H, W), torch.device("cpu"))
-        mtx = adapter.build_matrix(_StubRotation(), params, H, W)
-        assert mtx.shape == (B, 3, 3)
+        batch_size, height, width = 3, 64, 64
+        params = adapter.sample_params(_StubRotation(), (batch_size, 3, height, width), torch.device("cpu"))
+        mtx = adapter.build_matrix(_StubRotation(), params, height, width)
+        assert mtx.shape == (batch_size, 3, 3)
 
 
 class TestBuildMatrixAffine:
@@ -257,10 +257,10 @@ class TestBuildMatrixAffine:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_shape(self, adapter):
-        B, H, W = 2, 64, 64
-        params = adapter.sample_params(_StubAffine(), (B, 3, H, W), torch.device("cpu"))
-        mtx = adapter.build_matrix(_StubAffine(), params, H, W)
-        assert mtx.shape == (B, 3, 3)
+        batch_size, height, width = 2, 64, 64
+        params = adapter.sample_params(_StubAffine(), (batch_size, 3, height, width), torch.device("cpu"))
+        mtx = adapter.build_matrix(_StubAffine(), params, height, width)
+        assert mtx.shape == (batch_size, 3, 3)
 
 
 class TestBuildMatrixIdentity:
@@ -269,17 +269,17 @@ class TestBuildMatrixIdentity:
     @pytest.mark.usefixtures("_register_stubs")
     def test_identity_affine_params(self, adapter):
         """Angle=0, scale=1, shear=0, translate=0 -> identity."""
-        B, H, W = 2, 64, 64
+        batch_size, height, width = 2, 64, 64
         params = {
-            "angle_rad": torch.zeros(B),
-            "translate_x": torch.zeros(B),
-            "translate_y": torch.zeros(B),
-            "scale": torch.ones(B),
-            "shear_x_rad": torch.zeros(B),
-            "shear_y_rad": torch.zeros(B),
+            "angle_rad": torch.zeros(batch_size),
+            "translate_x": torch.zeros(batch_size),
+            "translate_y": torch.zeros(batch_size),
+            "scale": torch.ones(batch_size),
+            "shear_x_rad": torch.zeros(batch_size),
+            "shear_y_rad": torch.zeros(batch_size),
         }
-        mtx = adapter.build_matrix(_StubAffine(), params, H, W)
-        expected = torch.eye(3).unsqueeze(0).expand(B, -1, -1)
+        mtx = adapter.build_matrix(_StubAffine(), params, height, width)
+        expected = torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1)
         assert torch.allclose(mtx, expected, atol=1e-5), (
             f"Expected identity, max diff: {(mtx - expected).abs().max().item():.2e}"
         )
@@ -290,14 +290,14 @@ class TestBuildMatrixHFlip:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_hflip_first_row(self, adapter):
-        """Hflip matrix first row is [-1, 0, W-1]."""
-        B, H, W = 2, 32, 64
-        params = {"_batch_size": torch.tensor([B], dtype=torch.int64)}
-        mtx = adapter.build_matrix(_StubHFlip(), params, H, W)
-        for i in range(B):
-            assert mtx[i, 0, 0].item() == pytest.approx(-1.0)
-            assert mtx[i, 0, 1].item() == pytest.approx(0.0)
-            assert mtx[i, 0, 2].item() == pytest.approx(float(W - 1))
+        """Hflip matrix first row is [-1, 0, width-1]."""
+        batch_size, height, width = 2, 32, 64
+        params = {"_batch_size": torch.tensor([batch_size], dtype=torch.int64)}
+        mtx = adapter.build_matrix(_StubHFlip(), params, height, width)
+        for idx in range(batch_size):
+            assert mtx[idx, 0, 0].item() == pytest.approx(-1.0)
+            assert mtx[idx, 0, 1].item() == pytest.approx(0.0)
+            assert mtx[idx, 0, 2].item() == pytest.approx(float(width - 1))
 
 
 class TestBuildMatrixVFlip:
@@ -305,14 +305,14 @@ class TestBuildMatrixVFlip:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_vflip_second_row(self, adapter):
-        """Vflip matrix second row is [0, -1, H-1]."""
-        B, H, W = 2, 64, 32
-        params = {"_batch_size": torch.tensor([B], dtype=torch.int64)}
-        mtx = adapter.build_matrix(_StubVFlip(), params, H, W)
-        for i in range(B):
-            assert mtx[i, 1, 0].item() == pytest.approx(0.0)
-            assert mtx[i, 1, 1].item() == pytest.approx(-1.0)
-            assert mtx[i, 1, 2].item() == pytest.approx(float(H - 1))
+        """Vflip matrix second row is [0, -1, height-1]."""
+        batch_size, height, width = 2, 64, 32
+        params = {"_batch_size": torch.tensor([batch_size], dtype=torch.int64)}
+        mtx = adapter.build_matrix(_StubVFlip(), params, height, width)
+        for idx in range(batch_size):
+            assert mtx[idx, 1, 0].item() == pytest.approx(0.0)
+            assert mtx[idx, 1, 1].item() == pytest.approx(-1.0)
+            assert mtx[idx, 1, 2].item() == pytest.approx(float(height - 1))
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +347,7 @@ class TestBuildMatrixFallback:
 
     def test_unregistered_transform_returns_identity(self, adapter):
         """Unregistered transform with empty params returns (1, 3, 3) identity matrix."""
-        mtx = adapter.build_matrix(object(), {}, H=64, W=64)
+        mtx = adapter.build_matrix(object(), {}, 64, 64)
         assert mtx.shape == (1, 3, 3), f"Expected shape (1, 3, 3), got {mtx.shape}"
         expected = torch.eye(3).unsqueeze(0)
         torch.testing.assert_close(

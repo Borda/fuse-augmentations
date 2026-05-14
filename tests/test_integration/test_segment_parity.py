@@ -36,8 +36,8 @@ from fuse_augmentations.affine._segment import FusedAffineSegment  # noqa: E402
 
 pytestmark = pytest.mark.integration
 
-DEVICE = torch.device("cpu")
-DTYPE = torch.float32
+DEFAULT_DEVICE = torch.device("cpu")
+DEFAULT_DTYPE = torch.float32
 
 
 @pytest.fixture
@@ -51,38 +51,38 @@ def adapter():
 # ---------------------------------------------------------------------------
 
 
-def _hflip_fp_to_canonical(fp: dict) -> dict[str, torch.Tensor]:
+def _hflip_fp_to_canonical(forward_params: dict) -> dict[str, torch.Tensor]:
     """Convert RandomHorizontalFlip forward_parameters to canonical params."""
-    bsz = fp.get("batch_prob", torch.tensor([1])).shape[0]
-    return {"_batch_size": torch.tensor([bsz])}
+    batch_size = forward_params.get("batch_prob", torch.tensor([1])).shape[0]
+    return {"_batch_size": torch.tensor([batch_size])}
 
 
-def _vflip_fp_to_canonical(fp: dict) -> dict[str, torch.Tensor]:
+def _vflip_fp_to_canonical(forward_params: dict) -> dict[str, torch.Tensor]:
     """Convert RandomVerticalFlip forward_parameters to canonical params."""
-    bsz = fp.get("batch_prob", torch.tensor([1])).shape[0]
-    return {"_batch_size": torch.tensor([bsz])}
+    batch_size = forward_params.get("batch_prob", torch.tensor([1])).shape[0]
+    return {"_batch_size": torch.tensor([batch_size])}
 
 
-def _rotation_fp_to_canonical(fp: dict) -> dict[str, torch.Tensor]:
+def _rotation_fp_to_canonical(forward_params: dict) -> dict[str, torch.Tensor]:
     """Convert RandomRotation forward_parameters to canonical params."""
-    return {"angle_rad": -torch.deg2rad(fp["degrees"].to(DEVICE))}
+    return {"angle_rad": -torch.deg2rad(forward_params["degrees"].to(DEFAULT_DEVICE))}
 
 
-def _affine_fp_to_canonical(fp: dict) -> dict[str, torch.Tensor]:
+def _affine_fp_to_canonical(forward_params: dict) -> dict[str, torch.Tensor]:
     """Convert RandomAffine forward_parameters to canonical params."""
     params: dict[str, torch.Tensor] = {}
-    if "angle" in fp:
-        params["angle_rad"] = -torch.deg2rad(fp["angle"].to(DEVICE))
-    if "translations" in fp:
-        params["translate_x"] = fp["translations"][:, 0].to(DEVICE)
-        params["translate_y"] = fp["translations"][:, 1].to(DEVICE)
-    if "scale" in fp:
-        params["scale_x"] = fp["scale"][:, 0].to(DEVICE)
-        params["scale_y"] = fp["scale"][:, 1].to(DEVICE)
-    if "shear_x" in fp:
-        params["shear_x_rad"] = -torch.deg2rad(fp["shear_x"].to(DEVICE))
-    if "shear_y" in fp:
-        params["shear_y_rad"] = -torch.deg2rad(fp["shear_y"].to(DEVICE))
+    if "angle" in forward_params:
+        params["angle_rad"] = -torch.deg2rad(forward_params["angle"].to(DEFAULT_DEVICE))
+    if "translations" in forward_params:
+        params["translate_x"] = forward_params["translations"][:, 0].to(DEFAULT_DEVICE)
+        params["translate_y"] = forward_params["translations"][:, 1].to(DEFAULT_DEVICE)
+    if "scale" in forward_params:
+        params["scale_x"] = forward_params["scale"][:, 0].to(DEFAULT_DEVICE)
+        params["scale_y"] = forward_params["scale"][:, 1].to(DEFAULT_DEVICE)
+    if "shear_x" in forward_params:
+        params["shear_x_rad"] = -torch.deg2rad(forward_params["shear_x"].to(DEFAULT_DEVICE))
+    if "shear_y" in forward_params:
+        params["shear_y_rad"] = -torch.deg2rad(forward_params["shear_y"].to(DEFAULT_DEVICE))
     return params
 
 
@@ -94,29 +94,29 @@ _FP_CONVERTERS: dict[type, Callable[[dict], dict[str, torch.Tensor]]] = {
 }
 
 
-def _single_grid_sample_from_params(transforms, adapter, img, forward_params_list):
+def _single_grid_sample_from_params(transforms, adapter, image, forward_params_list):
     """Compose matrices from forward_parameters and apply one grid_sample.
 
-    This is the reference path: manually compose (B,3,3) matrices using
+    This is the reference path: manually compose (batch_size,3,3) matrices using
     the adapter, then invert+normalize+grid_sample in one pass -- identical
     to what FusedAffineSegment.forward() does, but with deterministic params.
 
     """
-    bsz, n_ch, height, width = img.shape
-    eye = torch.eye(3, device=img.device, dtype=img.dtype)
-    acc = eye.unsqueeze(0).expand(bsz, -1, -1).clone()
+    batch_size, num_channels, height, width = image.shape
+    mtx_identity = torch.eye(3, device=image.device, dtype=image.dtype)
+    mtx_acc = mtx_identity.unsqueeze(0).expand(batch_size, -1, -1).clone()
 
-    for t, fp in zip(transforms, forward_params_list, strict=True):
-        params = _FP_CONVERTERS.get(type(t), lambda _: {})(fp)
-        mtx_i = adapter.build_matrix(t, params, height, width)
-        if mtx_i.shape[0] == 1 and bsz > 1:
-            mtx_i = mtx_i.expand(bsz, -1, -1)
-        acc = matmul3x3(mtx_i, acc)
+    for transform, forward_params in zip(transforms, forward_params_list, strict=True):
+        params = _FP_CONVERTERS.get(type(transform), lambda _: {})(forward_params)
+        mtx = adapter.build_matrix(transform, params, height, width)
+        if mtx.shape[0] == 1 and batch_size > 1:
+            mtx = mtx.expand(batch_size, -1, -1)
+        mtx_acc = matmul3x3(mtx, mtx_acc)
 
-    mtx_inv = inv3x3(acc)
+    mtx_inv = inv3x3(mtx_acc)
     mtx_norm = normalize_matrix(mtx_inv, height, width)
-    grid = affine_grid(mtx_norm[:, :2, :], [bsz, n_ch, height, width], align_corners=True)
-    return grid_sample(img, grid, mode="bilinear", padding_mode="zeros", align_corners=True), acc
+    grid = affine_grid(mtx_norm[:, :2, :], [batch_size, num_channels, height, width], align_corners=True)
+    return grid_sample(image, grid, mode="bilinear", padding_mode="zeros", align_corners=True), mtx_acc
 
 
 class TestSingleTransformParity:
@@ -124,14 +124,14 @@ class TestSingleTransformParity:
 
     def test_random_rotation_parity(self, adapter):
         """RandomRotation fused path matches Kornia native within 1e-3."""
-        bsz, n_ch, height, width = 2, 3, 64, 64
-        img = torch.rand(bsz, n_ch, height, width)
+        batch_size, num_channels, height, width = 2, 3, 64, 64
+        image = torch.rand(batch_size, num_channels, height, width)
 
-        t = RandomRotation(degrees=45, p=1.0, align_corners=True)
-        fp = t.forward_parameters(torch.Size((bsz, n_ch, height, width)))
+        transform = RandomRotation(degrees=45, p=1.0, align_corners=True)
+        forward_params = transform.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
 
-        native_out = t(img, params=fp)
-        fused_out, _ = _single_grid_sample_from_params([t], adapter, img, [fp])
+        native_out = transform(image, params=forward_params)
+        fused_out, _ = _single_grid_sample_from_params([transform], adapter, image, [forward_params])
 
         assert torch.allclose(native_out, fused_out, atol=1e-3), (
             f"Rotation parity: max diff = {(native_out - fused_out).abs().max().item():.6f}"
@@ -139,14 +139,14 @@ class TestSingleTransformParity:
 
     def test_random_affine_scale_translate_parity(self, adapter):
         """RandomAffine with degrees=0 (scale + translate only) parity."""
-        bsz, n_ch, height, width = 2, 3, 64, 64
-        img = torch.rand(bsz, n_ch, height, width)
+        batch_size, num_channels, height, width = 2, 3, 64, 64
+        image = torch.rand(batch_size, num_channels, height, width)
 
-        t = RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.8, 1.2), p=1.0, align_corners=True)
-        fp = t.forward_parameters(torch.Size((bsz, n_ch, height, width)))
+        transform = RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.8, 1.2), p=1.0, align_corners=True)
+        forward_params = transform.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
 
-        native_out = t(img, params=fp)
-        fused_out, _ = _single_grid_sample_from_params([t], adapter, img, [fp])
+        native_out = transform(image, params=forward_params)
+        fused_out, _ = _single_grid_sample_from_params([transform], adapter, image, [forward_params])
 
         assert torch.allclose(native_out, fused_out, atol=1e-3), (
             f"Affine parity: max diff = {(native_out - fused_out).abs().max().item():.6f}"
@@ -154,14 +154,14 @@ class TestSingleTransformParity:
 
     def test_random_hflip_parity(self, adapter):
         """RandomHorizontalFlip fused path matches Kornia native within 1e-3."""
-        bsz, n_ch, height, width = 2, 3, 32, 32
-        img = torch.rand(bsz, n_ch, height, width)
+        batch_size, num_channels, height, width = 2, 3, 32, 32
+        image = torch.rand(batch_size, num_channels, height, width)
 
-        t = RandomHorizontalFlip(p=1.0)
-        fp = t.forward_parameters(torch.Size((bsz, n_ch, height, width)))
+        transform = RandomHorizontalFlip(p=1.0)
+        forward_params = transform.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
 
-        native_out = t(img, params=fp)
-        fused_out, _ = _single_grid_sample_from_params([t], adapter, img, [fp])
+        native_out = transform(image, params=forward_params)
+        fused_out, _ = _single_grid_sample_from_params([transform], adapter, image, [forward_params])
 
         assert torch.allclose(native_out, fused_out, atol=1e-3), (
             f"HFlip parity: max diff = {(native_out - fused_out).abs().max().item():.6f}"
@@ -169,14 +169,14 @@ class TestSingleTransformParity:
 
     def test_random_vflip_parity(self, adapter):
         """RandomVerticalFlip fused path matches Kornia native within 1e-3."""
-        bsz, n_ch, height, width = 2, 3, 32, 32
-        img = torch.rand(bsz, n_ch, height, width)
+        batch_size, num_channels, height, width = 2, 3, 32, 32
+        image = torch.rand(batch_size, num_channels, height, width)
 
-        t = RandomVerticalFlip(p=1.0)
-        fp = t.forward_parameters(torch.Size((bsz, n_ch, height, width)))
+        transform = RandomVerticalFlip(p=1.0)
+        forward_params = transform.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
 
-        native_out = t(img, params=fp)
-        fused_out, _ = _single_grid_sample_from_params([t], adapter, img, [fp])
+        native_out = transform(image, params=forward_params)
+        fused_out, _ = _single_grid_sample_from_params([transform], adapter, image, [forward_params])
 
         assert torch.allclose(native_out, fused_out, atol=1e-3), (
             f"VFlip parity: max diff = {(native_out - fused_out).abs().max().item():.6f}"
@@ -194,31 +194,33 @@ class TestTwoTransformParity:
         scale=(2.0,2.0) always gives 2.0x.
 
         """
-        bsz, n_ch, height, width = 2, 3, 64, 64
-        img = torch.rand(bsz, n_ch, height, width)
+        batch_size, num_channels, height, width = 2, 3, 64, 64
+        image = torch.rand(batch_size, num_channels, height, width)
 
         t_rot = RandomRotation(degrees=(45, 45), p=1.0, align_corners=True)
         t_scale = RandomAffine(degrees=0, scale=(2.0, 2.0), p=1.0, align_corners=True)
 
         # Fused path: FusedAffineSegment composes both transforms in one warp.
-        seg = FusedAffineSegment([t_rot, t_scale], adapter)
-        fused_out = seg(img)
+        segment = FusedAffineSegment([t_rot, t_scale], adapter)
+        fused_out = segment(image)
 
         # Reference path: sample the same deterministic params via forward_parameters,
         # then manually compose matrices + single grid_sample.
-        fp_rot = t_rot.forward_parameters(torch.Size((bsz, n_ch, height, width)))
-        fp_scale = t_scale.forward_parameters(torch.Size((bsz, n_ch, height, width)))
-        reference_out, mtx_ref = _single_grid_sample_from_params([t_rot, t_scale], adapter, img, [fp_rot, fp_scale])
+        fp_rot = t_rot.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
+        fp_scale = t_scale.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
+        reference_out, mtx_reference = _single_grid_sample_from_params(
+            [t_rot, t_scale], adapter, image, [fp_rot, fp_scale]
+        )
 
         assert torch.allclose(fused_out, reference_out, atol=1e-3), (
             f"Two-transform fused parity: max diff = {(fused_out - reference_out).abs().max().item():.6f}"
         )
 
         # Verify the composed matrix from the segment is sensible.
-        assert seg.last_matrix is not None
-        assert seg.last_matrix.shape == (bsz, 3, 3)
-        det = torch.det(mtx_ref)
-        assert (det.abs() > 0.1).all(), f"Unexpected near-zero det: {det}"
+        assert segment.last_matrix is not None
+        assert segment.last_matrix.shape == (batch_size, 3, 3)
+        determinant = torch.det(mtx_reference)
+        assert (determinant.abs() > 0.1).all(), f"Unexpected near-zero determinant: {determinant}"
 
 
 class TestThreeTransformChain:
@@ -226,30 +228,30 @@ class TestThreeTransformChain:
 
     def test_rotate_scale_hflip_composed(self, adapter):
         """Three-transform chain satisfies matrix associativity within 1e-5."""
-        bsz, n_ch, height, width = 2, 3, 64, 64
-        img = torch.rand(bsz, n_ch, height, width)
+        batch_size, num_channels, height, width = 2, 3, 64, 64
+        image = torch.rand(batch_size, num_channels, height, width)
 
         t_rot = RandomRotation(degrees=(30, 30), p=1.0, align_corners=True)
         t_scale = RandomAffine(degrees=0, scale=(1.5, 1.5), p=1.0, align_corners=True)
         t_hflip = RandomHorizontalFlip(p=1.0)
 
-        fp_rot = t_rot.forward_parameters(torch.Size((bsz, n_ch, height, width)))
-        fp_scale = t_scale.forward_parameters(torch.Size((bsz, n_ch, height, width)))
-        fp_hflip = t_hflip.forward_parameters(torch.Size((bsz, n_ch, height, width)))
+        fp_rot = t_rot.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
+        fp_scale = t_scale.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
+        fp_hflip = t_hflip.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
 
         transforms = [t_rot, t_scale, t_hflip]
         fps = [fp_rot, fp_scale, fp_hflip]
 
         # Full chain in one shot
-        full_out, mtx_full = _single_grid_sample_from_params(transforms, adapter, img, fps)
+        full_out, mtx_full = _single_grid_sample_from_params(transforms, adapter, image, fps)
 
         # Associativity: compose first two, then compose with third
         # (rot, scale) then hflip
-        _out_pair, mtx_pair = _single_grid_sample_from_params([t_rot, t_scale], adapter, img, [fp_rot, fp_scale])
+        _out_pair, mtx_pair = _single_grid_sample_from_params([t_rot, t_scale], adapter, image, [fp_rot, fp_scale])
         params_hflip = _hflip_fp_to_canonical(fp_hflip)
         mtx_hflip = adapter.build_matrix(t_hflip, params_hflip, height, width)
-        if mtx_hflip.shape[0] == 1 and bsz > 1:
-            mtx_hflip = mtx_hflip.expand(bsz, -1, -1)
+        if mtx_hflip.shape[0] == 1 and batch_size > 1:
+            mtx_hflip = mtx_hflip.expand(batch_size, -1, -1)
         mtx_composed_alt = matmul3x3(mtx_hflip, mtx_pair)
 
         # Matrices should match exactly (associativity of matmul3x3)
@@ -258,7 +260,7 @@ class TestThreeTransformChain:
         )
 
         # Output shape and valid pixel values
-        assert full_out.shape == (bsz, n_ch, height, width)
+        assert full_out.shape == (batch_size, num_channels, height, width)
         assert not torch.isnan(full_out).any()
 
 
@@ -266,9 +268,9 @@ class TestLongChain:
     """Verify five-transform chain determinism and inverse round-trip."""
 
     def test_five_transform_chain_error_bounded(self, adapter):
-        """Five-transform chain is deterministic and inv(M)@M recovers identity."""
-        bsz, n_ch, height, width = 2, 3, 64, 64
-        img = torch.rand(bsz, n_ch, height, width)
+        """Five-transform chain is deterministic and inv(matrix)@matrix recovers identity."""
+        batch_size, num_channels, height, width = 2, 3, 64, 64
+        image = torch.rand(batch_size, num_channels, height, width)
 
         transforms = [
             RandomRotation(degrees=(10, 10), p=1.0, align_corners=True),
@@ -278,26 +280,29 @@ class TestLongChain:
             RandomVerticalFlip(p=1.0),
         ]
 
-        fps = [t.forward_parameters(torch.Size((bsz, n_ch, height, width))) for t in transforms]
+        fps = [
+            transform.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
+            for transform in transforms
+        ]
 
-        fused_out, mtx_fused = _single_grid_sample_from_params(transforms, adapter, img, fps)
+        fused_out, mtx_fused = _single_grid_sample_from_params(transforms, adapter, image, fps)
 
         # Run same composition a second time to confirm determinism
-        fused_out2, _ = _single_grid_sample_from_params(transforms, adapter, img, fps)
+        fused_out2, _ = _single_grid_sample_from_params(transforms, adapter, image, fps)
 
         max_diff = (fused_out - fused_out2).abs().max().item()
         assert max_diff < 1e-6, f"Non-deterministic: max diff = {max_diff:.6f}"
 
-        # Verify composed matrix round-trip: inv(M) @ M ~ I
+        # Verify composed matrix round-trip: inv(matrix) @ matrix ~ I
         mtx_inv = inv3x3(mtx_fused)
         product = matmul3x3(mtx_inv, mtx_fused)
-        eye = torch.eye(3).unsqueeze(0).expand(bsz, -1, -1)
-        assert torch.allclose(product, eye, atol=1e-4), (
-            f"Round-trip error: max diff = {(product - eye).abs().max().item():.6f}"
+        mtx_identity = torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1)
+        assert torch.allclose(product, mtx_identity, atol=1e-4), (
+            f"Round-trip error: max diff = {(product - mtx_identity).abs().max().item():.6f}"
         )
 
         # Output sanity
-        assert fused_out.shape == (bsz, n_ch, height, width)
+        assert fused_out.shape == (batch_size, num_channels, height, width)
         assert not torch.isnan(fused_out).any()
         assert not torch.isinf(fused_out).any()
 
@@ -306,38 +311,38 @@ class TestLastMatrixValue:
     """Verify last_matrix shape, determinant, and inverse round-trip."""
 
     def test_shape_and_determinant(self, adapter):
-        """last_matrix has shape (B,3,3) with non-zero determinant."""
-        bsz, n_ch, height, width = 4, 3, 32, 32
-        img = torch.rand(bsz, n_ch, height, width)
+        """last_matrix has shape (batch_size,3,3) with non-zero determinant."""
+        batch_size, num_channels, height, width = 4, 3, 32, 32
+        image = torch.rand(batch_size, num_channels, height, width)
 
-        t = RandomRotation(degrees=30, p=1.0, align_corners=True)
-        seg = FusedAffineSegment([t], adapter)
-        seg(img)
+        transform = RandomRotation(degrees=30, p=1.0, align_corners=True)
+        segment = FusedAffineSegment([transform], adapter)
+        segment(image)
 
-        mtx = seg.last_matrix
+        mtx = segment.last_matrix
         assert mtx is not None
-        assert mtx.shape == (bsz, 3, 3)
+        assert mtx.shape == (batch_size, 3, 3)
 
         # Determinant should be non-zero for all samples
-        det = torch.det(mtx)
-        assert (det.abs() > 1e-6).all(), f"Near-zero determinant found: {det}"
+        determinant = torch.det(mtx)
+        assert (determinant.abs() > 1e-6).all(), f"Near-zero determinant found: {determinant}"
 
     def test_inverse_roundtrip(self, adapter):
         """inv(last_matrix) @ last_matrix recovers identity within 1e-5."""
-        bsz, n_ch, height, width = 4, 3, 32, 32
-        img = torch.rand(bsz, n_ch, height, width)
+        batch_size, num_channels, height, width = 4, 3, 32, 32
+        image = torch.rand(batch_size, num_channels, height, width)
 
-        t = RandomRotation(degrees=30, p=1.0, align_corners=True)
-        seg = FusedAffineSegment([t], adapter)
-        seg(img)
+        transform = RandomRotation(degrees=30, p=1.0, align_corners=True)
+        segment = FusedAffineSegment([transform], adapter)
+        segment(image)
 
-        mtx = seg.last_matrix
+        mtx = segment.last_matrix
         mtx_inv = inv3x3(mtx)
         product = matmul3x3(mtx_inv, mtx)
-        eye = torch.eye(3).unsqueeze(0).expand(bsz, -1, -1)
+        mtx_identity = torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1)
 
-        assert torch.allclose(product, eye, atol=1e-5), (
-            f"Round-trip failed: max diff = {(product - eye).abs().max().item():.6f}"
+        assert torch.allclose(product, mtx_identity, atol=1e-5), (
+            f"Round-trip failed: max diff = {(product - mtx_identity).abs().max().item():.6f}"
         )
 
 
@@ -346,15 +351,15 @@ class TestLastMatrixValue:
 def test_flip_segment_cuda_device(adapter):
     """Flip segment runs on CUDA without device-mismatch errors."""
     device = torch.device("cuda")
-    bsz, n_ch, height, width = 2, 3, 32, 32
-    img = torch.rand(bsz, n_ch, height, width, device=device)
+    batch_size, num_channels, height, width = 2, 3, 32, 32
+    image = torch.rand(batch_size, num_channels, height, width, device=device)
 
-    t = RandomHorizontalFlip(p=1.0)
-    seg = FusedAffineSegment([t], adapter)
-    out = seg(img)
+    transform = RandomHorizontalFlip(p=1.0)
+    segment = FusedAffineSegment([transform], adapter)
+    out = segment(image)
 
     assert out.device.type == "cuda"
-    assert out.shape == (bsz, n_ch, height, width)
+    assert out.shape == (batch_size, num_channels, height, width)
     assert not torch.isnan(out).any()
 
 
@@ -363,13 +368,13 @@ def test_flip_segment_cuda_device(adapter):
 def test_vflip_segment_cuda_device(adapter):
     """Vertical flip segment runs on CUDA without device-mismatch errors."""
     device = torch.device("cuda")
-    bsz, n_ch, height, width = 2, 3, 32, 32
-    img = torch.rand(bsz, n_ch, height, width, device=device)
+    batch_size, num_channels, height, width = 2, 3, 32, 32
+    image = torch.rand(batch_size, num_channels, height, width, device=device)
 
-    t = RandomVerticalFlip(p=1.0)
-    seg = FusedAffineSegment([t], adapter)
-    out = seg(img)
+    transform = RandomVerticalFlip(p=1.0)
+    segment = FusedAffineSegment([transform], adapter)
+    out = segment(image)
 
     assert out.device.type == "cuda"
-    assert out.shape == (bsz, n_ch, height, width)
+    assert out.shape == (batch_size, num_channels, height, width)
     assert not torch.isnan(out).any()

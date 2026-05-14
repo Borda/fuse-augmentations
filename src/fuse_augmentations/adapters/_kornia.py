@@ -119,14 +119,14 @@ class KorniaAdapter:
         input_shape: tuple[int, int, int, int],
         device: torch.device,
     ) -> dict[str, torch.Tensor]:
-        """Sample random parameters for a batch of B images.
+        """Sample random parameters for a batch of images.
 
         Calls Kornia's ``generate_parameters(input_shape)`` and converts
         to canonical units (radians, pixels, scale factors).
 
         Args:
             transform: A Kornia augmentation transform.
-            input_shape: ``(B, C, H, W)`` shape tuple.
+            input_shape: ``(batch_size, channels, height, width)`` shape tuple.
             device: Target device for parameter tensors.
 
         Returns:
@@ -135,20 +135,20 @@ class KorniaAdapter:
         """
         ttype = type(transform)
 
-        B, _C, _H, _W = input_shape  # noqa: N806
+        batch_size, _channels, _height, _width = input_shape
 
         # POINTWISE (non-linear color ops): no spatial matrix — return sentinel.
         if TRANSFORM_REGISTRY and ttype is _RandomSaturation:
-            return {"_batch_size": torch.tensor([B], device=device, dtype=torch.int64)}
+            return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
 
-        # Flip transforms have no sampled params — p-mask handles them.
+        # Flip transforms have no sampled params — prob-mask handles them.
         # Store batch metadata so build_matrix can construct the right shape.
         if TRANSFORM_REGISTRY and ttype in (
             _RandomHorizontalFlip,
             _RandomVerticalFlip,
         ):
             return {
-                "_batch_size": torch.tensor([B], device=device, dtype=torch.int64),
+                "_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64),
             }
 
         # Generate Kornia-native params
@@ -156,7 +156,7 @@ class KorniaAdapter:
 
         if TRANSFORM_REGISTRY and ttype is _RandomRotation90:
             return {
-                "_batch_size": torch.tensor([B], device=device, dtype=torch.int64),
+                "_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64),
                 "k90": params["times"].to(device=device, dtype=torch.int64) % 4,
             }
 
@@ -173,20 +173,20 @@ class KorniaAdapter:
             if "angle" in params:
                 result["angle_rad"] = -torch.deg2rad(params["angle"].to(device=device))
 
-            # Translation - already in pixels (B, 2); do NOT multiply by W/H
+            # Translation - already in pixels (batch_size, 2); do NOT multiply by width/height
             if "translations" in params:
-                trans = params["translations"].to(device=device)
-                result["translate_x"] = trans[:, 0]
-                result["translate_y"] = trans[:, 1]
+                translation_factors = params["translations"].to(device=device)
+                result["translate_x"] = translation_factors[:, 0]
+                result["translate_y"] = translation_factors[:, 1]
 
-            # Scale (B, 2) - factors
+            # Scale (batch_size, 2) - factors
             if "scale" in params:
-                sc = params["scale"].to(device=device)
-                result["scale_x"] = sc[:, 0]
-                result["scale_y"] = sc[:, 1]
+                scale_factors = params["scale"].to(device=device)
+                result["scale_x"] = scale_factors[:, 0]
+                result["scale_y"] = scale_factors[:, 1]
 
             # Shear - degrees -> radians; negate to match Kornia's sign convention.
-            # Kornia emits separate "shear_x" / "shear_y" keys (shape (B,)).
+            # Kornia emits separate "shear_x" / "shear_y" keys (shape (batch_size,)).
             if "shear_x" in params:
                 result["shear_x_rad"] = -torch.deg2rad(params["shear_x"].to(device=device))
             if "shear_y" in params:
@@ -195,7 +195,7 @@ class KorniaAdapter:
             return result
 
         if TRANSFORM_REGISTRY and ttype is _RandomShear:
-            # RandomShear emits "shear_x" / "shear_y" keys in degrees (shape (B,)).
+            # RandomShear emits "shear_x" / "shear_y" keys in degrees (shape (batch_size,)).
             # Same conversion as the RandomAffine shear path.
             result_shear: dict[str, torch.Tensor] = {}
             if "shear_x" in params:
@@ -205,7 +205,7 @@ class KorniaAdapter:
             return result_shear
 
         if TRANSFORM_REGISTRY and ttype is _RandomTranslate:
-            # RandomTranslate emits "translate_x" / "translate_y" in pixels (shape (B,)).
+            # RandomTranslate emits "translate_x" / "translate_y" in pixels (shape (batch_size,)).
             return {
                 "translate_x": params["translate_x"].to(device=device),
                 "translate_y": params["translate_y"].to(device=device),
@@ -218,15 +218,15 @@ class KorniaAdapter:
             }
 
         if TRANSFORM_REGISTRY and ttype is _RandomResizedCrop:
-            # src: (B, 4, 2) corners (x, y) in order:
+            # src: (batch_size, 4, 2) corners (x, y) in order:
             #   [0]=top-left, [1]=top-right, [2]=bottom-right, [3]=bottom-left
-            # output_size: (B, 2) as (H, W)
-            src = params["src"].to(device=device)  # (B, 4, 2)
-            output_size = params["output_size"].to(device=device)  # (B, 2)
-            left = src[:, 0, 0].float()
-            top = src[:, 0, 1].float()
-            right = src[:, 1, 0].float()
-            bottom = src[:, 3, 1].float()
+            # output_size: (batch_size, 2) as (height, width)
+            src_points = params["src"].to(device=device)  # (batch_size, 4, 2)
+            output_size = params["output_size"].to(device=device)  # (batch_size, 2)
+            left = src_points[:, 0, 0].float()
+            top = src_points[:, 0, 1].float()
+            right = src_points[:, 1, 0].float()
+            bottom = src_points[:, 3, 1].float()
             return {
                 "crop_top": top,
                 "crop_left": left,
@@ -273,65 +273,65 @@ class KorniaAdapter:
     def build_matrix(
         transform: object,
         params: dict[str, torch.Tensor],
-        H: int,  # noqa: N803
-        W: int,  # noqa: N803
+        height: int,
+        width: int,
     ) -> torch.Tensor:
-        """Build a (B, 3, 3) pixel-space forward affine matrix from sampled params.
+        """Build a (batch_size, 3, 3) pixel-space forward affine matrix from sampled params.
 
         Args:
             transform: A Kornia augmentation transform.
             params: Canonical-unit parameter dict from ``sample_params``.
-            H: Image height in pixels.
-            W: Image width in pixels.
+            height: Image height in pixels.
+            width: Image width in pixels.
 
         Returns:
-            ``(B, 3, 3)`` forward affine matrix in pixel coordinates.
+            ``(batch_size, 3, 3)`` forward affine matrix in pixel coordinates.
 
         """
         ttype = type(transform)
 
         if TRANSFORM_REGISTRY and ttype is _RandomSaturation:
             # Non-linear color op: no spatial change → identity matrix.
-            B = int(params["_batch_size"].item())  # noqa: N806
+            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
-            return torch.eye(3, dtype=torch.float32, device=device).unsqueeze(0).expand(B, -1, -1).clone()
+            return torch.eye(3, dtype=torch.float32, device=device).unsqueeze(0).expand(batch_size, -1, -1).clone()
 
         if TRANSFORM_REGISTRY and ttype is _RandomHorizontalFlip:
-            B = int(params["_batch_size"].item())  # noqa: N806
+            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
-            return hflip_matrix(W=W, batch_size=B, device=device, dtype=torch.float32)
+            return hflip_matrix(width=width, batch_size=batch_size, device=device, dtype=torch.float32)
 
         if TRANSFORM_REGISTRY and ttype is _RandomVerticalFlip:
-            B = int(params["_batch_size"].item())  # noqa: N806
+            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
-            return vflip_matrix(H=H, batch_size=B, device=device, dtype=torch.float32)
+            return vflip_matrix(height=height, batch_size=batch_size, device=device, dtype=torch.float32)
 
         if TRANSFORM_REGISTRY and ttype is _RandomRotation90:
             # Build per-sample 90-degree multiple rotation matrices.
             # Expect an integer parameter "k90" in {0, 1, 2, 3} per batch element.
-            B = int(params["_batch_size"].item())  # noqa: N806
+            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
 
-            k = params.get("k90")
-            if k is None:
+            k_rotations = params.get("k90")
+            if k_rotations is None:
                 # Fallback: sample k uniformly if not provided in params.
-                k = torch.randint(0, 4, (B,), device=device)
+                k_rotations = torch.randint(0, 4, (batch_size,), device=device)
 
             # Convert discrete k to angle in radians: 0, π/2, π, 3π/2
-            angles_rad = k.to(dtype=torch.float32) * (torch.pi / 2.0)
-            return rotation_matrix(angles_rad, H=H, W=W)
+            angles_rad = k_rotations.to(dtype=torch.float32) * (torch.pi / 2.0)
+            return rotation_matrix(angles_rad, height=height, width=width)
         if TRANSFORM_REGISTRY and ttype is _RandomRotation:
             angle_rad = params["angle_rad"]
-            return rotation_matrix(angle_rad, H=H, W=W)
+            return rotation_matrix(angle_rad, height=height, width=width)
 
         if TRANSFORM_REGISTRY and ttype is _RandomAffine:
-            return KorniaAdapter._build_affine_matrix(params, H, W)
+            return KorniaAdapter._build_affine_matrix(params, height, width)
 
         if TRANSFORM_REGISTRY and ttype is _RandomShear:
-            return KorniaAdapter._build_affine_matrix(params, H, W)
+            return KorniaAdapter._build_affine_matrix(params, height, width)
 
         if TRANSFORM_REGISTRY and ttype is _RandomTranslate:
-            return KorniaAdapter._build_affine_matrix(params, H, W)
+            return KorniaAdapter._build_affine_matrix(params, height, width)
 
         if TRANSFORM_REGISTRY and ttype is _RandomPerspective:
             return perspective_from_points(params["start_points"], params["end_points"])
@@ -352,8 +352,8 @@ class KorniaAdapter:
     @staticmethod
     def _build_affine_matrix(
         params: dict[str, torch.Tensor],
-        H: int,  # noqa: N803
-        W: int,  # noqa: N803
+        height: int,
+        width: int,
     ) -> torch.Tensor:
         """Compose the full RandomAffine matrix: T @ Sh_y @ Sh_x @ S @ R.
 
@@ -363,32 +363,33 @@ class KorniaAdapter:
 
         Args:
             params: Canonical-unit parameter dict.
-            H: Image height.
-            W: Image width.
+            height: Image height.
+            width: Image width.
 
         Returns:
-            ``(B, 3, 3)`` composed forward matrix.
+            ``(batch_size, 3, 3)`` composed forward matrix.
+
         """
         # Determine batch size from any param
-        B = None  # noqa: N806
+        batch_size = None
         device = torch.device("cpu")
         dtype = torch.float32
-        for v in params.values():
-            if isinstance(v, torch.Tensor):
-                B = v.shape[0]  # noqa: N806
-                device = v.device
-                dtype = v.dtype
+        for param_value in params.values():
+            if isinstance(param_value, torch.Tensor):
+                batch_size = param_value.shape[0]
+                device = param_value.device
+                dtype = param_value.dtype
                 break
-        if B is None:
+        if batch_size is None:
             return torch.eye(3, dtype=dtype, device=device).unsqueeze(0)
 
         # Start with identity
-        acc = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
+        acc = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1).clone()
 
         # Rotation — skip when all angles are zero (e.g. RandomAffine(degrees=0))
         if "angle_rad" in params and not torch.all(params["angle_rad"] == 0):
-            R = rotation_matrix(params["angle_rad"], H=H, W=W)  # noqa: N806
-            acc = matmul3x3(R, acc)
+            matrix_r = rotation_matrix(params["angle_rad"], height=height, width=width)
+            acc = matmul3x3(matrix_r, acc)
 
         # Scale — skip when both factors are 1.0 (e.g. RandomAffine with no scale)
         if (
@@ -396,22 +397,22 @@ class KorniaAdapter:
             and "scale_y" in params
             and not (torch.all(params["scale_x"] == 1) and torch.all(params["scale_y"] == 1))
         ):
-            S = scale_matrix(params["scale_x"], params["scale_y"], H=H, W=W)  # noqa: N806
-            acc = matmul3x3(S, acc)
+            matrix_s = scale_matrix(params["scale_x"], params["scale_y"], height=height, width=width)
+            acc = matmul3x3(matrix_s, acc)
 
         # X-Shear — skip when all values are zero (e.g. RandomAffine with no shear)
         if "shear_x_rad" in params and not torch.all(params["shear_x_rad"] == 0):
             # shear_x_rad already carries the Kornia→CCW negation from sample_params.
             # Parity verified by test_kornia_adapter.py::test_shear_sign_parity.
             shear_x_tan = torch.tan(params["shear_x_rad"])
-            Sh_x = shear_x_matrix(shear_x_tan, H=H, W=W)  # noqa: N806
-            acc = matmul3x3(Sh_x, acc)
+            matrix_sh_x = shear_x_matrix(shear_x_tan, height=height, width=width)
+            acc = matmul3x3(matrix_sh_x, acc)
 
         # Y-Shear — skip when all values are zero
         if "shear_y_rad" in params and not torch.all(params["shear_y_rad"] == 0):
             shear_y_tan = torch.tan(params["shear_y_rad"])
-            Sh_y = shear_y_matrix(shear_y_tan, H=H, W=W)  # noqa: N806
-            acc = matmul3x3(Sh_y, acc)
+            matrix_sh_y = shear_y_matrix(shear_y_tan, height=height, width=width)
+            acc = matmul3x3(matrix_sh_y, acc)
 
         # Translation — skip when all offsets are zero
         if (
@@ -419,8 +420,8 @@ class KorniaAdapter:
             and "translate_y" in params
             and not (torch.all(params["translate_x"] == 0) and torch.all(params["translate_y"] == 0))
         ):
-            T = translate_matrix(params["translate_x"], params["translate_y"])  # noqa: N806
-            acc = matmul3x3(T, acc)
+            matrix_t = translate_matrix(params["translate_x"], params["translate_y"])
+            acc = matmul3x3(matrix_t, acc)
 
         return acc
 
@@ -457,10 +458,10 @@ class KorniaAdapter:
 
         Args:
             transform: A Kornia GEOMETRIC_EXACT transform.
-            image: ``(B, C, H, W)`` input tensor.
+            image: ``(batch_size, channels, height, width)`` input tensor.
 
         Returns:
-            Transformed ``(B, C, H, W)`` tensor.
+            Transformed ``(batch_size, channels, height, width)`` tensor.
 
         Raises:
             RuntimeError: If ``RandomRotation90`` is used on non-square images
@@ -523,8 +524,8 @@ class KorniaAdapter:
           Matrix: ``M = alpha * I₃``, ``b = 0``.
         - ``ColorJitter``: composes brightness (multiplicative) and contrast
           (approximated with midpoint 0.5) in the sampled ``order``.
-          Brightness: ``M = bf * I₃``, ``b = 0``.
-          Contrast: ``M = cf * I₃``, ``b = (1-cf) * 0.5``.
+          Brightness: ``M = brightness_factors * I₃``, ``b = 0``.
+          Contrast: ``M = contrast_factors * I₃``, ``b = (1-contrast_factors) * 0.5``.
 
         Args:
             transform: A Kornia color augmentation transform.
@@ -540,12 +541,12 @@ class KorniaAdapter:
         ttype = type(transform)
 
         if TRANSFORM_REGISTRY and ttype is _RandomBrightness:
-            bf = params["brightness_factor"]  # (B,)
-            return _brightness_additive_matrix(bf)
+            brightness_factors = params["brightness_factor"]  # (batch_size,)
+            return _brightness_additive_matrix(brightness_factors)
 
         if TRANSFORM_REGISTRY and ttype is _RandomContrast:
-            cf = params["contrast_factor"]  # (B,)
-            return _contrast_multiplicative_matrix(cf)
+            contrast_factors = params["contrast_factor"]  # (batch_size,)
+            return _contrast_multiplicative_matrix(contrast_factors)
 
         if TRANSFORM_REGISTRY and ttype is _ColorJitter:
             # NOTE: The fused ColorJitter path currently only supports
@@ -588,7 +589,7 @@ class KorniaAdapter:
 
         Args:
             transform: A Kornia augmentation transform.
-            image: ``(B, C, H, W)`` image tensor.
+            image: ``(batch_size, channels, height, width)`` image tensor.
             **kwargs: Additional keyword arguments (unused).
 
         Returns:
@@ -631,13 +632,13 @@ class KorniaAdapter:
             if "angle" in params:
                 result["angle_rad"] = -torch.deg2rad(params["angle"].to(device=device))
             if "translations" in params:
-                trans = params["translations"].to(device=device)
-                result["translate_x"] = trans[:, 0]
-                result["translate_y"] = trans[:, 1]
+                translation_factors = params["translations"].to(device=device)
+                result["translate_x"] = translation_factors[:, 0]
+                result["translate_y"] = translation_factors[:, 1]
             if "scale" in params:
-                sc = params["scale"].to(device=device)
-                result["scale_x"] = sc[:, 0]
-                result["scale_y"] = sc[:, 1]
+                scale_factors = params["scale"].to(device=device)
+                result["scale_x"] = scale_factors[:, 0]
+                result["scale_y"] = scale_factors[:, 1]
             if "shear_x" in params:
                 result["shear_x_rad"] = -torch.deg2rad(params["shear_x"].to(device=device))
             if "shear_y" in params:
@@ -659,15 +660,15 @@ class KorniaAdapter:
             }
 
         if TRANSFORM_REGISTRY and ttype in (_RandomHorizontalFlip, _RandomVerticalFlip):
-            B = int(params["batch_prob"].shape[0])  # noqa: N806
+            batch_size = int(params["batch_prob"].shape[0])
             return {
-                "_batch_size": torch.tensor([B], device=device, dtype=torch.int64),
+                "_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64),
             }
 
         if TRANSFORM_REGISTRY and ttype is _RandomRotation90:
-            B = int(params["batch_prob"].shape[0])  # noqa: N806
+            batch_size = int(params["batch_prob"].shape[0])
             return {
-                "_batch_size": torch.tensor([B], device=device, dtype=torch.int64),
+                "_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64),
                 "k90": params["times"].to(device=device, dtype=torch.int64) % 4,
             }
 
@@ -680,13 +681,13 @@ class KorniaAdapter:
 # ---------------------------------------------------------------------------
 
 
-def _rotation_np_b1(angle_rad: float, cx: float, cy: float) -> NDArray[np.float64]:
+def _rotation_np_b1(angle_rad: float, center_x: float, center_y: float) -> NDArray[np.float64]:
     cos_a = np.cos(angle_rad)
     sin_a = np.sin(angle_rad)
     return np.array(
         [
-            [cos_a, -sin_a, cx * (1.0 - cos_a) + cy * sin_a],
-            [sin_a, cos_a, cy * (1.0 - cos_a) - cx * sin_a],
+            [cos_a, -sin_a, center_x * (1.0 - cos_a) + center_y * sin_a],
+            [sin_a, cos_a, center_y * (1.0 - cos_a) - center_x * sin_a],
             [0.0, 0.0, 1.0],
         ],
         dtype=np.float64,
@@ -695,58 +696,76 @@ def _rotation_np_b1(angle_rad: float, cx: float, cy: float) -> NDArray[np.float6
 
 def _affine_matrix_np_b1(
     params: dict[str, torch.Tensor],
-    cx: float,
-    cy: float,
+    center_x: float,
+    center_y: float,
 ) -> NDArray[np.float64]:
-    """Compose rotation/scale/shear/translate from canonical params (B=1, NumPy only)."""
-    acc = np.eye(3, dtype=np.float64)
+    """Compose rotation/scale/shear/translate from canonical params (batch_size=1, NumPy only)."""
+    mtx_acc = np.eye(3, dtype=np.float64)
 
     if "angle_rad" in params:
-        a = float(params["angle_rad"].item())
-        if a != 0.0:
-            acc = _rotation_np_b1(a, cx, cy) @ acc
+        angle = float(params["angle_rad"].item())
+        if angle != 0.0:
+            mtx_acc = _rotation_np_b1(angle, center_x, center_y) @ mtx_acc
 
     if "scale_x" in params and "scale_y" in params:
-        sx = float(params["scale_x"].item())
-        sy = float(params["scale_y"].item())
-        if sx != 1.0 or sy != 1.0:
-            scale_m = np.array(
-                [[sx, 0.0, cx * (1.0 - sx)], [0.0, sy, cy * (1.0 - sy)], [0.0, 0.0, 1.0]], dtype=np.float64
+        scale_x = float(params["scale_x"].item())
+        scale_y = float(params["scale_y"].item())
+        if scale_x != 1.0 or scale_y != 1.0:
+            mtx_scale = np.array(
+                [
+                    [scale_x, 0.0, center_x * (1.0 - scale_x)],
+                    [0.0, scale_y, center_y * (1.0 - scale_y)],
+                    [0.0, 0.0, 1.0],
+                ],
+                dtype=np.float64,
             )
-            acc = scale_m @ acc
+            mtx_acc = mtx_scale @ mtx_acc
 
     if "shear_x_rad" in params:
-        sx_r = float(params["shear_x_rad"].item())
-        if sx_r != 0.0:
-            tsx = np.tan(sx_r)
-            acc = np.array([[1.0, tsx, -cy * tsx], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64) @ acc
+        shear_x_rad = float(params["shear_x_rad"].item())
+        if shear_x_rad != 0.0:
+            shear_x_tan = np.tan(shear_x_rad)
+            mtx_acc = (
+                np.array(
+                    [[1.0, shear_x_tan, -center_y * shear_x_tan], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64
+                )
+                @ mtx_acc
+            )
 
     if "shear_y_rad" in params:
-        sy_r = float(params["shear_y_rad"].item())
-        if sy_r != 0.0:
-            tsy = np.tan(sy_r)
-            acc = np.array([[1.0, 0.0, 0.0], [tsy, 1.0, -cx * tsy], [0.0, 0.0, 1.0]], dtype=np.float64) @ acc
+        shear_y_rad = float(params["shear_y_rad"].item())
+        if shear_y_rad != 0.0:
+            shear_y_tan = np.tan(shear_y_rad)
+            mtx_acc = (
+                np.array(
+                    [[1.0, 0.0, 0.0], [shear_y_tan, 1.0, -center_x * shear_y_tan], [0.0, 0.0, 1.0]], dtype=np.float64
+                )
+                @ mtx_acc
+            )
 
     if "translate_x" in params and "translate_y" in params:
-        tx = float(params["translate_x"].item())
-        ty = float(params["translate_y"].item())
-        if tx != 0.0 or ty != 0.0:
-            acc = np.array([[1.0, 0.0, tx], [0.0, 1.0, ty], [0.0, 0.0, 1.0]], dtype=np.float64) @ acc
+        translation_x = float(params["translate_x"].item())
+        translation_y = float(params["translate_y"].item())
+        if translation_x != 0.0 or translation_y != 0.0:
+            mtx_acc = (
+                np.array([[1.0, 0.0, translation_x], [0.0, 1.0, translation_y], [0.0, 0.0, 1.0]], dtype=np.float64)
+                @ mtx_acc
+            )
 
-    return acc
+    return mtx_acc
 
 
 def build_matrix_numpy_b1_kornia(
     transform: object,
     params: dict[str, torch.Tensor],
-    H: int,  # noqa: N803
-    W: int,  # noqa: N803
+    height: int,
+    width: int,
 ) -> NDArray[np.float64]:
-    """Return (3, 3) float64 pixel-space matrix for B=1, bypassing torch tensor creation.
+    """Return (3, 3) float64 pixel-space matrix for batch_size=1, bypassing torch tensor creation.
 
     Drop-in replacement for
-    ``KorniaAdapter.build_matrix(transform, params, H, W)[0].double().cpu().numpy()``
-    in the B=1 CPU cv2 warp path.  Extracts scalar values from ``params`` via
+    ``KorniaAdapter.build_matrix(transform, params, height, width)[0].double().cpu().numpy()``
+    in the batch_size=1 CPU cv2 warp path.  Extracts scalar values from ``params`` via
     ``.item()`` and computes the matrix directly in NumPy, avoiding the 8-12
     intermediate ``(1,)`` / ``(1, 3, 3)`` torch tensor allocations produced by
     the torch-based construction path.
@@ -754,40 +773,40 @@ def build_matrix_numpy_b1_kornia(
     Args:
         transform: A Kornia augmentation transform (type-dispatched).
         params: Canonical parameter dict from ``KorniaAdapter.sample_params``.
-        H: Image height in pixels.
-        W: Image width in pixels.
+        height: Image height in pixels.
+        width: Image width in pixels.
 
     Returns:
         ``(3, 3)`` float64 forward affine matrix in pixel coordinates.
 
     """
-    cx, cy = (W - 1) * 0.5, (H - 1) * 0.5
+    center_x, center_y = (width - 1) * 0.5, (height - 1) * 0.5
     ttype = type(transform)
 
     if TRANSFORM_REGISTRY and ttype is _RandomRotation:
-        return _rotation_np_b1(float(params["angle_rad"].item()), cx, cy)
+        return _rotation_np_b1(float(params["angle_rad"].item()), center_x, center_y)
 
     if TRANSFORM_REGISTRY and ttype is _RandomHorizontalFlip:
-        return np.array([[-1.0, 0.0, float(W - 1)], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+        return np.array([[-1.0, 0.0, float(width - 1)], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
 
     if TRANSFORM_REGISTRY and ttype is _RandomVerticalFlip:
-        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, float(H - 1)], [0.0, 0.0, 1.0]], dtype=np.float64)
+        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, float(height - 1)], [0.0, 0.0, 1.0]], dtype=np.float64)
 
     if TRANSFORM_REGISTRY and ttype in (_RandomAffine, _RandomShear, _RandomTranslate):
-        return _affine_matrix_np_b1(params, cx, cy)
+        return _affine_matrix_np_b1(params, center_x, center_y)
 
     # Fallback: torch path for uncommon types (RandomRotation90, RandomPerspective,
     # RandomResizedCrop, color ops, etc.).
-    return KorniaAdapter.build_matrix(transform, params, H, W)[0].double().cpu().numpy()
+    return KorniaAdapter.build_matrix(transform, params, height, width)[0].double().cpu().numpy()
 
 
 def sample_and_build_matrix_numpy_b1_kornia(
     transform: object,
     input_shape: tuple[int, int, int, int],
-    H: int,  # noqa: N803
-    W: int,  # noqa: N803
+    height: int,
+    width: int,
 ) -> NDArray[np.float64]:
-    """Sample params and build (3, 3) float64 matrix for B=1, entirely in numpy.
+    """Sample params and build (3, 3) float64 matrix for batch_size=1, entirely in numpy.
 
     Fuses :func:`KorniaAdapter.sample_params` + :func:`build_matrix_numpy_b1_kornia`
     into a single call that calls ``generate_parameters`` directly, extracts scalar
@@ -804,16 +823,16 @@ def sample_and_build_matrix_numpy_b1_kornia(
 
     Args:
         transform: A Kornia augmentation transform (type-dispatched).
-        input_shape: ``(B, C, H, W)`` shape tuple passed to ``generate_parameters``.
-        H: Image height in pixels.
-        W: Image width in pixels.
+        input_shape: ``(batch_size, channels, height, width)`` shape tuple passed to ``generate_parameters``.
+        height: Image height in pixels.
+        width: Image width in pixels.
 
     Returns:
         ``(3, 3)`` float64 forward affine matrix, or ``None`` if this type is not
         handled (caller must fall back to the two-step path).
 
     """
-    cx, cy = (W - 1) * 0.5, (H - 1) * 0.5
+    center_x, center_y = (width - 1) * 0.5, (height - 1) * 0.5
     ttype = type(transform)
 
     if not TRANSFORM_REGISTRY:
@@ -822,69 +841,91 @@ def sample_and_build_matrix_numpy_b1_kornia(
     if ttype is _RandomHorizontalFlip:
         # No generate_parameters needed — matrix is constant.
         transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
-        return np.array([[-1.0, 0.0, float(W - 1)], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+        return np.array([[-1.0, 0.0, float(width - 1)], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
 
     if ttype is _RandomVerticalFlip:
         transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
-        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, float(H - 1)], [0.0, 0.0, 1.0]], dtype=np.float64)
+        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, float(height - 1)], [0.0, 0.0, 1.0]], dtype=np.float64)
 
     if ttype is _RandomRotation:
         raw = transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
         # Kornia degrees: positive = CW; negate for CCW convention.
         angle_rad = -float(raw["degrees"].item()) * (np.pi / 180.0)
-        return _rotation_np_b1(angle_rad, cx, cy)
+        return _rotation_np_b1(angle_rad, center_x, center_y)
 
     if ttype in (_RandomAffine, _RandomShear, _RandomTranslate):
         raw = transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
-        acc = np.eye(3, dtype=np.float64)
+        mtx_acc = np.eye(3, dtype=np.float64)
 
         # Rotation
         if "angle" in raw:
-            a = -float(raw["angle"].item()) * (np.pi / 180.0)
-            if a != 0.0:
-                acc = _rotation_np_b1(a, cx, cy) @ acc
+            angle = -float(raw["angle"].item()) * (np.pi / 180.0)
+            if angle != 0.0:
+                mtx_acc = _rotation_np_b1(angle, center_x, center_y) @ mtx_acc
 
         # Scale
         if "scale" in raw:
-            sc = raw["scale"]
-            sx = float(sc[0, 0].item())
-            sy = float(sc[0, 1].item())
-            if sx != 1.0 or sy != 1.0:
-                acc = (
+            scale_raw = raw["scale"]
+            scale_x = float(scale_raw[0, 0].item())
+            scale_y = float(scale_raw[0, 1].item())
+            if scale_x != 1.0 or scale_y != 1.0:
+                mtx_acc = (
                     np.array(
-                        [[sx, 0.0, cx * (1.0 - sx)], [0.0, sy, cy * (1.0 - sy)], [0.0, 0.0, 1.0]],
+                        [
+                            [scale_x, 0.0, center_x * (1.0 - scale_x)],
+                            [0.0, scale_y, center_y * (1.0 - scale_y)],
+                            [0.0, 0.0, 1.0],
+                        ],
                         dtype=np.float64,
                     )
-                    @ acc
+                    @ mtx_acc
                 )
 
         # X-Shear
         if "shear_x" in raw:
-            sx_deg = float(raw["shear_x"].item())
-            if sx_deg != 0.0:
-                tsx = np.tan(-sx_deg * (np.pi / 180.0))
-                acc = np.array([[1.0, tsx, -cy * tsx], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64) @ acc
+            shear_x_deg = float(raw["shear_x"].item())
+            if shear_x_deg != 0.0:
+                shear_x_tan = np.tan(-shear_x_deg * (np.pi / 180.0))
+                mtx_acc = (
+                    np.array(
+                        [[1.0, shear_x_tan, -center_y * shear_x_tan], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                        dtype=np.float64,
+                    )
+                    @ mtx_acc
+                )
 
         # Y-Shear
         if "shear_y" in raw:
-            sy_deg = float(raw["shear_y"].item())
-            if sy_deg != 0.0:
-                tsy = np.tan(-sy_deg * (np.pi / 180.0))
-                acc = np.array([[1.0, 0.0, 0.0], [tsy, 1.0, -cx * tsy], [0.0, 0.0, 1.0]], dtype=np.float64) @ acc
+            shear_y_deg = float(raw["shear_y"].item())
+            if shear_y_deg != 0.0:
+                shear_y_tan = np.tan(-shear_y_deg * (np.pi / 180.0))
+                mtx_acc = (
+                    np.array(
+                        [[1.0, 0.0, 0.0], [shear_y_tan, 1.0, -center_x * shear_y_tan], [0.0, 0.0, 1.0]],
+                        dtype=np.float64,
+                    )
+                    @ mtx_acc
+                )
 
         # Translation
         if "translations" in raw:
-            tx = float(raw["translations"][0, 0].item())
-            ty = float(raw["translations"][0, 1].item())
-            if tx != 0.0 or ty != 0.0:
-                acc = np.array([[1.0, 0.0, tx], [0.0, 1.0, ty], [0.0, 0.0, 1.0]], dtype=np.float64) @ acc
+            translation_x = float(raw["translations"][0, 0].item())
+            translation_y = float(raw["translations"][0, 1].item())
+            if translation_x != 0.0 or translation_y != 0.0:
+                mtx_acc = (
+                    np.array([[1.0, 0.0, translation_x], [0.0, 1.0, translation_y], [0.0, 0.0, 1.0]], dtype=np.float64)
+                    @ mtx_acc
+                )
         elif "translate_x" in raw and "translate_y" in raw:
-            tx = float(raw["translate_x"].item())
-            ty = float(raw["translate_y"].item())
-            if tx != 0.0 or ty != 0.0:
-                acc = np.array([[1.0, 0.0, tx], [0.0, 1.0, ty], [0.0, 0.0, 1.0]], dtype=np.float64) @ acc
+            translation_x = float(raw["translate_x"].item())
+            translation_y = float(raw["translate_y"].item())
+            if translation_x != 0.0 or translation_y != 0.0:
+                mtx_acc = (
+                    np.array([[1.0, 0.0, translation_x], [0.0, 1.0, translation_y], [0.0, 0.0, 1.0]], dtype=np.float64)
+                    @ mtx_acc
+                )
 
-        return acc
+        return mtx_acc
 
     # Unsupported type: signal caller to fall back to the two-step path.
     return None  # type: ignore[return-value]
@@ -897,28 +938,28 @@ def sample_and_build_matrix_numpy_b1_kornia(
 _MIDPOINT = 0.5  # Fixed midpoint for contrast approximation in ColorJitter
 
 
-def _make_eye4(B: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:  # noqa: N803
-    """Return (B, 4, 4) identity matrices."""
-    return torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1).clone()
+def _make_eye4(batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Return (batch_size, 4, 4) identity matrices."""
+    return torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1).clone()
 
 
 def _brightness_additive_matrix(brightness_factor: torch.Tensor) -> torch.Tensor:
-    """Build (B, 4, 4) for Kornia RandomBrightness: ``c' = c + (bf - 1)``.
+    """Build (batch_size, 4, 4) for Kornia RandomBrightness: ``c' = c + (brightness_factor - 1)``.
 
     M = I₃, b = (beta, beta, beta) where beta = brightness_factor - 1.
 
     Args:
-        brightness_factor: ``(B,)`` brightness factor tensor.
+        brightness_factor: ``(batch_size,)`` brightness factor tensor.
 
     Returns:
-        ``(B, 4, 4)`` homogeneous color-space affine matrix.
+        ``(batch_size, 4, 4)`` homogeneous color-space affine matrix.
 
     """
-    B = brightness_factor.shape[0]  # noqa: N806
+    batch_size = brightness_factor.shape[0]
     device = brightness_factor.device
     dtype = brightness_factor.dtype
-    mat = _make_eye4(B, device, dtype)
-    beta = brightness_factor - 1.0  # (B,)
+    mat = _make_eye4(batch_size, device, dtype)
+    beta = brightness_factor - 1.0  # (batch_size,)
     mat[:, 0, 3] = beta
     mat[:, 1, 3] = beta
     mat[:, 2, 3] = beta
@@ -926,21 +967,21 @@ def _brightness_additive_matrix(brightness_factor: torch.Tensor) -> torch.Tensor
 
 
 def _contrast_multiplicative_matrix(contrast_factor: torch.Tensor) -> torch.Tensor:
-    """Build (B, 4, 4) for Kornia RandomContrast: ``c' = cf * c``.
+    """Build (batch_size, 4, 4) for Kornia RandomContrast: ``c' = contrast_factor * c``.
 
-    M = cf * I₃, b = 0.
+    M = contrast_factor * I₃, b = 0.
 
     Args:
-        contrast_factor: ``(B,)`` contrast factor tensor.
+        contrast_factor: ``(batch_size,)`` contrast factor tensor.
 
     Returns:
-        ``(B, 4, 4)`` homogeneous color-space affine matrix.
+        ``(batch_size, 4, 4)`` homogeneous color-space affine matrix.
 
     """
-    B = contrast_factor.shape[0]  # noqa: N806
+    batch_size = contrast_factor.shape[0]
     device = contrast_factor.device
     dtype = contrast_factor.dtype
-    mat = _make_eye4(B, device, dtype)
+    mat = _make_eye4(batch_size, device, dtype)
     mat[:, 0, 0] = contrast_factor
     mat[:, 1, 1] = contrast_factor
     mat[:, 2, 2] = contrast_factor
@@ -948,11 +989,11 @@ def _contrast_multiplicative_matrix(contrast_factor: torch.Tensor) -> torch.Tens
 
 
 def _color_jitter_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:
-    """Build (B, 4, 4) for Kornia ColorJitter (brightness + contrast).
+    """Build (batch_size, 4, 4) for Kornia ColorJitter (brightness + contrast).
 
     ColorJitter applies sub-transforms in a random ``order``. This function
-    composes brightness (multiplicative: ``bf * c``) and contrast (linear
-    approximation around midpoint 0.5: ``cf * c + (1-cf) * 0.5``) in the
+    composes brightness (multiplicative: ``brightness_factors * c``) and contrast (linear
+    approximation around midpoint 0.5: ``contrast_factors * c + (1-contrast_factors) * 0.5``) in the
     sampled order. Saturation and hue steps are treated as identity.
 
     Args:
@@ -960,42 +1001,42 @@ def _color_jitter_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:
             and ``order`` tensors.
 
     Returns:
-        ``(B, 4, 4)`` homogeneous color-space affine matrix.
+        ``(batch_size, 4, 4)`` homogeneous color-space affine matrix.
 
     """
-    bf = params["brightness_factor"]  # (B,)
-    cf = params["contrast_factor"]  # (B,)
-    order = params["order"]  # (N_ops,) -- typically (4,) for [b, c, s, h]
-    B = bf.shape[0]  # noqa: N806
-    device = bf.device
-    dtype = bf.dtype
+    brightness_factors = params["brightness_factor"]  # (batch_size,)
+    contrast_factors = params["contrast_factor"]  # (batch_size,)
+    order = params["order"]  # (num_ops,) -- typically (4,) for [b, c, s, h]
+    batch_size = brightness_factors.shape[0]
+    device = brightness_factors.device
+    dtype = brightness_factors.dtype
 
     # Start with identity
-    acc = _make_eye4(B, device, dtype)
+    mtx_acc = _make_eye4(batch_size, device, dtype)
 
     # Apply in sampled order; index 0=brightness, 1=contrast, 2=saturation, 3=hue
     for idx_t in order.tolist():
         idx = int(idx_t)
         if idx == 0:
-            # Brightness (multiplicative in ColorJitter): c' = bf * c
-            step = _make_eye4(B, device, dtype)
-            step[:, 0, 0] = bf
-            step[:, 1, 1] = bf
-            step[:, 2, 2] = bf
+            # Brightness (multiplicative in ColorJitter): c' = brightness_factors * c
+            mtx_step = _make_eye4(batch_size, device, dtype)
+            mtx_step[:, 0, 0] = brightness_factors
+            mtx_step[:, 1, 1] = brightness_factors
+            mtx_step[:, 2, 2] = brightness_factors
         elif idx == 1:
-            # Contrast (midpoint approximation): c' = cf * c + (1-cf)*midpoint
-            step = _make_eye4(B, device, dtype)
-            step[:, 0, 0] = cf
-            step[:, 1, 1] = cf
-            step[:, 2, 2] = cf
-            bias = (1.0 - cf) * _MIDPOINT
-            step[:, 0, 3] = bias
-            step[:, 1, 3] = bias
-            step[:, 2, 3] = bias
+            # Contrast (midpoint approximation): c' = contrast_factors * c + (1-contrast_factors)*midpoint
+            mtx_step = _make_eye4(batch_size, device, dtype)
+            mtx_step[:, 0, 0] = contrast_factors
+            mtx_step[:, 1, 1] = contrast_factors
+            mtx_step[:, 2, 2] = contrast_factors
+            bias = (1.0 - contrast_factors) * _MIDPOINT
+            mtx_step[:, 0, 3] = bias
+            mtx_step[:, 1, 3] = bias
+            mtx_step[:, 2, 3] = bias
         else:
             # Saturation (idx=2) and hue (idx=3) treated as identity
             continue
-        # Compose: acc = step @ acc (step applied after current accumulation)
-        acc = torch.bmm(step, acc)
+        # Compose: mtx_acc = mtx_step @ mtx_acc (mtx_step applied after current accumulation)
+        mtx_acc = torch.bmm(mtx_step, mtx_acc)
 
-    return acc
+    return mtx_acc

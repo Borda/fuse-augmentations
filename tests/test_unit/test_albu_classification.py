@@ -60,42 +60,42 @@ class TestAlbumentationsAdapterCategory:
         assert cat == TransformCategory.SPATIAL_KERNEL
 
     def test_category_real_affine(self, adapter):
-        """A.Affine → GEOMETRIC_INTERP (requires albumentations)."""
+        """albu.Affine → GEOMETRIC_INTERP (requires albumentations)."""
         pytest.importorskip("albumentations", reason="albumentations >= 2.0 required")
-        import albumentations as A
+        import albumentations as albu
 
-        assert adapter.category(A.Affine()) == TransformCategory.GEOMETRIC_INTERP
+        assert adapter.category(albu.Affine()) == TransformCategory.GEOMETRIC_INTERP
 
     def test_category_real_rotate(self, adapter):
         pytest.importorskip("albumentations")
-        import albumentations as A
+        import albumentations as albu
 
-        assert adapter.category(A.Rotate()) == TransformCategory.GEOMETRIC_INTERP
+        assert adapter.category(albu.Rotate()) == TransformCategory.GEOMETRIC_INTERP
 
     def test_category_real_shift_scale_rotate(self, adapter):
         pytest.importorskip("albumentations")
         import warnings
 
-        import albumentations as A
+        import albumentations as albu
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)  # deprecation warning from SSR
-            assert adapter.category(A.ShiftScaleRotate()) == TransformCategory.GEOMETRIC_INTERP
+            assert adapter.category(albu.ShiftScaleRotate()) == TransformCategory.GEOMETRIC_INTERP
 
     def test_category_real_hflip(self, adapter):
         pytest.importorskip("albumentations")
-        import albumentations as A
+        import albumentations as albu
 
-        assert adapter.category(A.HorizontalFlip()) == TransformCategory.GEOMETRIC_EXACT
+        assert adapter.category(albu.HorizontalFlip()) == TransformCategory.GEOMETRIC_EXACT
 
     def test_category_real_vflip(self, adapter):
         pytest.importorskip("albumentations")
-        import albumentations as A
+        import albumentations as albu
 
-        assert adapter.category(A.VerticalFlip()) == TransformCategory.GEOMETRIC_EXACT
+        assert adapter.category(albu.VerticalFlip()) == TransformCategory.GEOMETRIC_EXACT
 
     def test_perspective_is_projective(self, adapter):
-        """A.Perspective -> PROJECTIVE (requires albumentations)."""
+        """albu.Perspective -> PROJECTIVE (requires albumentations)."""
         A = pytest.importorskip("albumentations", reason="albumentations required")
         cat = adapter.category(A.Perspective())
         assert cat == TransformCategory.PROJECTIVE
