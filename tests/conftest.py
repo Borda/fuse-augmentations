@@ -19,7 +19,7 @@ def reset_random_seeds() -> None:
 
 
 @pytest.fixture(autouse=True)
-def disable_interactive_prompts():
+def disable_interactive_prompts() -> None:
     """Keep test runs non-interactive across dependency versions."""
     old_breakpoint = os.environ.get("PYTHONBREAKPOINT")
     os.environ["PYTHONBREAKPOINT"] = "0"

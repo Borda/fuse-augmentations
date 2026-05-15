@@ -22,17 +22,14 @@ import pytest
 import torch
 from torch.nn.functional import affine_grid, grid_sample
 
-kornia = pytest.importorskip("kornia", reason="kornia >= 0.6.12 required")
-from kornia.augmentation import (  # noqa: E402
-    RandomAffine,
-    RandomHorizontalFlip,
-    RandomRotation,
-    RandomVerticalFlip,
-)
+from fuse_augmentations._compat import _KORNIA_AVAILABLE
 
-from fuse_augmentations.adapters._kornia import KorniaAdapter  # noqa: E402
-from fuse_augmentations.affine._matrix import inv3x3, matmul3x3, normalize_matrix  # noqa: E402
-from fuse_augmentations.affine._segment import FusedAffineSegment  # noqa: E402
+if _KORNIA_AVAILABLE:
+    import kornia.augmentation as kornia_aug
+
+    from fuse_augmentations.adapters._kornia import KorniaAdapter
+    from fuse_augmentations.affine._matrix import inv3x3, matmul3x3, normalize_matrix
+    from fuse_augmentations.affine._segment import FusedAffineSegment
 
 pytestmark = pytest.mark.integration
 
@@ -41,35 +38,30 @@ DEFAULT_DTYPE = torch.float32
 
 
 @pytest.fixture
-def adapter():
+def adapter() -> KorniaAdapter:
     """Create a fresh KorniaAdapter instance for each test."""
     return KorniaAdapter()
 
 
-# ---------------------------------------------------------------------------
-# Per-transform forward_parameters -> canonical param converters
-# ---------------------------------------------------------------------------
-
-
 def _hflip_fp_to_canonical(forward_params: dict) -> dict[str, torch.Tensor]:
-    """Convert RandomHorizontalFlip forward_parameters to canonical params."""
+    """Convert kornia_aug.RandomHorizontalFlip forward_parameters to canonical params."""
     batch_size = forward_params.get("batch_prob", torch.tensor([1])).shape[0]
     return {"_batch_size": torch.tensor([batch_size])}
 
 
 def _vflip_fp_to_canonical(forward_params: dict) -> dict[str, torch.Tensor]:
-    """Convert RandomVerticalFlip forward_parameters to canonical params."""
+    """Convert kornia_aug.RandomVerticalFlip forward_parameters to canonical params."""
     batch_size = forward_params.get("batch_prob", torch.tensor([1])).shape[0]
     return {"_batch_size": torch.tensor([batch_size])}
 
 
 def _rotation_fp_to_canonical(forward_params: dict) -> dict[str, torch.Tensor]:
-    """Convert RandomRotation forward_parameters to canonical params."""
+    """Convert kornia_aug.RandomRotation forward_parameters to canonical params."""
     return {"angle_rad": -torch.deg2rad(forward_params["degrees"].to(DEFAULT_DEVICE))}
 
 
 def _affine_fp_to_canonical(forward_params: dict) -> dict[str, torch.Tensor]:
-    """Convert RandomAffine forward_parameters to canonical params."""
+    """Convert kornia_aug.RandomAffine forward_parameters to canonical params."""
     params: dict[str, torch.Tensor] = {}
     if "angle" in forward_params:
         params["angle_rad"] = -torch.deg2rad(forward_params["angle"].to(DEFAULT_DEVICE))
@@ -86,12 +78,15 @@ def _affine_fp_to_canonical(forward_params: dict) -> dict[str, torch.Tensor]:
     return params
 
 
-_FP_CONVERTERS: dict[type, Callable[[dict], dict[str, torch.Tensor]]] = {
-    RandomHorizontalFlip: _hflip_fp_to_canonical,
-    RandomVerticalFlip: _vflip_fp_to_canonical,
-    RandomRotation: _rotation_fp_to_canonical,
-    RandomAffine: _affine_fp_to_canonical,
-}
+if _KORNIA_AVAILABLE:
+    _FP_CONVERTERS: dict[type, Callable[[dict], dict[str, torch.Tensor]]] = {
+        kornia_aug.RandomHorizontalFlip: _hflip_fp_to_canonical,
+        kornia_aug.RandomVerticalFlip: _vflip_fp_to_canonical,
+        kornia_aug.RandomRotation: _rotation_fp_to_canonical,
+        kornia_aug.RandomAffine: _affine_fp_to_canonical,
+    }
+else:
+    _FP_CONVERTERS = {}
 
 
 def _single_grid_sample_from_params(transforms, adapter, image, forward_params_list):
@@ -119,15 +114,16 @@ def _single_grid_sample_from_params(transforms, adapter, image, forward_params_l
     return grid_sample(image, grid, mode="bilinear", padding_mode="zeros", align_corners=True), mtx_acc
 
 
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
 class TestSingleTransformParity:
     """Verify single-transform fused path matches Kornia native output."""
 
     def test_random_rotation_parity(self, adapter):
-        """RandomRotation fused path matches Kornia native within 1e-3."""
+        """kornia_aug.RandomRotation fused path matches Kornia native within 1e-3."""
         batch_size, num_channels, height, width = 2, 3, 64, 64
         image = torch.rand(batch_size, num_channels, height, width)
 
-        transform = RandomRotation(degrees=45, p=1.0, align_corners=True)
+        transform = kornia_aug.RandomRotation(degrees=45, p=1.0, align_corners=True)
         forward_params = transform.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
 
         native_out = transform(image, params=forward_params)
@@ -138,11 +134,13 @@ class TestSingleTransformParity:
         )
 
     def test_random_affine_scale_translate_parity(self, adapter):
-        """RandomAffine with degrees=0 (scale + translate only) parity."""
+        """kornia_aug.RandomAffine with degrees=0 (scale + translate only) parity."""
         batch_size, num_channels, height, width = 2, 3, 64, 64
         image = torch.rand(batch_size, num_channels, height, width)
 
-        transform = RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.8, 1.2), p=1.0, align_corners=True)
+        transform = kornia_aug.RandomAffine(
+            degrees=0, translate=(0.1, 0.1), scale=(0.8, 1.2), p=1.0, align_corners=True
+        )
         forward_params = transform.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
 
         native_out = transform(image, params=forward_params)
@@ -153,11 +151,11 @@ class TestSingleTransformParity:
         )
 
     def test_random_hflip_parity(self, adapter):
-        """RandomHorizontalFlip fused path matches Kornia native within 1e-3."""
+        """kornia_aug.RandomHorizontalFlip fused path matches Kornia native within 1e-3."""
         batch_size, num_channels, height, width = 2, 3, 32, 32
         image = torch.rand(batch_size, num_channels, height, width)
 
-        transform = RandomHorizontalFlip(p=1.0)
+        transform = kornia_aug.RandomHorizontalFlip(p=1.0)
         forward_params = transform.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
 
         native_out = transform(image, params=forward_params)
@@ -168,11 +166,11 @@ class TestSingleTransformParity:
         )
 
     def test_random_vflip_parity(self, adapter):
-        """RandomVerticalFlip fused path matches Kornia native within 1e-3."""
+        """kornia_aug.RandomVerticalFlip fused path matches Kornia native within 1e-3."""
         batch_size, num_channels, height, width = 2, 3, 32, 32
         image = torch.rand(batch_size, num_channels, height, width)
 
-        transform = RandomVerticalFlip(p=1.0)
+        transform = kornia_aug.RandomVerticalFlip(p=1.0)
         forward_params = transform.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
 
         native_out = transform(image, params=forward_params)
@@ -183,6 +181,7 @@ class TestSingleTransformParity:
         )
 
 
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
 class TestTwoTransformParity:
     """Verify two-transform composed matrix path matches manual reference."""
 
@@ -197,8 +196,8 @@ class TestTwoTransformParity:
         batch_size, num_channels, height, width = 2, 3, 64, 64
         image = torch.rand(batch_size, num_channels, height, width)
 
-        t_rot = RandomRotation(degrees=(45, 45), p=1.0, align_corners=True)
-        t_scale = RandomAffine(degrees=0, scale=(2.0, 2.0), p=1.0, align_corners=True)
+        t_rot = kornia_aug.RandomRotation(degrees=(45, 45), p=1.0, align_corners=True)
+        t_scale = kornia_aug.RandomAffine(degrees=0, scale=(2.0, 2.0), p=1.0, align_corners=True)
 
         # Fused path: FusedAffineSegment composes both transforms in one warp.
         segment = FusedAffineSegment([t_rot, t_scale], adapter)
@@ -223,6 +222,7 @@ class TestTwoTransformParity:
         assert (determinant.abs() > 0.1).all(), f"Unexpected near-zero determinant: {determinant}"
 
 
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
 class TestThreeTransformChain:
     """Verify three-transform chain composition and matrix associativity."""
 
@@ -231,9 +231,9 @@ class TestThreeTransformChain:
         batch_size, num_channels, height, width = 2, 3, 64, 64
         image = torch.rand(batch_size, num_channels, height, width)
 
-        t_rot = RandomRotation(degrees=(30, 30), p=1.0, align_corners=True)
-        t_scale = RandomAffine(degrees=0, scale=(1.5, 1.5), p=1.0, align_corners=True)
-        t_hflip = RandomHorizontalFlip(p=1.0)
+        t_rot = kornia_aug.RandomRotation(degrees=(30, 30), p=1.0, align_corners=True)
+        t_scale = kornia_aug.RandomAffine(degrees=0, scale=(1.5, 1.5), p=1.0, align_corners=True)
+        t_hflip = kornia_aug.RandomHorizontalFlip(p=1.0)
 
         fp_rot = t_rot.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
         fp_scale = t_scale.forward_parameters(torch.Size((batch_size, num_channels, height, width)))
@@ -264,6 +264,7 @@ class TestThreeTransformChain:
         assert not torch.isnan(full_out).any()
 
 
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
 class TestLongChain:
     """Verify five-transform chain determinism and inverse round-trip."""
 
@@ -273,11 +274,11 @@ class TestLongChain:
         image = torch.rand(batch_size, num_channels, height, width)
 
         transforms = [
-            RandomRotation(degrees=(10, 10), p=1.0, align_corners=True),
-            RandomAffine(degrees=0, scale=(1.1, 1.1), p=1.0, align_corners=True),
-            RandomHorizontalFlip(p=1.0),
-            RandomRotation(degrees=(5, 5), p=1.0, align_corners=True),
-            RandomVerticalFlip(p=1.0),
+            kornia_aug.RandomRotation(degrees=(10, 10), p=1.0, align_corners=True),
+            kornia_aug.RandomAffine(degrees=0, scale=(1.1, 1.1), p=1.0, align_corners=True),
+            kornia_aug.RandomHorizontalFlip(p=1.0),
+            kornia_aug.RandomRotation(degrees=(5, 5), p=1.0, align_corners=True),
+            kornia_aug.RandomVerticalFlip(p=1.0),
         ]
 
         fps = [
@@ -307,6 +308,7 @@ class TestLongChain:
         assert not torch.isinf(fused_out).any()
 
 
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
 class TestLastMatrixValue:
     """Verify last_matrix shape, determinant, and inverse round-trip."""
 
@@ -315,7 +317,7 @@ class TestLastMatrixValue:
         batch_size, num_channels, height, width = 4, 3, 32, 32
         image = torch.rand(batch_size, num_channels, height, width)
 
-        transform = RandomRotation(degrees=30, p=1.0, align_corners=True)
+        transform = kornia_aug.RandomRotation(degrees=30, p=1.0, align_corners=True)
         segment = FusedAffineSegment([transform], adapter)
         segment(image)
 
@@ -332,7 +334,7 @@ class TestLastMatrixValue:
         batch_size, num_channels, height, width = 4, 3, 32, 32
         image = torch.rand(batch_size, num_channels, height, width)
 
-        transform = RandomRotation(degrees=30, p=1.0, align_corners=True)
+        transform = kornia_aug.RandomRotation(degrees=30, p=1.0, align_corners=True)
         segment = FusedAffineSegment([transform], adapter)
         segment(image)
 
@@ -346,6 +348,7 @@ class TestLastMatrixValue:
         )
 
 
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_flip_segment_cuda_device(adapter):
@@ -354,7 +357,7 @@ def test_flip_segment_cuda_device(adapter):
     batch_size, num_channels, height, width = 2, 3, 32, 32
     image = torch.rand(batch_size, num_channels, height, width, device=device)
 
-    transform = RandomHorizontalFlip(p=1.0)
+    transform = kornia_aug.RandomHorizontalFlip(p=1.0)
     segment = FusedAffineSegment([transform], adapter)
     out = segment(image)
 
@@ -363,6 +366,7 @@ def test_flip_segment_cuda_device(adapter):
     assert not torch.isnan(out).any()
 
 
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_vflip_segment_cuda_device(adapter):
@@ -371,7 +375,7 @@ def test_vflip_segment_cuda_device(adapter):
     batch_size, num_channels, height, width = 2, 3, 32, 32
     image = torch.rand(batch_size, num_channels, height, width, device=device)
 
-    transform = RandomVerticalFlip(p=1.0)
+    transform = kornia_aug.RandomVerticalFlip(p=1.0)
     segment = FusedAffineSegment([transform], adapter)
     out = segment(image)
 

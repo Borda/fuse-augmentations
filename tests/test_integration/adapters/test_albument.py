@@ -18,13 +18,13 @@ import numpy as np
 import pytest
 import torch
 
-albu = pytest.importorskip("albumentations", reason="albumentations >= 2.0 required")
+from fuse_augmentations import Compose
+from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
+from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+from fuse_augmentations.affine._segment import _CV2_BORDER, _CV2_INTERP, _warp
 
-from fuse_augmentations import Compose  # noqa: E402
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+if _ALBUMENTATIONS_AVAILABLE:
+    import albumentations as albu
 
 ATOL_PIXEL = 1e-3  # flip parity: tensor.flip vs albumentations cv2
 ATOL_CV2 = 1e-5  # INTERP parity: fused cv2 vs sequential cv2 reference
@@ -34,6 +34,11 @@ HEIGHT, WIDTH, NUM_CHANNELS = 64, 64, 3
 def _rand_image(batch_size: int = 1) -> torch.Tensor:
     torch.manual_seed(0)
     return torch.rand(batch_size, NUM_CHANNELS, HEIGHT, WIDTH)
+
+
+@pytest.fixture
+def img() -> torch.Tensor:
+    return _rand_image()
 
 
 def _sequential_albu(transforms: list, img_tensor: torch.Tensor) -> torch.Tensor:
@@ -55,9 +60,6 @@ def _sequential_cv2(transforms: list, img_tensor: torch.Tensor) -> torch.Tensor:
     by AlbuFusedAffineSegment. For a single transform this produces output identical to the fused pipeline.
 
     """
-    from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
-    from fuse_augmentations.affine._segment import _CV2_BORDER, _CV2_INTERP, _warp
-
     adapter = AlbumentationsAdapter()
     interp_flag = _CV2_INTERP["bilinear"]
     border_flag = _CV2_BORDER["zeros"]
@@ -78,17 +80,11 @@ def _sequential_cv2(transforms: list, img_tensor: torch.Tensor) -> torch.Tensor:
     return torch.stack(results)
 
 
-# ---------------------------------------------------------------------------
-# Single-transform parity tests (prob=1 to force determinism)
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestSingleTransformParity:
-    """Fused output with prob=1 must match sequential albumentations output."""
+    """Fused output with p=1 must match sequential albumentations output."""
 
-    def test_rotation_parity(self):
-        img = _rand_image()
-
+    def test_rotation_parity(self, img):
         # Reference: sequential cv2 warp with the same albumentations matrix.
         # Both fused and sequential now use cv2.warpAffine, so results are essentially identical.
         np.random.seed(42)
@@ -102,9 +98,7 @@ class TestSingleTransformParity:
             f"Max diff: {(fused_out - seq_out).abs().max().item():.2e}"
         )
 
-    def test_affine_rotation_only_parity(self):
-        img = _rand_image()
-
+    def test_affine_rotation_only_parity(self, img):
         np.random.seed(42)
         seq_out = _sequential_cv2([albu.Affine(rotate=(20, 20), p=1.0)], img)
 
@@ -113,9 +107,7 @@ class TestSingleTransformParity:
 
         assert torch.allclose(fused_out, seq_out, atol=ATOL_CV2)
 
-    def test_affine_scale_parity(self):
-        img = _rand_image()
-
+    def test_affine_scale_parity(self, img):
         np.random.seed(42)
         seq_out = _sequential_cv2([albu.Affine(scale=(0.9, 0.9), p=1.0)], img)
 
@@ -124,21 +116,17 @@ class TestSingleTransformParity:
 
         assert torch.allclose(fused_out, seq_out, atol=ATOL_CV2)
 
-    def test_hflip_parity(self):
-        img = _rand_image()
+    def test_hflip_parity(self, img):
         seq_out = _sequential_albu([albu.HorizontalFlip(p=1.0)], img)
         fused_out = Compose([albu.HorizontalFlip(p=1.0)])(img)
         assert torch.allclose(fused_out, seq_out, atol=ATOL_PIXEL)
 
-    def test_vflip_parity(self):
-        img = _rand_image()
+    def test_vflip_parity(self, img):
         seq_out = _sequential_albu([albu.VerticalFlip(p=1.0)], img)
         fused_out = Compose([albu.VerticalFlip(p=1.0)])(img)
         assert torch.allclose(fused_out, seq_out, atol=ATOL_PIXEL)
 
-    def test_safe_rotate_parity(self):
-        img = _rand_image()
-
+    def test_safe_rotate_parity(self, img):
         np.random.seed(42)
         seq_out = _sequential_cv2([albu.SafeRotate(limit=(30, 30), p=1.0)], img)
 
@@ -150,8 +138,7 @@ class TestSingleTransformParity:
             f"Max diff: {(fused_out - seq_out).abs().max().item():.2e}"
         )
 
-    def test_shift_scale_rotate_parity(self):
-        img = _rand_image()
+    def test_shift_scale_rotate_parity(self, img):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             t_seq = albu.ShiftScaleRotate(rotate_limit=(15, 15), shift_limit=0, scale_limit=0, p=1.0)
@@ -168,59 +155,43 @@ class TestSingleTransformParity:
         assert torch.allclose(fused_out, seq_out, atol=ATOL_CV2)
 
 
-# ---------------------------------------------------------------------------
-# prob=0 identity / prob=1 always-active
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestProbabilityEdgeCases:
-    def test_p0_output_unchanged(self):
-        img = _rand_image()
+    def test_p0_output_unchanged(self, img):
         out = Compose([albu.Rotate(limit=30, p=0.0)])(img)
-        # With prob=0 the composed matrix should be identity → output == input
-        assert torch.allclose(out, img, atol=1e-5), "prob=0 should produce identity output"
+        # With p=0 the composed matrix should be identity → output == input
+        assert torch.allclose(out, img, atol=1e-5), "p=0 should produce identity output"
 
-    def test_p1_output_differs(self):
-        img = _rand_image()
+    def test_p1_output_differs(self, img):
         out = Compose([albu.Rotate(limit=(45, 45), p=1.0)])(img)
-        assert not torch.allclose(out, img, atol=1e-3), "prob=1 rotate should change the image"
+        assert not torch.allclose(out, img, atol=1e-3), "p=1 rotate should change the image"
 
-    def test_empty_pipeline_is_identity(self):
-        img = _rand_image()
+    def test_empty_pipeline_is_identity(self, img):
         out = Compose([])(img)
         assert torch.allclose(out, img)
 
 
-# ---------------------------------------------------------------------------
-# Batch correctness
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestBatchCorrectness:
     def test_output_shape_preserved(self):
         img = _rand_image(batch_size=4)
         out = Compose([albu.Rotate(limit=30, p=1.0)])(img)
         assert out.shape == img.shape
 
-    def test_batch_size_one(self):
-        img = _rand_image(batch_size=1)
+    def test_batch_size_one(self, img):
         out = Compose([albu.Rotate(limit=30, p=1.0)])(img)
         assert out.shape == (1, NUM_CHANNELS, HEIGHT, WIDTH)
 
     def test_batch_samples_independent(self):
-        """With random prob=1 rotations, batch_size=4 samples should not all be identical."""
+        """With random p=1 rotations, B=4 samples should not all be identical."""
         img = _rand_image(batch_size=4)
         out = Compose([albu.Rotate(limit=45, p=1.0)])(img)
         # At minimum, samples should not all be the same (independent per-sample RNG)
-        diffs = [(out[sample_idx] - out[0]).abs().max().item() for sample_idx in range(1, 4)]
-        assert any(max_diff > 1e-3 for max_diff in diffs), "Expected per-sample independence in outputs"
+        diffs = [(out[idx] - out[0]).abs().max().item() for idx in range(1, 4)]
+        assert any(diff > 1e-3 for diff in diffs), "Expected per-sample independence in outputs"
 
 
-# ---------------------------------------------------------------------------
-# Multi-transform chain
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestMultiTransformChain:
     def test_rotate_then_hflip_fusion_plan(self):
         pipe = Compose([albu.Rotate(limit=30, p=1.0), albu.HorizontalFlip(p=1.0)])
@@ -251,11 +222,7 @@ class TestMultiTransformChain:
         assert out.shape == img.shape
 
 
-# ---------------------------------------------------------------------------
-# transform_matrix property
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestTransformMatrix:
     def test_last_matrix_shape(self):
         img = _rand_image(batch_size=2)
@@ -283,11 +250,7 @@ class TestTransformMatrix:
         assert torch.allclose(mtx, eye, atol=1e-5)
 
 
-# ---------------------------------------------------------------------------
-# fusion_plan and n_warps_saved
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestFusionPlanAndWarps:
     def test_single_transform_zero_warps_saved(self):
         pipe = Compose([albu.Rotate(limit=30)])

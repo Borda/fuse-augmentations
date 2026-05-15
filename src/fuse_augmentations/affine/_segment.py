@@ -1000,10 +1000,10 @@ class AlbuFusedAffineSegment(nn.Module):
                 acc = mtx_np[0] @ acc
             elif tag == self._TAG_HFLIP:
                 any_active = True
-                acc = _hflip_matrix_np_fn(W=width) @ acc
+                acc = _hflip_matrix_np_fn(width=width) @ acc
             elif tag == self._TAG_VFLIP:
                 any_active = True
-                acc = _vflip_matrix_np_fn(H=height) @ acc
+                acc = _vflip_matrix_np_fn(height=height) @ acc
             else:
                 # Fallback: full adapter round-trip for unrecognised types.
                 params = self.adapter.sample_params(tfm, (1, n_ch, height, width), torch.device("cpu"))

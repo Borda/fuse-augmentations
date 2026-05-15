@@ -12,34 +12,44 @@ import pickle
 import pytest
 import torch
 
-kornia = pytest.importorskip("kornia", reason="kornia >= 0.6.12 required")
-from kornia.augmentation import RandomAffine, RandomGaussianBlur, RandomHorizontalFlip, RandomRotation  # noqa: E402
+from fuse_augmentations import Compose
+from fuse_augmentations._compat import _KORNIA_AVAILABLE
 
-from fuse_augmentations._compose import FusedCompose as Compose  # noqa: E402
+if _KORNIA_AVAILABLE:
+    import kornia.augmentation as kornia_aug
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia >= 0.6.12 required")]
+
+
+@pytest.fixture
+def image8x8_batch1() -> torch.Tensor:
+    return torch.rand(1, 3, 8, 8)
+
+
+@pytest.fixture
+def image32x32_batch2() -> torch.Tensor:
+    return torch.rand(2, 3, 32, 32)
 
 
 class TestSingleTransformNoFusion:
     """Validate behavior for one-transform pipelines."""
 
     def test_n_warps_saved_zero(self):
-        """Albu single GEOMETRIC_INTERP transform saves zero warps (no fusion)."""
-        pipe = Compose([RandomRotation(30, p=1.0)])
+        """A single GEOMETRIC_INTERP transform saves zero warps (no fusion)."""
+        pipe = Compose([kornia_aug.RandomRotation(30, p=1.0)])
         assert pipe.n_warps_saved == 0
 
     def test_n_warps_saved_exact(self):
-        """Albu single GEOMETRIC_EXACT transform saves 1 warp (no grid_sample at all)."""
-        pipe = Compose([RandomHorizontalFlip(p=1.0)])
+        """A single GEOMETRIC_EXACT transform saves 1 warp (no grid_sample at all)."""
+        pipe = Compose([kornia_aug.RandomHorizontalFlip(p=1.0)])
         assert pipe.n_warps_saved == 1
 
-    def test_forward_runs(self):
+    def test_forward_runs(self, image8x8_batch1):
         """Single transform Compose produces valid output."""
-        pipe = Compose([RandomHorizontalFlip(p=1.0)])
-        image = torch.rand(1, 3, 8, 8)
-        image_output = pipe(image)
-        assert image_output.shape == image.shape
-        assert not torch.isnan(image_output).any()
+        pipe = Compose([kornia_aug.RandomHorizontalFlip(p=1.0)])
+        out = pipe(image8x8_batch1)
+        assert out.shape == image8x8_batch1.shape
+        assert not torch.isnan(out).any()
 
 
 class TestMixedBackend:
@@ -57,28 +67,27 @@ class TestMixedBackend:
         """Mixing kornia with another backend constructs without raising (v0.5+)."""
         cls = type("FakeTransform", (), {"__module__": second_module, "__qualname__": "FakeTransform"})
 
-        pipe = Compose([RandomRotation(degrees=30), cls()])
+        pipe = Compose([kornia_aug.RandomRotation(degrees=30), cls()])
         assert pipe is not None
 
 
 class TestSerialization:
     """Validate pickle and torch.save serialization round-trips."""
 
-    def test_pickle_roundtrip(self):
+    def test_pickle_roundtrip(self, image8x8_batch1):
         """Compose survives pickle dump/load and produces identical output."""
-        pipe = Compose([RandomHorizontalFlip(p=1.0)])
+        pipe = Compose([kornia_aug.RandomHorizontalFlip(p=1.0)])
         loaded = pickle.loads(pickle.dumps(pipe))  # noqa: S301
 
-        image = torch.rand(1, 3, 8, 8)
         torch.manual_seed(42)
-        out1 = pipe(image)
+        out1 = pipe(image8x8_batch1)
         torch.manual_seed(42)
-        out2 = loaded(image)
+        out2 = loaded(image8x8_batch1)
         assert torch.allclose(out1, out2)
 
     def test_torch_save_load(self):
         """Compose survives torch.save/torch.load via BytesIO."""
-        pipe = Compose([RandomHorizontalFlip(p=1.0)])
+        pipe = Compose([kornia_aug.RandomHorizontalFlip(p=1.0)])
         buf = io.BytesIO()
         torch.save(pipe, buf)
         buf.seek(0)
@@ -92,15 +101,15 @@ class TestNWarpsSaved:
     def test_three_fused_saves_two(self):
         """Three consecutive geometric transforms fused -> 2 warps saved."""
         pipe = Compose([
-            RandomRotation(30, p=1.0),
-            RandomAffine(0, scale=(0.8, 1.2), p=1.0),
-            RandomHorizontalFlip(p=1.0),
+            kornia_aug.RandomRotation(30, p=1.0),
+            kornia_aug.RandomAffine(0, scale=(0.8, 1.2), p=1.0),
+            kornia_aug.RandomHorizontalFlip(p=1.0),
         ])
         assert pipe.n_warps_saved == 2
 
     def test_single_transform_saves_zero(self):
         """Single geometric transform -> 0 warps saved."""
-        pipe = Compose([RandomRotation(30, p=1.0)])
+        pipe = Compose([kornia_aug.RandomRotation(30, p=1.0)])
         assert pipe.n_warps_saved == 0
 
 
@@ -109,7 +118,7 @@ class TestFusionPlan:
 
     def test_contains_transform_names(self):
         """fusion_plan names each transform in fused segments."""
-        pipe = Compose([RandomRotation(30, p=1.0), RandomHorizontalFlip(p=1.0)])
+        pipe = Compose([kornia_aug.RandomRotation(30, p=1.0), kornia_aug.RandomHorizontalFlip(p=1.0)])
         plan = pipe.fusion_plan
         assert "fused" in plan
         assert "RandomRotation" in plan
@@ -117,7 +126,7 @@ class TestFusionPlan:
 
     def test_single_segment(self):
         """Single fused segment shows one fused(...) group."""
-        pipe = Compose([RandomRotation(30, p=1.0)])
+        pipe = Compose([kornia_aug.RandomRotation(30, p=1.0)])
         plan = pipe.fusion_plan
         assert plan.startswith("fused(")
         assert "RandomRotation" in plan
@@ -128,25 +137,25 @@ class TestTransformMatrix:
 
     def test_none_before_forward(self):
         """transform_matrix is None before any forward call."""
-        pipe = Compose([RandomRotation(30, p=1.0)])
+        pipe = Compose([kornia_aug.RandomRotation(30, p=1.0)])
         assert pipe.transform_matrix is None
 
     def test_populated_after_forward(self):
         """transform_matrix is populated with correct shape after forward."""
-        pipe = Compose([RandomRotation(30, p=1.0)])
+        pipe = Compose([kornia_aug.RandomRotation(30, p=1.0)])
         pipe(torch.rand(1, 3, 8, 8))
         assert pipe.transform_matrix is not None
         assert pipe.transform_matrix.shape == torch.Size([1, 3, 3])
 
     def test_batch_shape(self):
         """transform_matrix batch dimension matches input batch size."""
-        pipe = Compose([RandomRotation(30, p=1.0)])
+        pipe = Compose([kornia_aug.RandomRotation(30, p=1.0)])
         pipe(torch.rand(4, 3, 8, 8))
         assert pipe.transform_matrix.shape == torch.Size([4, 3, 3])
 
     def test_none_for_exact_only(self):
         """transform_matrix is None when pipeline has only ExactAffineSegments."""
-        pipe = Compose([RandomHorizontalFlip(p=1.0)])
+        pipe = Compose([kornia_aug.RandomHorizontalFlip(p=1.0)])
         pipe(torch.rand(1, 3, 8, 8))
         assert pipe.transform_matrix is None
 
@@ -154,24 +163,23 @@ class TestTransformMatrix:
 class TestPassthroughPath:
     """Validate passthrough behavior for non-fusible transforms."""
 
-    def test_spatial_kernel_passthrough_shape(self):
+    def test_spatial_kernel_passthrough_shape(self, image32x32_batch2):
         """Pipeline with a SPATIAL_KERNEL transform (GaussianBlur) executes the passthrough branch."""
         pipe = Compose([
-            RandomHorizontalFlip(p=1.0),
-            RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
-            RandomRotation(degrees=15, p=1.0),
+            kornia_aug.RandomHorizontalFlip(p=1.0),
+            kornia_aug.RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
+            kornia_aug.RandomRotation(degrees=15, p=1.0),
         ])
-        image = torch.rand(2, 3, 32, 32)
-        image_output = pipe(image)
-        assert image_output.shape == image.shape
-        assert not torch.isnan(image_output).any()
+        out = pipe(image32x32_batch2)
+        assert out.shape == image32x32_batch2.shape
+        assert not torch.isnan(out).any()
 
     def test_spatial_kernel_passthrough_segments(self):
         """GaussianBlur between two geometric transforms breaks into 3 segments."""
         pipe = Compose([
-            RandomHorizontalFlip(p=1.0),
-            RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
-            RandomRotation(degrees=15, p=1.0),
+            kornia_aug.RandomHorizontalFlip(p=1.0),
+            kornia_aug.RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
+            kornia_aug.RandomRotation(degrees=15, p=1.0),
         ])
         # Should have 3 segments: fused(hflip), passthrough(GaussianBlur), fused(rotation)
         assert "passthrough" in pipe.fusion_plan
@@ -179,9 +187,9 @@ class TestPassthroughPath:
     def test_spatial_kernel_warps_saved(self):
         """Single-transform segments on each side of a passthrough save appropriately."""
         pipe = Compose([
-            RandomRotation(30, p=1.0),
-            RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
-            RandomRotation(30, p=1.0),
+            kornia_aug.RandomRotation(30, p=1.0),
+            kornia_aug.RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
+            kornia_aug.RandomRotation(30, p=1.0),
         ])
         # Each fused segment has only one INTERP transform, so 0 warps saved per segment
         assert pipe.n_warps_saved == 0
@@ -189,9 +197,9 @@ class TestPassthroughPath:
     def test_spatial_kernel_exact_warps_saved(self):
         """ExactAffineSegment single-transform on each side of a passthrough: 1 warp saved each."""
         pipe = Compose([
-            RandomHorizontalFlip(p=1.0),
-            RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
-            RandomHorizontalFlip(p=1.0),
+            kornia_aug.RandomHorizontalFlip(p=1.0),
+            kornia_aug.RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
+            kornia_aug.RandomHorizontalFlip(p=1.0),
         ])
         # Each ExactAffineSegment with 1 transform saves 1 warp (no grid_sample at all)
         assert pipe.n_warps_saved == 2
@@ -215,14 +223,13 @@ class TestUnknownBackend:
 class TestForwardMultiTransform:
     """Validate end-to-end forward pass for multi-transform pipelines."""
 
-    def test_three_transform_forward(self):
-        """Three-transform pipeline produces valid (batch_size, channels, height, width) output."""
+    def test_three_transform_forward(self, image32x32_batch2):
+        """Three-transform pipeline produces valid (B,C,H,W) output."""
         pipe = Compose([
-            RandomRotation(30, p=1.0),
-            RandomAffine(0, scale=(0.8, 1.2), p=1.0),
-            RandomHorizontalFlip(p=1.0),
+            kornia_aug.RandomRotation(30, p=1.0),
+            kornia_aug.RandomAffine(0, scale=(0.8, 1.2), p=1.0),
+            kornia_aug.RandomHorizontalFlip(p=1.0),
         ])
-        image = torch.rand(2, 3, 32, 32)
-        image_output = pipe(image)
-        assert image_output.shape == image.shape
-        assert not torch.isnan(image_output).any()
+        out = pipe(image32x32_batch2)
+        assert out.shape == image32x32_batch2.shape
+        assert not torch.isnan(out).any()

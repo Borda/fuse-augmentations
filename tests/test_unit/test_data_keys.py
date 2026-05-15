@@ -111,13 +111,13 @@ class TestDataKeysUnknownKey:
         """Unknown data_key emits a UserWarning at construction time."""
         img = torch.rand(1, 3, 4, 4)
         custom = torch.rand(1, 1, 4, 4)
-        with warnings.catch_warnings(record=True) as w:
+        with warnings.catch_warnings(record=True) as recorded_warnings:
             warnings.simplefilter("always")
             pipe = Compose([], data_keys=["input", "custom_field"])
             pipe(img, custom)
-        user_warnings = [x for x in w if issubclass(x.category, UserWarning)]
+        user_warnings = [warning for warning in recorded_warnings if issubclass(warning.category, UserWarning)]
         assert len(user_warnings) >= 1, "Expected at least one UserWarning for unknown key"
-        assert any("custom_field" in str(x.message) for x in user_warnings), (
+        assert any("custom_field" in str(warning.message) for warning in user_warnings), (
             "Warning should mention the unknown key name"
         )
 

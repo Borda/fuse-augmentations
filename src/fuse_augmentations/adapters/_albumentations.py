@@ -816,7 +816,10 @@ def _sample_crop_resize_params(
     crop_ws: list[float] = []
     for _ in range(batch_size):
         base = transform.get_params()  # type: ignore[attr-defined]
-        base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
+        if hasattr(transform, "update_transform_params"):
+            base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
+        else:
+            base = transform.update_params(base, **data)  # type: ignore[attr-defined]
         full = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]
         x_min, y_min, x_max, y_max = full["crop_coords"]
         tops.append(float(y_min))
@@ -866,9 +869,12 @@ def _sample_matrices(transform: object, batch_size: int, height: int, width: int
     matrices = np.empty((batch_size, 3, 3), dtype=np.float64)
     for idx in range(batch_size):
         base = transform.get_params()  # type: ignore[attr-defined]
-        # update_transform_params adds "shape" (and interpolation/fill keys) needed
-        # by get_params_dependent_on_data to compute center coordinates etc.
-        base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
+        # Inject "shape" (and interpolation/fill) so get_params_dependent_on_data can compute
+        # center coordinates. API differs between albu 1.x and 2.x.
+        if hasattr(transform, "update_transform_params"):
+            base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
+        else:
+            base = transform.update_params(base, **data)  # type: ignore[attr-defined]
         full = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]
         if "matrix" in full:
             matrices[idx] = full["matrix"]
@@ -909,7 +915,10 @@ def _sample_color_params(
     betas: list[float] = []
     for _idx in range(batch_size):
         base = transform.get_params()  # type: ignore[attr-defined]
-        base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
+        if hasattr(transform, "update_transform_params"):
+            base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
+        else:
+            base = transform.update_params(base, **data)  # type: ignore[attr-defined]
         full = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]
         alphas.append(float(full["alpha"]))
         betas.append(float(full["beta"]))
