@@ -84,6 +84,7 @@ class TestFlipParity:
     """Flips: fused output must exactly match native TorchVision output."""
 
     def test_hflip_parity(self, img):
+        """Fused tv_trans.RandomHorizontalFlip(p=1) matches native per-sample output exactly."""
         torch.manual_seed(42)
         native_out = _native_apply(tv_trans.RandomHorizontalFlip(p=1), img)
 
@@ -95,6 +96,7 @@ class TestFlipParity:
         )
 
     def test_vflip_parity(self, img):
+        """Fused tv_trans.RandomVerticalFlip(p=1) matches native per-sample output exactly."""
         torch.manual_seed(42)
         native_out = _native_apply(tv_trans.RandomVerticalFlip(p=1), img)
 
@@ -115,6 +117,7 @@ class TestInterpParity:
         return TorchVisionAdapter()
 
     def test_rotation_parity(self, adapter, img):
+        """Fused tv_trans.RandomRotation output matches manual grid_sample reference."""
         transform = tv_trans.RandomRotation(degrees=(30, 30))
 
         torch.manual_seed(42)
@@ -129,6 +132,7 @@ class TestInterpParity:
         )
 
     def test_affine_rotation_only_parity(self, adapter, img):
+        """Fused tv_trans.RandomAffine with rotation-only matches manual grid_sample reference."""
         transform = tv_trans.RandomAffine(degrees=(20, 20), translate=None, scale=None, shear=None)
 
         torch.manual_seed(42)
@@ -142,6 +146,7 @@ class TestInterpParity:
         )
 
     def test_affine_scale_parity(self, adapter, img):
+        """Fused tv_trans.RandomAffine with scale-only matches manual grid_sample reference."""
         transform = tv_trans.RandomAffine(degrees=0, scale=(0.9, 0.9))
 
         torch.manual_seed(42)
@@ -155,6 +160,7 @@ class TestInterpParity:
         )
 
     def test_affine_translate_parity(self, adapter, img):
+        """Fused tv_trans.RandomAffine with translate-only matches manual grid_sample reference."""
         transform = tv_trans.RandomAffine(degrees=0, translate=(0.1, 0.1))
 
         torch.manual_seed(42)
@@ -168,6 +174,7 @@ class TestInterpParity:
         )
 
     def test_affine_shear_parity(self, adapter, img):
+        """Fused tv_trans.RandomAffine with shear-only matches manual grid_sample reference."""
         transform = tv_trans.RandomAffine(degrees=0, shear=(10, 10, 0, 0))
 
         torch.manual_seed(42)
@@ -184,14 +191,13 @@ class TestInterpParity:
 @pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
 class TestAlignCornersOffset:
     def test_align_corners_offset_within_bound(self, img):
-        """Fused (align_corners=True, center=(W-1)/2) vs native TorchVision (center=W/2) difference is bounded for the
-        documented center offset.
+        """Fused vs native TorchVision pixel difference stays within bound despite the align_corners center offset.
 
         The fused engine uses align_corners=True with rotation center (W-1)/2, while TorchVision native uses half-pixel
-        center W/2.  Under 30-degree rotation, this 0.5px center offset displaces source coordinates across the image,
-        producing pixel-value differences especially at edges (where zeros-padding creates hard boundaries).  This test
+        center W/2. Under 30-degree rotation, this 0.5px center offset displaces source coordinates across the image,
+        producing pixel-value differences especially at edges (where zeros-padding creates hard boundaries). This test
         validates that the max absolute difference stays <= 1.0 (pixel range is [0, 1]) and that the output shapes match
-        -- confirming the architectural difference is bounded, not divergent.
+        — confirming the architectural difference is bounded, not divergent.
 
         """
         # Fixed angle so both paths get angle=30 regardless of RNG state.
@@ -214,14 +220,17 @@ class TestAlignCornersOffset:
 @pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
 class TestEdgeCases:
     def test_p0_output_unchanged(self, img):
+        """tv_trans.RandomHorizontalFlip(p=0) composes to identity so output equals input."""
         out = Compose([tv_trans.RandomHorizontalFlip(p=0)])(img)
         assert torch.allclose(out, img, atol=1e-5), "p=0 should produce identity output"
 
     def test_empty_pipeline_is_identity(self, img):
+        """Compose([]) over a torchvision pipeline returns input unchanged."""
         out = Compose([])(img)
         assert torch.allclose(out, img)
 
     def test_output_shape_preserved(self):
+        """tv_trans.RandomRotation over a batch of 4 preserves (B,C,H,W) shape."""
         img = _rand_image(batch_size=4)
         out = Compose([tv_trans.RandomRotation(degrees=30)])(img)
         assert out.shape == img.shape
@@ -251,6 +260,12 @@ class TestV2Parity:
 
     @pytest.mark.skipif(not _TORCHVISION_V2_AVAILABLE, reason="torchvision v2 required")
     def test_v2_hflip_batch_probability_matches_native(self):
+        """v2.RandomHorizontalFlip(p=0.5) over a batch matches native per-sample probability decisions.
+
+        Verifies that the fused path consumes RNG in the same order as v2 native so that per-sample flip-or-not
+        decisions agree under identical seed.
+
+        """
         img = _rand_image(batch_size=4)
 
         torch.manual_seed(0)
@@ -263,6 +278,12 @@ class TestV2Parity:
 
     @pytest.mark.skipif(not _TORCHVISION_V2_AVAILABLE, reason="torchvision v2 required")
     def test_v2_rotation_uses_one_matrix_for_the_batch(self):
+        """v2.RandomRotation samples a single rotation matrix replicated across the batch.
+
+        TorchVision v2's transform semantics differ from v1: v2 samples parameters once per batch, not per sample, so
+        the resulting per-sample matrices must all be identical.
+
+        """
         img = _rand_image(batch_size=4)
         pipe = Compose([T2.RandomRotation(degrees=30)])
 
@@ -276,6 +297,7 @@ class TestV2Parity:
 
     @pytest.mark.skipif(not _TORCHVISION_V2_AVAILABLE, reason="torchvision v2 required")
     def test_v2_affine_uses_one_matrix_for_the_batch(self):
+        """v2.RandomAffine samples a single affine matrix replicated across the batch."""
         img = _rand_image(batch_size=4)
         pipe = Compose([T2.RandomAffine(degrees=20, translate=(0.1, 0.1), scale=(0.8, 1.2), shear=(-5, 5, -3, 3))])
 
@@ -289,6 +311,7 @@ class TestV2Parity:
 
     @pytest.mark.skipif(not _TORCHVISION_V2_AVAILABLE, reason="torchvision v2 required")
     def test_v2_color_jitter_passthrough_matches_native_on_batch(self):
+        """v2.ColorJitter passthrough segment matches native output bit-for-bit across the batch."""
         img = _rand_image(batch_size=4)
         transform = T2.ColorJitter(brightness=0.2, contrast=0.3, saturation=0.1, hue=0.05)
 
@@ -311,8 +334,8 @@ def _tv_forward_matrix(
 ) -> torch.Tensor:
     """Build TorchVision's forward 3x3 matrix from sampled parameters.
 
-    Delegates to TorchVision's own affine helper with ``inverted=False`` so
-    the reference matrix stays aligned with upstream parameterization.
+    Delegates to TorchVision's own affine helper with ``inverted=False`` so the reference matrix stays aligned with
+    upstream parameterization.
 
     """
     flat = tv_trans.functional._get_inverse_affine_matrix(  # type: ignore[attr-defined]
@@ -428,11 +451,12 @@ class TestBatchSamplesIndependentAffine:
 @pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
 class TestChain:
     def test_rotate_then_hflip_fusion_plan(self):
+        """tv_trans Rotation + HorizontalFlip chain reports a fused segment in fusion_plan."""
         pipe = Compose([tv_trans.RandomRotation(degrees=30), tv_trans.RandomHorizontalFlip(p=1)])
         assert "fused" in pipe.fusion_plan
 
     def test_n_warps_saved(self):
-        """Chain of 2 GEOMETRIC_INTERP saves 1 warp."""
+        """Chain of 2 tv_trans GEOMETRIC_INTERP transforms collapses one grid_sample call."""
         pipe = Compose([
             tv_trans.RandomRotation(degrees=30),
             tv_trans.RandomAffine(degrees=0, scale=(0.9, 1.1)),

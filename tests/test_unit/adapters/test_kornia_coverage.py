@@ -134,6 +134,7 @@ class TestRegistryCompleteness:
     """Verify the registry is non-empty (guards against broken lazy import)."""
 
     def test_registry_not_empty(self):
+        """TRANSFORM_REGISTRY is non-empty, guarding against silent kornia import failure."""
         assert len(TRANSFORM_REGISTRY) > 0, "TRANSFORM_REGISTRY is empty -- kornia imports may have failed silently"
 
     def test_registry_has_expected_minimum(self):

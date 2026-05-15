@@ -191,7 +191,13 @@ class TestExactWithInterp:
     """EXACT with INTERP present fuses everything into a single FusedAffineSegment."""
 
     def test_exact_with_interp_creates_fused_segment(self):
-        """[HFlip, Rotate, VFlip] -> single FusedAffineSegment (INTERP present)."""
+        """[HFlip, Rotate, VFlip] collapses into a single FusedAffineSegment when an INTERP op is present.
+
+        Once any GEOMETRIC_INTERP op is in the run, a single grid_sample is unavoidable; the surrounding EXACT ops are
+        folded into that same warp rather than running as a separate ExactAffineSegment, since piggy-backing on the
+        already-required interpolation is free.
+
+        """
         adapter = _StubAdapter()
         hflip = _StubTransform(_identity_matrix_fn, category=TransformCategory.GEOMETRIC_EXACT)
         rotate = _StubTransform(_identity_matrix_fn, category=TransformCategory.GEOMETRIC_INTERP)

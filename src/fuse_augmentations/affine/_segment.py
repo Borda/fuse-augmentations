@@ -86,29 +86,23 @@ def _transform_prob(transform: object, default: float = 1.0) -> float:
 class ExactAffineSegment(nn.Module):
     """Lossless segment for GEOMETRIC_EXACT-only chains.
 
-    Used when a run of consecutive geometric transforms consists entirely of
-    ``GEOMETRIC_EXACT`` operations, such as flips and other discrete,
-    lossless image-space transforms supported by the active adapter
-    (for example 90-degree rotations or transpose-like ops).
-    Applies each transform via :meth:`TransformAdapter.exact_apply`
-    instead of ``grid_sample``, introducing zero interpolation error.
+    Used when a run of consecutive geometric transforms consists entirely of ``GEOMETRIC_EXACT`` operations, such as
+    flips and other discrete, lossless image-space transforms supported by the active adapter (for example 90-degree
+    rotations or transpose-like ops). Applies each transform via :meth:`TransformAdapter.exact_apply` instead of
+    ``grid_sample``, introducing zero interpolation error.
 
-    Per-sample probability masking is implemented by sampling a boolean mask
-    of shape ``(B,)`` from each transform's application probability and
-    applying the exact transform only to active samples. The fused engine
-    prefers a ``prob`` attribute when present and falls back to backend ``p``
-    for native transform objects.
+    Per-sample probability masking is implemented by sampling a boolean mask of shape ``(B,)`` from each transform's
+    application probability and applying the exact transform only to active samples. The fused engine prefers a ``prob``
+    attribute when present and falls back to backend ``p`` for native transform objects.
 
-    Auxiliary-target routing currently remains flip-only: mask/box/keypoint
-    updates rely on :meth:`TransformAdapter.exact_flip_dims`, so non-flip
-    exact ops raise at runtime when ``aux_targets`` are present and at least
-    one sample is active.
+    Auxiliary-target routing currently remains flip-only: mask/box/keypoint updates rely on
+    :meth:`TransformAdapter.exact_flip_dims`, so non-flip exact ops raise at runtime when ``aux_targets`` are present
+    and at least one sample is active.
 
     Args:
         transforms: List of ``GEOMETRIC_EXACT`` transform objects.
         adapter: A ``TransformAdapter`` providing ``exact_apply`` for image
-            updates and, when auxiliary targets are used, ``exact_flip_dims``
-            for flip-compatible target routing.
+            updates and, when auxiliary targets are used, ``exact_flip_dims`` for flip-compatible target routing.
 
     Example:
         >>> import torch
@@ -238,21 +232,17 @@ class ExactAffineSegment(nn.Module):
 class FusedAffineSegment(nn.Module):
     """Fused affine segment that composes geometric transforms into one grid_sample call.
 
-    Accumulates per-sample ``(B, 3, 3)`` forward affine matrices for every
-    transform in the segment, inverts the composed matrix once, and applies
-    a single ``grid_sample`` warp. All operations are vectorised over the
-    batch dimension -- no Python loop per sample.
+    Accumulates per-sample ``(B, 3, 3)`` forward affine matrices for every transform in the segment, inverts the
+    composed matrix once, and applies a single ``grid_sample`` warp. All operations are vectorised over the batch
+    dimension -- no Python loop per sample.
 
     Args:
         transforms: List of geometric transform objects to fuse.
-        adapter: A ``TransformAdapter`` that bridges the transforms to
-            canonical parameters and matrices.
-        interpolation: Optional interpolation mode override
-            (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
-            Defaults to ``"bilinear"`` when ``None``.
-        padding_mode: Optional padding mode override
-            (``"zeros"``, ``"border"``, ``"reflection"``).
-            Defaults to ``"zeros"`` when ``None``.
+        adapter: A ``TransformAdapter`` that bridges the transforms to canonical parameters and matrices.
+        interpolation: Optional interpolation mode override (``"bilinear"``, ``"nearest"``, ``"bicubic"``). Defaults
+            to ``"bilinear"`` when ``None``.
+        padding_mode: Optional padding mode override (``"zeros"``, ``"border"``, ``"reflection"``). Defaults to
+            ``"zeros"`` when ``None``.
 
     """
 
@@ -341,8 +331,7 @@ class FusedAffineSegment(nn.Module):
         """Return the ``(B, 3, 3)`` composed forward matrix from the last forward pass.
 
         Returns:
-            The detached, cloned composed matrix, or ``None`` before the
-            first call to :meth:`forward`.
+            The detached, cloned composed matrix, or ``None`` before the first call to :meth:`forward`.
 
         """
         return self._last_matrix
@@ -671,25 +660,22 @@ def _inv3x3_affine_np(mtx: MatrixArray) -> MatrixArray:
 class AlbuFusedAffineSegment(nn.Module):
     """Fused affine segment for the Albumentations cv2 backend.
 
-    Loops over B samples, composes per-sample ``(3, 3)`` forward affine
-    matrices, and applies a single ``cv2.warpAffine`` call per sample.
+    Loops over B samples, composes per-sample ``(3, 3)`` forward affine matrices, and applies a single
+    ``cv2.warpAffine`` call per sample.
 
-    The input and output are ``(B, C, H, W)`` float32 ``torch.Tensor`` objects.
-    Conversion to/from ``(H, W, C)`` NumPy arrays happens inside ``forward()``.
+    The input and output are ``(B, C, H, W)`` float32 ``torch.Tensor`` objects. Conversion to/from ``(H, W, C)``
+    NumPy arrays happens inside ``forward()``.
 
-    No ``normalize_matrix`` step is needed — ``cv2.warpAffine`` operates in
-    pixel coordinates natively. The accumulated forward (src->dst) matrix is
-    inverted once per sample and passed to :func:`_warp` via
+    No ``normalize_matrix`` step is needed — ``cv2.warpAffine`` operates in pixel coordinates natively. The
+    accumulated forward (src->dst) matrix is inverted once per sample and passed to :func:`_warp` via
     ``cv2.WARP_INVERSE_MAP``.
 
     Args:
         transforms: List of Albumentations transform objects to fuse.
         adapter: An ``AlbumentationsAdapter`` providing ``sample_params``,
             ``build_matrix``, and category lookup.
-        interpolation: Interpolation mode (``"bilinear"``, ``"nearest"``,
-            ``"bicubic"``). Defaults to ``"bilinear"``.
-        padding_mode: Padding mode (``"zeros"``, ``"border"``,
-            ``"reflection"``). Defaults to ``"zeros"``.
+        interpolation: Interpolation mode (``"bilinear"``, ``"nearest"``, ``"bicubic"``). Defaults to ``"bilinear"``.
+        padding_mode: Padding mode (``"zeros"``, ``"border"``, ``"reflection"``). Defaults to ``"zeros"``.
 
     Example:
         >>> import numpy as np
@@ -740,8 +726,8 @@ class AlbuFusedAffineSegment(nn.Module):
     def _classify_transforms(transforms: list[object], adapter: TransformAdapter) -> list[int]:
         """Classify each transform for dispatch in ``forward_numpy``.
 
-        Returns a list of integer tags (one per transform) enabling O(1)
-        dispatch in the hot loop instead of O(n) ``isinstance`` chains.
+        Returns a list of integer tags (one per transform) enabling O(1) dispatch in the hot loop instead of O(n)
+        ``isinstance`` chains.
 
         """
         tags: list[int] = []
@@ -780,8 +766,7 @@ class AlbuFusedAffineSegment(nn.Module):
         """Return the ``(B, 3, 3)`` composed forward matrix from the last forward pass.
 
         Returns:
-            The composed forward matrix (detached clone), or ``None`` before
-            the first call to :meth:`forward`.
+            The composed forward matrix (detached clone), or ``None`` before the first call to :meth:`forward`.
 
         """
         return self._last_matrix
@@ -1076,14 +1061,11 @@ class ProjectiveSegment(nn.Module):
 
     Args:
         transforms: List of projective transform objects to fuse.
-        adapter: A ``TransformAdapter`` that bridges the transforms to
-            canonical parameters and matrices.
-        interpolation: Optional interpolation mode override
-            (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
-            Defaults to ``"bilinear"`` when ``None``.
-        padding_mode: Optional padding mode override
-            (``"zeros"``, ``"border"``, ``"reflection"``).
-            Defaults to ``"zeros"`` when ``None``.
+        adapter: A ``TransformAdapter`` that bridges the transforms to canonical parameters and matrices.
+        interpolation: Optional interpolation mode override (``"bilinear"``, ``"nearest"``, ``"bicubic"``). Defaults
+            to ``"bilinear"`` when ``None``.
+        padding_mode: Optional padding mode override (``"zeros"``, ``"border"``, ``"reflection"``). Defaults to
+            ``"zeros"`` when ``None``.
 
     """
 
@@ -1106,8 +1088,7 @@ class ProjectiveSegment(nn.Module):
         """Return the ``(B, 3, 3)`` composed forward matrix from the last forward pass.
 
         Returns:
-            The detached, cloned composed matrix, or ``None`` before the
-            first call to :meth:`forward`.
+            The detached, cloned composed matrix, or ``None`` before the first call to :meth:`forward`.
 
         """
         return self._last_matrix
@@ -1227,10 +1208,8 @@ class AlbuProjectiveSegment(nn.Module):
         transforms: List of Albumentations perspective transform objects to fuse.
         adapter: An ``AlbumentationsAdapter`` providing ``sample_params``,
             ``build_matrix``, and category lookup.
-        interpolation: Interpolation mode (``"bilinear"``, ``"nearest"``,
-            ``"bicubic"``). Defaults to ``"bilinear"``.
-        padding_mode: Padding mode (``"zeros"``, ``"border"``,
-            ``"reflection"``). Defaults to ``"zeros"``.
+        interpolation: Interpolation mode (``"bilinear"``, ``"nearest"``, ``"bicubic"``). Defaults to ``"bilinear"``.
+        padding_mode: Padding mode (``"zeros"``, ``"border"``, ``"reflection"``). Defaults to ``"zeros"``.
 
     """
 
@@ -1257,8 +1236,7 @@ class AlbuProjectiveSegment(nn.Module):
         """Return the ``(B, 3, 3)`` composed forward matrix from the last forward pass.
 
         Returns:
-            The composed forward matrix (detached clone), or ``None`` before
-            the first call to :meth:`forward`.
+            The composed forward matrix (detached clone), or ``None`` before the first call to :meth:`forward`.
 
         """
         return self._last_matrix
@@ -1371,24 +1349,20 @@ class AlbuProjectiveSegment(nn.Module):
 class FusedColorSegment(nn.Module):
     """Fused colour-space segment that composes POINTWISE_LINEAR transforms into one matrix multiply.
 
-    Accumulates per-sample ``(B, 4, 4)`` homogeneous colour-space affine
-    matrices for every transform in the segment, multiplies all pixels by
-    the composed matrix, and clamps the result to ``[0, 1]``.  All operations
-    are vectorised over the batch dimension.
+    Accumulates per-sample ``(B, 4, 4)`` homogeneous colour-space affine matrices for every transform in the
+    segment, multiplies all pixels by the composed matrix, and clamps the result to ``[0, 1]``.  All operations are
+    vectorised over the batch dimension.
 
-    Colour transforms do **not** affect spatial layout, so auxiliary targets
-    (masks, bounding boxes, keypoints) are returned unchanged.
+    Colour transforms do **not** affect spatial layout, so auxiliary targets (masks, bounding boxes, keypoints) are
+    returned unchanged.
 
     Args:
         transforms: List of ``POINTWISE_LINEAR`` transform objects to fuse.
-        adapter: A ``TransformAdapter`` providing ``sample_params`` and
-            ``build_color_matrix`` for each transform.
-        clip_output: When ``True`` (default), the fused output is clamped to
-            ``[0, 1]`` after the matrix multiply, matching the typical behaviour
-            of individual colour transforms.  Set to ``False`` only when the
-            pipeline intentionally produces values outside this range (e.g.
-            transforms configured with ``clip_output=False`` in the underlying
-            library).
+        adapter: A ``TransformAdapter`` providing ``sample_params`` and ``build_color_matrix`` for each transform.
+        clip_output: When ``True`` (default), the fused output is clamped to ``[0, 1]`` after the matrix multiply,
+            matching the typical behaviour of individual colour transforms.  Set to ``False`` only when the pipeline
+            intentionally produces values outside this range (e.g. transforms configured with ``clip_output=False``
+            in the underlying library).
 
     """
 
@@ -1547,10 +1521,9 @@ def _flush_color(
 ) -> None:
     """Flush a run of ``POINTWISE_LINEAR`` transforms into segments.
 
-    If the adapter supports ``build_color_matrix`` for **every** transform
-    in the run, they are folded into a single :class:`FusedColorSegment`.
-    Otherwise the transforms fall back to passthrough (appended as-is).
-    This helper intentionally mutates ``transforms`` in-place (clears it).
+    If the adapter supports ``build_color_matrix`` for **every** transform in the run, they are folded into a single
+    :class:`FusedColorSegment`. Otherwise the transforms fall back to passthrough (appended as-is). This helper
+    intentionally mutates ``transforms`` in-place (clears it).
 
     """
     if not transforms:
@@ -1579,20 +1552,17 @@ class CropResizeSegment(nn.Module):
     which generally differs from the input shape ``(batch_size, channels, height_in, width_in)``.
 
     .. note::
-        Per-sample probability ``prob`` is **not** applied: shape-changing transforms
-        must produce a consistent output size for all batch elements, so the crop is
-        always applied.  Use ``prob=1.0`` (the standard default) when constructing
-        ``RandomResizedCrop`` transforms.
+        Per-sample probability ``prob`` is **not** applied: shape-changing transforms must produce a consistent
+        output size for all batch elements, so the crop is always applied.  Use ``prob=1.0`` (the standard default)
+        when constructing ``RandomResizedCrop`` transforms.
 
     .. note::
-        Auxiliary targets (``"mask"``, ``"bbox_xyxy"``, etc.) are **passed through
-        unchanged** in this release.  Full aux-target routing for crop-resize is
-        deferred to a future phase.
+        Auxiliary targets (``"mask"``, ``"bbox_xyxy"``, etc.) are **passed through unchanged** in this release.
+        Full aux-target routing for crop-resize is deferred to a future phase.
 
     Args:
         transform: A single ``CROP_RESIZE_FIXED`` transform object.
-        adapter: A ``TransformAdapter`` providing ``sample_params`` and ``build_matrix``
-            for the transform.
+        adapter: A ``TransformAdapter`` providing ``sample_params`` and ``build_matrix`` for the transform.
         interpolation: Interpolation mode (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
             Defaults to ``"bilinear"`` when ``None``.
         padding_mode: Padding mode (``"zeros"``, ``"border"``, ``"reflection"``).
@@ -1804,9 +1774,8 @@ def build_segments(
 ) -> list[object]:
     """Split a transform list into fused segments and passthrough transforms.
 
-    Walks the transforms left to right and groups consecutive geometric
-    transforms (``GEOMETRIC_INTERP`` or ``GEOMETRIC_EXACT``) into a single
-    segment.  Any ``SPATIAL_KERNEL``, ``POINTWISE``, or ``POINTWISE_LINEAR``
+    Walks the transforms left to right and groups consecutive geometric transforms (``GEOMETRIC_INTERP`` or
+    ``GEOMETRIC_EXACT``) into a single segment.  Any ``SPATIAL_KERNEL``, ``POINTWISE``, or ``POINTWISE_LINEAR``
     transform breaks the current geometric group and is returned as-is.
 
     After grouping, each accumulated geometric run is classified:

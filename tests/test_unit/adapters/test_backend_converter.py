@@ -33,20 +33,25 @@ class TestBackendConverterProtocol:
     """Verify the BackendConverter protocol definition and runtime checks."""
 
     def test_importable_from_package(self) -> None:
+        """BackendConverter is exposed at the top-level fuse_augmentations package."""
         assert hasattr(fuse_augmentations, "BackendConverter")
 
     def test_in_all(self) -> None:
+        """BackendConverter is listed in fuse_augmentations.__all__"""
         assert "BackendConverter" in fuse_augmentations.__all__
 
     def test_isinstance_valid(self) -> None:
+        """A class implementing convert() and target_backend satisfies BackendConverter."""
         converter = _ValidConverter()
         assert isinstance(converter, BackendConverter)
 
     def test_isinstance_missing_convert_fails(self) -> None:
+        """A class missing convert() does not satisfy the BackendConverter protocol."""
         obj = _MissingConvert()
         assert not isinstance(obj, BackendConverter)
 
     def test_importable_from_fuse_aug(self) -> None:
+        """BackendConverter is reachable through the legacy fuse_aug alias."""
         from fuse_aug import BackendConverter as BC
 
         assert BC is BackendConverter
@@ -67,6 +72,7 @@ class TestBackendConverterExamples:
     """Protocol-compliant converters remain usable outside FusedCompose internals."""
 
     def test_custom_converter_is_backend_converter(self) -> None:
+        """A user-defined identity converter passes the BackendConverter isinstance check."""
         assert isinstance(_IdentityConverter(), BackendConverter)
 
     def test_custom_converter_round_trips_tensor(self) -> None:

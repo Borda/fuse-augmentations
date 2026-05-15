@@ -2,15 +2,13 @@
 
 Requires kornia >= 0.6.12.
 
-For single-transform tests, the fused path and Kornia native produce
-identical results because both perform a single ``grid_sample``.
+For single-transform tests, the fused path and Kornia native produce identical results because both perform a single
+``grid_sample``.
 
-For multi-transform chains, the fused path composes matrices then does
-a single ``grid_sample`` (one interpolation pass), while Kornia applies
-transforms sequentially (one ``grid_sample`` per transform, accumulating
-interpolation error).  Multi-transform tests therefore verify that the
-fused path matches a manually composed matrix + single ``grid_sample``
-reference, which is the mathematically correct comparison.
+For multi-transform chains, the fused path composes matrices then does a single ``grid_sample`` (one interpolation
+pass), while Kornia applies transforms sequentially (one ``grid_sample`` per transform, accumulating interpolation
+error).  Multi-transform tests therefore verify that the fused path matches a manually composed matrix + single
+``grid_sample`` reference, which is the mathematically correct comparison.
 
 """
 

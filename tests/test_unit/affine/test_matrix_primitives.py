@@ -436,7 +436,6 @@ class TestPerspectiveGrid:
 
     def test_identity_grid_matches_affine_grid(self) -> None:
         """Identity 3x3 produces grid matching F.affine_grid with identity 2x3."""
-
         batch_size, height, width = 2, 8, 8
         mtx_identity = torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1)
         grid_proj = perspective_grid(mtx_identity, height=height, width=width)

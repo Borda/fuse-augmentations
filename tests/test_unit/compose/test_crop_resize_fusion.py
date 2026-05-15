@@ -67,7 +67,12 @@ class TestCropResizeMatrix:
         assert torch.allclose(mtx, torch.eye(3).unsqueeze(0))
 
     def test_scale_halves_output(self):
-        """Crop full image but resize to half: scale factor = 0.5."""
+        """Crop full image but resize to half: scale factor reflects align_corners endpoint mapping.
+
+        With align_corners=True, the discrete scale factor is (W_out - 1) / (W_in - 1)
+        rather than the naive W_out / W_in. For a 64->32 downscale this yields 31/63,
+        not 0.5 — this test pins that convention.
+        """
         height, width = 64, 64
         top = torch.zeros(1)
         left = torch.zeros(1)
@@ -155,7 +160,14 @@ class TestNormalizeMatrixIO:
         assert torch.all(torch.isfinite(mtx_norm))
 
     def test_crop_resize_matches_explicit_crop_then_interpolate(self):
-        """normalize_matrix_io + grid_sample matches explicit crop + interpolate."""
+        """normalize_matrix_io + grid_sample matches explicit crop + interpolate within float tolerance.
+
+        This is the core numerical-equivalence guarantee for the fused crop-resize
+        path: replacing a two-step (slice then bilinear resize) operation with a
+        single affine-grid sample must produce pixel-identical output up to
+        floating-point round-off, otherwise the fusion is silently lossy.
+
+        """
         h_in, w_in = 64, 80
         h_out, w_out = 32, 32
         top, left = 7, 11
@@ -261,7 +273,13 @@ class TestBuildSegmentsCropResize:
 
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_crop_resize_flushes_preceding_geo(self):
-        """A preceding GEOMETRIC_INTERP run is flushed before the CropResizeSegment."""
+        """A preceding GEOMETRIC_INTERP run is flushed into its own segment before the CropResizeSegment.
+
+        Crop-resize changes output resolution, so it cannot be merged into a same-size affine chain. The builder must
+        emit two segments — a fused affine segment for the rotation followed by the crop-resize segment — not one
+        combined segment.
+
+        """
         rotate_transform = kornia_aug.RandomRotation(degrees=30.0, p=1.0)
         crop_transform = kornia_aug.RandomResizedCrop(size=(64, 64), scale=(0.5, 1.0))
         adapter = KorniaAdapter()
@@ -330,7 +348,12 @@ class TestCropResizeSegmentForward:
 
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_p_zero_is_ignored(self):
-        """CropResizeSegment always applies regardless of p; p=0.0 still crops."""
+        """CropResizeSegment always applies regardless of p; p=0.0 still crops.
+
+        Unlike random geometric ops where p=0 yields a no-op, RandomResizedCrop changes output resolution. Skipping it
+        would leave a shape mismatch in the pipeline, so the segment ignores p and always applies.
+
+        """
         transform = kornia_aug.RandomResizedCrop(size=(32, 32), scale=(0.5, 1.0), p=0.0)
         seg = CropResizeSegment(transform, KorniaAdapter())
         image = torch.rand(2, 3, 64, 64)

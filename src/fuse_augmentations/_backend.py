@@ -1,7 +1,6 @@
 """Backend detection for augmentation transform pipelines.
 
-Inspects transform module paths to determine which backend framework
-(Kornia, Albumentations, TorchVision) is in use.
+Inspects transform module paths to determine which backend framework (Kornia, Albumentations, TorchVision) is in use.
 
 Example:
     >>> from fuse_augmentations._backend import detect_backend
@@ -139,8 +138,7 @@ def _match_backend(module: str) -> Backend | None:
 def _match_backend_from_mro(cls: type) -> Backend | None:
     """Walk the MRO looking for an ancestor whose module matches a known backend.
 
-    Skips ``object`` and the class itself (already checked by the caller via
-    its direct ``__module__``).
+    Skips ``object`` and the class itself (already checked by the caller via its direct ``__module__``).
 
     Args:
         cls: The type of the transform.

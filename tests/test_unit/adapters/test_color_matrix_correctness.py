@@ -107,7 +107,7 @@ class TestKorniaColorMatrixCorrectness:
         ],
     )
     def test_last_row_homogeneous(self, transform_factory):
-        """Bottom row of each (4, 4) sub-matrix is [0, 0, 0, 1]."""
+        """Bottom row of each (4, 4) sub-matrix is [0, 0, 0, 1]"""
         transform = transform_factory()
         shape = (3, 3, 8, 8)
         params = self.adapter.sample_params(transform, shape, torch.device("cpu"))
@@ -118,7 +118,7 @@ class TestKorniaColorMatrixCorrectness:
     @given(seed=integers(min_value=0, max_value=9999))
     @settings(max_examples=30)
     def test_random_brightness_parity(self, seed):
-        """Matrix-applied brightness matches Kornia's native output (no clamping)."""
+        """Matrix-applied brightness matches Kornia's native output (no clamping)"""
         torch.manual_seed(seed)
         transform = kornia_aug.RandomBrightness(brightness=(0.8, 1.2), p=1.0, clip_output=False)
         batch_size, channels, height, width = 2, 3, 8, 8
@@ -137,7 +137,7 @@ class TestKorniaColorMatrixCorrectness:
     @given(seed=integers(min_value=0, max_value=9999))
     @settings(max_examples=30)
     def test_random_contrast_parity(self, seed):
-        """Matrix-applied contrast matches Kornia's native output (no clamping)."""
+        """Matrix-applied contrast matches Kornia's native output (no clamping)"""
         torch.manual_seed(seed)
         transform = kornia_aug.RandomContrast(contrast=(0.8, 1.2), p=1.0, clip_output=False)
         batch_size, channels, height, width = 2, 3, 8, 8
@@ -161,7 +161,7 @@ class TestKorniaColorMatrixCorrectness:
         ],
     )
     def test_identity_case(self, transform_factory):
-        """When factor=1.0 the matrix is identity (brightness and contrast)."""
+        """When factor=1.0 the matrix is identity (brightness and contrast)"""
         transform = transform_factory()
         shape = (2, 3, 8, 8)
         params = self.adapter.sample_params(transform, shape, torch.device("cpu"))
@@ -199,7 +199,7 @@ class TestTorchVisionColorMatrixCorrectness:
         assert matrix.shape == (2, 4, 4)
 
     def test_last_row_homogeneous(self):
-        """Bottom row of each (4, 4) matrix is [0, 0, 0, 1]."""
+        """Bottom row of each (4, 4) matrix is [0, 0, 0, 1]"""
         transform = tv_trans.ColorJitter(brightness=0.5, contrast=0.5)
         shape = (3, 3, 8, 8)
         params = self.adapter.sample_params(transform, shape, torch.device("cpu"))
@@ -209,7 +209,12 @@ class TestTorchVisionColorMatrixCorrectness:
             torch.testing.assert_close(matrix[idx, 3, :], expected)
 
     def test_brightness_only_parity(self):
-        """Brightness-only ColorJitter: matrix matches native (multiplicative)."""
+        """Brightness-only ColorJitter: matrix matches native (multiplicative)
+
+        TorchVision's ColorJitter has no `clip_output` flag, so this test stays inside the [0.25, 0.75] safe range and
+        compares against a manually-computed multiplicative reference rather than calling the transform directly — this
+        isolates the matrix-construction step from TorchVision's parameter-sampling and per-sample loop.
+        """
         torch.manual_seed(42)
         transform = tv_trans.ColorJitter(brightness=0.3)
         batch_size, channels, height, width = 2, 3, 8, 8
@@ -248,7 +253,7 @@ class TestAlbumentationsColorMatrixCorrectness:
         assert matrix.shape == (2, 4, 4)
 
     def test_last_row_homogeneous(self):
-        """Bottom row of each (4, 4) matrix is [0, 0, 0, 1]."""
+        """Bottom row of each (4, 4) matrix is [0, 0, 0, 1]"""
         transform = albu.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=1.0)
         shape = (3, 3, 8, 8)
         params = self.adapter.sample_params(transform, shape, torch.device("cpu"))

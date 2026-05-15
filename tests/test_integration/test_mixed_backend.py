@@ -169,8 +169,9 @@ class TestMixedBackendSerialization:
     def test_pickle_roundtrip_tv_only_with_spatial_kernel_barrier(self):
         """Regression: pickle round-trip with a SPATIAL_KERNEL barrier dispatches correctly.
 
-        Bug #2: id()-keyed adapter map broke after pickle because object ids
-        change on deserialization. Index-based keys survive pickle.
+        Bug #2: id()-keyed adapter map broke after pickle because object ids change on deserialization. Index-based keys
+        survive pickle.
+
         """
         pipe = Compose([
             tv_trans.RandomRotation(degrees=30),

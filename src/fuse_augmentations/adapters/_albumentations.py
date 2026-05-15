@@ -14,9 +14,8 @@ matrix directly instead of reconstructing it from raw angle/scale/shear values.
 forward pixel-space homography and consumed by
 ``AlbuProjectiveSegment`` rather than the affine fusion path.
 
-Flip transforms (``A.HorizontalFlip``, ``A.VerticalFlip``) return an empty
-parameter dict; ``build_matrix()`` constructs their matrices from inline
-NumPy helpers.
+Flip transforms (``A.HorizontalFlip``, ``A.VerticalFlip``) return an empty parameter dict; ``build_matrix()``
+constructs their matrices from inline NumPy helpers.
 
 Requires ``albumentations >= 2.0``.
 
@@ -186,10 +185,8 @@ class AlbumentationsAdapter:
     (GEOMETRIC_EXACT). ``A.Perspective`` is classified as ``PROJECTIVE`` and
     routed through the projective segment path instead of affine fusion.
 
-    Requires ``albumentations >= 2.0``. The adapter reads the pre-built
-    ``matrix`` key returned by affine-style transforms and ``Perspective``
-    rather than reconstructing affine or projective matrices from raw
-    parameters.
+    Requires ``albumentations >= 2.0``. The adapter reads the pre-built ``matrix`` key returned by affine-style
+    transforms and ``Perspective`` rather than reconstructing affine or projective matrices from raw parameters.
 
     Example:
         >>> adapter = AlbumentationsAdapter()

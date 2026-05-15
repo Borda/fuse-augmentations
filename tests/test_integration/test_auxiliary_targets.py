@@ -127,7 +127,13 @@ class TestBboxRotation:
     """#36: After 90-degree rotation, bbox AABB contains expected corners."""
 
     def test_bbox_aabb_after_90_rotation(self):
-        """90-degree rotation of a bbox: AABB of rotated corners is computed correctly."""
+        """90-degree rotation of a bbox produces a valid axis-aligned bounding box.
+
+        Rotating a bbox by 90 degrees swaps its width and height; the implementation must compute the AABB enclosing all
+        four rotated corners rather than naively transforming the original (x1, y1, x2, y2) pair, which would yield an
+        inverted box.
+
+        """
         # Use a known 90-degree rotation via kornia_aug.RandomRotation with degrees=(90, 90)
         pipe = Compose(
             [kornia_aug.RandomRotation(degrees=(90, 90), p=1.0)],
@@ -289,7 +295,12 @@ class TestTransformMask:
         assert unique_vals.issubset({0, 1, 2}), f"Unexpected label values after transform: {unique_vals}"
 
     def test_int64_preserves_large_labels_with_fp16_grid(self):
-        """Large integer labels are preserved even when the input grid is float16."""
+        """Large integer labels are preserved even when the input grid is float16.
+
+        Mixed-precision paths can quietly round class IDs above the float16 mantissa limit (2048). Casting to float32
+        internally before the warp ensures large labels survive the round-trip without truncation.
+
+        """
         mask_int64 = torch.full((BATCH, 1, HEIGHT, WIDTH), 4097, dtype=torch.int64)
         theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(BATCH, -1, -1)
         grid = F.affine_grid(theta, [BATCH, 1, HEIGHT, WIDTH], align_corners=True).to(torch.float16)

@@ -1,8 +1,8 @@
 """Concrete BackendConverter implementations for cross-backend output.
 
-Provides converters between PyTorch tensors and NumPy arrays, preserving the
-``(batch_size, channels, height, width)`` pipeline invariant on the torch side and converting to/from
-``(batch_size, height, width, channels)`` HWC layout on the NumPy side.
+Provides converters between PyTorch tensors and NumPy arrays, preserving the ``(batch_size, channels, height, width)``
+pipeline invariant on the torch side and converting to/from ``(batch_size, height, width, channels)`` HWC layout on the
+NumPy side.
 
 """
 
@@ -19,9 +19,8 @@ if TYPE_CHECKING:
 class NumpyToTorchConverter:
     """Convert NumPy HWC/BHWC arrays to ``(batch_size, channels, height, width)`` torch tensors.
 
-    All pipeline outputs are ``(batch_size, channels, height, width)`` ``torch.Tensor`` regardless of backend.
-    ``uint8`` inputs are normalised to ``float32`` in ``[0, 1]``; ``float32`` inputs
-    are passed through unchanged.
+    All pipeline outputs are ``(batch_size, channels, height, width)`` ``torch.Tensor`` regardless of backend. ``uint8``
+    inputs are normalised to ``float32`` in ``[0, 1]``; ``float32`` inputs are passed through unchanged.
 
     """
 
@@ -79,8 +78,8 @@ class NumpyToTorchConverter:
 class TorchToNumpyConverter:
     """Convert ``(batch_size, channels, height, width)`` torch tensors to NumPy HWC/BHWC arrays.
 
-    Single-image batches ``(1, channels, height, width)`` are squeezed to ``(height, width, channels)`` for
-    convenience. Multi-image batches produce ``(batch_size, height, width, channels)``.
+    Single-image batches ``(1, channels, height, width)`` are squeezed to ``(height, width, channels)`` for convenience.
+    Multi-image batches produce ``(batch_size, height, width, channels)``.
 
     """
 

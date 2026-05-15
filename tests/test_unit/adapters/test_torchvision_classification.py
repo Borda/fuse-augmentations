@@ -88,7 +88,7 @@ class TestTorchVisionAdapterCategory:
         ],
     )
     def test_category_real_v1(self, adapter: TorchVisionAdapter, transform_factory, expected_cat):
-        """V1 transforms map to expected categories (requires torchvision)."""
+        """V1 transforms map to expected categories (requires torchvision)"""
         assert adapter.category(transform_factory(tv_trans)) == expected_cat
 
     @pytest.mark.skipif(not _TORCHVISION_V2_AVAILABLE, reason="missing torchvision.transforms.v2")
@@ -123,7 +123,7 @@ class TestTorchVisionAdapterCategory:
         ],
     )
     def test_category_real_v2(self, adapter: TorchVisionAdapter, transform_factory, expected_cat):
-        """V2 transforms map to expected categories (requires torchvision.transforms.v2)."""
+        """V2 transforms map to expected categories (requires torchvision.transforms.v2)"""
         assert adapter.category(transform_factory(Tv2)) == expected_cat
 
     def test_unknown_transform_returns_spatial_kernel_with_warning(self, adapter: TorchVisionAdapter):

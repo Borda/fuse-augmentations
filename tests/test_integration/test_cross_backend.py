@@ -76,24 +76,33 @@ class TestKorniaOutputBackend:
         )
 
     def test_kornia_to_numpy(self) -> None:
+        """Kornia pipeline with output_backend='numpy' yields BHWC float32 ndarray."""
         pipe = self._make_pipe(output_backend="numpy")
         result = pipe(_rand_image())
         assert isinstance(result, np.ndarray)
         _assert_valid_numpy(result)
 
     def test_kornia_to_torch(self) -> None:
+        """Kornia pipeline with output_backend='torch' yields BCHW torch.Tensor."""
         pipe = self._make_pipe(output_backend="torch")
         result = pipe(_rand_image())
         assert isinstance(result, torch.Tensor)
         _assert_valid_torch(result)
 
     def test_kornia_default(self) -> None:
+        """Kornia pipeline with output_backend=None defaults to torch.Tensor output."""
         pipe = self._make_pipe(output_backend=None)
         result = pipe(_rand_image())
         assert isinstance(result, torch.Tensor)
         _assert_valid_torch(result)
 
     def test_kornia_to_numpy_single_batch(self) -> None:
+        """Kornia pipeline output_backend='numpy' with batch=1 produces (H,W,C) ndarray.
+
+        Single-batch numpy output collapses the leading batch dimension to match the conventional HWC layout used by
+        image libraries.
+
+        """
         pipe = self._make_pipe(output_backend="numpy")
         result = pipe(_rand_image(batch_size=1))
         assert isinstance(result, np.ndarray)
@@ -111,24 +120,28 @@ class TestTorchVisionOutputBackend:
         )
 
     def test_torchvision_to_numpy(self) -> None:
+        """TorchVision pipeline with output_backend='numpy' yields BHWC float32 ndarray."""
         pipe = self._make_pipe(output_backend="numpy")
         result = pipe(_rand_image())
         assert isinstance(result, np.ndarray)
         _assert_valid_numpy(result)
 
     def test_torchvision_to_torch(self) -> None:
+        """TorchVision pipeline with output_backend='torch' yields BCHW torch.Tensor."""
         pipe = self._make_pipe(output_backend="torch")
         result = pipe(_rand_image())
         assert isinstance(result, torch.Tensor)
         _assert_valid_torch(result)
 
     def test_torchvision_default(self) -> None:
+        """TorchVision pipeline with output_backend=None defaults to torch.Tensor output."""
         pipe = self._make_pipe(output_backend=None)
         result = pipe(_rand_image())
         assert isinstance(result, torch.Tensor)
         _assert_valid_torch(result)
 
     def test_torchvision_to_numpy_single_batch(self) -> None:
+        """TorchVision pipeline output_backend='numpy' with batch=1 produces (H,W,C) ndarray."""
         pipe = self._make_pipe(output_backend="numpy")
         result = pipe(_rand_image(batch_size=1))
         assert isinstance(result, np.ndarray)
@@ -146,24 +159,28 @@ class TestAlbumentationsOutputBackend:
         )
 
     def test_albu_to_numpy(self) -> None:
+        """Albumentations pipeline with output_backend='numpy' yields BHWC float32 ndarray."""
         pipe = self._make_pipe(output_backend="numpy")
         result = pipe(_rand_image())
         assert isinstance(result, np.ndarray)
         _assert_valid_numpy(result)
 
     def test_albu_to_torch(self) -> None:
+        """Albumentations pipeline with output_backend='torch' yields BCHW torch.Tensor."""
         pipe = self._make_pipe(output_backend="torch")
         result = pipe(_rand_image())
         assert isinstance(result, torch.Tensor)
         _assert_valid_torch(result)
 
     def test_albu_default(self) -> None:
+        """Albumentations pipeline with output_backend=None defaults to torch.Tensor output."""
         pipe = self._make_pipe(output_backend=None)
         result = pipe(_rand_image())
         assert isinstance(result, torch.Tensor)
         _assert_valid_torch(result)
 
     def test_albu_to_numpy_single_batch(self) -> None:
+        """Albumentations pipeline output_backend='numpy' with batch=1 produces (H,W,C) ndarray."""
         pipe = self._make_pipe(output_backend="numpy")
         result = pipe(_rand_image(batch_size=1))
         assert isinstance(result, np.ndarray)
@@ -175,6 +192,7 @@ class TestMixedBackendKorniaTorchVision:
     """Kornia + TorchVision mixed pipeline with output_backend."""
 
     def test_kornia_then_torchvision_to_numpy(self) -> None:
+        """Kornia-then-TorchVision mixed pipeline converts to BHWC numpy output."""
         pipe = Compose(
             [kornia_aug.RandomRotation(degrees=10, p=1.0), tv_trans.RandomHorizontalFlip(p=0.5)],
             output_backend="numpy",
@@ -184,6 +202,12 @@ class TestMixedBackendKorniaTorchVision:
         _assert_valid_numpy(result)
 
     def test_torchvision_then_kornia_to_numpy(self) -> None:
+        """TorchVision-then-Kornia mixed pipeline converts to BHWC numpy output.
+
+        Reverse ordering verifies that the conversion step does not depend on the backend of the final transform in the
+        chain.
+
+        """
         pipe = Compose(
             [tv_trans.RandomRotation(degrees=10), kornia_aug.RandomHorizontalFlip(p=0.5)],
             output_backend="numpy",
@@ -193,6 +217,7 @@ class TestMixedBackendKorniaTorchVision:
         _assert_valid_numpy(result)
 
     def test_kornia_then_torchvision_to_torch(self) -> None:
+        """Kornia-then-TorchVision mixed pipeline preserves BCHW torch.Tensor output."""
         pipe = Compose(
             [kornia_aug.RandomRotation(degrees=10, p=1.0), tv_trans.RandomHorizontalFlip(p=0.5)],
             output_backend="torch",
@@ -207,6 +232,7 @@ class TestMixedBackendKorniaAlbu:
     """Kornia + Albumentations mixed pipeline with output_backend."""
 
     def test_kornia_then_albu_to_numpy(self) -> None:
+        """Kornia-then-Albumentations mixed pipeline converts to BHWC numpy output."""
         pipe = Compose(
             [kornia_aug.RandomRotation(degrees=10, p=1.0), albu.HorizontalFlip(p=1.0)],
             output_backend="numpy",
@@ -216,6 +242,7 @@ class TestMixedBackendKorniaAlbu:
         _assert_valid_numpy(result)
 
     def test_albu_then_kornia_to_numpy(self) -> None:
+        """Albumentations-then-Kornia mixed pipeline converts to BHWC numpy output."""
         pipe = Compose(
             [albu.HorizontalFlip(p=1.0), kornia_aug.RandomHorizontalFlip(p=0.5)],
             output_backend="numpy",
@@ -225,6 +252,7 @@ class TestMixedBackendKorniaAlbu:
         _assert_valid_numpy(result)
 
     def test_kornia_then_albu_to_torch(self) -> None:
+        """Kornia-then-Albumentations mixed pipeline preserves BCHW torch.Tensor output."""
         pipe = Compose(
             [kornia_aug.RandomRotation(degrees=10, p=1.0), albu.HorizontalFlip(p=1.0)],
             output_backend="torch",
@@ -241,6 +269,7 @@ class TestMixedBackendTorchVisionAlbu:
     """TorchVision + Albumentations mixed pipeline with output_backend."""
 
     def test_torchvision_then_albu_to_numpy(self) -> None:
+        """TorchVision-then-Albumentations mixed pipeline converts to BHWC numpy output."""
         pipe = Compose(
             [tv_trans.RandomRotation(degrees=10), albu.HorizontalFlip(p=1.0)],
             output_backend="numpy",
@@ -250,6 +279,7 @@ class TestMixedBackendTorchVisionAlbu:
         _assert_valid_numpy(result)
 
     def test_albu_then_torchvision_to_numpy(self) -> None:
+        """Albumentations-then-TorchVision mixed pipeline converts to BHWC numpy output."""
         pipe = Compose(
             [albu.HorizontalFlip(p=1.0), tv_trans.RandomHorizontalFlip(p=0.5)],
             output_backend="numpy",
@@ -259,6 +289,7 @@ class TestMixedBackendTorchVisionAlbu:
         _assert_valid_numpy(result)
 
     def test_torchvision_then_albu_to_torch(self) -> None:
+        """TorchVision-then-Albumentations mixed pipeline preserves BCHW torch.Tensor output."""
         pipe = Compose(
             [tv_trans.RandomRotation(degrees=10), albu.HorizontalFlip(p=1.0)],
             output_backend="torch",
@@ -272,23 +303,27 @@ class TestFromParamsOutputBackend:
     """Backend-free from_params pipelines with output_backend."""
 
     def test_from_params_to_numpy(self) -> None:
+        """from_params with output_backend='numpy' yields BHWC float32 ndarray."""
         pipe = FusedCompose.from_params(rotation=(-10.0, 10.0), hflip_p=0.5, output_backend="numpy")
         result = pipe(_rand_image())
         assert isinstance(result, np.ndarray)
         _assert_valid_numpy(result)
 
     def test_from_params_to_torch(self) -> None:
+        """from_params with output_backend='torch' yields BCHW torch.Tensor."""
         pipe = FusedCompose.from_params(rotation=(-10.0, 10.0), hflip_p=0.5, output_backend="torch")
         result = pipe(_rand_image())
         assert isinstance(result, torch.Tensor)
         _assert_valid_torch(result)
 
     def test_from_params_default(self) -> None:
+        """from_params with no output_backend defaults to torch.Tensor output."""
         pipe = FusedCompose.from_params(rotation=(-10.0, 10.0), hflip_p=0.5)
         result = pipe(_rand_image())
         assert isinstance(result, torch.Tensor)
         _assert_valid_torch(result)
 
     def test_from_params_unknown_raises(self) -> None:
+        """from_params with an unsupported output_backend value raises ValueError at construction."""
         with pytest.raises(ValueError, match="Unknown output_backend"):
             FusedCompose.from_params(rotation=(-10.0, 10.0), output_backend="tensorflow")

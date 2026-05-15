@@ -118,7 +118,7 @@ class TestBuildMatrix:
         assert mtx.shape == (batch, 3, 3)
 
     def test_identity_on_identity_matrix(self):
-        """build_matrix with identity params['matrix'] produces identity (B, 3, 3)."""
+        """build_matrix with identity params['matrix'] produces identity (B, 3, 3)"""
         adapter = AlbumentationsAdapter()
         batch, height, width = 2, 32, 32
 
@@ -147,7 +147,13 @@ class TestBuildMatrix:
         assert torch.allclose(mtx[0], torch.tensor(known, dtype=torch.float32), atol=1e-5)
 
     def test_transpose_returns_swap_matrix_on_square_images(self):
-        """Transpose must provide a real affine matrix in mixed fused segments."""
+        """Transpose produces the (x, y) -> (y, x) swap matrix on square inputs.
+
+        Transpose is an exact-discrete D4 element that mixed fused segments rely on; verified here by patching the
+        module-level type registries so the test does not depend on the installed Albumentations version exposing the
+        Transpose class.
+
+        """
         adapter = AlbumentationsAdapter()
 
         class _TransposeStub:
@@ -240,12 +246,15 @@ class TestSampleParams:
 
 class TestHflipMatrixNp:
     def test_shape(self):
+        """hflip_matrix_np returns a (3, 3) matrix."""
         assert hflip_matrix_np(width=64).shape == (3, 3)
 
     def test_dtype(self):
+        """hflip_matrix_np returns a float64 matrix."""
         assert hflip_matrix_np(width=64).dtype == np.float64
 
     def test_maps_x_correctly(self):
+        """First row encodes x mirror: [-1, 0, W-1]"""
         width = 10
         mtx = hflip_matrix_np(width=width)
         assert mtx[0, 0] == -1.0
@@ -253,12 +262,14 @@ class TestHflipMatrixNp:
         assert mtx[0, 2] == float(width - 1)
 
     def test_maps_y_unchanged(self):
+        """Second row leaves y unchanged: [0, 1, 0]"""
         mtx = hflip_matrix_np(width=10)
         assert mtx[1, 0] == 0.0
         assert mtx[1, 1] == 1.0
         assert mtx[1, 2] == 0.0
 
     def test_homogeneous_row(self):
+        """Third row equals [0, 0, 1] for a homogeneous affine matrix."""
         mtx = hflip_matrix_np(width=10)
         np.testing.assert_array_equal(mtx[2], [0.0, 0.0, 1.0])
 
@@ -270,7 +281,7 @@ class TestHflipMatrixNp:
 
     @pytest.mark.parametrize("width", [4, 64])
     def test_pixel_transform(self, width):
-        """Pixel (0, y, 1) maps to (W-1, y, 1)."""
+        """Pixel (0, y, 1) maps to (W-1, y, 1)"""
         mtx = hflip_matrix_np(width=width)
         point = np.array([0.0, 3.0, 1.0])
         result = mtx @ point
@@ -288,12 +299,15 @@ class TestHflipMatrixNp:
 
 class TestVflipMatrixNp:
     def test_shape(self):
+        """vflip_matrix_np returns a (3, 3) matrix."""
         assert vflip_matrix_np(height=64).shape == (3, 3)
 
     def test_dtype(self):
+        """vflip_matrix_np returns a float64 matrix."""
         assert vflip_matrix_np(height=64).dtype == np.float64
 
     def test_maps_y_correctly(self):
+        """Second row encodes y mirror: [0, -1, H-1]"""
         height = 10
         mtx = vflip_matrix_np(height=height)
         assert mtx[1, 0] == 0.0
@@ -301,12 +315,14 @@ class TestVflipMatrixNp:
         assert mtx[1, 2] == float(height - 1)
 
     def test_maps_x_unchanged(self):
+        """First row leaves x unchanged: [1, 0, 0]"""
         mtx = vflip_matrix_np(height=10)
         assert mtx[0, 0] == 1.0
         assert mtx[0, 1] == 0.0
         assert mtx[0, 2] == 0.0
 
     def test_homogeneous_row(self):
+        """Third row equals [0, 0, 1] for a homogeneous affine matrix."""
         mtx = vflip_matrix_np(height=10)
         np.testing.assert_array_equal(mtx[2], [0.0, 0.0, 1.0])
 
@@ -318,7 +334,7 @@ class TestVflipMatrixNp:
 
     @pytest.mark.parametrize("height", [4, 64])
     def test_pixel_transform(self, height):
-        """Pixel (x, 0, 1) maps to (x, H-1, 1)."""
+        """Pixel (x, 0, 1) maps to (x, H-1, 1)"""
         mtx = vflip_matrix_np(height=height)
         point = np.array([5.0, 0.0, 1.0])
         result = mtx @ point
@@ -348,7 +364,12 @@ class TestVflipMatrixNp:
     ],
 )
 def test_d4_matrix_composition_with_inverse_is_identity(elem: str, inv_elem: str) -> None:
-    """M[elem] @ M[inv_elem] == I for all D4 elements on square images."""
+    """M[elem] @ M[inv_elem] == I for all D4 elements on square images.
+
+    Confirms that the D4 group inverses encoded in ``_D4_ELEM_TO_CODE`` are correctly composed into identity by
+    ``_d4_matrix``; covers self-inverse elements (e, r180, h, v, t, hvt) and rotation pairs (r90/r270).
+
+    """
     height = width = 8
     device = torch.device("cpu")
     dtype = torch.float32

@@ -115,6 +115,7 @@ class TestRegistryCompleteness:
     """Verify the registry is non-empty and covers both v1 and v2 namespaces."""
 
     def test_registry_not_empty(self):
+        """_TRANSFORM_REGISTRY is non-empty, guarding against silent torchvision import failure."""
         assert len(_TRANSFORM_REGISTRY) > 0, (
             "TorchVision _TRANSFORM_REGISTRY is empty -- imports may have failed silently"
         )

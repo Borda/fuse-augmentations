@@ -100,8 +100,8 @@ SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color", "c
 class BackendConverter(Protocol):
     """Protocol for output format converters used with ``output_backend=``.
 
-    Implementations convert the pipeline's native ``torch.Tensor`` output to a
-    target backend format (e.g. NumPy ``ndarray``).
+    Implementations convert the pipeline's native ``torch.Tensor`` output to a target backend format (e.g. NumPy
+    ``ndarray``).
 
     """
 
@@ -203,12 +203,10 @@ class TransformAdapter(Protocol):
     def exact_apply(self, transform: object, image: Tensor) -> Tensor:
         """Apply a GEOMETRIC_EXACT transform losslessly to an image batch.
 
-        Implementers **must** provide this method for adapters that are used
-        with :class:`ExactAffineSegment`. A typical implementation flips the
-        image along the dims returned by :meth:`exact_flip_dims`.
-        Adapters that support non-flip discrete ops (e.g. 90-degree rotations,
-        transposes) can instead dispatch via ``torch.rot90``, ``.permute``,
-        etc.
+        Implementers **must** provide this method for adapters that are used with :class:`ExactAffineSegment`.
+        A typical implementation flips the image along the dims returned by :meth:`exact_flip_dims`.
+        Adapters that support non-flip discrete ops (e.g. 90-degree rotations, transposes) can instead dispatch via
+        ``torch.rot90``, ``.permute``, etc.
 
         Args:
             transform: The backend transform object (GEOMETRIC_EXACT category).
@@ -246,12 +244,10 @@ class TransformAdapter(Protocol):
     ) -> Tensor:
         """Build a (batch_size, 4, 4) homogeneous color-space affine matrix from sampled params.
 
-        Adapters that support ``POINTWISE_LINEAR`` fusion must override this
-        method to return a ``(batch_size, 4, 4)`` matrix encoding the per-channel linear
-        colour transform (3x3 colour matrix + 3-element bias in homogeneous
-        form).  The default implementation raises ``NotImplementedError`` so
-        that adapters without colour-fusion support fall back to passthrough
-        segmentation automatically.
+        Adapters that support ``POINTWISE_LINEAR`` fusion must override this method to return a ``(batch_size, 4, 4)``
+        matrix encoding the per-channel linear colour transform (3x3 colour matrix + 3-element bias in homogeneous
+        form).  The default implementation raises ``NotImplementedError`` so that adapters without colour-fusion
+        support fall back to passthrough segmentation automatically.
 
         Args:
             transform: The backend transform object (``POINTWISE_LINEAR`` category).
@@ -261,8 +257,7 @@ class TransformAdapter(Protocol):
             Tensor of shape ``(batch_size, 4, 4)``.
 
         Raises:
-            NotImplementedError: If the adapter does not support colour-space
-                matrix fusion for this transform.
+            NotImplementedError: If the adapter does not support colour-space matrix fusion for this transform.
 
         """
         raise NotImplementedError(
@@ -274,12 +269,10 @@ class TransformAdapter(Protocol):
 class TransformSpec:
     """Declarative specification for a single augmentation transform.
 
-    A backend-agnostic, JSON-serialisable description of one augmentation
-    operation. Used by :meth:`FusedCompose.from_config
-    <fuse_augmentations._compose.FusedCompose.from_config>` and
-    :meth:`FusedCompose.from_params
-    <fuse_augmentations._compose.FusedCompose.from_params>` to build
-    pipelines from configuration data rather than live transform objects.
+    A backend-agnostic, JSON-serialisable description of one augmentation operation. Used by
+    :meth:`FusedCompose.from_config <fuse_augmentations._compose.FusedCompose.from_config>` and
+    :meth:`FusedCompose.from_params <fuse_augmentations._compose.FusedCompose.from_params>` to build pipelines
+    from configuration data rather than live transform objects.
 
     Args:
         operation: Canonical operation name (e.g. ``"rotation"``, ``"hflip"``).
@@ -437,10 +430,9 @@ class SegmentDescriptor:
     """Structured description of one segment in a fused augmentation pipeline.
 
     Returned by :attr:`FusedCompose.fusion_plan_descriptors
-    <fuse_augmentations._compose.FusedCompose.fusion_plan_descriptors>`.
-    Each instance describes exactly one segment — a fused geometric group,
-    a lossless exact segment, a projective segment, or a passthrough barrier —
-    and is frozen and JSON-serialisable via :meth:`to_dict`.
+    <fuse_augmentations._compose.FusedCompose.fusion_plan_descriptors>`. Each instance describes exactly one segment —
+    a fused geometric group, a lossless exact segment, a projective segment, or a passthrough barrier — and is frozen
+    and JSON-serialisable via :meth:`to_dict`.
 
     Args:
         kind: Segment type. One of ``"fused"``, ``"exact"``, ``"projective"``,
@@ -481,9 +473,8 @@ class SegmentDescriptor:
         """Return a JSON-serialisable dict representation of this descriptor.
 
         Returns:
-            Dict with keys ``"kind"``, ``"transforms"``, ``"n_warps_saved"``,
-            and ``"backend"``. The ``"transforms"`` value is a ``list`` of
-            strings (not a ``tuple``) for JSON compatibility.
+            Dict with keys ``"kind"``, ``"transforms"``, ``"n_warps_saved"``, and ``"backend"``. The ``"transforms"``
+            value is a ``list`` of strings (not a ``tuple``) for JSON compatibility.
 
         Example:
             >>> d = SegmentDescriptor(

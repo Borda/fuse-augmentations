@@ -118,6 +118,7 @@ class TestRegistryCompleteness:
     """Verify the registry is non-empty and covers the baseline transforms."""
 
     def test_registry_not_empty(self):
+        """TRANSFORM_REGISTRY is non-empty, guarding against silent import failure."""
         assert len(TRANSFORM_REGISTRY) > 0, (
             "Albumentations TRANSFORM_REGISTRY is empty -- imports may have failed silently"
         )

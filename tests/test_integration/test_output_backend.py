@@ -97,7 +97,6 @@ class TestOutputBackend:
 
     def test_single_data_key_converts_without_warning(self) -> None:
         """output_backend='numpy' + data_keys=['input'] (single key) converts and does NOT warn."""
-
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
             pipe = FusedCompose([], output_backend="numpy", data_keys=["input"])
@@ -114,7 +113,6 @@ class TestOutputBackend:
 
     def test_output_backend_with_data_keys_no_conversion(self) -> None:
         """When data_keys is set, output_backend conversion is NOT applied (no-op)."""
-
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             pipe = FusedCompose([], output_backend="numpy", data_keys=["input", "mask"])

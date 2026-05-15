@@ -169,9 +169,10 @@ def test_normalize_round_trip(height: int, width: int, angle_deg: float) -> None
 )
 @settings(max_examples=50)
 def test_determinant_product(num_matrices: int, seed: int) -> None:
-    """Det(albu @ batch_size @ ...) == det(albu) * det(batch_size) * ...
+    """Determinant of a matrix chain equals the product of individual determinants for random well-conditioned inputs.
 
-    for random well-conditioned matrices.
+    This is a fundamental property of matrix determinants and validates that matmul3x3 preserves determinants
+    numerically across chains of arbitrary length.
 
     """
     torch.manual_seed(seed)

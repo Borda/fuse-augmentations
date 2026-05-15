@@ -1,12 +1,11 @@
 """Albumentations native I/O parity tests.
 
-Verifies that FusedCompose accepts the same dict-input calling convention as
-albu.Compose (``pipeline(image=ndarray)``), returning a dict with an ``"image"``
-key containing a HWC NumPy array — while leaving the existing BCHW tensor path
+Verifies that FusedCompose accepts the same dict-input calling convention as albu.Compose (``pipeline(image=ndarray)``),
+returning a dict with an ``"image"`` key containing a HWC NumPy array — while leaving the existing BCHW tensor path
 completely unchanged.
 
-Parity tests (marked below) MUST FAIL before the implementation and PASS after.
-Backward-compat tests MUST PASS both before and after the implementation.
+Parity tests (marked below) MUST FAIL before the implementation and PASS after. Backward-compat tests MUST PASS both
+before and after the implementation.
 
 """
 
@@ -81,7 +80,14 @@ class TestAlbuDictInput:
         assert out["image"].shape == img.shape
 
     def test_fused_plus_passthrough(self):
-        """Mixed fused-geometric + passthrough colour op via dict input."""
+        """Mixed fused-geometric + passthrough colour op via dict input preserves shape and type.
+
+        Verifies that the dict-input path correctly dispatches across heterogeneous segments:
+        albu.Rotate goes through AlbuFusedAffineSegment while albu.GaussianBlur is routed via
+        _PassthroughSegment with AlbumentationsAdapter. Both must agree on the HWC NumPy
+        round-trip without intermediate tensor conversion errors.
+
+        """
         img = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
         # albu.Rotate is fused (AlbuFusedAffineSegment); albu.GaussianBlur is a passthrough
         # (_PassthroughSegment with AlbumentationsAdapter).

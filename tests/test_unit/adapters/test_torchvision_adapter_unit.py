@@ -150,17 +150,20 @@ class TestSampleParamsRotation:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_returns_angle_rad_key(self, adapter):
+        """sample_params on a rotation stub returns the 'angle_rad' key."""
         params = adapter.sample_params(_StubRotation(), (2, 3, 64, 64), torch.device("cpu"))
         assert "angle_rad" in params
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_angle_rad_shape(self, adapter):
+        """angle_rad tensor has shape (batch_size,) for v1 rotation stubs."""
         batch_size = 4
         params = adapter.sample_params(_StubRotation(), (batch_size, 3, 64, 64), torch.device("cpu"))
         assert params["angle_rad"].shape == (batch_size,)
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_angle_rad_dtype(self, adapter):
+        """angle_rad tensor has float32 dtype."""
         params = adapter.sample_params(_StubRotation(), (2, 3, 64, 64), torch.device("cpu"))
         assert params["angle_rad"].dtype == torch.float32
 
@@ -177,6 +180,7 @@ class TestSampleParamsAffine:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_returns_all_six_keys(self, adapter):
+        """sample_params on an affine stub returns angle/translate/scale/shear keys."""
         params = adapter.sample_params(_StubAffine(), (2, 3, 64, 64), torch.device("cpu"))
         expected_keys = {"angle_rad", "translate_x", "translate_y", "scale", "shear_x_rad", "shear_y_rad"}
         assert expected_keys == set(params.keys())
@@ -184,13 +188,14 @@ class TestSampleParamsAffine:
     @pytest.mark.usefixtures("_register_stubs")
     @pytest.mark.parametrize("key", ["angle_rad", "translate_x", "translate_y", "scale", "shear_x_rad", "shear_y_rad"])
     def test_affine_param_shapes(self, adapter, key):
+        """Every affine parameter tensor has shape (batch_size,) for v1 stubs."""
         batch_size = 3
         params = adapter.sample_params(_StubAffine(), (batch_size, 3, 64, 64), torch.device("cpu"))
         assert params[key].shape == (batch_size,)
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_affine_values_from_stub(self, adapter):
-        """Stub returns angle=10, translate=(5,-3), scale=0.9, shear=(5.0, 0.0)."""
+        """Stub returns angle=10, translate=(5,-3), scale=0.9, shear=(5.0, 0.0)"""
         params = adapter.sample_params(_StubAffine(), (1, 3, 64, 64), torch.device("cpu"))
         assert params["angle_rad"].item() == pytest.approx(math.radians(10.0), abs=1e-6)
         assert params["translate_x"].item() == pytest.approx(5.0, abs=1e-6)
@@ -201,6 +206,12 @@ class TestSampleParamsAffine:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_v2_affine_samples_one_param_set_per_batch_tensor(self, adapter):
+        """V2 affine transforms sample a single param set shared across the batch.
+
+        Unlike v1, torchvision.transforms.v2 applies one sampled parameter set to the whole batch tensor, so all affine
+        parameter tensors must have shape (1,) regardless of batch size.
+
+        """
         params = adapter.sample_params(_StubV2Affine(), (3, 3, 64, 64), torch.device("cpu"))
         for key in ["angle_rad", "translate_x", "translate_y", "scale", "shear_x_rad", "shear_y_rad"]:
             assert params[key].shape == (1,)
@@ -218,6 +229,7 @@ class TestSampleParamsFlips:
         ],
     )
     def test_flip_returns_batch_size_key(self, adapter, stub_cls):
+        """Flip stubs return only the sentinel '_batch_size' tensor in sample_params."""
         params = adapter.sample_params(stub_cls(), (4, 3, 32, 32), torch.device("cpu"))
         assert "_batch_size" in params
         assert int(params["_batch_size"].item()) == 4
@@ -269,7 +281,7 @@ class TestBuildMatrixHFlip:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_hflip_first_row(self, adapter):
-        """Hflip matrix first row is [-1, 0, width-1]."""
+        """Hflip matrix first row is [-1, 0, width-1]"""
         batch_size, height, width = 2, 32, 64
         params = {"_batch_size": torch.tensor([batch_size], dtype=torch.int64)}
         matrix = adapter.build_matrix(_StubHFlip(), params, height, width)
@@ -284,7 +296,7 @@ class TestBuildMatrixVFlip:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_vflip_second_row(self, adapter):
-        """Vflip matrix second row is [0, -1, height-1]."""
+        """Vflip matrix second row is [0, -1, height-1]"""
         batch_size, height, width = 2, 64, 32
         params = {"_batch_size": torch.tensor([batch_size], dtype=torch.int64)}
         matrix = adapter.build_matrix(_StubVFlip(), params, height, width)
@@ -299,14 +311,17 @@ class TestExactFlipDims:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_hflip_returns_3(self, adapter):
+        """exact_flip_dims on a horizontal flip stub returns [3] (width axis)"""
         assert adapter.exact_flip_dims(_StubHFlip()) == [3]
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_vflip_returns_2(self, adapter):
+        """exact_flip_dims on a vertical flip stub returns [2] (height axis)"""
         assert adapter.exact_flip_dims(_StubVFlip()) == [2]
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_unknown_raises_type_error(self, adapter):
+        """exact_flip_dims raises TypeError for non-flip transforms."""
         with pytest.raises(TypeError, match="Cannot determine flip dims"):
             adapter.exact_flip_dims(_StubRotation())
 
@@ -342,7 +357,7 @@ class TestExpandGuard:
         ],
     )
     def test_expand_true_raises(self, adapter, call):
-        """Expand=True is rejected by both category() and sample_params()."""
+        """Expand=True is rejected by both category() and sample_params()"""
         with pytest.raises(ValueError, match="expand=True is not supported"):
             call(adapter)
 
@@ -350,16 +365,24 @@ class TestExpandGuard:
 class TestV2BatchSemantics:
     @pytest.mark.usefixtures("_register_stubs")
     def test_v2_rotation_samples_one_angle_per_batch_tensor(self, adapter):
+        """V2 rotation samples a single angle for the whole batch (shape (1,))"""
         params = adapter.sample_params(_StubV2Rotation(), (4, 3, 64, 64), torch.device("cpu"))
         assert params["angle_rad"].shape == (1,)
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_same_on_batch_true_for_v2_transform(self, adapter):
+        """V2 transforms report same_on_batch() == True (batch-wide parameter sampling)"""
         assert adapter.same_on_batch(_StubV2Rotation()) is True
 
 
 class TestCallNonfused:
     def test_v1_passthrough_loops_per_sample(self, adapter):
+        """V1 transforms are invoked once per sample with the CHW slice.
+
+        V1 transforms accept only single-sample CHW inputs, so call_nonfused must iterate the batch dimension; the
+        recorded shapes confirm the per-sample invocation pattern.
+
+        """
         transform = _StubPerSampleTransform()
         image = torch.zeros(3, 2, 4, 5)
 
@@ -369,6 +392,12 @@ class TestCallNonfused:
         assert transform.calls == [(2, 4, 5)] * 3
 
     def test_v2_passthrough_runs_once_on_whole_batch(self, adapter):
+        """V2 transforms receive the full BCHW tensor in a single call.
+
+        V2 transforms support batched inputs natively, so call_nonfused must not loop; the recorded single 4-D call
+        shape confirms the batch-wide invocation pattern.
+
+        """
         transform = _StubBatchTransform()
         image = torch.zeros(3, 2, 4, 5)
 
@@ -378,6 +407,12 @@ class TestCallNonfused:
         assert transform.calls == [(3, 2, 4, 5)]
 
     def test_empty_batch_returns_input_without_calling_transform(self, adapter):
+        """Empty batch (B=0) short-circuits and returns the input without invoking the transform.
+
+        Some torchvision transforms raise on zero-length inputs; the adapter must guard against that by returning the
+        input untouched, which the empty calls list verifies.
+
+        """
         transform = _StubBatchTransform()
         image = torch.zeros(0, 2, 4, 5)
 

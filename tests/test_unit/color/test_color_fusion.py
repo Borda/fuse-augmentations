@@ -1,5 +1,5 @@
-"""Contract and regression tests for color fusion: from_params backend= kwarg,
-FusedColorSegment, and adapter build_color_matrix implementations.
+"""Contract and regression tests for color fusion: from_params backend= kwarg, FusedColorSegment, and adapter
+build_color_matrix implementations.
 
 Covers:
 - from_params(specs=..., backend=...) delegation to from_config semantics
@@ -58,7 +58,12 @@ class TestFromParamsBackend:
 
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_from_params_specs_with_backend_same_segments_as_from_config(self):
-        """from_params(specs=..., backend='kornia') produces the same segment structure as from_config."""
+        """from_params(specs=..., backend='kornia') produces the same segment structure as from_config.
+
+        Both factories must produce equivalent fusion plans for the same spec list; otherwise the two entry points would
+        silently diverge and users would get different fusion behaviour depending on which they call.
+
+        """
         specs = [
             TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=1.0),
             TransformSpec(operation="hflip", params={}, prob=0.5),
@@ -73,7 +78,12 @@ class TestFromParamsBackend:
 
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_from_params_backend_native_kwarg_forwarded(self):
-        """TransformSpec.params with a backend-native kwarg (same_on_batch) is forwarded without error."""
+        """TransformSpec.params with a backend-native kwarg (same_on_batch) is forwarded without error.
+
+        Backend-specific kwargs are an escape hatch for advanced users; the resolver must accept unknown but valid
+        kwargs by passing them through to the underlying transform constructor.
+
+        """
         specs = [
             TransformSpec(
                 operation="rotation",
@@ -88,7 +98,12 @@ class TestFromParamsBackend:
 
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_from_params_unknown_backend_native_kwarg_raises(self):
-        """TransformSpec.params with an unrecognised kwarg raises ValueError."""
+        """TransformSpec.params with an unrecognised kwarg raises ValueError.
+
+        Counterpart to the forwarded-kwarg test: kwargs the backend cannot consume must surface as a clear
+        construction error rather than being silently dropped or causing an obscure runtime failure.
+
+        """
         specs = [
             TransformSpec(
                 operation="rotation",
@@ -100,7 +115,12 @@ class TestFromParamsBackend:
             FusedCompose.from_params(specs=specs, backend="kornia")
 
     def test_from_params_existing_call_sig_unchanged(self):
-        """Existing from_params(rotation=...) call signature is not broken."""
+        """Existing from_params(rotation=...) call signature is not broken.
+
+        Backward-compat guard: adding the specs=/backend= path must not break callers that still pass rotation,
+        hflip_p, scale, etc., as individual kwargs.
+
+        """
         pipe = FusedCompose.from_params(rotation=(-30.0, 30.0), hflip_p=0.5)
         image = torch.zeros(2, 3, 32, 32)
         out = pipe(image)
@@ -115,7 +135,12 @@ class TestFusedColorSegment:
         assert FusedColorSegment is not None
 
     def test_build_segments_folds_pointwise_linear_run(self):
-        """Two consecutive POINTWISE_LINEAR ops → single FusedColorSegment."""
+        """Two consecutive POINTWISE_LINEAR ops -> single FusedColorSegment.
+
+        Core color-fusion invariant: when adjacent POINTWISE_LINEAR ops both expose build_color_matrix, the
+        planner must collapse them into a single FusedColorSegment so the matrices multiply at build time.
+
+        """
 
         class _PLTransform:
             _category = TransformCategory.POINTWISE_LINEAR
@@ -182,7 +207,12 @@ class TestFusedColorSegment:
         assert out.shape == image.shape
 
     def test_fused_color_segment_identity_matrix_preserves_image(self):
-        """Applying identity color matrices does not alter pixel values."""
+        """Applying identity color matrices does not alter pixel values.
+
+        Numerical sanity check: feeding eye(4) color matrices through the full fused forward path must round-trip
+        the image without precision loss; any drift signals a bug in the matmul or in/out conversion.
+
+        """
 
         class _IdentityPLTransform:
             _category = TransformCategory.POINTWISE_LINEAR
@@ -213,7 +243,13 @@ class TestFusedColorSegment:
         torch.testing.assert_close(out, image)
 
     def test_build_segments_fallback_to_passthrough_when_adapter_raises(self):
-        """If any adapter in a POINTWISE_LINEAR run raises NotImplementedError, fall back to passthrough."""
+        """If any adapter in a POINTWISE_LINEAR run raises NotImplementedError, fall back to passthrough.
+
+        Adapters that lack color-matrix support (e.g. operations that aren't representable as a 4x4 affine) must signal
+        this via NotImplementedError so the planner emits them as passthrough segments rather than building a broken
+        fused segment.
+
+        """
 
         class _PLTransform:
             _category = TransformCategory.POINTWISE_LINEAR
@@ -248,7 +284,12 @@ class TestFusedColorSegment:
 
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_build_segments_kornia_color_jitter_sat_hue_passthrough(self):
-        """Kornia ColorJitter with active saturation/hue must not be fused."""
+        """Kornia ColorJitter with active saturation/hue must not be fused.
+
+        Saturation and hue are non-linear in RGB space and cannot be represented as a 4x4 affine. The planner must
+        recognise this and leave ColorJitter as a passthrough rather than producing an incorrect fused segment.
+
+        """
         transform = kornia_aug.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=1.0)
         segs = build_segments([transform], KorniaAdapter(), "bilinear", "zeros")
         assert not any(isinstance(seg, FusedColorSegment) for seg in segs)
@@ -265,7 +306,7 @@ class TestAdapterBuildColorMatrix:
 
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_kornia_random_brightness_returns_4x4(self):
-        """KorniaAdapter.build_color_matrix for RandomBrightness returns (B, 4, 4)."""
+        """KorniaAdapter.build_color_matrix for RandomBrightness returns (B, 4, 4)"""
         batch = 3
         transform = kornia_aug.RandomBrightness(brightness=(0.5, 1.5), p=1.0)
         adapter = KorniaAdapter()
@@ -275,7 +316,7 @@ class TestAdapterBuildColorMatrix:
 
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_kornia_color_jitter_returns_4x4(self):
-        """KorniaAdapter.build_color_matrix for ColorJitter returns (B, 4, 4)."""
+        """KorniaAdapter.build_color_matrix for ColorJitter returns (B, 4, 4)"""
         batch = 2
         transform = kornia_aug.ColorJitter(brightness=0.2, contrast=0.2, p=1.0)
         adapter = KorniaAdapter()
@@ -285,7 +326,13 @@ class TestAdapterBuildColorMatrix:
 
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_kornia_color_jitter_with_sat_hue_raises_not_implemented(self):
-        """ColorJitter with active saturation/hue is intentionally not fused."""
+        """ColorJitter with active saturation/hue is intentionally not fused.
+
+        Adapter-level counterpart to the planner-level passthrough test: build_color_matrix must raise
+        NotImplementedError with a message mentioning 'saturation/hue' so callers (and tests) can rely on
+        the contract.
+
+        """
         batch = 2
         transform = kornia_aug.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=1.0)
         adapter = KorniaAdapter()
@@ -306,7 +353,12 @@ class TestAdapterBuildColorMatrix:
 
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_build_color_matrix_last_row_is_homogeneous(self):
-        """build_color_matrix bottom row is [0, 0, 0, 1] for all batch items."""
+        """build_color_matrix bottom row is [0, 0, 0, 1] for all batch items.
+
+        Homogeneous-form invariant: the last row of every 4x4 color matrix must be the canonical [0,0,0,1] so
+        that matrix multiplication composes correctly. A drift here would silently break the fusion algebra.
+
+        """
         batch = 4
         transform = kornia_aug.RandomBrightness(brightness=(0.8, 1.2), p=1.0)
         adapter = KorniaAdapter()
@@ -350,7 +402,13 @@ class TestFusedColorSegmentEdgeCases:
         return FusedColorSegment([transform], _IdentityAdapter())
 
     def test_forward_non_3channel_falls_back_to_passthrough(self):
-        """FusedColorSegment falls back to sequential passthrough for non-RGB (C != 3) inputs."""
+        """FusedColorSegment falls back to sequential passthrough for non-RGB (C != 3) inputs.
+
+        The 4x4 color matrix assumes RGB; grayscale, depth, or multi-spectral inputs cannot use it. The segment must
+        detect non-3-channel inputs and fall back to calling each transform sequentially so the pipeline still produces
+        a correct (if unfused) result.
+
+        """
         seg = self._make_identity_seg()
         image = torch.rand(2, 1, 16, 16)
         out = seg(image)
@@ -358,7 +416,13 @@ class TestFusedColorSegmentEdgeCases:
         torch.testing.assert_close(out, image)
 
     def test_forward_with_aux_targets_returns_tuple(self):
-        """FusedColorSegment returns (image, aux_targets) tuple when aux_targets is provided."""
+        """FusedColorSegment returns (image, aux_targets) tuple when aux_targets is provided.
+
+        Color ops do not touch the spatial layout, so aux targets (masks, keypoints) pass through unchanged; the segment
+        must still return them in the call-signature-expected tuple shape so the outer pipeline can route them
+        consistently with other segment types.
+
+        """
         seg = self._make_identity_seg()
         image = torch.rand(2, 3, 16, 16)
         mask = torch.rand(2, 1, 16, 16)
@@ -377,7 +441,12 @@ class TestFusedColorSegmentEdgeCases:
         assert isinstance(out, torch.Tensor)
 
     def test_forward_non_3channel_with_aux_targets_returns_tuple(self):
-        """Non-RGB fallback path also returns (image, aux_targets) when aux_targets is present."""
+        """Non-RGB fallback path also returns (image, aux_targets) when aux_targets is present.
+
+        Combines the two edge cases (non-RGB + aux targets) to confirm the fallback path preserves the return-shape
+        contract; a bug here would surface only when both conditions apply at once.
+
+        """
         seg = self._make_identity_seg()
         image = torch.rand(2, 1, 16, 16)
         mask = torch.rand(2, 1, 16, 16)
@@ -391,7 +460,7 @@ class TestTryBuildColorMatrixProbe:
     """_try_build_color_matrix correctly classifies adapter support."""
 
     def test_not_implemented_returns_false(self):
-        """NotImplementedError from build_color_matrix → False (no support)."""
+        """NotImplementedError from build_color_matrix -> False (no support)"""
 
         class _NoSupportAdapter:
             def build_color_matrix(self, tfm, params):
@@ -401,7 +470,7 @@ class TestTryBuildColorMatrixProbe:
         assert _try_build_color_matrix(_NoSupportAdapter(), object()) is False
 
     def test_attribute_error_returns_false(self):
-        """AttributeError (missing method) → False."""
+        """AttributeError (missing method) -> False."""
 
         class _MissingMethodAdapter:
             pass
@@ -409,7 +478,13 @@ class TestTryBuildColorMatrixProbe:
         assert _try_build_color_matrix(_MissingMethodAdapter(), object()) is False
 
     def test_key_error_returns_true(self):
-        """KeyError (method exists but needs real params) → True."""
+        """KeyError (method exists but needs real params) -> True.
+
+        The probe runs with an empty params dict; a KeyError signals that build_color_matrix is implemented and would
+        succeed given real sampled params. Treating this as 'supported' lets the fusion planner proceed and call the
+        method with proper params at run time.
+
+        """
 
         class _NeedsParamsAdapter:
             def build_color_matrix(self, tfm, params):
@@ -420,7 +495,7 @@ class TestTryBuildColorMatrixProbe:
         assert _try_build_color_matrix(_NeedsParamsAdapter(), object()) is True
 
     def test_runtime_error_returns_false(self):
-        """RuntimeError from build_color_matrix → False (not classified as supported).
+        """RuntimeError from build_color_matrix -> False (not classified as supported)
 
         A RuntimeError (e.g. GPU OOM, device mismatch) must NOT be silently treated as "method exists but needs real
         params" — it is classified as unsupported.
@@ -442,7 +517,12 @@ class TestFromParamsScaleXYWithBackendRaises:
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     @pytest.mark.parametrize("kwarg", ["scale_x", "scale_y"])
     def test_scale_axis_with_backend_raises(self, kwarg):
-        """from_params(scale_x/y=..., backend='kornia') raises ValueError naming the kwarg."""
+        """from_params(scale_x/y=..., backend='kornia') raises ValueError naming the kwarg.
+
+        Per-axis scale (scale_x, scale_y) is part of the legacy direct-kwarg API and is incompatible with the spec-
+        driven backend= path. The error must name the offending kwarg so users know exactly which arg to change.
+
+        """
         with pytest.raises(ValueError, match=kwarg):
             FusedCompose.from_params(**{kwarg: (0.8, 1.2)}, backend="kornia")
 

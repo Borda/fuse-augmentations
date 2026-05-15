@@ -112,7 +112,7 @@ class TestPointwiseLinearReordering:
     """reorder_pointwise treats POINTWISE_LINEAR as reorderable (like POINTWISE)."""
 
     def test_pl_moved_after_geometric(self):
-        """[Rotate, LinearColor, Scale] reorders to [Rotate, Scale, LinearColor]."""
+        """[Rotate, LinearColor, Scale] reorders to [Rotate, Scale, LinearColor]"""
         adapter = _StubAdapter()
         rotate = _GeoTransform()
         linear = _PointwiseLinearTransform()
@@ -128,7 +128,12 @@ class TestPointwiseLinearReordering:
         ]
 
     def test_pl_and_pw_both_moved_after_geometric(self):
-        """[Rotate, POINTWISE, POINTWISE_LINEAR, Scale] -> [Rotate, Scale, pw, pl] or same deferred order."""
+        """[Rotate, POINTWISE, POINTWISE_LINEAR, Scale] -> [Rotate, Scale, pw, pl] or same deferred order.
+
+        Both POINTWISE and POINTWISE_LINEAR are reorderable past geometric ops; this verifies that mixing them does not
+        break the invariant that all geometric ops precede all reorderable ops in the result.
+
+        """
         adapter = _StubAdapter()
         rotate = _GeoTransform()
         pointwise = _PointwiseTransform()
@@ -149,7 +154,12 @@ class TestPointwiseLinearReordering:
         assert max(geo_indices) < min(pw_indices + pl_indices), "All geometric ops should precede all reorderable ops"
 
     def test_pl_does_not_cross_spatial_kernel_barrier(self):
-        """POINTWISE_LINEAR is not reordered across a SPATIAL_KERNEL barrier."""
+        """POINTWISE_LINEAR is not reordered across a SPATIAL_KERNEL barrier.
+
+        SPATIAL_KERNEL ops (blur, sharpen) read pixel neighborhoods, so a color-space op crossing them would change the
+        result. The reorderer must respect this barrier and only reorder within the post-barrier sub-sequence.
+
+        """
         adapter = _StubAdapter()
         rotate = _GeoTransform()
         barrier = _BarrierTransform()
@@ -200,7 +210,12 @@ class TestPointwiseLinearSegmentation:
     """build_segments treats POINTWISE_LINEAR as a pass-through barrier."""
 
     def test_pl_breaks_geometric_segment(self):
-        """[Rotate, POINTWISE_LINEAR, Scale] -> [FusedAffine, pl, FusedAffine] (two separate segments)."""
+        """[Rotate, POINTWISE_LINEAR, Scale] -> [FusedAffine, pl, FusedAffine] (two separate segments)
+
+        Before color-segment fusion was implemented, POINTWISE_LINEAR acted as a barrier that prevented adjacent
+        geometric ops from collapsing into one warp. This test guards the pre-fusion behaviour.
+
+        """
         adapter = _StubAdapter()
         rotate = _GeoTransform()
         linear = _PointwiseLinearTransform()
@@ -224,7 +239,12 @@ class TestPointwiseLinearSegmentation:
         assert segments[0] is linear
 
     def test_pl_does_not_merge_with_geometric(self):
-        """Albu POINTWISE_LINEAR between two geometric ops creates two separate fused segments."""
+        """Albu POINTWISE_LINEAR between two geometric ops creates two separate fused segments.
+
+        Compares the split case [geo, pl, geo] (3 segments) against the merged case [geo, geo] (1 segment) to confirm
+        that POINTWISE_LINEAR genuinely partitions the geometric run rather than just hiding inside it.
+
+        """
         adapter = _StubAdapter()
         geo1 = _GeoTransform()
         geo2 = _GeoTransform()
@@ -272,7 +292,12 @@ class TestPointwiseLinearSegmentation:
         assert isinstance(segments[3], FusedAffineSegment)
 
     def test_geometric_exact_pl_geometric_interp(self):
-        """[ExactOp, POINTWISE_LINEAR, InterpOp] -> [ExactSegment, pl, FusedSegment]."""
+        """[ExactOp, POINTWISE_LINEAR, InterpOp] -> [ExactSegment, pl, FusedSegment]
+
+        Exact and interp geometric ops live in separate segment classes; a POINTWISE_LINEAR between them keeps the
+        segment kinds distinct and emits the color op as a pass-through middle element.
+
+        """
         adapter = _StubAdapter()
         exact = _ExactTransform()
         linear = _PointwiseLinearTransform()
@@ -336,7 +361,7 @@ class TestColorMatrixFusionAlgebra:
     def test_brightness_fusion_equals_sequential(
         self, mult1: float, mult2: float, bias1: float, bias2: float, red: float, green: float, b_val: float
     ) -> None:
-        """Two diagonal brightness ops fuse: A2*A1 gives same result as sequential application.
+        """Two diagonal brightness ops fuse: A2*A1 gives same result as sequential application
 
         Op1: c' = mult1*c + bias1*1 (brightness scale + offset, applied identically per channel)
         Op2: c'' = mult2*c' + bias2*1
@@ -368,10 +393,10 @@ class TestColorMatrixFusionAlgebra:
     )
     @settings(max_examples=100)
     def test_n_color_ops_fuse_to_single_matrix(self, seed: int, n_ops: int) -> None:
-        """N consecutive linear color ops: A_N*...*A_1 applied once equals sequential application.
+        """N consecutive linear color ops: A_N*...*A_1 applied once equals sequential application
 
-        Validates the inductive proof from D.5: any chain of POINTWISE_LINEAR ops
-        can be collapsed to a single 4x4 matrix.
+        Validates the inductive proof from D.5: any chain of POINTWISE_LINEAR ops can be collapsed to a single 4x4
+        matrix.
         """
         torch.manual_seed(seed)
 

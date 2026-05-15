@@ -95,9 +95,8 @@ class _PassthroughSegment:
 class FusedCompose(nn.Module):
     """Fused augmentation pipeline that replaces the backend's native Compose.
 
-    Segments the transform list into fused geometric segments and passthrough
-    transforms, then executes them sequentially. Consecutive geometric ops are
-    grouped and executed as either:
+    Segments the transform list into fused geometric segments and passthrough transforms, then executes them
+    sequentially. Consecutive geometric ops are grouped and executed as either:
 
     - A :class:`~fuse_augmentations.affine._segment.FusedAffineSegment` - when the run
       contains at least one ``GEOMETRIC_INTERP`` op. Matrices are composed and
@@ -118,10 +117,9 @@ class FusedCompose(nn.Module):
     Args:
         transforms: List of augmentation transform objects.
         reorder: Reorder policy applied before segmentation.
-            ``NONE`` (default) preserves the original order.
-            ``POINTWISE`` reorders pointwise ops after geometric chains.
-            ``AGGRESSIVE`` currently aliases ``POINTWISE`` and is kept for API
-            compatibility with future stronger reorder semantics.
+            ``NONE`` (default) preserves the original order. ``POINTWISE`` reorders pointwise ops after geometric
+            chains. ``AGGRESSIVE`` currently aliases ``POINTWISE`` and is kept for API compatibility with future
+            stronger reorder semantics.
         interpolation: Interpolation mode override for fused segments
             (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
             Defaults to ``"bilinear"`` when ``None``.
@@ -131,22 +129,17 @@ class FusedCompose(nn.Module):
         data_keys: List of key names describing positional arguments to
             :meth:`forward`. The first key should be ``"input"`` (the image).
             Auxiliary keys (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``,
-            ``"keypoints"``) are routed through segments and transformed
-            alongside the image. Unknown keys are passed through unchanged
-            with a ``UserWarning``. ``None`` preserves backward-compatible
-            single-tensor input/output.
-            In this release, Albumentations fused affine segments do not
-            support ``aux_targets``. If such a segment exists and ``data_keys``
-            is set, construction raises ``ValueError``.
+            ``"keypoints"``) are routed through segments and transformed alongside the image. Unknown keys are passed
+            through unchanged with a ``UserWarning``. ``None`` preserves backward-compatible single-tensor input/output.
+            In this release, Albumentations fused affine segments do not support ``aux_targets``. If such a segment
+            exists and ``data_keys`` is set, construction raises ``ValueError``.
         output_backend: Target output format. ``"numpy"`` (or its alias
             ``"numpy_hwc"``) converts the primary image output to a NumPy
             ``ndarray`` with channel-last layout: batched inputs of shape
             ``(batch_size, channels, height, width)`` become ``(batch_size, height, width, channels)``,
-            while unbatched inputs of shape ``(channels, height, width)`` become
-            ``(height, width, channels)`` (i.e. the batch
-            dimension is implicit/squeezed). ``"torch"`` or ``None`` keeps
-            the native ``torch.Tensor`` output. Conversion applies only to
-            single-tensor output; when ``data_keys`` is active and a tuple is
+            while unbatched inputs of shape ``(channels, height, width)`` become ``(height, width, channels)`` (i.e.
+            the batch dimension is implicit/squeezed). ``"torch"`` or ``None`` keeps the native ``torch.Tensor``
+            output. Conversion applies only to single-tensor output; when ``data_keys`` is active and a tuple is
             returned, conversion is NOT applied.
         **backend_kwargs: Reserved for backend-specific options (currently unused).
 
@@ -810,10 +803,9 @@ class FusedCompose(nn.Module):
         backends contributes to this value.
 
         Returns:
-            The composed matrix for the last fused affine or projective
-            segment, or ``None`` if no such segment has been executed yet
-            (including before the first call to :meth:`forward` or if the
-            last forward contained only passthrough transforms).
+            The composed matrix for the last fused affine or projective segment, or ``None`` if no such segment has
+            been executed yet (including before the first call to :meth:`forward` or if the last forward contained
+            only passthrough transforms).
 
         """
         return self._last_transform_matrix
@@ -1401,8 +1393,8 @@ class FusedCompose(nn.Module):
     ) -> FusedCompose:
         """Build a from_params pipeline from a list of TransformSpec objects.
 
-        Each spec is converted to the appropriate internal direct-param
-        transform (``_DirectParamTransform`` or ``_DirectFlipTransform``).
+        Each spec is converted to the appropriate internal direct-param transform (``_DirectParamTransform`` or
+        ``_DirectFlipTransform``).
 
         """
         op_to_param_key: dict[str, str] = {
@@ -1509,8 +1501,8 @@ class FusedCompose(nn.Module):
     ) -> list[TransformSpec]:
         """Convert geometric keyword arguments to a list of TransformSpec objects.
 
-        Used internally by :meth:`from_params` when ``backend`` is set and
-        geometric kwargs (rather than ``specs``) are provided.
+        Used internally by :meth:`from_params` when ``backend`` is set and geometric kwargs (rather than ``specs``) are
+        provided.
 
         """
         if scale_x is not None or scale_y is not None:
@@ -1694,9 +1686,8 @@ def _wrap_passthrough_segments(
 ) -> list[object]:
     """Wrap raw passthrough transforms with their adapter for stable dispatch.
 
-    When ``transform_adapters`` is keyed by positional index (mixed-backend
-    path), ``original_transforms`` is used to resolve the index of each raw
-    passthrough transform object.
+    When ``transform_adapters`` is keyed by positional index (mixed-backend path), ``original_transforms`` is used to
+    resolve the index of each raw passthrough transform object.
 
     """
     wrapped_segments: list[object] = []

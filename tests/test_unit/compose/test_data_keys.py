@@ -48,7 +48,12 @@ class TestDataKeysSingleKey:
     """data_keys=["input"] with single key returns unwrapped tensor."""
 
     def test_single_key_returns_tensor_not_tuple(self):
-        """Single data_key returns an unwrapped Tensor, not a 1-tuple."""
+        """Single data_key returns an unwrapped Tensor, not a 1-tuple.
+
+        Wrapping a single output in a 1-tuple would break the common `out = pipe(img)` call site that expects a tensor
+        directly; the unwrap rule keeps single-key pipelines drop-in compatible with tensor-returning APIs.
+
+        """
         pipe = Compose([], data_keys=["input"])
         x = torch.rand(2, 3, 8, 8)
         out = pipe(x)
@@ -94,7 +99,12 @@ class TestDataKeysMultipleKeys:
         torch.testing.assert_close(out_mask, mask)
 
     def test_tuple_order_matches_data_keys(self):
-        """Return tuple order matches data_keys declaration order."""
+        """Return tuple order matches data_keys declaration order, not internal storage order.
+
+        Uses sentinel values (all-ones image vs all-zeros mask) so a swapped return order would be detected via the mean
+        comparison rather than silently passing on identical-shaped tensors.
+
+        """
         pipe = Compose([], data_keys=["input", "mask"])
         img = torch.ones(1, 3, 4, 4)
         mask = torch.zeros(1, 1, 4, 4)
@@ -122,7 +132,12 @@ class TestDataKeysUnknownKey:
         )
 
     def test_unknown_key_passes_through_unchanged(self):
-        """Unknown key value is returned unchanged (passthrough)."""
+        """Unknown key value is returned unchanged (passthrough), not dropped or transformed.
+
+        The contract for unknown keys is warn-then-passthrough so callers using custom keys see a deprecation-style
+        warning at construction yet still receive their data back intact — failing closed would break user pipelines.
+
+        """
         img = torch.rand(1, 3, 4, 4)
         custom = torch.rand(1, 2, 4, 4)
         with warnings.catch_warnings():

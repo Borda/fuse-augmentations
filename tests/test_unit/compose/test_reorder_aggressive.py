@@ -69,21 +69,34 @@ class _StubAdapter:
 
 
 class TestAggressiveNoLongerRaisesError:
+    """ReorderPolicy.AGGRESSIVE is now a fully accepted policy, not a placeholder."""
+
     def test_fused_compose_accepts_aggressive_policy(self):
+        """FusedCompose constructor accepts AGGRESSIVE and stores it on the instance.
+
+        Earlier versions raised NotImplementedError for AGGRESSIVE; this test guards against regressing to that
+        placeholder behaviour.
+
+        """
         # Should NOT raise NotImplementedError anymore
         pipe = FusedCompose([], reorder=ReorderPolicy.AGGRESSIVE)
         assert pipe.reorder == ReorderPolicy.AGGRESSIVE
 
     def test_from_params_accepts_aggressive_policy(self):
+        """FusedCompose.from_params accepts AGGRESSIVE as the reorder kwarg."""
         pipe = FusedCompose.from_params(rotation=(-30, 30), reorder=ReorderPolicy.AGGRESSIVE)
         assert pipe is not None
 
 
 class TestReorderAggressiveFunction:
+    """Behavioural contract of the reorder_aggressive function on stub transforms."""
+
     def test_reorder_aggressive_importable(self):
+        """reorder_aggressive is exported as a callable from affine._segment."""
         assert callable(reorder_aggressive)
 
     def test_aggressive_moves_pointwise_after_geometric(self):
+        """[Geo, Pointwise] is reordered so the pointwise op runs after the geometric op."""
         adapter = _StubAdapter()
         geo = _StubGeo()
         pointwise = _StubPointwise()
@@ -92,7 +105,12 @@ class TestReorderAggressiveFunction:
         assert cats == [TransformCategory.GEOMETRIC_INTERP, TransformCategory.POINTWISE]
 
     def test_aggressive_same_result_as_pointwise_for_standard_pipeline(self):
-        """AGGRESSIVE and POINTWISE produce the same ordering for a standard pipeline."""
+        """AGGRESSIVE and POINTWISE produce the same ordering for a standard pipeline.
+
+        For pipelines without projective ops or barriers between geometric stretches, the AGGRESSIVE policy degenerates
+        to the POINTWISE policy — extra freedom is unused and both produce identical orderings.
+
+        """
         adapter = _StubAdapter()
         geo1, geo2 = _StubGeo("g1"), _StubGeo("g2")
         pw1, pw2 = _StubPointwise("p1"), _StubPointwise("p2")
@@ -106,6 +124,12 @@ class TestReorderAggressiveFunction:
         assert cats_pw == cats_agg
 
     def test_aggressive_never_crosses_spatial_kernel_barrier(self):
+        """Pointwise ops must not be moved across a SPATIAL_KERNEL barrier even under AGGRESSIVE.
+
+        Spatial-kernel ops (e.g. blur) read neighbouring pixels, so a pointwise op appearing before the kernel cannot be
+        deferred past it without changing semantics. AGGRESSIVE respects this invariant.
+
+        """
         adapter = _StubAdapter()
         pointwise = _StubPointwise()
         barrier = _StubBarrier()
@@ -119,7 +143,12 @@ class TestReorderAggressiveFunction:
         assert positions[id(pointwise)] < positions[id(barrier)]
 
     def test_aggressive_stable_idempotent(self):
-        """Applying AGGRESSIVE twice produces the same result as once."""
+        """Applying AGGRESSIVE twice produces the same result as once.
+
+        Idempotency guarantees that reorder is a fixed-point operation: pipelines
+        already in canonical aggressive order do not get rewritten on re-application.
+
+        """
         adapter = _StubAdapter()
         geo = _StubGeo()
         pointwise = _StubPointwise()
@@ -137,6 +166,7 @@ class TestAggressivePipelineImage:
     """End-to-end: AGGRESSIVE policy produces correct pipeline structure."""
 
     def test_aggressive_pipeline_runs_without_error(self):
+        """Compose with AGGRESSIVE policy applied to a real kornia pipeline runs and preserves shape."""
         pipe = Compose(
             [
                 kornia_aug.RandomRotation(degrees=30, p=1.0),

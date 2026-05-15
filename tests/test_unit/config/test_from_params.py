@@ -103,7 +103,7 @@ class TestFromParamsHFlip:
         torch.testing.assert_close(out, expected, atol=1e-5, rtol=1e-5)
 
     def test_hflip_p0_is_identity(self, image8x8_batch2):
-        """from_params(hflip_p=0.0) is identity (no flip)."""
+        """from_params(hflip_p=0.0) is identity (no flip)"""
         pipe = Compose.from_params(hflip_p=0.0)
         out = pipe(image8x8_batch2)
         torch.testing.assert_close(out, image8x8_batch2, atol=1e-5, rtol=1e-5)
@@ -129,7 +129,7 @@ class TestFromParamsWithDataKeys:
     """from_params() with data_keys routes aux targets correctly."""
 
     def test_rotation_with_mask_returns_tuple(self):
-        """from_params(rotation=..., data_keys=["input","mask"]) returns (img, mask) tuple."""
+        """from_params(rotation=..., data_keys=['input','mask']) returns (img, mask) tuple."""
         pipe = Compose.from_params(
             rotation=(-15.0, 15.0),
             data_keys=["input", "mask"],
@@ -144,7 +144,7 @@ class TestFromParamsWithDataKeys:
         assert out_mask.shape == mask.shape
 
     def test_hflip_with_mask_shapes(self):
-        """from_params(hflip_p=1.0, data_keys=["input","mask"]) preserves shapes."""
+        """from_params(hflip_p=1.0, data_keys=['input','mask']) preserves shapes."""
         pipe = Compose.from_params(
             hflip_p=1.0,
             data_keys=["input", "mask"],
