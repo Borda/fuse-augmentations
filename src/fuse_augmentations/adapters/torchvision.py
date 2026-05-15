@@ -6,7 +6,7 @@ representation used by ``FusedAffineSegment``.
 Supports both ``torchvision.transforms`` (v1) and ``torchvision.transforms.v2``
 namespaces. Each geometric transform samples parameters via TorchVision's
 ``get_params()`` static method and reconstructs the affine matrix from
-``fuse_augmentations.affine._matrix`` primitives.
+``fuse_augmentations.affine.matrix`` primitives.
 
 Flip transforms (``RandomHorizontalFlip``, ``RandomVerticalFlip``) return a
 minimal parameter dict containing a ``"_batch_size"`` sentinel; ``build_matrix()``
@@ -16,7 +16,7 @@ Optional: ``torchvision`` must be installed at runtime for transform dispatch
 to function; the module is importable without it.
 
 Example:
-    >>> from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
+    >>> from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
     >>> adapter = TorchVisionAdapter()
     >>> adapter  # doctest: +ELLIPSIS
     <...TorchVisionAdapter...>
@@ -32,14 +32,14 @@ from typing import Any, cast
 import numpy as np
 import torch
 
-from fuse_augmentations._types import TransformCategory
-from fuse_augmentations.affine._matrix import (
+from fuse_augmentations.affine.matrix import (
     crop_resize_matrix,
     hflip_matrix,
     perspective_from_points,
     rotation_matrix,
     vflip_matrix,
 )
+from fuse_augmentations.types import TransformCategory
 
 # ---------------------------------------------------------------------------
 # Transform registry -- lazy import guards (torchvision is optional)
@@ -127,7 +127,7 @@ def _check_expand(transform: object) -> None:
         raise ValueError(msg)
 
 
-def _is_torchvision_v2_transform(transform: object) -> bool:
+def is_torchvision_v2_transform(transform: object) -> bool:
     """Return whether the transform comes from ``torchvision.transforms.v2``."""
     transform_type = type(transform)
     # _v1_transform_cls is an undocumented TorchVision internal, stable from 0.15-0.20;
@@ -208,7 +208,7 @@ class TorchVisionAdapter:
 
         # RandomRotation
         if isinstance(transform, tuple(_ROTATION_TYPES_FS)):
-            if _is_torchvision_v2_transform(transform):
+            if is_torchvision_v2_transform(transform):
                 angle_deg = _sample_rotation_angle(transform)
                 return {
                     "angle_rad": torch.tensor([math.radians(angle_deg)], dtype=torch.float32, device=device),
@@ -229,12 +229,12 @@ class TorchVisionAdapter:
                 height,
                 width,
                 device,
-                shared_across_batch=_is_torchvision_v2_transform(transform),
+                shared_across_batch=is_torchvision_v2_transform(transform),
             )
 
         # RandomPerspective
         if isinstance(transform, tuple(_PERSPECTIVE_TYPES_FS)):
-            is_v2 = _is_torchvision_v2_transform(transform)
+            is_v2 = is_torchvision_v2_transform(transform)
             sample_count = 1 if is_v2 else batch_size
             starts, ends = [], []
             for _ in range(sample_count):
@@ -248,12 +248,12 @@ class TorchVisionAdapter:
 
         # ColorJitter
         if isinstance(transform, tuple(_COLOR_JITTER_TYPES_FS)):
-            return _sample_color_jitter_params(transform, batch_size, device, _is_torchvision_v2_transform(transform))
+            return _sample_color_jitter_params(transform, batch_size, device, is_torchvision_v2_transform(transform))
 
         # RandomResizedCrop
         if isinstance(transform, tuple(_CROP_RESIZE_TYPES_FS)):
             return _sample_crop_resize_params(
-                transform, batch_size, height, width, device, _is_torchvision_v2_transform(transform)
+                transform, batch_size, height, width, device, is_torchvision_v2_transform(transform)
             )
 
         # Unknown -- return empty
@@ -364,7 +364,7 @@ class TorchVisionAdapter:
     @staticmethod
     def same_on_batch(transform: object) -> bool:
         """Return whether randomness should be shared across the input batch."""
-        return _is_torchvision_v2_transform(transform) or bool(getattr(transform, "same_on_batch", False))
+        return is_torchvision_v2_transform(transform) or bool(getattr(transform, "same_on_batch", False))
 
     @staticmethod
     def build_color_matrix(
@@ -446,7 +446,7 @@ class TorchVisionAdapter:
         dtype = image.dtype
         batch_size = image.shape[0]
 
-        if _is_torchvision_v2_transform(transform):
+        if is_torchvision_v2_transform(transform):
             image_output = transform(image)  # type: ignore[operator]
             return cast(torch.Tensor, image_output.to(device=device, dtype=dtype))
 

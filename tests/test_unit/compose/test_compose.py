@@ -11,8 +11,8 @@ import pytest
 import torch
 
 from fuse_augmentations._compat import _KORNIA_AVAILABLE
-from fuse_augmentations._compose import AugmentationSequential, Compose, FusedCompose
-from fuse_augmentations._types import ReorderPolicy
+from fuse_augmentations.compose import AugmentationSequential, Compose, FusedCompose
+from fuse_augmentations.types import ReorderPolicy
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug

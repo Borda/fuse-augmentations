@@ -6,7 +6,7 @@ functions resolve the modes by taking the finest/highest-quality option.
 
 Example:
     >>> from fuse_augmentations._interpolation import resolve_interpolation, resolve_padding
-    >>> from fuse_augmentations._types import InterpolationMode, PaddingMode
+    >>> from fuse_augmentations.types import InterpolationMode, PaddingMode
     >>> resolve_interpolation([InterpolationMode.BILINEAR, InterpolationMode.NEAREST])
     <InterpolationMode.BILINEAR: 1>
     >>> resolve_padding([PaddingMode.ZEROS, PaddingMode.REFLECTION])
@@ -16,7 +16,7 @@ Example:
 
 from __future__ import annotations
 
-from fuse_augmentations._types import InterpolationMode, PaddingMode
+from fuse_augmentations.types import InterpolationMode, PaddingMode
 
 
 def resolve_interpolation(
@@ -37,7 +37,7 @@ def resolve_interpolation(
 
     Example:
         >>> from fuse_augmentations._interpolation import resolve_interpolation
-        >>> from fuse_augmentations._types import InterpolationMode
+        >>> from fuse_augmentations.types import InterpolationMode
         >>> resolve_interpolation([InterpolationMode.BILINEAR, InterpolationMode.BICUBIC])
         <InterpolationMode.BICUBIC: 2>
 
@@ -67,7 +67,7 @@ def resolve_padding(
 
     Example:
         >>> from fuse_augmentations._interpolation import resolve_padding
-        >>> from fuse_augmentations._types import PaddingMode
+        >>> from fuse_augmentations.types import PaddingMode
         >>> resolve_padding([PaddingMode.ZEROS, PaddingMode.REFLECTION])
         <PaddingMode.REFLECTION: 2>
 

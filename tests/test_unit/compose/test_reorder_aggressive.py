@@ -7,8 +7,8 @@ import torch
 
 from fuse_augmentations import Compose, FusedCompose
 from fuse_augmentations._compat import _KORNIA_AVAILABLE
-from fuse_augmentations._types import ReorderPolicy, TransformCategory
-from fuse_augmentations.affine._segment import reorder_aggressive, reorder_pointwise
+from fuse_augmentations.affine.segment import reorder_aggressive, reorder_pointwise
+from fuse_augmentations.types import ReorderPolicy, TransformCategory
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug

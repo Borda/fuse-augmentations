@@ -22,7 +22,7 @@ from fuse_augmentations._compat import (
     _KORNIA_AVAILABLE,
     _TORCHVISION_AVAILABLE,
 )
-from fuse_augmentations.affine._matrix import (
+from fuse_augmentations.affine.matrix import (
     inv3x3,
     normalize_matrix,
     perspective_from_points,

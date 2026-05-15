@@ -3,8 +3,8 @@
 Pure mathematical functions that transform masks, bounding boxes, and keypoints
 using precomputed affine matrices or grids from the fused pipeline.
 
-These helpers are called internally by :class:`~fuse_augmentations.affine._segment.FusedAffineSegment` and
-:class:`~fuse_augmentations.affine._segment.ExactAffineSegment` when
+These helpers are called internally by :class:`~fuse_augmentations.affine.segment.FusedAffineSegment` and
+:class:`~fuse_augmentations.affine.segment.ExactAffineSegment` when
 ``data_keys`` includes auxiliary targets. They are also exported as public API
 for callers that want to apply the same math outside of the pipeline
 (e.g. to transform a stored transform matrix after the fact).
@@ -15,7 +15,7 @@ sampling is not differentiable); the other three functions are differentiable.
 
 Example:
     >>> import torch
-    >>> from fuse_augmentations._targets import transform_keypoints
+    >>> from fuse_augmentations.targets import transform_keypoints
     >>> keypoints = torch.tensor([[[10.0, 20.0]]])  # (batch_size=1, num_points=1, 2)
     >>> matrix = torch.eye(3).unsqueeze(0)           # identity (1, 3, 3)
     >>> out = transform_keypoints(keypoints, matrix)

@@ -7,8 +7,8 @@ of geometric transforms, inverts the composed matrix once, and executes a single
 Example:
     >>> import torch
     >>> import kornia.augmentation as K
-    >>> from fuse_augmentations.affine._segment import FusedAffineSegment
-    >>> from fuse_augmentations.adapters._kornia import KorniaAdapter
+    >>> from fuse_augmentations.affine.segment import FusedAffineSegment
+    >>> from fuse_augmentations.adapters.kornia import KorniaAdapter
     >>> t = K.RandomHorizontalFlip(p=1.0)
     >>> seg = FusedAffineSegment([t], KorniaAdapter())
     >>> out = seg(torch.zeros(1, 3, 8, 8))
@@ -29,14 +29,14 @@ from numpy.typing import NDArray
 from torch import Tensor, nn
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
-from fuse_augmentations._types import InterpolationStr, PaddingModeStr, TransformAdapter, TransformCategory
-from fuse_augmentations.affine._matrix import (
+from fuse_augmentations.affine.matrix import (
     inv3x3,
     matmul3x3,
     normalize_matrix,
     normalize_matrix_io,
     perspective_grid,
 )
+from fuse_augmentations.types import InterpolationStr, PaddingModeStr, TransformAdapter, TransformCategory
 
 # cv2 optional import — used by both FusedAffineSegment (B=1 CPU fast path)
 # and AlbuFusedAffineSegment (Albumentations cv2 backend).
@@ -107,8 +107,8 @@ class ExactAffineSegment(nn.Module):
     Example:
         >>> import torch
         >>> import kornia.augmentation as K
-        >>> from fuse_augmentations.affine._segment import ExactAffineSegment
-        >>> from fuse_augmentations.adapters._kornia import KorniaAdapter
+        >>> from fuse_augmentations.affine.segment import ExactAffineSegment
+        >>> from fuse_augmentations.adapters.kornia import KorniaAdapter
         >>> t = K.RandomHorizontalFlip(p=1.0)
         >>> seg = ExactAffineSegment([t], KorniaAdapter())
         >>> out = seg(torch.zeros(1, 3, 8, 8))
@@ -118,6 +118,7 @@ class ExactAffineSegment(nn.Module):
     """
 
     def __init__(self, transforms: list[object], adapter: TransformAdapter) -> None:
+        """Initialize ``ExactAffineSegment``."""
         super().__init__()
         self.transforms = transforms
         self.adapter = adapter
@@ -253,6 +254,7 @@ class FusedAffineSegment(nn.Module):
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
     ) -> None:
+        """Initialize ``FusedAffineSegment``."""
         super().__init__()
         self.transforms = transforms
         self.adapter = adapter
@@ -263,8 +265,8 @@ class FusedAffineSegment(nn.Module):
         # isinstance checks on every forward call.
         self._fast_path: str | None = None
         try:
-            from fuse_augmentations.adapters._kornia import KorniaAdapter
-            from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
+            from fuse_augmentations.adapters.kornia import KorniaAdapter
+            from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
 
             if isinstance(adapter, KorniaAdapter):
                 self._fast_path = "kornia"
@@ -298,7 +300,7 @@ class FusedAffineSegment(nn.Module):
         self._np_fused_builder = None
         if self._cv2_warp and self._fast_path == "kornia":
             try:
-                from fuse_augmentations.adapters._kornia import (
+                from fuse_augmentations.adapters.kornia import (
                     build_matrix_numpy_b1_kornia,
                     sample_and_build_matrix_numpy_b1_kornia,
                 )
@@ -309,7 +311,7 @@ class FusedAffineSegment(nn.Module):
                 pass
         elif self._cv2_warp and self._fast_path == "torchvision":
             try:
-                from fuse_augmentations.adapters._torchvision import (
+                from fuse_augmentations.adapters.torchvision import (
                     build_matrix_numpy_b1_tv,
                     sample_and_build_matrix_numpy_b1_tv,
                 )
@@ -374,7 +376,7 @@ class FusedAffineSegment(nn.Module):
             _tfm = self.transforms[0]
 
             if self._fast_path == "kornia":
-                from fuse_augmentations.adapters._kornia import KorniaAdapter
+                from fuse_augmentations.adapters.kornia import KorniaAdapter
 
                 # After call_nonfused, Kornia stores sampled params in tfm._params.
                 # convert_native_params reads those to build a consistent matrix.
@@ -421,12 +423,12 @@ class FusedAffineSegment(nn.Module):
                 return image
 
             if self._fast_path == "torchvision":
-                from fuse_augmentations.adapters._torchvision import (
+                from fuse_augmentations.adapters.torchvision import (
                     TorchVisionAdapter,
-                    _is_torchvision_v2_transform,
+                    is_torchvision_v2_transform,
                 )
 
-                if _is_torchvision_v2_transform(_tfm):
+                if is_torchvision_v2_transform(_tfm):
                     if self._skip_matrix_recon:
                         image = TorchVisionAdapter.call_nonfused(_tfm, image)
                         _mtx_eye = self._eye_1x3x3_f32
@@ -548,7 +550,7 @@ class FusedAffineSegment(nn.Module):
 
         # Transform auxiliary targets using the composed forward matrix
         if aux_targets:
-            from fuse_augmentations._targets import (
+            from fuse_augmentations.targets import (
                 transform_bbox_xywh,
                 transform_bbox_xyxy,
                 transform_keypoints,
@@ -680,8 +682,8 @@ class AlbuFusedAffineSegment(nn.Module):
     Example:
         >>> import numpy as np
         >>> import torch
-        >>> from fuse_augmentations.affine._segment import AlbuFusedAffineSegment
-        >>> from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+        >>> from fuse_augmentations.affine.segment import AlbuFusedAffineSegment
+        >>> from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
         >>> seg = AlbuFusedAffineSegment([], AlbumentationsAdapter())
         >>> out = seg(torch.zeros(1, 3, 8, 8))
         >>> out.shape
@@ -703,6 +705,7 @@ class AlbuFusedAffineSegment(nn.Module):
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
     ) -> None:
+        """Initialize ``AlbuFusedAffineSegment``."""
         super().__init__()
         self.transforms = transforms
         self.adapter = adapter
@@ -732,7 +735,7 @@ class AlbuFusedAffineSegment(nn.Module):
         """
         tags: list[int] = []
         try:
-            from fuse_augmentations.adapters._albumentations import (
+            from fuse_augmentations.adapters.albumentations import (
                 _HFLIP_TYPES,
                 _INTERP_TYPES,
                 _VFLIP_TYPES,
@@ -893,8 +896,8 @@ class AlbuFusedAffineSegment(nn.Module):
 
         Examples:
             >>> import numpy as np
-            >>> from fuse_augmentations.affine._segment import AlbuFusedAffineSegment
-            >>> from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+            >>> from fuse_augmentations.affine.segment import AlbuFusedAffineSegment
+            >>> from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
             >>> seg = AlbuFusedAffineSegment([], AlbumentationsAdapter())
             >>> img = np.zeros((8, 8, 3), dtype=np.uint8)
             >>> out = seg.forward_numpy(img)
@@ -939,13 +942,13 @@ class AlbuFusedAffineSegment(nn.Module):
 
         # Resolve imports once (cached by Python import system, but avoids
         # per-iteration dict lookups inside the hot loop).
-        from fuse_augmentations.adapters._albumentations import (
+        from fuse_augmentations.adapters.albumentations import (
             _sample_matrices as _sample_matrices_fn,
         )
-        from fuse_augmentations.adapters._albumentations import (
+        from fuse_augmentations.adapters.albumentations import (
             hflip_matrix_np as _hflip_matrix_np_fn,
         )
-        from fuse_augmentations.adapters._albumentations import (
+        from fuse_augmentations.adapters.albumentations import (
             vflip_matrix_np as _vflip_matrix_np_fn,
         )
 
@@ -1055,7 +1058,7 @@ class ProjectiveSegment(nn.Module):
     """Fused projective segment that composes homography matrices into one grid_sample call.
 
     Identical to :class:`FusedAffineSegment` in accumulation and auxiliary-target
-    handling, but uses :func:`~fuse_augmentations.affine._matrix.perspective_grid`
+    handling, but uses :func:`~fuse_augmentations.affine.matrix.perspective_grid`
     instead of ``F.affine_grid`` so the full ``3x3`` homography (including
     perspective division) is applied correctly.
 
@@ -1076,6 +1079,7 @@ class ProjectiveSegment(nn.Module):
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
     ) -> None:
+        """Initialize ``ProjectiveSegment``."""
         super().__init__()
         self.transforms = transforms
         self.adapter = adapter
@@ -1164,7 +1168,7 @@ class ProjectiveSegment(nn.Module):
 
         # Transform auxiliary targets using the composed forward matrix
         if aux_targets:
-            from fuse_augmentations._targets import (
+            from fuse_augmentations.targets import (
                 transform_bbox_xywh,
                 transform_bbox_xyxy,
                 transform_keypoints,
@@ -1220,6 +1224,7 @@ class AlbuProjectiveSegment(nn.Module):
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
     ) -> None:
+        """Initialize ``AlbuProjectiveSegment``."""
         super().__init__()
         if _cv2 is None:
             raise ImportError(
@@ -1375,6 +1380,7 @@ class FusedColorSegment(nn.Module):
         adapter: TransformAdapter,
         clip_output: bool = True,
     ) -> None:
+        """Initialize ``FusedColorSegment``."""
         super().__init__()
         self._transforms = transforms
         self._adapter = adapter
@@ -1544,7 +1550,7 @@ class CropResizeSegment(nn.Module):
     """Segment for a single ``CROP_RESIZE_FIXED`` transform.
 
     Samples the random crop region, builds the forward affine matrix, normalizes it
-    via :func:`~fuse_augmentations.affine._matrix.normalize_matrix_io` (which accounts
+    via :func:`~fuse_augmentations.affine.matrix.normalize_matrix_io` (which accounts
     for different input and output spatial dimensions), and applies exactly one
     ``grid_sample`` call at the target ``(H_out, W_out)`` dimensions.
 
@@ -1577,6 +1583,7 @@ class CropResizeSegment(nn.Module):
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
     ) -> None:
+        """Initialize ``CropResizeSegment``."""
         super().__init__()
         self.transform = transform
         self.transforms: list[object] = [transform]
@@ -1682,8 +1689,8 @@ def reorder_pointwise(
         Using stub objects (the KorniaAdapter registry does not include any
         POINTWISE transforms in v0.2):
 
-    >>> from fuse_augmentations.affine._segment import reorder_pointwise
-    >>> from fuse_augmentations._types import TransformCategory
+    >>> from fuse_augmentations.affine.segment import reorder_pointwise
+    >>> from fuse_augmentations.types import TransformCategory
     >>> class _StubAdapter:
     ...     def category(self, transform):
     ...         return transform._cat
@@ -1789,7 +1796,7 @@ def build_segments(
       and applies one ``grid_sample`` call.
 
     When ``ReorderPolicy.POINTWISE`` is active in
-    :class:`~fuse_augmentations._compose.FusedCompose`, ``reorder_pointwise``
+    :class:`~fuse_augmentations.compose.FusedCompose`, ``reorder_pointwise``
     is called first to bubble pointwise ops out of geometric chains, and
     ``build_segments`` then classifies the reordered list.
 

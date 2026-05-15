@@ -24,24 +24,24 @@ from fuse_augmentations._compat import (
     _KORNIA_AVAILABLE,
     _TORCHVISION_AVAILABLE,
 )
-from fuse_augmentations._compose import FusedCompose
-from fuse_augmentations._types import TransformCategory, TransformSpec
-from fuse_augmentations.affine._segment import (
+from fuse_augmentations.affine.segment import (
     FusedColorSegment,
     _try_build_color_matrix,
     build_segments,
 )
+from fuse_augmentations.compose import FusedCompose
+from fuse_augmentations.types import TransformCategory, TransformSpec
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
 
-    from fuse_augmentations.adapters._kornia import KorniaAdapter
+    from fuse_augmentations.adapters.kornia import KorniaAdapter
 
 if _TORCHVISION_AVAILABLE:
-    from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
+    from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
 
 if _ALBUMENTATIONS_AVAILABLE:
-    from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+    from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
 
 
 class TestFromParamsBackend:
@@ -131,7 +131,7 @@ class TestFusedColorSegment:
     """build_segments folds consecutive POINTWISE_LINEAR ops into FusedColorSegment."""
 
     def test_fused_color_segment_importable(self):
-        """FusedColorSegment can be imported from fuse_augmentations.affine._segment."""
+        """FusedColorSegment can be imported from fuse_augmentations.affine.segment."""
         assert FusedColorSegment is not None
 
     def test_build_segments_folds_pointwise_linear_run(self):

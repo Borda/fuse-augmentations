@@ -4,7 +4,7 @@ Bridges Kornia augmentation transforms to the canonical parameter
 representation and matrix primitives used by ``FusedAffineSegment``.
 
 Example:
-    >>> from fuse_augmentations.adapters._kornia import KorniaAdapter
+    >>> from fuse_augmentations.adapters.kornia import KorniaAdapter
     >>> adapter = KorniaAdapter()
     >>> adapter  # doctest: +ELLIPSIS
     <...KorniaAdapter...>
@@ -19,8 +19,7 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
-from fuse_augmentations._types import TransformCategory
-from fuse_augmentations.affine._matrix import (
+from fuse_augmentations.affine.matrix import (
     crop_resize_matrix,
     hflip_matrix,
     matmul3x3,
@@ -32,6 +31,7 @@ from fuse_augmentations.affine._matrix import (
     translate_matrix,
     vflip_matrix,
 )
+from fuse_augmentations.types import TransformCategory
 
 # ---------------------------------------------------------------------------
 # Transform registry - lazy import guards kornia as optional dependency

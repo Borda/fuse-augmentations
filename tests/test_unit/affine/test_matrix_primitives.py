@@ -6,7 +6,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from fuse_augmentations.affine._matrix import (
+from fuse_augmentations.affine.matrix import (
     hflip_matrix,
     inv3x3,
     matmul3x3,

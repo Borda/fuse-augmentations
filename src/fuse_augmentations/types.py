@@ -270,8 +270,8 @@ class TransformSpec:
     """Declarative specification for a single augmentation transform.
 
     A backend-agnostic, JSON-serialisable description of one augmentation operation. Used by
-    :meth:`FusedCompose.from_config <fuse_augmentations._compose.FusedCompose.from_config>` and
-    :meth:`FusedCompose.from_params <fuse_augmentations._compose.FusedCompose.from_params>` to build pipelines
+    :meth:`FusedCompose.from_config <fuse_augmentations.compose.FusedCompose.from_config>` and
+    :meth:`FusedCompose.from_params <fuse_augmentations.compose.FusedCompose.from_params>` to build pipelines
     from configuration data rather than live transform objects.
 
     Args:
@@ -430,7 +430,7 @@ class SegmentDescriptor:
     """Structured description of one segment in a fused augmentation pipeline.
 
     Returned by :attr:`FusedCompose.fusion_plan_descriptors
-    <fuse_augmentations._compose.FusedCompose.fusion_plan_descriptors>`. Each instance describes exactly one segment —
+    <fuse_augmentations.compose.FusedCompose.fusion_plan_descriptors>`. Each instance describes exactly one segment —
     a fused geometric group, a lossless exact segment, a projective segment, or a passthrough barrier — and is frozen
     and JSON-serialisable via :meth:`to_dict`.
 
@@ -446,7 +446,7 @@ class SegmentDescriptor:
             (for example ``"KorniaAdapter"``, ``"AlbumentationsAdapter"``,
             ``"TorchVisionAdapter"``), or ``None`` for backend-free pipelines
             created via
-            :meth:`FusedCompose.from_params <fuse_augmentations._compose.FusedCompose.from_params>`.
+            :meth:`FusedCompose.from_params <fuse_augmentations.compose.FusedCompose.from_params>`.
 
     Example:
         >>> d = SegmentDescriptor(

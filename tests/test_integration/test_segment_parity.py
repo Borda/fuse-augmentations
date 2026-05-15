@@ -25,9 +25,9 @@ from fuse_augmentations._compat import _KORNIA_AVAILABLE
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
 
-    from fuse_augmentations.adapters._kornia import KorniaAdapter
-    from fuse_augmentations.affine._matrix import inv3x3, matmul3x3, normalize_matrix
-    from fuse_augmentations.affine._segment import FusedAffineSegment
+    from fuse_augmentations.adapters.kornia import KorniaAdapter
+    from fuse_augmentations.affine.matrix import inv3x3, matmul3x3, normalize_matrix
+    from fuse_augmentations.affine.segment import FusedAffineSegment
 
 pytestmark = pytest.mark.integration
 

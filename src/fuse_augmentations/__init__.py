@@ -16,19 +16,27 @@ from __future__ import annotations
 import os
 
 from fuse_augmentations.__about__ import *  # noqa: F403
-from fuse_augmentations._compose import (
+from fuse_augmentations.affine.segment import (
+    CropResizeSegment,
+    ExactAffineSegment,
+    FusedAffineSegment,
+    FusedColorSegment,
+    ProjectiveSegment,
+    build_segments,
+)
+from fuse_augmentations.compose import (
     AugmentationSequential,
     Compose,
     FusedCompose,
 )
-from fuse_augmentations._converters import NumpyToTorchConverter, TorchToNumpyConverter
-from fuse_augmentations._targets import (
+from fuse_augmentations.converters import NumpyToTorchConverter, TorchToNumpyConverter
+from fuse_augmentations.targets import (
     transform_bbox_xywh,
     transform_bbox_xyxy,
     transform_keypoints,
     transform_mask,
 )
-from fuse_augmentations._types import (
+from fuse_augmentations.types import (
     BackendConverter,
     InterpolationMode,
     PaddingMode,
@@ -37,14 +45,6 @@ from fuse_augmentations._types import (
     TransformAdapter,
     TransformCategory,
     TransformSpec,
-)
-from fuse_augmentations.affine._segment import (
-    CropResizeSegment,
-    ExactAffineSegment,
-    FusedAffineSegment,
-    FusedColorSegment,
-    ProjectiveSegment,
-    build_segments,
 )
 
 __all__ = [

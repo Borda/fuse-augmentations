@@ -10,9 +10,9 @@ from fuse_augmentations._compat import _KORNIA_AVAILABLE
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
 
-    from fuse_augmentations._types import TransformCategory
-    from fuse_augmentations.adapters._kornia import KorniaAdapter
-    from fuse_augmentations.affine._matrix import inv3x3, normalize_matrix
+    from fuse_augmentations.adapters.kornia import KorniaAdapter
+    from fuse_augmentations.affine.matrix import inv3x3, normalize_matrix
+    from fuse_augmentations.types import TransformCategory
 
     _CATEGORY_PARAMS = [
         (kornia_aug.RandomRotation(degrees=30, p=1.0), TransformCategory.GEOMETRIC_INTERP),

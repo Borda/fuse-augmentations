@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations._compose import FusedCompose as Compose
+from fuse_augmentations.compose import FusedCompose as Compose
 
 
 @pytest.fixture

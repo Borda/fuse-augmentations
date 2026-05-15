@@ -1,7 +1,7 @@
-"""Unit tests for AlbumentationsAdapter — no albumentations installation required.
+"""Unit tests for AlbumentationsAdapter internals.
 
-Stub transforms are used to test protocol compliance, matrix shape, and flip dims without importing the albumentations
-package.
+All tests require albumentations to be installed and are skipped automatically when it is absent. Stub transforms stand
+in for real albumentations classes to isolate adapter logic from albumentations version changes.
 
 """
 
@@ -14,13 +14,13 @@ import pytest
 import torch
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
-from fuse_augmentations._types import TransformAdapter, TransformCategory
-from fuse_augmentations.affine._matrix import hflip_matrix, vflip_matrix
+from fuse_augmentations.affine.matrix import hflip_matrix, vflip_matrix
+from fuse_augmentations.types import TransformAdapter, TransformCategory
 
 if _ALBUMENTATIONS_AVAILABLE:
     from fuse_augmentations.adapters import AlbumentationsAdapter
-    from fuse_augmentations.adapters import _albumentations as _mod
-    from fuse_augmentations.adapters._albumentations import (
+    from fuse_augmentations.adapters import albumentations as _mod
+    from fuse_augmentations.adapters.albumentations import (
         _D4_ELEM_TO_CODE,
         _d4_matrix,
         hflip_matrix_np,
@@ -28,12 +28,14 @@ if _ALBUMENTATIONS_AVAILABLE:
     )
 
 
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 def test_albumentations_adapter_exists_and_satisfies_protocol():
     """AlbumentationsAdapter can be imported and satisfies TransformAdapter protocol."""
     adapter = AlbumentationsAdapter()
     assert isinstance(adapter, TransformAdapter)
 
 
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 def test_albumentations_adapter_exported_from_adapters_package():
     """AlbumentationsAdapter is importable from the adapters package."""
     assert AlbumentationsAdapter is not None
@@ -102,6 +104,7 @@ class _StubAdapter:
         return self._inner.exact_flip_dims(transform)
 
 
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestBuildMatrix:
     """AlbumentationsAdapter.build_matrix shape, identity, value propagation, and Transpose."""
 
@@ -180,6 +183,7 @@ class TestBuildMatrix:
         assert torch.allclose(mtx, expected)
 
 
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestExactFlipDims:
     """exact_flip_dims dispatch for hflip, vflip, and unknown transforms."""
 
@@ -214,6 +218,7 @@ class TestExactFlipDims:
             adapter.exact_flip_dims(_NotAFlip())
 
 
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestSampleParams:
     """AlbumentationsAdapter.sample_params for interp and flip transform types."""
 
@@ -244,7 +249,10 @@ class TestSampleParams:
             assert int(params["_batch_size"].item()) == 4
 
 
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestHflipMatrixNp:
+    """hflip_matrix_np shape, dtype, coordinate mapping, involutory, and torch consistency."""
+
     def test_shape(self):
         """hflip_matrix_np returns a (3, 3) matrix."""
         assert hflip_matrix_np(width=64).shape == (3, 3)
@@ -297,7 +305,10 @@ class TestHflipMatrixNp:
         torch.testing.assert_close(torch.as_tensor(np_mat.copy()), torch_mat[0], rtol=1e-4, atol=1e-10)
 
 
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestVflipMatrixNp:
+    """vflip_matrix_np shape, dtype, coordinate mapping, involutory, and torch consistency."""
+
     def test_shape(self):
         """vflip_matrix_np returns a (3, 3) matrix."""
         assert vflip_matrix_np(height=64).shape == (3, 3)
@@ -350,6 +361,7 @@ class TestVflipMatrixNp:
         torch.testing.assert_close(torch.as_tensor(np_mat.copy()), torch_mat[0], rtol=1e-4, atol=1e-10)
 
 
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 @pytest.mark.parametrize(
     ("elem", "inv_elem"),
     [
@@ -383,6 +395,7 @@ def test_d4_matrix_composition_with_inverse_is_identity(elem: str, inv_elem: str
     )
 
 
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 @pytest.mark.parametrize("elem", ["r90", "r270", "hvt"])
 def test_d4_matrix_raises_on_nonsquare_for_shape_changing_elements(elem: str) -> None:
     """_d4_matrix raises RuntimeError for shape-changing D4 elements on non-square images."""
@@ -391,6 +404,7 @@ def test_d4_matrix_raises_on_nonsquare_for_shape_changing_elements(elem: str) ->
         _d4_matrix(code, height=8, width=12, device=torch.device("cpu"), dtype=torch.float32)
 
 
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestIsAlbuInstanceSubclassDispatch:
     """Verify that isinstance-based dispatch correctly routes subclasses of registered base types.
 

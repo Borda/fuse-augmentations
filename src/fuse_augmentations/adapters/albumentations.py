@@ -21,7 +21,7 @@ Requires ``albumentations >= 2.0``.
 
 
 Example:
-    >>> from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+    >>> from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
     >>> adapter = AlbumentationsAdapter()
     >>> adapter  # doctest: +ELLIPSIS
     <...AlbumentationsAdapter...>
@@ -38,8 +38,8 @@ import torch
 from numpy.typing import NDArray
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
-from fuse_augmentations._types import TransformCategory
-from fuse_augmentations.affine._matrix import crop_resize_matrix, hflip_matrix, matmul3x3, rotation_matrix, vflip_matrix
+from fuse_augmentations.affine.matrix import crop_resize_matrix, hflip_matrix, matmul3x3, rotation_matrix, vflip_matrix
+from fuse_augmentations.types import TransformCategory
 
 __doctest_skip__: list[str] = []
 if not _ALBUMENTATIONS_AVAILABLE:
@@ -529,7 +529,7 @@ class AlbumentationsAdapter:
 
         Calls the transform via its native Albumentations dict API
         (``transform(image=image_hwc)["image"]``) without any tensor conversion.
-        Used by :meth:`~fuse_augmentations._compose.FusedCompose._forward_albu_native`
+        Used by :meth:`~fuse_augmentations.compose.FusedCompose._forward_albu_native`
         to apply passthrough transforms in the Albumentations native I/O path.
 
         Args:
@@ -542,7 +542,7 @@ class AlbumentationsAdapter:
         Examples:
             >>> import numpy as np
             >>> import albumentations as A
-            >>> from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+            >>> from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
             >>> image = np.zeros((8, 8, 3), dtype=np.uint8)
             >>> out = AlbumentationsAdapter.call_nonfused_numpy(A.GaussianBlur(p=1.0), image)
             >>> out.shape
@@ -814,7 +814,7 @@ def _sample_crop_resize_params(
     for _ in range(batch_size):
         base = transform.get_params()  # type: ignore[attr-defined]
         if hasattr(transform, "update_transform_params"):
-            base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
+            base = transform.update_transform_params(base, data)
         else:
             base = transform.update_params(base, **data)  # type: ignore[attr-defined]
         full = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]
@@ -869,7 +869,7 @@ def _sample_matrices(transform: object, batch_size: int, height: int, width: int
         # Inject "shape" (and interpolation/fill) so get_params_dependent_on_data can compute
         # center coordinates. API differs between albu 1.x and 2.x.
         if hasattr(transform, "update_transform_params"):
-            base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
+            base = transform.update_transform_params(base, data)
         else:
             base = transform.update_params(base, **data)  # type: ignore[attr-defined]
         full = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]
@@ -913,7 +913,7 @@ def _sample_color_params(
     for _idx in range(batch_size):
         base = transform.get_params()  # type: ignore[attr-defined]
         if hasattr(transform, "update_transform_params"):
-            base = transform.update_transform_params(base, data)  # type: ignore[attr-defined]
+            base = transform.update_transform_params(base, data)
         else:
             base = transform.update_params(base, **data)  # type: ignore[attr-defined]
         full = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]

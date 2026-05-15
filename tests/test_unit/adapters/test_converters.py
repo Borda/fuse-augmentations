@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from fuse_augmentations import BackendConverter
-from fuse_augmentations._converters import NumpyToTorchConverter, TorchToNumpyConverter
+from fuse_augmentations.converters import NumpyToTorchConverter, TorchToNumpyConverter
 
 
 class TestNumpyToTorchConverter:

@@ -6,10 +6,9 @@ import pytest
 import torch
 
 from fuse_augmentations._compat import _CV2_AVAILABLE
-from fuse_augmentations._types import TransformCategory
-from fuse_augmentations.affine import _segment as segment_mod
-from fuse_augmentations.affine._matrix import hflip_matrix, inv3x3, matmul3x3, scale_matrix, vflip_matrix
-from fuse_augmentations.affine._segment import (
+from fuse_augmentations.affine import segment as segment_mod
+from fuse_augmentations.affine.matrix import hflip_matrix, inv3x3, matmul3x3, scale_matrix, vflip_matrix
+from fuse_augmentations.affine.segment import (
     AlbuProjectiveSegment,
     ExactAffineSegment,
     FusedAffineSegment,
@@ -17,6 +16,7 @@ from fuse_augmentations.affine._segment import (
     build_segments,
     reorder_pointwise,
 )
+from fuse_augmentations.types import TransformCategory
 
 
 class _StubTransform:

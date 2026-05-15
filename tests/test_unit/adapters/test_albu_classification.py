@@ -13,12 +13,12 @@ import pytest
 
 from fuse_augmentations._backend import Backend, detect_backend
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
-from fuse_augmentations._types import TransformCategory
+from fuse_augmentations.types import TransformCategory
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as albu
 
-    from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+    from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
 
 
 def _make_mock(module_path: str) -> object:
@@ -42,6 +42,20 @@ def test_detect_backend_albumentations(module_path: str) -> None:
     assert detect_backend([mock]) == Backend.ALBUMENTATIONS
 
 
+_ALBU_CATEGORY_PARAMS = (
+    [
+        pytest.param(albu.Affine, TransformCategory.GEOMETRIC_INTERP, id="Affine"),
+        pytest.param(albu.Rotate, TransformCategory.GEOMETRIC_INTERP, id="Rotate"),
+        pytest.param(albu.ShiftScaleRotate, TransformCategory.GEOMETRIC_INTERP, id="ShiftScaleRotate"),
+        pytest.param(albu.HorizontalFlip, TransformCategory.GEOMETRIC_EXACT, id="HorizontalFlip"),
+        pytest.param(albu.VerticalFlip, TransformCategory.GEOMETRIC_EXACT, id="VerticalFlip"),
+        pytest.param(albu.Perspective, TransformCategory.PROJECTIVE, id="Perspective"),
+    ]
+    if _ALBUMENTATIONS_AVAILABLE
+    else [pytest.param(None, None, id="skip", marks=pytest.mark.skip(reason="albumentations not installed"))]
+)
+
+
 @pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestAlbumentationsAdapterCategory:
     """Category lookup for the 5 registered transforms."""
@@ -57,17 +71,7 @@ class TestAlbumentationsAdapterCategory:
             cat = adapter.category(mock)
         assert cat == TransformCategory.SPATIAL_KERNEL
 
-    @pytest.mark.parametrize(
-        "transform_factory, expected_cat",
-        [
-            pytest.param(albu.Affine, TransformCategory.GEOMETRIC_INTERP, id="Affine"),
-            pytest.param(albu.Rotate, TransformCategory.GEOMETRIC_INTERP, id="Rotate"),
-            pytest.param(albu.ShiftScaleRotate, TransformCategory.GEOMETRIC_INTERP, id="ShiftScaleRotate"),
-            pytest.param(albu.HorizontalFlip, TransformCategory.GEOMETRIC_EXACT, id="HorizontalFlip"),
-            pytest.param(albu.VerticalFlip, TransformCategory.GEOMETRIC_EXACT, id="VerticalFlip"),
-            pytest.param(albu.Perspective, TransformCategory.PROJECTIVE, id="Perspective"),
-        ],
-    )
+    @pytest.mark.parametrize("transform_factory, expected_cat", _ALBU_CATEGORY_PARAMS)
     def test_category_real(self, adapter, transform_factory, expected_cat):
         """Real albumentations transforms map to their expected TransformCategory."""
         with warnings.catch_warnings():

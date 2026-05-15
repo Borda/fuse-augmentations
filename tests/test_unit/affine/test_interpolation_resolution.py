@@ -1,7 +1,7 @@
 """Tests for _interpolation.py."""
 
 from fuse_augmentations._interpolation import resolve_interpolation, resolve_padding
-from fuse_augmentations._types import InterpolationMode, PaddingMode
+from fuse_augmentations.types import InterpolationMode, PaddingMode
 
 
 class TestResolveInterpolation:

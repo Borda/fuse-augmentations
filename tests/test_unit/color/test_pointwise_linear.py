@@ -17,13 +17,13 @@ import torch
 from hypothesis import given, settings
 from hypothesis.strategies import floats, integers
 
-from fuse_augmentations._types import TransformCategory
-from fuse_augmentations.affine._segment import (
+from fuse_augmentations.affine.segment import (
     ExactAffineSegment,
     FusedAffineSegment,
     build_segments,
     reorder_pointwise,
 )
+from fuse_augmentations.types import TransformCategory
 
 
 class _GeoTransform:

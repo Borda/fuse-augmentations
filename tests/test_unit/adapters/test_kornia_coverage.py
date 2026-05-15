@@ -21,7 +21,7 @@ import torch
 from fuse_augmentations._compat import _KORNIA_AVAILABLE
 
 if _KORNIA_AVAILABLE:
-    from fuse_augmentations.adapters._kornia import TRANSFORM_REGISTRY, KorniaAdapter
+    from fuse_augmentations.adapters.kornia import TRANSFORM_REGISTRY, KorniaAdapter
 else:
     TRANSFORM_REGISTRY = {}  # type: ignore[var-annotated]
     KorniaAdapter = None  # type: ignore[assignment,misc]

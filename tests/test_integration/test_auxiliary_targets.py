@@ -11,8 +11,8 @@ import torch
 import torch.nn.functional as F
 
 from fuse_augmentations._compat import _KORNIA_AVAILABLE
-from fuse_augmentations._compose import FusedCompose as Compose
-from fuse_augmentations._targets import transform_mask
+from fuse_augmentations.compose import FusedCompose as Compose
+from fuse_augmentations.targets import transform_mask
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug

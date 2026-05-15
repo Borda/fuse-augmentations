@@ -21,7 +21,7 @@ import torch
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
 
 if _ALBUMENTATIONS_AVAILABLE:
-    from fuse_augmentations.adapters._albumentations import TRANSFORM_REGISTRY, AlbumentationsAdapter
+    from fuse_augmentations.adapters.albumentations import TRANSFORM_REGISTRY, AlbumentationsAdapter
 else:
     TRANSFORM_REGISTRY = {}  # type: ignore[var-annotated]
     AlbumentationsAdapter = None  # type: ignore[assignment,misc]

@@ -13,14 +13,14 @@ import pytest
 from fuse_augmentations import Compose
 from fuse_augmentations._backend import Backend, detect_backend, detect_backends_per_transform
 from fuse_augmentations._compat import _TORCHVISION_AVAILABLE, _TORCHVISION_V2_AVAILABLE
-from fuse_augmentations._compose import _build_mixed_segments
-from fuse_augmentations._types import ReorderPolicy, TransformCategory
+from fuse_augmentations.compose import _build_mixed_segments
+from fuse_augmentations.types import ReorderPolicy, TransformCategory
 
 if _TORCHVISION_AVAILABLE:
     import torch
     import torchvision.transforms as tv_trans
 
-    from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
+    from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
 
 if _TORCHVISION_V2_AVAILABLE:
     import torchvision.transforms.v2 as Tv2
@@ -48,6 +48,7 @@ def test_detect_backend_torchvision(module_path: str) -> None:
     assert detect_backend([mock]) == Backend.TORCHVISION
 
 
+@pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
 class TestTorchVisionAdapterCategory:
     """Category lookup for the 4 registered transforms."""
 
@@ -161,7 +162,7 @@ def test_v1_transform_cls_attribute_exists_on_v2_transform():
     transform = Tv2.RandomHorizontalFlip(p=1.0)
     assert hasattr(transform, "_v1_transform_cls"), (
         "torchvision.transforms.v2.RandomHorizontalFlip no longer has _v1_transform_cls; "
-        "TorchVisionAdapter._is_torchvision_v2_transform may need updating"
+        "TorchVisionAdapter.is_torchvision_v2_transform may need updating"
     )
 
 

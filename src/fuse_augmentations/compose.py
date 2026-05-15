@@ -17,7 +17,7 @@ deserialisation (object ids change; positional indices do not).
 
 Example:
     >>> import torch
-    >>> from fuse_augmentations._compose import Compose
+    >>> from fuse_augmentations.compose import Compose
     >>> pipe = Compose([])
     >>> image = torch.zeros(1, 3, 8, 8)
     >>> pipe(image).shape
@@ -38,16 +38,7 @@ from torch import Tensor, nn
 
 from fuse_augmentations._backend import Backend, detect_backends_per_transform
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
-from fuse_augmentations._types import (
-    InterpolationStr,
-    PaddingModeStr,
-    ReorderPolicy,
-    SegmentDescriptor,
-    TransformAdapter,
-    TransformCategory,
-    TransformSpec,
-)
-from fuse_augmentations.affine._matrix import (
+from fuse_augmentations.affine.matrix import (
     hflip_matrix,
     matmul3x3,
     rotation_matrix,
@@ -57,7 +48,7 @@ from fuse_augmentations.affine._matrix import (
     translate_matrix,
     vflip_matrix,
 )
-from fuse_augmentations.affine._segment import (
+from fuse_augmentations.affine.segment import (
     AlbuFusedAffineSegment,
     AlbuProjectiveSegment,
     CropResizeSegment,
@@ -69,6 +60,15 @@ from fuse_augmentations.affine._segment import (
     reorder_aggressive,
     reorder_pointwise,
 )
+from fuse_augmentations.types import (
+    InterpolationStr,
+    PaddingModeStr,
+    ReorderPolicy,
+    SegmentDescriptor,
+    TransformAdapter,
+    TransformCategory,
+    TransformSpec,
+)
 
 __doctest_skip__: list[str] = []
 if not _KORNIA_AVAILABLE:
@@ -79,7 +79,7 @@ if not _ALBUMENTATIONS_AVAILABLE:
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-    from fuse_augmentations._resolver import BackendStr, OpStr
+    from fuse_augmentations.resolver import BackendStr, OpStr
 
 _KNOWN_DATA_KEYS = {"input", "mask", "bbox_xyxy", "bbox_xywh", "keypoints"}
 
@@ -98,11 +98,11 @@ class FusedCompose(nn.Module):
     Segments the transform list into fused geometric segments and passthrough transforms, then executes them
     sequentially. Consecutive geometric ops are grouped and executed as either:
 
-    - A :class:`~fuse_augmentations.affine._segment.FusedAffineSegment` - when the run
+    - A :class:`~fuse_augmentations.affine.segment.FusedAffineSegment` - when the run
       contains at least one ``GEOMETRIC_INTERP`` op. Matrices are composed and
       a single ``grid_sample`` call is used, eliminating redundant interpolation
       passes.
-    - An :class:`~fuse_augmentations.affine._segment.ExactAffineSegment` - when the run
+    - An :class:`~fuse_augmentations.affine.segment.ExactAffineSegment` - when the run
       contains *only* ``GEOMETRIC_EXACT`` ops (HFlip, VFlip). Transforms are
       applied via ``tensor.flip`` with zero interpolation error.
 
@@ -155,6 +155,7 @@ class FusedCompose(nn.Module):
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
         **backend_kwargs: object,
     ) -> None:
+        """Initialize ``FusedCompose``."""
         super().__init__()
 
         if reorder not in (ReorderPolicy.NONE, ReorderPolicy.POINTWISE, ReorderPolicy.AGGRESSIVE):
@@ -289,9 +290,9 @@ class FusedCompose(nn.Module):
             _bypass_ok = True
             if _seg0._fast_path == "torchvision":
                 try:
-                    from fuse_augmentations.adapters._torchvision import _is_torchvision_v2_transform
+                    from fuse_augmentations.adapters.torchvision import is_torchvision_v2_transform
 
-                    _bypass_ok = _is_torchvision_v2_transform(_tfm0)
+                    _bypass_ok = is_torchvision_v2_transform(_tfm0)
                 except ImportError:
                     _bypass_ok = False
             if _bypass_ok:
@@ -312,7 +313,7 @@ class FusedCompose(nn.Module):
             and len(self._segments[0].transforms) == 1
         ):
             try:
-                from fuse_augmentations.adapters._albumentations import (
+                from fuse_augmentations.adapters.albumentations import (
                     AlbumentationsAdapter as AlbuAdapterCls,
                 )
 
@@ -326,7 +327,7 @@ class FusedCompose(nn.Module):
         _is_albu: bool = False
         if adapter is not None:
             try:
-                from fuse_augmentations.adapters._albumentations import (
+                from fuse_augmentations.adapters.albumentations import (
                     AlbumentationsAdapter as _AlbuAdapterCls,
                 )
 
@@ -354,7 +355,7 @@ class FusedCompose(nn.Module):
                     tags.append(3)
                 elif isinstance(seg, _PassthroughSegment):
                     try:
-                        from fuse_augmentations.adapters._albumentations import (
+                        from fuse_augmentations.adapters.albumentations import (
                             AlbumentationsAdapter as _AlbuAdapterCheck,
                         )
 
@@ -369,13 +370,13 @@ class FusedCompose(nn.Module):
             self._albu_seg_tags = tags
 
         # Resolve output_backend converter.
-        from fuse_augmentations._types import BackendConverter
+        from fuse_augmentations.types import BackendConverter
 
         self._output_converter: BackendConverter | None
         if output_backend is None:
             self._output_converter = None
         elif output_backend in ("numpy", "numpy_hwc"):
-            from fuse_augmentations._converters import TorchToNumpyConverter
+            from fuse_augmentations.converters import TorchToNumpyConverter
 
             self._output_converter = TorchToNumpyConverter()
         elif output_backend == "torch":
@@ -443,7 +444,7 @@ class FusedCompose(nn.Module):
         """Route to the Albumentations native dict path or the standard tensor path.
 
         When called with ``image=<numpy.ndarray>`` and the pipeline adapter is an
-        :class:`~fuse_augmentations.adapters._albumentations.AlbumentationsAdapter`,
+        :class:`~fuse_augmentations.adapters.albumentations.AlbumentationsAdapter`,
         the call is dispatched to :meth:`_forward_albu_native`, which avoids all
         tensor round-trips and returns a ``{"image": ndarray}`` dict matching the
         :class:`albumentations.Compose` calling convention.
@@ -510,11 +511,11 @@ class FusedCompose(nn.Module):
         """Execute the pipeline in Albumentations native dict-input mode.
 
         Iterates over all segments in NumPy space — no tensor conversion.
-        :class:`~fuse_augmentations.affine._segment.AlbuFusedAffineSegment`
+        :class:`~fuse_augmentations.affine.segment.AlbuFusedAffineSegment`
         segments are dispatched via their :meth:`forward_numpy` method;
-        :class:`~fuse_augmentations._compose._PassthroughSegment` segments
+        :class:`~fuse_augmentations.compose._PassthroughSegment` segments
         are dispatched via
-        :meth:`~fuse_augmentations.adapters._albumentations.AlbumentationsAdapter.call_nonfused_numpy`.
+        :meth:`~fuse_augmentations.adapters.albumentations.AlbumentationsAdapter.call_nonfused_numpy`.
 
         Args:
             img_hwc: ``(H, W, C)`` or ``(H, W)`` NumPy array (uint8 or float32).
@@ -532,7 +533,7 @@ class FusedCompose(nn.Module):
         # to avoid per-call isinstance dispatch overhead.
         _tags = self._albu_seg_tags
         if _tags is not None:
-            from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+            from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
 
             for idx_segment, seg in enumerate(self._segments):
                 tag = _tags[idx_segment]
@@ -564,7 +565,7 @@ class FusedCompose(nn.Module):
                     raise RuntimeError(msg)
         else:
             # Fallback: isinstance dispatch (used when _albu_seg_tags was not built).
-            from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+            from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
 
             for seg in self._segments:
                 if isinstance(seg, AlbuFusedAffineSegment):
@@ -902,7 +903,7 @@ class FusedCompose(nn.Module):
         does not require a :meth:`forward` call.
 
         Returns:
-            List of :class:`~fuse_augmentations._types.SegmentDescriptor`
+            List of :class:`~fuse_augmentations.types.SegmentDescriptor`
             instances, one per segment. Empty list for an empty pipeline.
             Each descriptor's ``backend`` field is the adapter class name
             (e.g. ``"KorniaAdapter"``) for fused, exact, and projective
@@ -911,7 +912,7 @@ class FusedCompose(nn.Module):
 
         Example:
             >>> import torch
-            >>> from fuse_augmentations._compose import FusedCompose
+            >>> from fuse_augmentations.compose import FusedCompose
             >>> pipe = FusedCompose([])
             >>> pipe.fusion_plan_descriptors
             []
@@ -1049,21 +1050,21 @@ class FusedCompose(nn.Module):
             A configured ``FusedCompose`` instance.
 
         Raises:
-            ValueError: If ``backend`` is not in :data:`~fuse_augmentations._resolver.SUPPORTED_BACKENDS`,
+            ValueError: If ``backend`` is not in :data:`~fuse_augmentations.resolver.SUPPORTED_BACKENDS`,
                 or if a spec's operation is not supported by the chosen backend.
                 This validation applies even when ``specs`` is empty.
 
         Example:
             >>> import torch
-            >>> from fuse_augmentations._compose import FusedCompose
-            >>> from fuse_augmentations._types import TransformSpec
+            >>> from fuse_augmentations.compose import FusedCompose
+            >>> from fuse_augmentations.types import TransformSpec
             >>> spec = TransformSpec(operation="hflip", params={}, prob=0.5)
             >>> pipe = FusedCompose.from_config([spec], backend="kornia")
             >>> pipe(torch.zeros(1, 3, 8, 8)).shape
             torch.Size([1, 3, 8, 8])
 
         """
-        from fuse_augmentations._resolver import SUPPORTED_BACKENDS, SUPPORTED_OPS, resolve_op, translate_params
+        from fuse_augmentations.resolver import SUPPORTED_BACKENDS, SUPPORTED_OPS, resolve_op, translate_params
 
         if backend not in SUPPORTED_BACKENDS:
             msg = f"unknown backend {backend!r}; supported: {sorted(SUPPORTED_BACKENDS)}"
@@ -1230,7 +1231,7 @@ class FusedCompose(nn.Module):
 
         Example:
             >>> import torch
-            >>> from fuse_augmentations._compose import FusedCompose
+            >>> from fuse_augmentations.compose import FusedCompose
             >>> pipe = FusedCompose.from_params(rotation=(-30, 30), hflip_p=0.5)
             >>> x = torch.zeros(2, 3, 64, 64)
             >>> out = pipe(x)
@@ -1564,15 +1565,15 @@ def _adapter_for_backend(backend: Backend) -> TransformAdapter:
 
     """
     if backend == Backend.KORNIA:
-        from fuse_augmentations.adapters._kornia import KorniaAdapter
+        from fuse_augmentations.adapters.kornia import KorniaAdapter
 
         return KorniaAdapter()
     if backend == Backend.ALBUMENTATIONS:
-        from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+        from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
 
         return AlbumentationsAdapter()
     if backend == Backend.TORCHVISION:
-        from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
+        from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
 
         return TorchVisionAdapter()
     msg = f"Backend '{backend.value}' not yet supported"
@@ -1872,6 +1873,7 @@ class _DirectParamAdapter:
         width: int,
     ) -> torch.Tensor:
         """Build a (batch_size, 3, 3) forward affine matrix from sampled params."""
+        batch_size: int | None = None
         if isinstance(transform, _DirectFlipTransform):
             batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device

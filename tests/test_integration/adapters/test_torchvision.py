@@ -19,8 +19,8 @@ import torch.nn.functional as F
 
 from fuse_augmentations import Compose
 from fuse_augmentations._compat import _TORCHVISION_AVAILABLE, _TORCHVISION_V2_AVAILABLE
-from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
-from fuse_augmentations.affine._matrix import inv3x3, normalize_matrix
+from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
+from fuse_augmentations.affine.matrix import inv3x3, normalize_matrix
 
 if _TORCHVISION_AVAILABLE:
     import torchvision.transforms as tv_trans

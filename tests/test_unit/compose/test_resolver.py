@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
-from fuse_augmentations._resolver import SUPPORTED_BACKENDS, SUPPORTED_OPS, resolve_op, translate_params
+from fuse_augmentations.resolver import SUPPORTED_BACKENDS, SUPPORTED_OPS, resolve_op, translate_params
 
 
 class TestSupportedConstants:

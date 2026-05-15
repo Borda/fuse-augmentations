@@ -13,12 +13,12 @@ import pytest
 import torch
 
 from fuse_augmentations._compat import _TORCHVISION_AVAILABLE
-from fuse_augmentations._types import TransformAdapter, TransformCategory
 from fuse_augmentations.adapters import TorchVisionAdapter as _PublicTorchVisionAdapter
+from fuse_augmentations.types import TransformAdapter, TransformCategory
 
 if _TORCHVISION_AVAILABLE:
-    from fuse_augmentations.adapters import _torchvision as _mod
-    from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
+    from fuse_augmentations.adapters import torchvision as _mod
+    from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
 
 pytestmark = pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
 

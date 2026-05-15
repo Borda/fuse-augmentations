@@ -6,7 +6,7 @@ is ``cx = (W-1)/2``, ``cy = (H-1)/2``.
 
 Example:
     >>> import torch
-    >>> from fuse_augmentations.affine._matrix import rotation_matrix, matmul3x3, inv3x3
+    >>> from fuse_augmentations.affine.matrix import rotation_matrix, matmul3x3, inv3x3
     >>> matrix = rotation_matrix(torch.zeros(2), height=64, width=64)
     >>> matrix.shape
     torch.Size([2, 3, 3])
@@ -487,7 +487,7 @@ def normalize_matrix_io(
       (uses ``height_out``, ``width_out``).
 
     Use this instead of :func:`normalize_matrix` when the segment output size differs from the input
-    size (e.g. for :class:`~fuse_augmentations.affine._segment.CropResizeSegment`).
+    size (e.g. for :class:`~fuse_augmentations.affine.segment.CropResizeSegment`).
 
     Args:
         matrix: ``(batch_size, 3, 3)`` pixel-space *inverse* matrix (output pixel → input pixel).

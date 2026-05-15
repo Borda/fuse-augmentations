@@ -1,9 +1,9 @@
-"""Tests for fuse_augmentations._types."""
+"""Tests for fuse_augmentations.types."""
 
 import pytest
 import torch
 
-from fuse_augmentations._types import (
+from fuse_augmentations.types import (
     InterpolationMode,
     PaddingMode,
     ReorderPolicy,

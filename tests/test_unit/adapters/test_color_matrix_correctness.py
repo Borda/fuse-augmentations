@@ -32,22 +32,22 @@ from fuse_augmentations._compat import (
     _KORNIA_AVAILABLE,
     _TORCHVISION_AVAILABLE,
 )
-from fuse_augmentations._types import TransformCategory
+from fuse_augmentations.types import TransformCategory
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
 
-    from fuse_augmentations.adapters._kornia import KorniaAdapter
+    from fuse_augmentations.adapters.kornia import KorniaAdapter
 
 if _TORCHVISION_AVAILABLE:
     import torchvision.transforms as tv_trans
 
-    from fuse_augmentations.adapters._torchvision import TorchVisionAdapter
+    from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as albu
 
-    from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
+    from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
 
 
 def _apply_color_matrix(matrix: torch.Tensor, image: torch.Tensor) -> torch.Tensor:

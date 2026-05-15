@@ -20,8 +20,8 @@ import torch
 
 from fuse_augmentations import Compose
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
-from fuse_augmentations.adapters._albumentations import AlbumentationsAdapter
-from fuse_augmentations.affine._segment import _CV2_BORDER, _CV2_INTERP, _warp
+from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
+from fuse_augmentations.affine.segment import _CV2_BORDER, _CV2_INTERP, _warp
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as albu
