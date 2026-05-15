@@ -102,137 +102,140 @@ class _StubAdapter:
         return self._inner.exact_flip_dims(transform)
 
 
-def test_build_matrix_shape_from_known_matrix():
-    """build_matrix returns (B, 3, 3) when params contains a 'matrix' key."""
-    adapter = AlbumentationsAdapter()
-    batch, height, width = 3, 64, 64
+class TestBuildMatrix:
+    """AlbumentationsAdapter.build_matrix shape, identity, value propagation, and Transpose."""
 
-    # build_matrix reads params["matrix"] directly — construct it as sample_params would
-    matrix_tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0).expand(batch, -1, -1).clone()
-    stub = _StubInterpTransform(np.eye(3))
-    mtx = adapter.build_matrix(stub, {"matrix": matrix_tensor}, height, width)
+    def test_shape_from_known_matrix(self):
+        """build_matrix returns (B, 3, 3) when params contains a 'matrix' key."""
+        adapter = AlbumentationsAdapter()
+        batch, height, width = 3, 64, 64
 
-    assert mtx.shape == (batch, 3, 3)
+        # build_matrix reads params["matrix"] directly — construct it as sample_params would
+        matrix_tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0).expand(batch, -1, -1).clone()
+        stub = _StubInterpTransform(np.eye(3))
+        mtx = adapter.build_matrix(stub, {"matrix": matrix_tensor}, height, width)
 
+        assert mtx.shape == (batch, 3, 3)
 
-def test_build_matrix_identity_on_identity_matrix():
-    """build_matrix with identity params['matrix'] produces identity (B, 3, 3)."""
-    adapter = AlbumentationsAdapter()
-    B, H, W = 2, 32, 32
+    def test_identity_on_identity_matrix(self):
+        """build_matrix with identity params['matrix'] produces identity (B, 3, 3)."""
+        adapter = AlbumentationsAdapter()
+        batch, height, width = 2, 32, 32
 
-    matrix_tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0).expand(B, -1, -1).clone()
-    stub = _StubInterpTransform(np.eye(3))
-    mtx = adapter.build_matrix(stub, {"matrix": matrix_tensor}, H, W)
+        matrix_tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0).expand(batch, -1, -1).clone()
+        stub = _StubInterpTransform(np.eye(3))
+        mtx = adapter.build_matrix(stub, {"matrix": matrix_tensor}, height, width)
 
-    expected = torch.eye(3).unsqueeze(0).expand(B, -1, -1)
-    assert torch.allclose(mtx, expected, atol=1e-6)
+        expected = torch.eye(3).unsqueeze(0).expand(batch, -1, -1)
+        assert torch.allclose(mtx, expected, atol=1e-6)
 
+    def test_non_identity_matrix_preserved(self):
+        """build_matrix propagates non-identity matrix values exactly."""
+        adapter = AlbumentationsAdapter()
+        height, width = 64, 64
 
-def test_build_matrix_non_identity_matrix_preserved():
-    """build_matrix propagates non-identity matrix values exactly."""
-    adapter = AlbumentationsAdapter()
-    _B, H, W = 1, 64, 64
+        angle = np.deg2rad(30.0)
+        known = np.array([
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        matrix_tensor = torch.tensor(known, dtype=torch.float32).unsqueeze(0)
+        stub = _StubInterpTransform(known)
+        mtx = adapter.build_matrix(stub, {"matrix": matrix_tensor}, height, width)
 
-    angle = np.deg2rad(30.0)
-    known = np.array([
-        [np.cos(angle), -np.sin(angle), 0.0],
-        [np.sin(angle), np.cos(angle), 0.0],
-        [0.0, 0.0, 1.0],
-    ])
-    matrix_tensor = torch.tensor(known, dtype=torch.float32).unsqueeze(0)
-    stub = _StubInterpTransform(known)
-    mtx = adapter.build_matrix(stub, {"matrix": matrix_tensor}, H, W)
+        assert torch.allclose(mtx[0], torch.tensor(known, dtype=torch.float32), atol=1e-5)
 
-    assert torch.allclose(mtx[0], torch.tensor(known, dtype=torch.float32), atol=1e-5)
+    def test_transpose_returns_swap_matrix_on_square_images(self):
+        """Transpose must provide a real affine matrix in mixed fused segments."""
+        adapter = AlbumentationsAdapter()
 
+        class _TransposeStub:
+            pass
 
-def test_build_matrix_transpose_returns_non_identity_on_square_images():
-    """Transpose must provide a real affine matrix in mixed fused segments."""
-    adapter = AlbumentationsAdapter()
+        params = {"_batch_size": torch.tensor([2], dtype=torch.int64)}
+        with (
+            patch.object(_mod, "_RandomRotate90", type("_RandomRotate90Stub", (), {}), create=True),
+            patch.object(_mod, "_D4", type("_D4Stub", (), {}), create=True),
+            patch.object(_mod, "_Transpose", _TransposeStub, create=True),
+            patch.object(_mod, "_EXACT_DISCRETE_TYPES", frozenset({_TransposeStub})),
+        ):
+            mtx = adapter.build_matrix(_TransposeStub(), params, height=32, width=32)
 
-    class _TransposeStub:
-        pass
-
-    params = {"_batch_size": torch.tensor([2], dtype=torch.int64)}
-    with (
-        patch.object(_mod, "_RandomRotate90", type("_RandomRotate90Stub", (), {}), create=True),
-        patch.object(_mod, "_D4", type("_D4Stub", (), {}), create=True),
-        patch.object(_mod, "_Transpose", _TransposeStub, create=True),
-        patch.object(_mod, "_EXACT_DISCRETE_TYPES", frozenset({_TransposeStub})),
-    ):
-        mtx = adapter.build_matrix(_TransposeStub(), params, height=32, width=32)
-
-    expected = (
-        torch
-        .tensor(
-            [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
-            dtype=torch.float32,
+        expected = (
+            torch
+            .tensor(
+                [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+                dtype=torch.float32,
+            )
+            .unsqueeze(0)
+            .expand(2, -1, -1)
         )
-        .unsqueeze(0)
-        .expand(2, -1, -1)
-    )
-    assert torch.allclose(mtx, expected)
+        assert torch.allclose(mtx, expected)
 
 
-def test_exact_flip_dims_hflip():
-    """exact_flip_dims returns [3] for horizontal flip."""
-    adapter = AlbumentationsAdapter()
+class TestExactFlipDims:
+    """exact_flip_dims dispatch for hflip, vflip, and unknown transforms."""
 
-    class _HFlipStub(_StubFlipTransform):
-        pass
+    def test_hflip_returns_3(self):
+        """exact_flip_dims returns [3] for horizontal flip."""
+        adapter = AlbumentationsAdapter()
 
-    with patch.object(_mod, "_HFLIP_TYPES", frozenset({_HFlipStub})):
-        assert adapter.exact_flip_dims(_HFlipStub()) == [3]
+        class _HFlipStub(_StubFlipTransform):
+            pass
 
+        with patch.object(_mod, "_HFLIP_TYPES", frozenset({_HFlipStub})):
+            assert adapter.exact_flip_dims(_HFlipStub()) == [3]
 
-def test_exact_flip_dims_vflip():
-    """exact_flip_dims returns [2] for vertical flip."""
-    adapter = AlbumentationsAdapter()
+    def test_vflip_returns_2(self):
+        """exact_flip_dims returns [2] for vertical flip."""
+        adapter = AlbumentationsAdapter()
 
-    class _VFlipStub(_StubFlipTransform):
-        pass
+        class _VFlipStub(_StubFlipTransform):
+            pass
 
-    with patch.object(_mod, "_VFLIP_TYPES", frozenset({_VFlipStub})):
-        assert adapter.exact_flip_dims(_VFlipStub()) == [2]
+        with patch.object(_mod, "_VFLIP_TYPES", frozenset({_VFlipStub})):
+            assert adapter.exact_flip_dims(_VFlipStub()) == [2]
 
+    def test_unknown_raises_type_error(self):
+        """exact_flip_dims raises TypeError for non-flip transforms."""
+        adapter = AlbumentationsAdapter()
 
-def test_exact_flip_dims_unknown_raises():
-    """exact_flip_dims raises TypeError for non-flip transforms."""
-    adapter = AlbumentationsAdapter()
+        class _NotAFlip:
+            pass
 
-    class _NotAFlip:
-        pass
-
-    with pytest.raises(TypeError):
-        adapter.exact_flip_dims(_NotAFlip())
-
-
-def test_sample_params_matrix_batch_size():
-    """sample_params stacks B matrices into (B, 3, 3) via the 'matrix' key."""
-    adapter = AlbumentationsAdapter()
-    B, H, W = 5, 48, 48
-
-    class _InterpStub(_StubInterpTransform):
-        pass
-
-    with patch.object(_mod, "_INTERP_TYPES", frozenset({_InterpStub})):
-        stub = _InterpStub(np.eye(3, dtype=np.float64))
-        params = adapter.sample_params(stub, (B, 3, H, W), torch.device("cpu"))
-        assert "matrix" in params
-        assert params["matrix"].shape == (B, 3, 3)
+        with pytest.raises(TypeError):
+            adapter.exact_flip_dims(_NotAFlip())
 
 
-def test_sample_params_flip_returns_batch_size_key():
-    """sample_params for a flip stub returns _batch_size tensor."""
-    adapter = AlbumentationsAdapter()
+class TestSampleParams:
+    """AlbumentationsAdapter.sample_params for interp and flip transform types."""
 
-    class _HFlipStub(_StubFlipTransform):
-        pass
+    def test_matrix_batch_size(self):
+        """sample_params stacks B matrices into (B, 3, 3) via the 'matrix' key."""
+        adapter = AlbumentationsAdapter()
+        batch, height, width = 5, 48, 48
 
-    with patch.object(_mod, "_HFLIP_TYPES", frozenset({_HFlipStub})):
-        params = adapter.sample_params(_HFlipStub(), (4, 3, 32, 32), torch.device("cpu"))
-        assert "_batch_size" in params
-        assert int(params["_batch_size"].item()) == 4
+        class _InterpStub(_StubInterpTransform):
+            pass
+
+        with patch.object(_mod, "_INTERP_TYPES", frozenset({_InterpStub})):
+            stub = _InterpStub(np.eye(3, dtype=np.float64))
+            params = adapter.sample_params(stub, (batch, 3, height, width), torch.device("cpu"))
+            assert "matrix" in params
+            assert params["matrix"].shape == (batch, 3, 3)
+
+    def test_flip_returns_batch_size_key(self):
+        """sample_params for a flip stub returns _batch_size tensor."""
+        adapter = AlbumentationsAdapter()
+
+        class _HFlipStub(_StubFlipTransform):
+            pass
+
+        with patch.object(_mod, "_HFLIP_TYPES", frozenset({_HFlipStub})):
+            params = adapter.sample_params(_HFlipStub(), (4, 3, 32, 32), torch.device("cpu"))
+            assert "_batch_size" in params
+            assert int(params["_batch_size"].item()) == 4
 
 
 class TestHflipMatrixNp:

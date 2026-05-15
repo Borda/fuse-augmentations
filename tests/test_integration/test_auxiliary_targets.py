@@ -271,21 +271,24 @@ class TestPassthroughWithAuxTargets:
 
 
 @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
-class TestTransformMaskInt64:
-    """transform_mask with int64 input is supported via internal cast-and-restore."""
+class TestTransformMask:
+    """transform_mask dtype cast-and-restore for int64, int32, bool, and float32."""
 
-    def test_transform_mask_int64_input(self):
+    def _identity_grid(self, batch: int, height: int, width: int) -> torch.Tensor:
+        theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(batch, -1, -1)
+        return F.affine_grid(theta, [batch, 1, height, width], align_corners=True)
+
+    def test_int64_preserves_labels(self):
         """transform_mask accepts int64 masks and preserves integer labels."""
         mask_int64 = torch.randint(0, 3, (BATCH, 1, HEIGHT, WIDTH), dtype=torch.int64)
-        theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(BATCH, -1, -1)
-        grid = F.affine_grid(theta, [BATCH, 1, HEIGHT, WIDTH], align_corners=True)
+        grid = self._identity_grid(BATCH, HEIGHT, WIDTH)
 
         out = transform_mask(mask_int64, grid)
         assert out.dtype == torch.int64, f"Expected int64 output dtype, got {out.dtype}"
         unique_vals = set(torch.unique(out).tolist())
         assert unique_vals.issubset({0, 1, 2}), f"Unexpected label values after transform: {unique_vals}"
 
-    def test_transform_mask_int64_preserves_large_labels_with_fp16_grid(self):
+    def test_int64_preserves_large_labels_with_fp16_grid(self):
         """Large integer labels are preserved even when the input grid is float16."""
         mask_int64 = torch.full((BATCH, 1, HEIGHT, WIDTH), 4097, dtype=torch.int64)
         theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(BATCH, -1, -1)
@@ -295,16 +298,7 @@ class TestTransformMaskInt64:
         assert out.dtype == torch.int64, f"Expected int64 output dtype, got {out.dtype}"
         assert (out == 4097).all(), "Large class IDs must not be rounded in mixed-precision paths"
 
-
-@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
-class TestTransformMaskDtypes:
-    """transform_mask preserves dtype for int32, bool, and float32 inputs."""
-
-    def _identity_grid(self, batch: int, height: int, width: int) -> torch.Tensor:
-        theta = torch.eye(2, 3, dtype=torch.float32).unsqueeze(0).expand(batch, -1, -1)
-        return F.affine_grid(theta, [batch, 1, height, width], align_corners=True)
-
-    def test_transform_mask_int32_preserves_dtype_and_labels(self):
+    def test_int32_preserves_dtype_and_labels(self):
         """Int32 mask is cast internally and cast back; output dtype is int32."""
         mask = torch.randint(0, 3, (BATCH, 1, HEIGHT, WIDTH), dtype=torch.int32)
         grid = self._identity_grid(BATCH, HEIGHT, WIDTH)
@@ -314,7 +308,7 @@ class TestTransformMaskDtypes:
         unique_vals = set(torch.unique(out).tolist())
         assert unique_vals.issubset({0, 1, 2}), f"Unexpected values after transform: {unique_vals}"
 
-    def test_transform_mask_bool_preserves_dtype_and_values(self):
+    def test_bool_preserves_dtype_and_values(self):
         """Bool mask is cast internally and cast back; output dtype is bool."""
         mask = torch.randint(0, 2, (BATCH, 1, HEIGHT, WIDTH)).bool()
         grid = self._identity_grid(BATCH, HEIGHT, WIDTH)
@@ -324,7 +318,7 @@ class TestTransformMaskDtypes:
         unique_vals = set(torch.unique(out).tolist())
         assert unique_vals.issubset({False, True}), f"Unexpected values after transform: {unique_vals}"
 
-    def test_transform_mask_float32_passthrough_preserves_dtype(self):
+    def test_float32_passthrough_preserves_dtype(self):
         """Float32 mask takes the needs_cast_back=False path; output dtype is float32."""
         mask = torch.rand(BATCH, 1, HEIGHT, WIDTH, dtype=torch.float32)
         grid = self._identity_grid(BATCH, HEIGHT, WIDTH)

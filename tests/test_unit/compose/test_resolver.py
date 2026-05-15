@@ -48,30 +48,22 @@ class TestSupportedConstants:
 class TestResolveOpKornia:
     """resolve_op with backend='kornia'."""
 
-    def test_rotation_returns_callable(self):
-        cls = resolve_op("rotation", "kornia")
-        assert callable(cls), f"resolve_op('rotation', 'kornia') should return callable, got {type(cls)}"
-
-    def test_hflip_returns_callable(self):
-        cls = resolve_op("hflip", "kornia")
-        assert callable(cls), f"resolve_op('hflip', 'kornia') should return callable, got {type(cls)}"
-
-    def test_vflip_returns_callable(self):
-        cls = resolve_op("vflip", "kornia")
-        assert callable(cls), f"resolve_op('vflip', 'kornia') should return callable, got {type(cls)}"
+    @pytest.mark.parametrize("op", ["rotation", "hflip", "vflip"])
+    def test_op_returns_callable(self, op):
+        """Common geometric ops resolve to a callable on kornia backend."""
+        cls = resolve_op(op, "kornia")
+        assert callable(cls), f"resolve_op({op!r}, 'kornia') should return callable, got {type(cls)}"
 
 
 @pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
 class TestResolveOpTorchVision:
     """resolve_op with backend='torchvision'."""
 
-    def test_hflip_returns_callable(self):
-        cls = resolve_op("hflip", "torchvision")
-        assert callable(cls)
-
-    def test_rotation_returns_callable(self):
-        cls = resolve_op("rotation", "torchvision")
-        assert callable(cls)
+    @pytest.mark.parametrize("op", ["hflip", "rotation"])
+    def test_op_returns_callable(self, op):
+        """Common geometric ops resolve to a callable on torchvision backend."""
+        cls = resolve_op(op, "torchvision")
+        assert callable(cls), f"resolve_op({op!r}, 'torchvision') should return callable, got {type(cls)}"
 
 
 @pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
@@ -79,6 +71,7 @@ class TestResolveOpAlbumentations:
     """resolve_op with backend='albumentations'."""
 
     def test_hflip_returns_callable(self):
+        """Hflip resolves to a callable on albumentations backend."""
         cls = resolve_op("hflip", "albumentations")
         assert callable(cls)
 
@@ -86,31 +79,31 @@ class TestResolveOpAlbumentations:
 class TestResolveOpErrors:
     """Error paths for resolve_op."""
 
-    def test_unknown_op_raises_value_error(self):
+    @pytest.mark.parametrize(
+        "op",
+        [
+            pytest.param("nonexistent_op_xyz", id="unknown"),
+            pytest.param("Rotation", id="wrong_case"),
+            pytest.param("", id="empty"),
+        ],
+    )
+    def test_bad_op_raises_value_error(self, op):
+        """Unknown, wrong-case, or empty op strings raise ValueError."""
         with pytest.raises(ValueError, match="unknown"):
-            resolve_op("nonexistent_op_xyz", "kornia")
+            resolve_op(op, "kornia")
 
-    def test_unknown_backend_raises_value_error(self):
+    @pytest.mark.parametrize(
+        "backend",
+        [
+            pytest.param("nonexistent_backend_xyz", id="unknown"),
+            pytest.param("Kornia", id="wrong_case"),
+            pytest.param("", id="empty"),
+        ],
+    )
+    def test_bad_backend_raises_value_error(self, backend):
+        """Unknown, wrong-case, or empty backend strings raise ValueError."""
         with pytest.raises(ValueError, match="unknown backend"):
-            resolve_op("rotation", "nonexistent_backend_xyz")
-
-    def test_case_sensitive_op(self):
-        """resolve_op is case-sensitive: 'Rotation' != 'rotation'."""
-        with pytest.raises(ValueError, match="unknown op"):
-            resolve_op("Rotation", "kornia")
-
-    def test_case_sensitive_backend(self):
-        """resolve_op is case-sensitive: 'Kornia' != 'kornia'."""
-        with pytest.raises(ValueError, match="unknown backend"):
-            resolve_op("rotation", "Kornia")
-
-    def test_empty_op_string(self):
-        with pytest.raises(ValueError, match="unknown op"):
-            resolve_op("", "kornia")
-
-    def test_empty_backend_string(self):
-        with pytest.raises(ValueError, match="unknown backend"):
-            resolve_op("rotation", "")
+            resolve_op("rotation", backend)
 
 
 class TestResolveOpComprehensive:
@@ -147,32 +140,22 @@ class TestResolveOpBackendGap:
     """Ops that are in SUPPORTED_OPS but not covered by a specific backend."""
 
     @pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
-    def test_rotation90_not_in_torchvision_raises_value_error(self) -> None:
-        """Rotation90 is in SUPPORTED_OPS but TorchVision has no equivalent."""
+    @pytest.mark.parametrize("op", ["rotation90", "shear", "translate"])
+    def test_op_not_in_torchvision_raises(self, op) -> None:
+        """Ops valid globally but missing in torchvision raise ValueError."""
         with pytest.raises(ValueError, match="does not support op"):
-            resolve_op("rotation90", "torchvision")
+            resolve_op(op, "torchvision")
 
     @pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
-    def test_rotation90_in_supported_ops_but_not_albumentations_shear(self) -> None:
-        """Shear is in SUPPORTED_OPS and albumentations supports it (via Affine)."""
-        # albumentations does not have a standalone shear; if it raises it's a backend-gap
-        # ValueError, if it resolves (via Affine) that's also correct behaviour.
-        # This test simply ensures no unexpected exception type is raised.
+    def test_shear_albumentations_resolves_or_raises_backend_gap(self) -> None:
+        """Shear resolves via Affine or raises ValueError for backend-gap — both valid outcomes."""
         try:
             result = resolve_op("shear", "albumentations")
-            assert callable(result)
         except ValueError:
-            pass  # acceptable — backend-gap path
-
-    @pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
-    def test_shear_not_in_torchvision_raises_value_error(self) -> None:
-        with pytest.raises(ValueError, match="does not support op"):
-            resolve_op("shear", "torchvision")
-
-    @pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
-    def test_translate_not_in_torchvision_raises_value_error(self) -> None:
-        with pytest.raises(ValueError, match="does not support op"):
-            resolve_op("translate", "torchvision")
+            return  # backend-gap path — valid
+        except Exception as exc:
+            pytest.fail(f"Unexpected exception type raised: {exc!r}")
+        assert callable(result), f"Expected callable, got {result!r}"
 
 
 class TestTranslateParams:

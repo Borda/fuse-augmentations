@@ -34,7 +34,6 @@ HEIGHT, WIDTH, CHANNELS, BATCH_SIZE = 16, 16, 3, 2
 
 
 def _rand_image(batch_size: int = BATCH_SIZE) -> torch.Tensor:
-    torch.manual_seed(42)
     return torch.rand(batch_size, CHANNELS, HEIGHT, WIDTH)
 
 

@@ -190,24 +190,20 @@ class TestNearDegenerateScale:
 class TestNaNInfInput:
     """Verify NaN and Inf inputs propagate through grid_sample without crash."""
 
-    def test_nan_input_propagates(self):
-        """NaN in input should propagate through grid_sample without crash."""
+    @pytest.mark.parametrize(
+        "fill_value",
+        [
+            pytest.param(float("nan"), id="nan"),
+            pytest.param(float("inf"), id="inf"),
+        ],
+    )
+    def test_special_value_propagates(self, fill_value):
+        """NaN and Inf inputs propagate through grid_sample without raising."""
         adapter = _StubAdapter()
         transform = _StubTransform(_identity_matrix_fn, prob=1.0)
         seg = FusedAffineSegment([transform], adapter)
-
-        img = torch.full((1, 1, 4, 4), float("nan"))
-        out = seg(img)  # should not raise
-        assert out.shape == img.shape
-
-    def test_inf_input_propagates(self):
-        """Inf in input should propagate through grid_sample without crash."""
-        adapter = _StubAdapter()
-        transform = _StubTransform(_identity_matrix_fn, prob=1.0)
-        seg = FusedAffineSegment([transform], adapter)
-
-        img = torch.full((1, 1, 4, 4), float("inf"))
-        out = seg(img)  # should not raise
+        img = torch.full((1, 1, 4, 4), fill_value)
+        out = seg(img)
         assert out.shape == img.shape
 
 
@@ -389,29 +385,22 @@ class _RaisingExactAdapter(_FlipAdapter):
 class TestExactAffineSegmentLossless:
     """Verify ExactAffineSegment applies lossless flips via tensor.flip."""
 
-    def test_hflip_p1_matches_tensor_flip(self):
-        """HFlip with p=1.0 produces pixel-exact same result as image.flip(dims=[3])."""
+    @pytest.mark.parametrize(
+        "transform_cls, flip_dims",
+        [
+            pytest.param(_HFlipTransform, [3], id="hflip"),
+            pytest.param(_VFlipTransform, [2], id="vflip"),
+        ],
+    )
+    def test_flip_p1_matches_tensor_flip(self, transform_cls, flip_dims):
+        """Flip with p=1.0 is pixel-exact versus torch.flip on the corresponding axis."""
         adapter = _FlipAdapter()
-        transform = _HFlipTransform(prob=1.0)
+        transform = transform_cls(prob=1.0)
         seg = ExactAffineSegment([transform], adapter)
-
         img = torch.rand(2, 3, 8, 8)
         out = seg(img)
-        expected = img.flip(dims=[3])
-
-        assert torch.equal(out, expected), "ExactAffineSegment HFlip should be pixel-exact"
-
-    def test_vflip_p1_matches_tensor_flip(self):
-        """VFlip with p=1.0 produces pixel-exact same result as image.flip(dims=[2])."""
-        adapter = _FlipAdapter()
-        transform = _VFlipTransform(prob=1.0)
-        seg = ExactAffineSegment([transform], adapter)
-
-        img = torch.rand(2, 3, 8, 8)
-        out = seg(img)
-        expected = img.flip(dims=[2])
-
-        assert torch.equal(out, expected), "ExactAffineSegment VFlip should be pixel-exact"
+        expected = img.flip(dims=flip_dims)
+        assert torch.equal(out, expected), "ExactAffineSegment flip should be pixel-exact"
 
 
 class TestExactAffineSegmentP0:

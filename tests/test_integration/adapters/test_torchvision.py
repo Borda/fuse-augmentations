@@ -36,7 +36,6 @@ ATOL_INTERP = 1e-5  # same matrix, same grid_sample -> near-identical
 
 
 def _rand_image(batch_size: int = 1) -> torch.Tensor:
-    torch.manual_seed(0)
     return torch.rand(batch_size, CHANNELS, HEIGHT, WIDTH)
 
 

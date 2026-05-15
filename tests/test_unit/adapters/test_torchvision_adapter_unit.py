@@ -223,25 +223,22 @@ class TestSampleParamsFlips:
         assert int(params["_batch_size"].item()) == 4
 
 
-class TestBuildMatrixRotation:
-    """build_matrix for rotation stub."""
+class TestBuildMatrixShape:
+    """build_matrix returns (batch_size, 3, 3) regardless of transform type."""
 
     @pytest.mark.usefixtures("_register_stubs")
-    def test_shape(self, adapter):
-        batch_size, height, width = 3, 64, 64
-        params = adapter.sample_params(_StubRotation(), (batch_size, 3, height, width), torch.device("cpu"))
-        matrix = adapter.build_matrix(_StubRotation(), params, height, width)
-        assert matrix.shape == (batch_size, 3, 3)
-
-
-class TestBuildMatrixAffine:
-    """build_matrix for affine stub."""
-
-    @pytest.mark.usefixtures("_register_stubs")
-    def test_shape(self, adapter):
-        batch_size, height, width = 2, 64, 64
-        params = adapter.sample_params(_StubAffine(), (batch_size, 3, height, width), torch.device("cpu"))
-        matrix = adapter.build_matrix(_StubAffine(), params, height, width)
+    @pytest.mark.parametrize(
+        "stub_cls, batch_size",
+        [
+            pytest.param(_StubRotation, 3, id="rotation"),
+            pytest.param(_StubAffine, 2, id="affine"),
+        ],
+    )
+    def test_shape(self, adapter, stub_cls, batch_size):
+        """build_matrix output shape is (batch_size, 3, 3) for rotation and affine stubs."""
+        height, width = 64, 64
+        params = adapter.sample_params(stub_cls(), (batch_size, 3, height, width), torch.device("cpu"))
+        matrix = adapter.build_matrix(stub_cls(), params, height, width)
         assert matrix.shape == (batch_size, 3, 3)
 
 
@@ -332,17 +329,22 @@ class TestBuildMatrixFallback:
 
 
 class TestExpandGuard:
-    """Expand=True raises ValueError in sample_params and category."""
+    """Expand=True raises ValueError in both sample_params and category."""
 
     @pytest.mark.usefixtures("_register_stubs")
-    def test_expand_true_in_category(self, adapter):
+    @pytest.mark.parametrize(
+        "call",
+        [
+            pytest.param(lambda a: a.category(_StubExpandTrue()), id="category"),
+            pytest.param(
+                lambda a: a.sample_params(_StubExpandTrue(), (2, 3, 64, 64), torch.device("cpu")), id="sample_params"
+            ),
+        ],
+    )
+    def test_expand_true_raises(self, adapter, call):
+        """Expand=True is rejected by both category() and sample_params()."""
         with pytest.raises(ValueError, match="expand=True is not supported"):
-            adapter.category(_StubExpandTrue())
-
-    @pytest.mark.usefixtures("_register_stubs")
-    def test_expand_true_in_sample_params(self, adapter):
-        with pytest.raises(ValueError, match="expand=True is not supported"):
-            adapter.sample_params(_StubExpandTrue(), (2, 3, 64, 64), torch.device("cpu"))
+            call(adapter)
 
 
 class TestV2BatchSemantics:

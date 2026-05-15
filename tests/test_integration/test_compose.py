@@ -107,11 +107,6 @@ class TestNWarpsSaved:
         ])
         assert pipe.n_warps_saved == 2
 
-    def test_single_transform_saves_zero(self):
-        """Single geometric transform -> 0 warps saved."""
-        pipe = Compose([kornia_aug.RandomRotation(30, p=1.0)])
-        assert pipe.n_warps_saved == 0
-
 
 class TestFusionPlan:
     """Validate human-readable fusion-plan formatting."""

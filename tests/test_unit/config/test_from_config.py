@@ -88,14 +88,17 @@ class TestFromConfigEmptySpecs:
 class TestFromConfigErrors:
     """Error paths for from_config."""
 
-    def test_invalid_backend_raises_value_error(self):
-        specs = [TransformSpec(operation="rotation", params={"degrees": (-10.0, 10.0)})]
+    @pytest.mark.parametrize(
+        "specs_arg",
+        [
+            pytest.param([TransformSpec(operation="rotation", params={"degrees": (-10.0, 10.0)})], id="with_specs"),
+            pytest.param([], id="empty_specs"),
+        ],
+    )
+    def test_invalid_backend_raises(self, specs_arg):
+        """Unknown backend raises ValueError regardless of whether specs is empty or not."""
         with pytest.raises(ValueError, match="unknown backend"):
-            Compose.from_config(specs, backend="nonexistent_backend")
-
-    def test_invalid_backend_raises_value_error_for_empty_specs(self):
-        with pytest.raises(ValueError, match="unknown backend"):
-            Compose.from_config([], backend="nonexistent_backend")
+            Compose.from_config(specs_arg, backend="nonexistent_backend")
 
     def test_invalid_op_raises_at_construction(self):
         """Invalid operation name should raise ValueError at construction, not at forward time."""
@@ -124,7 +127,6 @@ class TestFromConfigProbability:
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_p_one_hflip_always_applied(self):
         """prob=1.0 hflip should always flip the image."""
-        torch.manual_seed(42)
         specs = [TransformSpec(operation="hflip", params={}, prob=1.0)]
         pipe = Compose.from_config(specs, backend="kornia")
         image = torch.rand(2, 3, 32, 32)

@@ -49,6 +49,7 @@ smallest ``(a_deg, b_deg, height, width)`` that still triggers the failure, maki
 
 import math
 
+import pytest
 import torch
 from hypothesis import given, settings
 from hypothesis.strategies import floats, integers, lists, tuples
@@ -68,21 +69,18 @@ DEFAULT_DTYPE = torch.float64
 DEFAULT_DEVICE = torch.device("cpu")
 
 
-@given(width=integers(min_value=2, max_value=4096))
+@pytest.mark.parametrize(
+    "matrix_fn, dim_kwarg",
+    [
+        pytest.param(hflip_matrix, "width", id="hflip"),
+        pytest.param(vflip_matrix, "height", id="vflip"),
+    ],
+)
+@given(dim=integers(min_value=2, max_value=4096))
 @settings(max_examples=50)
-def test_hflip_involution(width: int) -> None:
-    """Hflip @ Hflip == identity for any width."""
-    mtx = hflip_matrix(width=width, batch_size=1, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE)
-    product = matmul3x3(mtx, mtx)
-    mtx_identity = torch.eye(3, dtype=DEFAULT_DTYPE).unsqueeze(0)
-    assert torch.allclose(product, mtx_identity, atol=1e-10)
-
-
-@given(height=integers(min_value=2, max_value=4096))
-@settings(max_examples=50)
-def test_vflip_involution(height: int) -> None:
-    """Vflip @ Vflip == identity for any height."""
-    mtx = vflip_matrix(height=height, batch_size=1, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE)
+def test_flip_involution(matrix_fn, dim_kwarg, dim: int) -> None:
+    """Flip matrix is its own inverse for any image dimension."""
+    mtx = matrix_fn(**{dim_kwarg: dim}, batch_size=1, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE)
     product = matmul3x3(mtx, mtx)
     mtx_identity = torch.eye(3, dtype=DEFAULT_DTYPE).unsqueeze(0)
     assert torch.allclose(product, mtx_identity, atol=1e-10)

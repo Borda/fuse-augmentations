@@ -440,16 +440,11 @@ class TestFromParamsScaleXYWithBackendRaises:
     """scale_x/scale_y kwargs raise ValueError when backend= is set."""
 
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
-    def test_scale_x_with_backend_raises(self):
-        """from_params(scale_x=..., backend='kornia') raises ValueError."""
-        with pytest.raises(ValueError, match="scale_x"):
-            FusedCompose.from_params(scale_x=(0.8, 1.2), backend="kornia")
-
-    @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
-    def test_scale_y_with_backend_raises(self):
-        """from_params(scale_y=..., backend='kornia') raises ValueError."""
-        with pytest.raises(ValueError, match="scale_y"):
-            FusedCompose.from_params(scale_y=(0.8, 1.2), backend="kornia")
+    @pytest.mark.parametrize("kwarg", ["scale_x", "scale_y"])
+    def test_scale_axis_with_backend_raises(self, kwarg):
+        """from_params(scale_x/y=..., backend='kornia') raises ValueError naming the kwarg."""
+        with pytest.raises(ValueError, match=kwarg):
+            FusedCompose.from_params(**{kwarg: (0.8, 1.2)}, backend="kornia")
 
     def test_scale_x_without_backend_works(self):
         """from_params(scale_x=...) without backend= is still valid."""

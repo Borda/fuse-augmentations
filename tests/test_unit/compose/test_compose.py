@@ -52,22 +52,13 @@ class TestEmptyPipeline:
 
 
 class TestReorderPolicyAggressive:
-    """Verify reorder policy acceptance and rejection."""
+    """All ReorderPolicy values are accepted by Compose."""
 
-    def test_aggressive_reorder_accepted(self):
-        """AGGRESSIVE reorder policy is accepted (v0.8+)."""
-        pipe = Compose([], reorder=ReorderPolicy.AGGRESSIVE)
-        assert pipe.reorder is ReorderPolicy.AGGRESSIVE
-
-    def test_none_reorder_accepted(self):
-        """NONE reorder policy is accepted without error."""
-        pipe = Compose([], reorder=ReorderPolicy.NONE)
-        assert pipe.reorder is ReorderPolicy.NONE
-
-    def test_pointwise_reorder_accepted(self):
-        """POINTWISE reorder policy is accepted without error."""
-        pipe = Compose([], reorder=ReorderPolicy.POINTWISE)
-        assert pipe.reorder is ReorderPolicy.POINTWISE
+    @pytest.mark.parametrize("policy", list(ReorderPolicy))
+    def test_all_policies_accepted(self, policy):
+        """Every ReorderPolicy member is accepted without error and stored on the pipe."""
+        pipe = Compose([], reorder=policy)
+        assert pipe.reorder is policy
 
 
 class TestAliases:

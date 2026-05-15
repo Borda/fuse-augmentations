@@ -57,29 +57,20 @@ class TestAlbumentationsAdapterCategory:
             cat = adapter.category(mock)
         assert cat == TransformCategory.SPATIAL_KERNEL
 
-    def test_category_real_affine(self, adapter):
-        """A.Affine → GEOMETRIC_INTERP."""
-        assert adapter.category(albu.Affine()) == TransformCategory.GEOMETRIC_INTERP
-
-    def test_category_real_rotate(self, adapter):
-        """A.Rotate → GEOMETRIC_INTERP."""
-        assert adapter.category(albu.Rotate()) == TransformCategory.GEOMETRIC_INTERP
-
-    def test_category_real_shift_scale_rotate(self, adapter):
-        """A.ShiftScaleRotate → GEOMETRIC_INTERP."""
+    @pytest.mark.parametrize(
+        "transform_factory, expected_cat",
+        [
+            pytest.param(albu.Affine, TransformCategory.GEOMETRIC_INTERP, id="Affine"),
+            pytest.param(albu.Rotate, TransformCategory.GEOMETRIC_INTERP, id="Rotate"),
+            pytest.param(albu.ShiftScaleRotate, TransformCategory.GEOMETRIC_INTERP, id="ShiftScaleRotate"),
+            pytest.param(albu.HorizontalFlip, TransformCategory.GEOMETRIC_EXACT, id="HorizontalFlip"),
+            pytest.param(albu.VerticalFlip, TransformCategory.GEOMETRIC_EXACT, id="VerticalFlip"),
+            pytest.param(albu.Perspective, TransformCategory.PROJECTIVE, id="Perspective"),
+        ],
+    )
+    def test_category_real(self, adapter, transform_factory, expected_cat):
+        """Real albumentations transforms map to their expected TransformCategory."""
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            assert adapter.category(albu.ShiftScaleRotate()) == TransformCategory.GEOMETRIC_INTERP
-
-    def test_category_real_hflip(self, adapter):
-        """A.HorizontalFlip → GEOMETRIC_EXACT."""
-        assert adapter.category(albu.HorizontalFlip()) == TransformCategory.GEOMETRIC_EXACT
-
-    def test_category_real_vflip(self, adapter):
-        """A.VerticalFlip → GEOMETRIC_EXACT."""
-        assert adapter.category(albu.VerticalFlip()) == TransformCategory.GEOMETRIC_EXACT
-
-    def test_perspective_is_projective(self, adapter):
-        """A.Perspective → PROJECTIVE."""
-        cat = adapter.category(albu.Perspective())
-        assert cat == TransformCategory.PROJECTIVE
+            transform = transform_factory()
+        assert adapter.category(transform) == expected_cat

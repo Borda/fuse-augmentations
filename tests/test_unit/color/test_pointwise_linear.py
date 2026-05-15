@@ -296,7 +296,7 @@ class TestPointwiseLinearSegmentation:
 #   A_fused = A2 * A1
 #   where albu = [[M, b], [0^T, 1]]
 #
-# These tests confirm the algebra is correct in float32. When FusedColorSegment
+# These tests confirm the algebra is correct in float64. When FusedColorSegment
 # is implemented in a later phase, these properties should hold for its output.
 
 DEFAULT_DTYPE = torch.float64
@@ -311,176 +311,163 @@ def _make_color_matrix(mat: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
 
 
 def _apply_color_matrix(mat: torch.Tensor, color: torch.Tensor) -> torch.Tensor:
-    """Apply a (1, 4, 4) color matrix to a (3,) RGB vector.
-
-    Returns (3,) result.
-
-    """
+    """Apply a (1, 4, 4) color matrix to a (3,) RGB vector; returns (3,) result."""
     c_hom = torch.cat([color, torch.ones(1, dtype=color.dtype)])  # (4,)
     return (mat[0] @ c_hom)[:3]
 
 
-@given(
-    mult1=floats(min_value=0.1, max_value=3.0),
-    mult2=floats(min_value=0.1, max_value=3.0),
-    bias1=floats(min_value=-1.0, max_value=1.0),
-    bias2=floats(min_value=-1.0, max_value=1.0),
-    red=floats(min_value=0.0, max_value=1.0),
-    green=floats(min_value=0.0, max_value=1.0),
-    b_val=floats(min_value=0.0, max_value=1.0),
-)
-@settings(max_examples=200)
-def test_brightness_fusion_equals_sequential(
-    mult1: float, mult2: float, bias1: float, bias2: float, red: float, green: float, b_val: float
-) -> None:
-    """Two diagonal brightness ops fuse: A2*A1 gives same result as sequential application.
+class TestColorMatrixFusionAlgebra:
+    """Property-based tests for the 4x4 homogeneous color-space affine fusion law.
 
-    Op1: c' = mult1*c + bias1*1 (brightness scale + offset, applied identically per channel)
-    Op2: c'' = mult2*c' + bias2*1
+    Validates (M2, b2) ∘ (M1, b1) = (M2*M1, M2*b1 + b2) as proved in docs/math/fusible-categories-proofs.md section 1.2.
 
-    Sequential: c'' = mult2*(mult1*c + bias1) + bias2 = (mult2*mult1)*c + (mult2*bias1 + bias2)
-    Fused:      A_fused = A2 * A1 applied once.
     """
-    mat1 = mult1 * torch.eye(3, dtype=DEFAULT_DTYPE)
-    bvec1 = bias1 * torch.ones(3, dtype=DEFAULT_DTYPE)
-    mat2 = mult2 * torch.eye(3, dtype=DEFAULT_DTYPE)
-    bvec2 = bias2 * torch.ones(3, dtype=DEFAULT_DTYPE)
 
-    color_mat1 = _make_color_matrix(mat1, bvec1)
-    color_mat2 = _make_color_matrix(mat2, bvec2)
-
-    color_vec = torch.tensor([red, green, b_val], dtype=DEFAULT_DTYPE)
-
-    # Sequential application
-    color_seq = _apply_color_matrix(color_mat2, _apply_color_matrix(color_mat1, color_vec))
-
-    # Fused: fused_mat = color_mat2 @ color_mat1
-    fused_mat = torch.bmm(color_mat2, color_mat1)
-    color_fused = _apply_color_matrix(fused_mat, color_vec)
-
-    assert torch.allclose(color_seq, color_fused, atol=1e-9), (
-        f"Fused and sequential results differ: seq={color_seq.tolist()}, fused={color_fused.tolist()}"
+    @given(
+        mult1=floats(min_value=0.1, max_value=3.0),
+        mult2=floats(min_value=0.1, max_value=3.0),
+        bias1=floats(min_value=-1.0, max_value=1.0),
+        bias2=floats(min_value=-1.0, max_value=1.0),
+        red=floats(min_value=0.0, max_value=1.0),
+        green=floats(min_value=0.0, max_value=1.0),
+        b_val=floats(min_value=0.0, max_value=1.0),
     )
+    @settings(max_examples=200)
+    def test_brightness_fusion_equals_sequential(
+        self, mult1: float, mult2: float, bias1: float, bias2: float, red: float, green: float, b_val: float
+    ) -> None:
+        """Two diagonal brightness ops fuse: A2*A1 gives same result as sequential application.
 
+        Op1: c' = mult1*c + bias1*1 (brightness scale + offset, applied identically per channel)
+        Op2: c'' = mult2*c' + bias2*1
 
-@given(
-    seed=integers(min_value=0, max_value=9999),
-    n_ops=integers(min_value=2, max_value=6),
-)
-@settings(max_examples=100)
-def test_n_color_ops_fuse_to_single_matrix(seed: int, n_ops: int) -> None:
-    """N consecutive linear color ops: A_N*...*A_1 applied once equals sequential application.
+        Sequential: c'' = mult2*(mult1*c + bias1) + bias2 = (mult2*mult1)*c + (mult2*bias1 + bias2)
+        Fused:      A_fused = A2 * A1 applied once.
+        """
+        mat1 = mult1 * torch.eye(3, dtype=DEFAULT_DTYPE)
+        bvec1 = bias1 * torch.ones(3, dtype=DEFAULT_DTYPE)
+        mat2 = mult2 * torch.eye(3, dtype=DEFAULT_DTYPE)
+        bvec2 = bias2 * torch.ones(3, dtype=DEFAULT_DTYPE)
 
-    Validates the inductive proof from D.5: any chain of POINTWISE_LINEAR ops
-    can be collapsed to a single 4x4 matrix.
-    """
-    torch.manual_seed(seed)
+        color_mat1 = _make_color_matrix(mat1, bvec1)
+        color_mat2 = _make_color_matrix(mat2, bvec2)
 
-    # Generate N random invertible 3x3 color matrices (diagonal-dominant for stability)
-    matrices = []
-    biases = []
-    for _ in range(n_ops):
-        col_mat = torch.randn(3, 3, dtype=DEFAULT_DTYPE) * 0.3 + torch.eye(3, dtype=DEFAULT_DTYPE)
-        bias_vec = torch.randn(3, dtype=DEFAULT_DTYPE) * 0.1
-        matrices.append(col_mat)
-        biases.append(bias_vec)
+        color_vec = torch.tensor([red, green, b_val], dtype=DEFAULT_DTYPE)
 
-    # Random input color vector
-    color_vec = torch.rand(3, dtype=DEFAULT_DTYPE)
+        color_seq = _apply_color_matrix(color_mat2, _apply_color_matrix(color_mat1, color_vec))
+        fused_mat = torch.bmm(color_mat2, color_mat1)
+        color_fused = _apply_color_matrix(fused_mat, color_vec)
 
-    # Sequential: apply ops left to right
-    color_seq = color_vec.clone()
-    for col_mat, bias_vec in zip(matrices, biases, strict=True):
-        color_seq = col_mat @ color_seq + bias_vec
-
-    # Fused: accumulate A_N * ... * A_1
-    fused_mat = _make_color_matrix(matrices[0], biases[0])
-    for col_mat, bias_vec in zip(matrices[1:], biases[1:], strict=True):
-        color_mat_i = _make_color_matrix(col_mat, bias_vec)
-        fused_mat = torch.bmm(color_mat_i, fused_mat)
-
-    color_fused = _apply_color_matrix(fused_mat, color_vec)
-
-    assert torch.allclose(color_seq, color_fused, atol=1e-8), f"N={n_ops} ops: fused and sequential differ; seed={seed}"
-
-
-@given(
-    alpha=floats(min_value=0.1, max_value=3.0),
-    beta=floats(min_value=0.1, max_value=3.0),
-    mean=floats(min_value=0.0, max_value=1.0),
-    red=floats(min_value=0.0, max_value=1.0),
-    green=floats(min_value=0.0, max_value=1.0),
-    b_val=floats(min_value=0.0, max_value=1.0),
-)
-@settings(max_examples=150)
-def test_brightness_then_contrast_non_commutative(
-    alpha: float, beta: float, mean: float, red: float, green: float, b_val: float
-) -> None:
-    """Brightness(a) then Contrast(b,mean) != Contrast then Brightness in general.
-
-    Validates the non-commutativity result from D.5 section 1.3. The counter-example uses diagonal ops with bias,
-    confirming that POINTWISE_LINEAR order must be preserved.
-
-    """
-    # Brightness: c' = alpha*c
-    mat_brightness = alpha * torch.eye(3, dtype=DEFAULT_DTYPE)
-    bias_brightness = torch.zeros(3, dtype=DEFAULT_DTYPE)
-
-    # Contrast: c' = beta*(c - mean) + mean = beta*c + (1-beta)*mean
-    mat_contrast = beta * torch.eye(3, dtype=DEFAULT_DTYPE)
-    bias_contrast = (1.0 - beta) * mean * torch.ones(3, dtype=DEFAULT_DTYPE)
-
-    brightness_mat = _make_color_matrix(mat_brightness, bias_brightness)
-    contrast_mat = _make_color_matrix(mat_contrast, bias_contrast)
-
-    color_vec = torch.tensor([red, green, b_val], dtype=DEFAULT_DTYPE)
-
-    # Order 1: brightness then contrast
-    bc_mat = torch.bmm(contrast_mat, brightness_mat)
-    color_bc = _apply_color_matrix(bc_mat, color_vec)
-
-    # Order 2: contrast then brightness
-    cb_mat = torch.bmm(brightness_mat, contrast_mat)
-    color_cb = _apply_color_matrix(cb_mat, color_vec)
-
-    # The fused-order result must match sequential-order result (correctness)
-    color_seq_bc = _apply_color_matrix(contrast_mat, _apply_color_matrix(brightness_mat, color_vec))
-    assert torch.allclose(color_bc, color_seq_bc, atol=1e-9), "Fused brightness->contrast should match sequential"
-
-    # Non-commutativity: the per-channel difference between the two orders is
-    #   (alpha-1)*(1-beta)*mean  (analytically, for diagonal brightness+contrast ops).
-    # Only assert they differ when this quantity is large enough to exceed our tolerance.
-    expected_diff = abs((alpha - 1.0) * (1.0 - beta) * mean)
-    if expected_diff > 1e-3:
-        assert not torch.allclose(color_bc, color_cb, atol=expected_diff * 0.5), (
-            f"brightness->contrast should differ from contrast->brightness when "
-            f"alpha={alpha:.3f}, beta={beta:.3f}, mean={mean:.3f}: expected per-channel diff~{expected_diff:.3e}, "
-            f"got color_bc={color_bc.tolist()}, color_cb={color_cb.tolist()}"
+        assert torch.allclose(color_seq, color_fused, atol=1e-9), (
+            f"Fused and sequential results differ: seq={color_seq.tolist()}, fused={color_fused.tolist()}"
         )
 
+    @given(
+        seed=integers(min_value=0, max_value=9999),
+        n_ops=integers(min_value=2, max_value=6),
+    )
+    @settings(max_examples=100)
+    def test_n_color_ops_fuse_to_single_matrix(self, seed: int, n_ops: int) -> None:
+        """N consecutive linear color ops: A_N*...*A_1 applied once equals sequential application.
 
-@given(
-    seed=integers(min_value=0, max_value=9999),
-)
-@settings(max_examples=100)
-def test_color_matrix_composition_law(seed: int) -> None:
-    """A_fused = A2 * A1 satisfies M_fused = M2*M1 and b_fused = M2*b1 + b2.
+        Validates the inductive proof from D.5: any chain of POINTWISE_LINEAR ops
+        can be collapsed to a single 4x4 matrix.
+        """
+        torch.manual_seed(seed)
 
-    Direct verification of the composition formula from D.5 section 1.2.
+        matrices = []
+        biases = []
+        for _ in range(n_ops):
+            col_mat = torch.randn(3, 3, dtype=DEFAULT_DTYPE) * 0.3 + torch.eye(3, dtype=DEFAULT_DTYPE)
+            bias_vec = torch.randn(3, dtype=DEFAULT_DTYPE) * 0.1
+            matrices.append(col_mat)
+            biases.append(bias_vec)
 
-    """
-    torch.manual_seed(seed)
-    M1 = torch.randn(3, 3, dtype=DEFAULT_DTYPE)
-    b1 = torch.randn(3, dtype=DEFAULT_DTYPE)
-    M2 = torch.randn(3, 3, dtype=DEFAULT_DTYPE)
-    b2 = torch.randn(3, dtype=DEFAULT_DTYPE)
+        color_vec = torch.rand(3, dtype=DEFAULT_DTYPE)
 
-    A1 = _make_color_matrix(M1, b1)
-    A2 = _make_color_matrix(M2, b2)
-    A_fused = torch.bmm(A2, A1)[0]
+        color_seq = color_vec.clone()
+        for col_mat, bias_vec in zip(matrices, biases, strict=True):
+            color_seq = col_mat @ color_seq + bias_vec
 
-    M_fused_expected = M2 @ M1
-    b_fused_expected = M2 @ b1 + b2
+        fused_mat = _make_color_matrix(matrices[0], biases[0])
+        for col_mat, bias_vec in zip(matrices[1:], biases[1:], strict=True):
+            color_mat_i = _make_color_matrix(col_mat, bias_vec)
+            fused_mat = torch.bmm(color_mat_i, fused_mat)
 
-    assert torch.allclose(A_fused[:3, :3], M_fused_expected, atol=1e-10), "M_fused = M2*M1 violated"
-    assert torch.allclose(A_fused[:3, 3], b_fused_expected, atol=1e-10), "b_fused = M2*b1 + b2 violated"
+        color_fused = _apply_color_matrix(fused_mat, color_vec)
+
+        assert torch.allclose(color_seq, color_fused, atol=1e-8), (
+            f"N={n_ops} ops: fused and sequential differ; seed={seed}"
+        )
+
+    @given(
+        alpha=floats(min_value=0.1, max_value=3.0),
+        beta=floats(min_value=0.1, max_value=3.0),
+        mean=floats(min_value=0.0, max_value=1.0),
+        red=floats(min_value=0.0, max_value=1.0),
+        green=floats(min_value=0.0, max_value=1.0),
+        b_val=floats(min_value=0.0, max_value=1.0),
+    )
+    @settings(max_examples=150)
+    def test_brightness_then_contrast_non_commutative(
+        self, alpha: float, beta: float, mean: float, red: float, green: float, b_val: float
+    ) -> None:
+        """Brightness(a) then Contrast(b,mean) != Contrast then Brightness in general.
+
+        Validates the non-commutativity result from D.5 section 1.3. The counter-example uses diagonal ops with bias,
+        confirming that POINTWISE_LINEAR order must be preserved.
+
+        """
+        mat_brightness = alpha * torch.eye(3, dtype=DEFAULT_DTYPE)
+        bias_brightness = torch.zeros(3, dtype=DEFAULT_DTYPE)
+
+        mat_contrast = beta * torch.eye(3, dtype=DEFAULT_DTYPE)
+        bias_contrast = (1.0 - beta) * mean * torch.ones(3, dtype=DEFAULT_DTYPE)
+
+        brightness_mat = _make_color_matrix(mat_brightness, bias_brightness)
+        contrast_mat = _make_color_matrix(mat_contrast, bias_contrast)
+
+        color_vec = torch.tensor([red, green, b_val], dtype=DEFAULT_DTYPE)
+
+        bc_mat = torch.bmm(contrast_mat, brightness_mat)
+        color_bc = _apply_color_matrix(bc_mat, color_vec)
+
+        cb_mat = torch.bmm(brightness_mat, contrast_mat)
+        color_cb = _apply_color_matrix(cb_mat, color_vec)
+
+        color_seq_bc = _apply_color_matrix(contrast_mat, _apply_color_matrix(brightness_mat, color_vec))
+        assert torch.allclose(color_bc, color_seq_bc, atol=1e-9), "Fused brightness->contrast should match sequential"
+
+        expected_diff = abs((alpha - 1.0) * (1.0 - beta) * mean)
+        if expected_diff > 1e-3:
+            assert not torch.allclose(color_bc, color_cb, atol=expected_diff * 0.5), (
+                f"brightness->contrast should differ from contrast->brightness when "
+                f"alpha={alpha:.3f}, beta={beta:.3f}, mean={mean:.3f}: expected per-channel diff~{expected_diff:.3e}, "
+                f"got color_bc={color_bc.tolist()}, color_cb={color_cb.tolist()}"
+            )
+
+    @given(
+        seed=integers(min_value=0, max_value=9999),
+    )
+    @settings(max_examples=100)
+    def test_color_matrix_composition_law(self, seed: int) -> None:
+        """A_fused = A2 * A1 satisfies M_fused = M2*M1 and b_fused = M2*b1 + b2.
+
+        Direct verification of the composition formula from D.5 section 1.2.
+
+        """
+        torch.manual_seed(seed)
+        M1 = torch.randn(3, 3, dtype=DEFAULT_DTYPE)
+        b1 = torch.randn(3, dtype=DEFAULT_DTYPE)
+        M2 = torch.randn(3, 3, dtype=DEFAULT_DTYPE)
+        b2 = torch.randn(3, dtype=DEFAULT_DTYPE)
+
+        A1 = _make_color_matrix(M1, b1)
+        A2 = _make_color_matrix(M2, b2)
+        A_fused = torch.bmm(A2, A1)[0]
+
+        M_fused_expected = M2 @ M1
+        b_fused_expected = M2 @ b1 + b2
+
+        assert torch.allclose(A_fused[:3, :3], M_fused_expected, atol=1e-10), "M_fused = M2*M1 violated"
+        assert torch.allclose(A_fused[:3, 3], b_fused_expected, atol=1e-10), "b_fused = M2*b1 + b2 violated"

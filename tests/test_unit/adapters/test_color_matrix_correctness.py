@@ -81,49 +81,39 @@ class TestKorniaColorMatrixCorrectness:
     def _setup_adapter(self) -> None:
         self.adapter = KorniaAdapter()
 
-    def test_random_brightness_shape(self):
-        """RandomBrightness build_color_matrix returns (B, 4, 4) tensor."""
-        transform = kornia_aug.RandomBrightness(brightness=(0.5, 1.5), p=1.0)
+    @pytest.mark.parametrize(
+        "transform_factory",
+        [
+            pytest.param(lambda: kornia_aug.RandomBrightness(brightness=(0.5, 1.5), p=1.0), id="RandomBrightness"),
+            pytest.param(lambda: kornia_aug.RandomContrast(contrast=(0.5, 1.5), p=1.0), id="RandomContrast"),
+            pytest.param(
+                lambda: kornia_aug.ColorJitter(brightness=(0.5, 1.5), contrast=(0.5, 1.5), p=1.0), id="ColorJitter"
+            ),
+        ],
+    )
+    def test_shape(self, transform_factory):
+        """build_color_matrix returns (B, 4, 4) for brightness, contrast, and jitter transforms."""
+        transform = transform_factory()
         shape = (2, 3, 8, 8)
         params = self.adapter.sample_params(transform, shape, torch.device("cpu"))
         matrix = self.adapter.build_color_matrix(transform, params)
         assert matrix.shape == (2, 4, 4)
 
-    def test_random_contrast_shape(self):
-        """RandomContrast build_color_matrix returns (B, 4, 4) tensor."""
-        transform = kornia_aug.RandomContrast(contrast=(0.5, 1.5), p=1.0)
-        shape = (2, 3, 8, 8)
-        params = self.adapter.sample_params(transform, shape, torch.device("cpu"))
-        matrix = self.adapter.build_color_matrix(transform, params)
-        assert matrix.shape == (2, 4, 4)
-
-    def test_color_jitter_shape(self):
-        """ColorJitter build_color_matrix returns (B, 4, 4) tensor."""
-        transform = kornia_aug.ColorJitter(brightness=(0.5, 1.5), contrast=(0.5, 1.5), p=1.0)
-        shape = (2, 3, 8, 8)
-        params = self.adapter.sample_params(transform, shape, torch.device("cpu"))
-        matrix = self.adapter.build_color_matrix(transform, params)
-        assert matrix.shape == (2, 4, 4)
-
-    def test_last_row_homogeneous(self):
-        """Bottom row of each (4, 4) matrix is [0, 0, 0, 1]."""
-        transform = kornia_aug.RandomBrightness(brightness=(0.5, 1.5), p=1.0)
+    @pytest.mark.parametrize(
+        "transform_factory",
+        [
+            pytest.param(lambda: kornia_aug.RandomBrightness(brightness=(0.5, 1.5), p=1.0), id="brightness"),
+            pytest.param(lambda: kornia_aug.RandomContrast(contrast=(0.5, 1.5), p=1.0), id="contrast"),
+        ],
+    )
+    def test_last_row_homogeneous(self, transform_factory):
+        """Bottom row of each (4, 4) sub-matrix is [0, 0, 0, 1]."""
+        transform = transform_factory()
         shape = (3, 3, 8, 8)
         params = self.adapter.sample_params(transform, shape, torch.device("cpu"))
         matrix = self.adapter.build_color_matrix(transform, params)
-        expected = torch.tensor([0.0, 0.0, 0.0, 1.0])
-        for idx in range(3):
-            torch.testing.assert_close(matrix[idx, 3, :], expected)
-
-    def test_contrast_last_row_homogeneous(self):
-        """Contrast matrix bottom row is [0, 0, 0, 1]."""
-        transform = kornia_aug.RandomContrast(contrast=(0.5, 1.5), p=1.0)
-        shape = (3, 3, 8, 8)
-        params = self.adapter.sample_params(transform, shape, torch.device("cpu"))
-        matrix = self.adapter.build_color_matrix(transform, params)
-        expected = torch.tensor([0.0, 0.0, 0.0, 1.0])
-        for idx in range(3):
-            torch.testing.assert_close(matrix[idx, 3, :], expected)
+        expected = torch.tensor([0.0, 0.0, 0.0, 1.0]).unsqueeze(0).expand(3, -1)
+        torch.testing.assert_close(matrix[:, 3, :], expected)
 
     @given(seed=integers(min_value=0, max_value=9999))
     @settings(max_examples=30)
@@ -163,40 +153,33 @@ class TestKorniaColorMatrixCorrectness:
 
         torch.testing.assert_close(fused, native, atol=1e-5, rtol=1e-5)
 
-    def test_brightness_identity_case(self):
-        """When brightness_factor=1.0, matrix should be identity."""
-        transform = kornia_aug.RandomBrightness(brightness=(1.0, 1.0), p=1.0)
+    @pytest.mark.parametrize(
+        "transform_factory",
+        [
+            pytest.param(lambda: kornia_aug.RandomBrightness(brightness=(1.0, 1.0), p=1.0), id="brightness"),
+            pytest.param(lambda: kornia_aug.RandomContrast(contrast=(1.0, 1.0), p=1.0), id="contrast"),
+        ],
+    )
+    def test_identity_case(self, transform_factory):
+        """When factor=1.0 the matrix is identity (brightness and contrast)."""
+        transform = transform_factory()
         shape = (2, 3, 8, 8)
         params = self.adapter.sample_params(transform, shape, torch.device("cpu"))
         matrix = self.adapter.build_color_matrix(transform, params)
-
         expected = torch.eye(4).unsqueeze(0).expand(2, -1, -1)
         torch.testing.assert_close(matrix, expected, atol=1e-6, rtol=1e-6)
 
-    def test_contrast_identity_case(self):
-        """When contrast_factor=1.0, matrix should be identity."""
-        transform = kornia_aug.RandomContrast(contrast=(1.0, 1.0), p=1.0)
-        shape = (2, 3, 8, 8)
-        params = self.adapter.sample_params(transform, shape, torch.device("cpu"))
-        matrix = self.adapter.build_color_matrix(transform, params)
-
-        expected = torch.eye(4).unsqueeze(0).expand(2, -1, -1)
-        torch.testing.assert_close(matrix, expected, atol=1e-6, rtol=1e-6)
-
-    def test_category_random_brightness(self):
-        """RandomBrightness category is POINTWISE_LINEAR."""
-        transform = kornia_aug.RandomBrightness(brightness=(0.5, 1.5), p=1.0)
-        assert self.adapter.category(transform) == TransformCategory.POINTWISE_LINEAR
-
-    def test_category_random_contrast(self):
-        """RandomContrast category is POINTWISE_LINEAR."""
-        transform = kornia_aug.RandomContrast(contrast=(0.5, 1.5), p=1.0)
-        assert self.adapter.category(transform) == TransformCategory.POINTWISE_LINEAR
-
-    def test_category_color_jitter(self):
-        """ColorJitter category is POINTWISE_LINEAR."""
-        transform = kornia_aug.ColorJitter(brightness=(0.5, 1.5), p=1.0)
-        assert self.adapter.category(transform) == TransformCategory.POINTWISE_LINEAR
+    @pytest.mark.parametrize(
+        "transform_factory",
+        [
+            pytest.param(lambda: kornia_aug.RandomBrightness(brightness=(0.5, 1.5), p=1.0), id="RandomBrightness"),
+            pytest.param(lambda: kornia_aug.RandomContrast(contrast=(0.5, 1.5), p=1.0), id="RandomContrast"),
+            pytest.param(lambda: kornia_aug.ColorJitter(brightness=(0.5, 1.5), p=1.0), id="ColorJitter"),
+        ],
+    )
+    def test_category(self, transform_factory):
+        """Brightness, contrast, and jitter are all POINTWISE_LINEAR."""
+        assert self.adapter.category(transform_factory()) == TransformCategory.POINTWISE_LINEAR
 
 
 @pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")

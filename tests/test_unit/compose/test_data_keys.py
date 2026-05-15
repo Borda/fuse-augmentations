@@ -135,26 +135,19 @@ class TestDataKeysUnknownKey:
 class TestDataKeysArgCountMismatch:
     """Wrong number of positional args vs data_keys raises an error."""
 
-    def test_too_few_args(self):
-        """Fewer positional args than data_keys raises ValueError or TypeError."""
-        pipe = Compose([], data_keys=["input", "mask"])
-        img = torch.rand(1, 3, 4, 4)
+    @pytest.mark.parametrize(
+        "data_keys, args",
+        [
+            pytest.param(["input", "mask"], (torch.zeros(1, 3, 4, 4),), id="too_few"),
+            pytest.param(["input"], (torch.zeros(1, 3, 4, 4), torch.zeros(1, 1, 4, 4)), id="too_many"),
+            pytest.param(["input", "mask"], (), id="zero"),
+        ],
+    )
+    def test_arg_count_mismatch(self, data_keys, args):
+        """Arg count != len(data_keys) raises ValueError or TypeError."""
+        pipe = Compose([], data_keys=data_keys)
         with pytest.raises((ValueError, TypeError)):
-            pipe(img)  # missing mask
-
-    def test_too_many_args(self):
-        """More positional args than data_keys raises ValueError or TypeError."""
-        pipe = Compose([], data_keys=["input"])
-        img = torch.rand(1, 3, 4, 4)
-        extra = torch.rand(1, 1, 4, 4)
-        with pytest.raises((ValueError, TypeError)):
-            pipe(img, extra)
-
-    def test_zero_args(self):
-        """Zero positional args with non-empty data_keys raises ValueError or TypeError."""
-        pipe = Compose([], data_keys=["input", "mask"])
-        with pytest.raises((ValueError, TypeError)):
-            pipe()
+            pipe(*args)
 
 
 class TestDataKeysEmptyList:
@@ -169,15 +162,17 @@ class TestDataKeysEmptyList:
 class TestDataKeysFirstKeyValidation:
     """data_keys[0] != 'input' raises ValueError at construction time."""
 
-    def test_first_key_not_input_raises(self):
-        """Constructing with data_keys where first entry is not 'input' raises ValueError."""
+    @pytest.mark.parametrize(
+        "data_keys",
+        [
+            pytest.param(["mask", "input"], id="mask_first"),
+            pytest.param(["image"], id="image_only"),
+        ],
+    )
+    def test_first_key_must_be_input(self, data_keys):
+        """Any non-'input' string at data_keys[0] raises ValueError."""
         with pytest.raises(ValueError, match="data_keys\\[0\\] must be 'input'"):
-            Compose([], data_keys=["mask", "input"])
-
-    def test_first_key_arbitrary_name_raises(self):
-        """Any non-'input' string as data_keys[0] raises ValueError."""
-        with pytest.raises(ValueError, match="data_keys\\[0\\] must be 'input'"):
-            Compose([], data_keys=["image"])
+            Compose([], data_keys=data_keys)
 
 
 class TestDataKeysDuplicateAuxKeys:

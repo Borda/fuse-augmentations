@@ -13,31 +13,6 @@ import torch
 from fuse_augmentations import Compose, FusedCompose, TransformSpec
 
 
-@pytest.fixture
-def image16x16_batch1() -> torch.Tensor:
-    return torch.rand(1, 3, 16, 16)
-
-
-@pytest.fixture
-def image16x16_batch2() -> torch.Tensor:
-    return torch.rand(2, 3, 16, 16)
-
-
-@pytest.fixture
-def image32x32_batch2() -> torch.Tensor:
-    return torch.rand(2, 3, 32, 32)
-
-
-@pytest.fixture
-def image32x32_batch4() -> torch.Tensor:
-    return torch.rand(4, 3, 32, 32)
-
-
-@pytest.fixture
-def image64x64_batch2() -> torch.Tensor:
-    return torch.rand(2, 3, 64, 64)
-
-
 class TestFromParamsSpecsBasic:
     """from_params(specs=[...]) basic functionality."""
 
@@ -181,7 +156,6 @@ class TestFromParamsSpecsProbability:
 
     def test_p_one_always_applied(self, image32x32_batch2):
         """p=1.0 hflip always flips; output matches torch.flip reference."""
-        torch.manual_seed(42)
         specs = [TransformSpec(operation="hflip", params={}, prob=1.0)]
         pipe = Compose.from_params(specs=specs)
         out = pipe(image32x32_batch2)
@@ -296,15 +270,16 @@ class TestFromParamsSpecsValidation:
 class TestFromParamsSpecsUnsupportedOp:
     """from_params(specs=...) with ops not in the backend-free op set."""
 
-    def test_unsupported_op_raises_value_error(self) -> None:
-        """Perspective is valid in from_config but not in backend-free from_params."""
-        specs = [TransformSpec(operation="perspective", params={"distortion_scale": 0.5}, prob=1.0)]
-        with pytest.raises(ValueError, match="Unsupported op for from_params"):
-            Compose.from_params(specs=specs)
-
-    def test_affine_not_supported_in_backend_free_raises(self) -> None:
-        """Affine op is not directly supported in backend-free mode."""
-        specs = [TransformSpec(operation="affine", params={}, prob=1.0)]
+    @pytest.mark.parametrize(
+        "op, params",
+        [
+            pytest.param("perspective", {"distortion_scale": 0.5}, id="perspective"),
+            pytest.param("affine", {}, id="affine"),
+        ],
+    )
+    def test_unsupported_op_raises(self, op, params) -> None:
+        """Ops valid in from_config but unsupported in backend-free from_params raise ValueError."""
+        specs = [TransformSpec(operation=op, params=params, prob=1.0)]
         with pytest.raises(ValueError, match="Unsupported op for from_params"):
             Compose.from_params(specs=specs)
 
@@ -312,14 +287,15 @@ class TestFromParamsSpecsUnsupportedOp:
 class TestFromParamsSpecsOrderingWithReservedParams:
     """Brightness/contrast reserved-param checks fire before the specs= mutual-exclusivity check."""
 
-    def test_brightness_with_specs_raises_not_implemented(self) -> None:
-        """Brightness check (NotImplementedError) fires before specs mutual-exclusivity (ValueError)."""
+    @pytest.mark.parametrize(
+        "reserved_param, value",
+        [
+            pytest.param("brightness", 0.5, id="brightness"),
+            pytest.param("contrast", 0.3, id="contrast"),
+        ],
+    )
+    def test_reserved_param_with_specs_raises(self, reserved_param, value) -> None:
+        """Reserved param (brightness/contrast) check fires before specs mutual-exclusivity."""
         specs = [TransformSpec(operation="rotation", params={"degrees": (-10.0, 10.0)})]
         with pytest.raises(NotImplementedError):
-            Compose.from_params(specs=specs, brightness=0.5)
-
-    def test_contrast_with_specs_raises_not_implemented(self) -> None:
-        """Contrast check (NotImplementedError) fires before specs mutual-exclusivity (ValueError)."""
-        specs = [TransformSpec(operation="rotation", params={"degrees": (-10.0, 10.0)})]
-        with pytest.raises(NotImplementedError):
-            Compose.from_params(specs=specs, contrast=0.3)
+            Compose.from_params(specs=specs, **{reserved_param: value})

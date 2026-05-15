@@ -32,7 +32,6 @@ HEIGHT, WIDTH, NUM_CHANNELS = 64, 64, 3
 
 
 def _rand_image(batch_size: int = 1) -> torch.Tensor:
-    torch.manual_seed(0)
     return torch.rand(batch_size, NUM_CHANNELS, HEIGHT, WIDTH)
 
 
@@ -87,10 +86,7 @@ class TestSingleTransformParity:
     def test_rotation_parity(self, img):
         # Reference: sequential cv2 warp with the same albumentations matrix.
         # Both fused and sequential now use cv2.warpAffine, so results are essentially identical.
-        np.random.seed(42)
         seq_out = _sequential_cv2([albu.Rotate(limit=(30, 30), p=1.0)], img)
-
-        np.random.seed(42)
         fused_out = Compose([albu.Rotate(limit=(30, 30), p=1.0)])(img)
 
         assert fused_out.shape == img.shape
@@ -99,19 +95,13 @@ class TestSingleTransformParity:
         )
 
     def test_affine_rotation_only_parity(self, img):
-        np.random.seed(42)
         seq_out = _sequential_cv2([albu.Affine(rotate=(20, 20), p=1.0)], img)
-
-        np.random.seed(42)
         fused_out = Compose([albu.Affine(rotate=(20, 20), p=1.0)])(img)
 
         assert torch.allclose(fused_out, seq_out, atol=ATOL_CV2)
 
     def test_affine_scale_parity(self, img):
-        np.random.seed(42)
         seq_out = _sequential_cv2([albu.Affine(scale=(0.9, 0.9), p=1.0)], img)
-
-        np.random.seed(42)
         fused_out = Compose([albu.Affine(scale=(0.9, 0.9), p=1.0)])(img)
 
         assert torch.allclose(fused_out, seq_out, atol=ATOL_CV2)
@@ -127,10 +117,7 @@ class TestSingleTransformParity:
         assert torch.allclose(fused_out, seq_out, atol=ATOL_PIXEL)
 
     def test_safe_rotate_parity(self, img):
-        np.random.seed(42)
         seq_out = _sequential_cv2([albu.SafeRotate(limit=(30, 30), p=1.0)], img)
-
-        np.random.seed(42)
         fused_out = Compose([albu.SafeRotate(limit=(30, 30), p=1.0)])(img)
 
         assert fused_out.shape == img.shape
@@ -144,10 +131,8 @@ class TestSingleTransformParity:
             t_seq = albu.ShiftScaleRotate(rotate_limit=(15, 15), shift_limit=0, scale_limit=0, p=1.0)
             t_fus = albu.ShiftScaleRotate(rotate_limit=(15, 15), shift_limit=0, scale_limit=0, p=1.0)
 
-        np.random.seed(42)
         seq_out = _sequential_cv2([t_seq], img)
 
-        np.random.seed(42)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             fused_out = Compose([t_fus])(img)

@@ -43,21 +43,3 @@ def disable_interactive_prompts() -> None:
             from kornia.config import kornia_config
 
             kornia_config.lazyloader.installation_mode = restore_kornia
-
-
-@pytest.fixture
-def device() -> torch.device:
-    """Return CPU device for tests (GPU tests use gpu marker)."""
-    return torch.device("cpu")
-
-
-@pytest.fixture
-def img_batch() -> torch.Tensor:
-    """Return a (4, 3, 64, 64) float32 image batch on CPU."""
-    return torch.rand(4, 3, 64, 64)
-
-
-@pytest.fixture
-def img_single() -> torch.Tensor:
-    """Return a (1, 3, 64, 64) float32 image on CPU."""
-    return torch.rand(1, 3, 64, 64)
