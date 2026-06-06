@@ -1563,8 +1563,10 @@ class CropResizeSegment(nn.Module):
         when constructing ``RandomResizedCrop`` transforms.
 
     .. note::
-        Auxiliary targets (``"mask"``, ``"bbox_xyxy"``, etc.) are **passed through unchanged** in this release.
-        Full aux-target routing for crop-resize is deferred to a future phase.
+        Auxiliary targets (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``, ``"keypoints"``) are
+        warped through the crop affine matrix at the target output size. Masks use nearest-neighbour
+        sampling to preserve integer class labels; boxes and keypoints are transformed via the forward
+        affine matrix.
 
     Args:
         transform: A single ``CROP_RESIZE_FIXED`` transform object.
@@ -1600,7 +1602,10 @@ class CropResizeSegment(nn.Module):
 
         Args:
             image: ``(batch_size, channels, height_in, width_in)`` float input tensor.
-            aux_targets: Passed through unchanged (not transformed in this release).
+            aux_targets: Optional dict of auxiliary targets to transform alongside the image.
+                Supported keys: ``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``, ``"keypoints"``.
+                Masks are warped with nearest-neighbour sampling to the target size;
+                boxes and keypoints are transformed via the forward affine matrix.
 
         Returns:
             ``(batch_size, channels, height_out, width_out)`` tensor when ``aux_targets`` is ``None``;
@@ -1644,6 +1649,28 @@ class CropResizeSegment(nn.Module):
             padding_mode=self.padding_mode or "zeros",
             align_corners=True,
         )
+
+        if aux_targets:
+            from fuse_augmentations.targets import (
+                transform_bbox_xywh,
+                transform_bbox_xyxy,
+                transform_keypoints,
+                transform_mask,
+            )
+
+            for key in list(aux_targets.keys()):
+                val = aux_targets[key]
+                if key == "mask":
+                    aux_targets[key] = transform_mask(val, grid)
+                    continue
+                if key == "bbox_xyxy":
+                    aux_targets[key] = transform_bbox_xyxy(val, mtx)
+                    continue
+                if key == "bbox_xywh":
+                    aux_targets[key] = transform_bbox_xywh(val, mtx)
+                    continue
+                if key == "keypoints":
+                    aux_targets[key] = transform_keypoints(val, mtx)
 
         if not _has_aux:
             return out

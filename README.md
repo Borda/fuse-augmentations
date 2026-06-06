@@ -480,17 +480,17 @@ Supported ops for `from_params(specs=...)`: `"rotation"`, `"scale"`, `"scale_x"`
 augmentation:
   backend: kornia
   specs:
-    - op: rotation
+    - operation: rotation
       params:
         degrees: [-30.0, 30.0]
-      p: 0.8
-    - op: hflip
+      prob: 0.8
+    - operation: hflip
       params: {}
-      p: 0.5
-    - op: scale
+      prob: 0.5
+    - operation: scale
       params:
         factor: [0.8, 1.2]
-      p: 0.7
+      prob: 0.7
 ```
 
 ```python
@@ -506,7 +506,22 @@ def build_pipeline(cfg):
     return Compose.from_config(specs, backend=cfg.augmentation.backend)
 ```
 
-`TransformSpec.from_dict` restores tuple semantics from JSON/YAML lists automatically for canonical range-parameter keys (`degrees`, `factor`, `scale`, etc.).
+`TransformSpec.from_dict` restores tuple semantics from any sequence type (JSON/YAML `list`, OmegaConf `ListConfig`, etc.) automatically for canonical range-parameter keys (`degrees`, `factor`, `scale`, etc.).
+
+**Plain PyYAML** (no Hydra):
+
+```python
+import yaml
+from fuse_augmentations import Compose, TransformSpec
+
+with open("augmentation.yaml") as f:
+    data = yaml.safe_load(f)
+
+specs = [TransformSpec.from_dict(s) for s in data["augmentation"]["specs"]]
+pipe = Compose.from_config(specs, backend=data["augmentation"]["backend"])
+```
+
+> **Note**: `DictConfig` objects can be passed directly to `from_dict` — `OmegaConf.to_container()` is not required. Range keys (`degrees`, `factor`, etc.) are restored to tuples automatically regardless of input type.
 
 ## 🔗 Multi-Backend Pipelines
 
@@ -684,8 +699,8 @@ Pipelines survive `pickle` round-trips, so they work transparently with `torch.n
 
 - **Pixel-wise ops** (Normalize, gamma, equalize, saturation, hue) are not yet fusible -- they are single-pixel non-linear operations and currently act as passthrough. Linear color ops (brightness, contrast) are fusible via `FusedColorSegment`; see the Color Fusion section.
 - **Spatial-kernel ops** (GaussianBlur, Sharpen) act as fusion barriers; transforms on either side of a barrier form separate segments. These are not yet fusible.
-- **Padding mode** is segment-level: all transforms in a fused run share the same padding mode (the highest-quality setting among them).
-- **Crop+resize ops** (`RandomResizedCrop`): `CropResizeSegment` applies one interpolation pass at the target output size, but the output spatial dimensions differ from the input. `data_keys` auxiliary targets (masks, bounding boxes, keypoints) are not warped through `CropResizeSegment` -- they pass through unchanged.
+- **Padding mode** is segment-level: all transforms in a fused run share the padding mode passed to `Compose` (or the adapter default). Individual transforms cannot override it per-segment.
+- **Crop+resize ops** (`RandomResizedCrop`): `CropResizeSegment` applies one interpolation pass at the target output size, but the output spatial dimensions differ from the input. `data_keys` auxiliary targets (masks, bounding boxes, keypoints) are warped through the crop affine matrix at the target size.
 - **Albumentations + auxiliary targets**: Albumentations fused segments (`AlbuFusedAffineSegment`, `AlbuProjectiveSegment`) do not support auxiliary-target routing in this release. Constructing a `Compose` with an Albumentations pipeline and `data_keys` containing more than the image key raises `ValueError` at construction time.
 - **Gradients**: image transforms are differentiable; mask sampling (`mode='nearest'`) is not.
 - **`output_backend` with multi-target `data_keys`**: when `data_keys` contains more than one entry the pipeline returns a tuple, and `output_backend` conversion is NOT applied. Convert manually or set `output_backend=None` in that case.

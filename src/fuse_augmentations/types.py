@@ -1,7 +1,7 @@
 """Type definitions for the fuse-augmentations library."""
 
 import copy
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from types import MappingProxyType
@@ -279,7 +279,8 @@ class TransformSpec:
         params: Operation-specific parameters (e.g. ``{"degrees": (-30, 30)}``).
             Range values (``degrees``, ``scale``, etc.) must be 2-tuples, not
             lists. For JSON/YAML-deserialized configs use :meth:`from_dict`,
-            which restores tuple semantics from lists automatically.
+            which restores tuple semantics from any sequence type (``list``,
+            OmegaConf ``ListConfig``, etc.) automatically.
         prob: Per-sample application probability. Default ``1.0``.
 
     Example:
@@ -329,11 +330,13 @@ class TransformSpec:
             A new ``TransformSpec`` instance.
 
         Note:
-            Tuple restoration from JSON lists applies only to canonical range-parameter
-            keys ('degrees', 'factor', 'scale', 'pixels', etc. — the
-            full set is :data:`_RANGE_PARAM_KEYS`). Backend-specific keys not in that
-            set (e.g. Albumentations 'limit') are preserved as lists after JSON
-            round-trip. This is documented behaviour, not a bug.
+            Tuple restoration applies to any sequence type (``list``, OmegaConf
+            ``ListConfig``, etc.) but only for canonical range-parameter keys
+            (``'degrees'``, ``'factor'``, ``'scale'``, ``'pixels'``, etc. — the
+            full set is :data:`_RANGE_PARAM_KEYS`). Backend-specific keys not in
+            that set (e.g. Albumentations ``'limit'``) are preserved as lists.
+            OmegaConf ``DictConfig`` objects can be passed directly without calling
+            ``OmegaConf.to_container()`` first. This is documented behaviour, not a bug.
 
         Example:
             >>> import json
@@ -405,7 +408,7 @@ def _to_json_compatible(value: object) -> Any:  # noqa: ANN401
 
 
 def _normalize_loaded_params(params: Mapping[str, object]) -> dict[str, object]:
-    """Restore range tuples from JSON while preserving non-range lists."""
+    """Restore range tuples from any sequence type while preserving non-range sequences as lists."""
     return {key: _normalize_loaded_value(key, value) for key, value in params.items()}
 
 
@@ -413,7 +416,7 @@ def _normalize_loaded_value(key: str | None, value: object) -> object:
     """Normalize one loaded param tree."""
     if isinstance(value, Mapping):
         return {nested_key: _normalize_loaded_value(nested_key, nested) for nested_key, nested in value.items()}
-    if isinstance(value, list):
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, tuple)):
         normalized_items = [_normalize_loaded_value(None, item) for item in value]
         if (
             key in _RANGE_PARAM_KEYS
