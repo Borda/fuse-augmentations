@@ -199,6 +199,38 @@ class TorchVisionAdapter:
             Dict of parameter tensors keyed by canonical names.
 
         """
+        return TorchVisionAdapter._sample_params(transform, input_shape, device, force_per_sample=False)
+
+    @staticmethod
+    def sample_params_per_sample(
+        transform: object,
+        input_shape: tuple[int, int, int, int],
+        device: torch.device,
+    ) -> dict[str, torch.Tensor]:
+        """Sample one TorchVision parameter set per image, including v2 transforms.
+
+        Args:
+            transform: A TorchVision transform instance.
+            input_shape: ``(batch_size, channels, height, width)`` shape tuple.
+            device: Target device for the returned tensors.
+
+        Returns:
+            Dict of parameter tensors keyed by canonical names, with sampled
+            parameter tensors sized to the batch when the transform supports
+            canonical sampling.
+
+        """
+        return TorchVisionAdapter._sample_params(transform, input_shape, device, force_per_sample=True)
+
+    @staticmethod
+    def _sample_params(
+        transform: object,
+        input_shape: tuple[int, int, int, int],
+        device: torch.device,
+        *,
+        force_per_sample: bool,
+    ) -> dict[str, torch.Tensor]:
+        """Sample TorchVision parameters with optional v2 per-sample override."""
         _check_expand(transform)
         batch_size, _num_channels, height, width = input_shape
 
@@ -208,7 +240,8 @@ class TorchVisionAdapter:
 
         # RandomRotation
         if isinstance(transform, tuple(_ROTATION_TYPES_FS)):
-            if is_torchvision_v2_transform(transform):
+            shared_across_batch = is_torchvision_v2_transform(transform) and not force_per_sample
+            if shared_across_batch:
                 angle_deg = _sample_rotation_angle(transform)
                 return {
                     "angle_rad": torch.tensor([math.radians(angle_deg)], dtype=torch.float32, device=device),
@@ -224,18 +257,18 @@ class TorchVisionAdapter:
         # RandomAffine
         if isinstance(transform, tuple(_AFFINE_TYPES_FS)):
             return _sample_affine_params(
-                transform,
-                batch_size,
-                height,
-                width,
-                device,
-                shared_across_batch=is_torchvision_v2_transform(transform),
+                transform=transform,
+                batch_size=batch_size,
+                height=height,
+                width=width,
+                device=device,
+                shared_across_batch=is_torchvision_v2_transform(transform) and not force_per_sample,
             )
 
         # RandomPerspective
         if isinstance(transform, tuple(_PERSPECTIVE_TYPES_FS)):
-            is_v2 = is_torchvision_v2_transform(transform)
-            sample_count = 1 if is_v2 else batch_size
+            shared_across_batch = is_torchvision_v2_transform(transform) and not force_per_sample
+            sample_count = 1 if shared_across_batch else batch_size
             starts, ends = [], []
             for _ in range(sample_count):
                 start_points, end_points = type(transform).get_params(width, height, transform.distortion_scale)  # type: ignore[attr-defined]
@@ -248,12 +281,22 @@ class TorchVisionAdapter:
 
         # ColorJitter
         if isinstance(transform, tuple(_COLOR_JITTER_TYPES_FS)):
-            return _sample_color_jitter_params(transform, batch_size, device, is_torchvision_v2_transform(transform))
+            return _sample_color_jitter_params(
+                transform=transform,
+                batch_size=batch_size,
+                device=device,
+                shared_across_batch=is_torchvision_v2_transform(transform) and not force_per_sample,
+            )
 
         # RandomResizedCrop
         if isinstance(transform, tuple(_CROP_RESIZE_TYPES_FS)):
             return _sample_crop_resize_params(
-                transform, batch_size, height, width, device, is_torchvision_v2_transform(transform)
+                transform=transform,
+                batch_size=batch_size,
+                height=height,
+                width=width,
+                device=device,
+                shared_across_batch=is_torchvision_v2_transform(transform) and not force_per_sample,
             )
 
         # Unknown -- return empty

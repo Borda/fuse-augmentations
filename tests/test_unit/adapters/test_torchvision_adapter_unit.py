@@ -370,6 +370,12 @@ class TestV2BatchSemantics:
         assert params["angle_rad"].shape == (1,)
 
     @pytest.mark.usefixtures("_register_stubs")
+    def test_v2_rotation_can_sample_one_angle_per_item(self, adapter):
+        """The opt-in per-sample sampler returns one v2 angle per batch item."""
+        params = adapter.sample_params_per_sample(_StubV2Rotation(), (4, 3, 64, 64), torch.device("cpu"))
+        assert params["angle_rad"].shape == (4,)
+
+    @pytest.mark.usefixtures("_register_stubs")
     def test_same_on_batch_true_for_v2_transform(self, adapter):
         """V2 transforms report same_on_batch() == True (batch-wide parameter sampling)"""
         assert adapter.same_on_batch(_StubV2Rotation()) is True

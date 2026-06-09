@@ -6,6 +6,7 @@ import torch
 from fuse_augmentations.types import (
     InterpolationMode,
     PaddingMode,
+    RandomnessPolicy,
     ReorderPolicy,
     TransformAdapter,
     TransformCategory,
@@ -92,6 +93,29 @@ class TestReorderPolicy:
     def test_value_is_str(self, member):
         """Each ReorderPolicy member value is a string."""
         assert isinstance(member.value, str), f"{member.name}.value should be str, got {type(member.value).__name__}"
+
+
+class TestRandomnessPolicy:
+    """RandomnessPolicy enum -- membership and string values."""
+
+    @pytest.mark.parametrize(
+        "member, expected_value",
+        [
+            (RandomnessPolicy.BACKEND, "backend"),
+            (RandomnessPolicy.PER_SAMPLE, "per_sample"),
+        ],
+    )
+    def test_value(self, member, expected_value):
+        """Enum member has the expected string value."""
+        assert member.value == expected_value, f"{member.name}.value should be {expected_value!r}"
+
+    def test_exactly_two_members(self):
+        """RandomnessPolicy has exactly 2 members."""
+        assert len(RandomnessPolicy) == 2, f"Expected 2 members, got {len(RandomnessPolicy)}"
+
+    def test_member_names(self):
+        """RandomnessPolicy member names match the spec."""
+        assert {member.name for member in RandomnessPolicy} == {"BACKEND", "PER_SAMPLE"}
 
 
 class TestInterpolationMode:

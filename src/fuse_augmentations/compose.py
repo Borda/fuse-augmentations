@@ -63,6 +63,7 @@ from fuse_augmentations.affine.segment import (
 from fuse_augmentations.types import (
     InterpolationStr,
     PaddingModeStr,
+    RandomnessPolicy,
     ReorderPolicy,
     SegmentDescriptor,
     TransformAdapter,
@@ -82,6 +83,17 @@ if TYPE_CHECKING:
     from fuse_augmentations.resolver import BackendStr, OpStr
 
 _KNOWN_DATA_KEYS = {"input", "mask", "bbox_xyxy", "bbox_xywh", "keypoints"}
+
+
+def _coerce_randomness_policy(randomness: RandomnessPolicy | str) -> RandomnessPolicy:
+    """Normalize a randomness policy argument."""
+    if isinstance(randomness, RandomnessPolicy):
+        return randomness
+    try:
+        return RandomnessPolicy(randomness)
+    except ValueError as exc:
+        msg = f"unknown randomness policy {randomness!r}; expected one of {[item.value for item in RandomnessPolicy]}"
+        raise ValueError(msg) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +153,10 @@ class FusedCompose(nn.Module):
             the batch dimension is implicit/squeezed). ``"torch"`` or ``None`` keeps the native ``torch.Tensor``
             output. Conversion applies only to single-tensor output; when ``data_keys`` is active and a tuple is
             returned, conversion is NOT applied.
+        randomness: Batch randomness policy. ``"backend"`` preserves native
+            backend semantics, including TorchVision v2 batch-shared sampling.
+            ``"per_sample"`` asks adapters with canonical samplers to draw
+            independent parameters per batch item.
         **backend_kwargs: Reserved for backend-specific options (currently unused).
 
     """
@@ -153,10 +169,12 @@ class FusedCompose(nn.Module):
         padding_mode: PaddingModeStr | None = None,
         data_keys: list[str] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
+        randomness: RandomnessPolicy | Literal["backend", "per_sample"] = RandomnessPolicy.BACKEND,
         **backend_kwargs: object,
     ) -> None:
         """Initialize ``FusedCompose``."""
         super().__init__()
+        randomness_policy = _coerce_randomness_policy(randomness)
 
         if reorder not in (ReorderPolicy.NONE, ReorderPolicy.POINTWISE, ReorderPolicy.AGGRESSIVE):
             msg = f"ReorderPolicy.{reorder.name} not yet supported"
@@ -188,20 +206,22 @@ class FusedCompose(nn.Module):
                 elif reorder == ReorderPolicy.AGGRESSIVE:
                     transforms = reorder_aggressive(transforms, adapter)
                 segments = build_segments(
-                    transforms,
-                    adapter,
-                    interpolation,
-                    padding_mode,
+                    transforms=transforms,
+                    adapter=adapter,
+                    interpolation=interpolation,
+                    padding_mode=padding_mode,
+                    randomness=randomness_policy,
                     use_numpy=(backend == Backend.ALBUMENTATIONS),
                 )
             else:
                 # Mixed-backend path: group by backend, build segments per group
                 adapter, segments, tfm_adapters = _build_mixed_segments(
-                    transforms,
-                    per_backends,
-                    reorder,
-                    interpolation,
-                    padding_mode,
+                    transforms=transforms,
+                    per_backends=per_backends,
+                    reorder=reorder,
+                    interpolation=interpolation,
+                    padding_mode=padding_mode,
+                    randomness=randomness_policy,
                 )
 
         self._setup_instance(
@@ -214,6 +234,7 @@ class FusedCompose(nn.Module):
             segments=segments,
             transform_adapters=tfm_adapters,
             output_backend=output_backend,
+            randomness=randomness_policy,
         )
 
     def _setup_instance(
@@ -227,6 +248,7 @@ class FusedCompose(nn.Module):
         segments: list[object],
         transform_adapters: dict[int, TransformAdapter] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
+        randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     ) -> None:
         """Assign all instance attributes.
 
@@ -238,11 +260,12 @@ class FusedCompose(nn.Module):
         self.interpolation: InterpolationStr | None = interpolation
         self.padding_mode: PaddingModeStr | None = padding_mode
         self.data_keys: list[str] | None = data_keys
+        self.randomness: RandomnessPolicy = randomness
         self._adapter: TransformAdapter | None = adapter
         self._segments: list[object] = _wrap_passthrough_segments(
-            segments,
-            adapter,
-            transform_adapters,
+            segments=segments,
+            default_adapter=adapter,
+            transform_adapters=transform_adapters,
             original_transforms=transforms,
         )
         self._last_transform_matrix: Tensor | None = None
@@ -265,6 +288,7 @@ class FusedCompose(nn.Module):
             and len(self._segments[0].transforms) == 1
             and adapter is not None
             and not isinstance(adapter, _DirectParamAdapter)
+            and randomness is RandomnessPolicy.BACKEND
         ):
             self._single_exact_fast = (adapter, self._segments[0].transforms[0])
 
@@ -276,7 +300,7 @@ class FusedCompose(nn.Module):
         #   iter 1 where multi-transform segments were incorrectly bypassed)
         # - Kornia or TorchVision adapter only (not Albu — uses _forward_albu_native)
         # - For TorchVision: v2 transforms only (v1 has incompatible interpolation)
-        self._single_fused_fast_seg: tuple[TransformAdapter, object] | None = None
+        self._single_fused_fast_seg: FusedAffineSegment | None = None
         if (
             len(self._segments) == 1
             and isinstance(self._segments[0], FusedAffineSegment)
@@ -296,17 +320,14 @@ class FusedCompose(nn.Module):
                 except ImportError:
                     _bypass_ok = False
             if _bypass_ok:
-                self._single_fused_fast_seg = (adapter, _tfm0)
-        # Pre-cached B=1 CPU float32 identity for _last_transform_matrix in fast paths.
-        self._eye_1x3x3_f32: Tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0)
-
+                self._single_fused_fast_seg = _seg0
         # Single-transform Albumentations direct fast path: for pipelines with exactly
         # one AlbuFusedAffineSegment containing one transform, bypass
         # _forward_albu_native entirely.  Saves ~5-10 us/call: 4 lazy imports,
         # function call overhead, forward_numpy dispatch, and segment isinstance loop.
         # Guards: single segment + single transform + AlbumentationsAdapter only.
         # Not used when aux_targets are passed (kwargs size > 1).
-        self._single_albu_direct_tfm: object | None = None
+        self._single_albu_direct_seg: AlbuFusedAffineSegment | None = None
         if (
             len(self._segments) == 1
             and isinstance(self._segments[0], AlbuFusedAffineSegment)
@@ -318,7 +339,7 @@ class FusedCompose(nn.Module):
                 )
 
                 if isinstance(adapter, AlbuAdapterCls):
-                    self._single_albu_direct_tfm = self._segments[0].transforms[0]
+                    self._single_albu_direct_seg = self._segments[0]
             except ImportError:
                 pass
 
@@ -474,13 +495,13 @@ class FusedCompose(nn.Module):
 
         """
         if (
-            self._single_albu_direct_tfm is not None
+            self._single_albu_direct_seg is not None
             and len(kwargs) == 1
             and "image" in kwargs
             and isinstance(kwargs["image"], np.ndarray)
         ):
-            img = self._single_albu_direct_tfm(image=kwargs["image"])["image"]  # type: ignore[operator]
-            self._last_transform_matrix = self._eye_1x3x3_f32
+            img = self._single_albu_direct_seg.forward_numpy(kwargs["image"])
+            self._last_transform_matrix = self._single_albu_direct_seg.last_matrix
             return {"image": img}
         if self._is_albu_native and "image" in kwargs and isinstance(kwargs["image"], np.ndarray):
             return self._forward_albu_native(kwargs["image"])
@@ -497,12 +518,8 @@ class FusedCompose(nn.Module):
 
             _fused_fast = self._single_fused_fast_seg
             if _fused_fast is not None:
-                image = _fused_fast[0].call_nonfused(_fused_fast[1], cast(Tensor, args[0]))
-                _batch_size = image.shape[0]
-                _mtx_eye = self._eye_1x3x3_f32
-                self._last_transform_matrix = (
-                    _mtx_eye if _batch_size == 1 else _mtx_eye.expand(_batch_size, -1, -1).clone()
-                )
+                image = cast(Tensor, _fused_fast.forward(cast(Tensor, args[0]), None))
+                self._last_transform_matrix = _fused_fast.last_matrix
                 return self._convert_primary_output(image)
 
         return super().__call__(*args, **kwargs)
@@ -693,14 +710,10 @@ class FusedCompose(nn.Module):
 
         # Single-transform FusedAffineSegment fast path: same bypass for
         # single-transform GEOMETRIC_INTERP pipelines (a-group rotate/scale/shear).
-        # Sets _last_transform_matrix to identity — the single-transform path always
-        # returns identity regardless (no matrix reconstruction for a-group).
         _fast_seg = self._single_fused_fast_seg
         if _fast_seg is not None and aux_targets is None:
-            image = _fast_seg[0].call_nonfused(_fast_seg[1], image)
-            _batch_size = image.shape[0]
-            _mtx_eye = self._eye_1x3x3_f32
-            self._last_transform_matrix = _mtx_eye if _batch_size == 1 else _mtx_eye.expand(_batch_size, -1, -1).clone()
+            image = cast(Tensor, _fast_seg.forward(image, None))
+            self._last_transform_matrix = _fast_seg.last_matrix
             return self._convert_primary_output(image)
 
         for seg in self._segments:
@@ -1026,6 +1039,7 @@ class FusedCompose(nn.Module):
         reorder: ReorderPolicy = ReorderPolicy.POINTWISE,
         data_keys: list[str] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
+        randomness: RandomnessPolicy | Literal["backend", "per_sample"] = RandomnessPolicy.BACKEND,
     ) -> FusedCompose:
         """Create a FusedCompose pipeline from a list of TransformSpec objects.
 
@@ -1045,6 +1059,7 @@ class FusedCompose(nn.Module):
             output_backend: Target output format (``"numpy"``,
                 ``"numpy_hwc"``, ``"torch"``, or ``None``). Forwarded to
                 :meth:`__init__`.
+            randomness: Batch randomness policy forwarded to :meth:`__init__`.
 
         Returns:
             A configured ``FusedCompose`` instance.
@@ -1078,6 +1093,7 @@ class FusedCompose(nn.Module):
                 data_keys=data_keys,
                 reorder=reorder,
                 output_backend=output_backend,
+                randomness=randomness,
             )
 
         transforms: list[object] = []
@@ -1132,6 +1148,7 @@ class FusedCompose(nn.Module):
             data_keys=data_keys,
             reorder=reorder,
             output_backend=output_backend,
+            randomness=randomness,
         )
 
     @classmethod
@@ -1154,6 +1171,7 @@ class FusedCompose(nn.Module):
         reorder: ReorderPolicy = ReorderPolicy.POINTWISE,
         data_keys: list[str] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
+        randomness: RandomnessPolicy | Literal["backend", "per_sample"] = RandomnessPolicy.BACKEND,
         *,
         specs: list[TransformSpec] | None = None,
         backend: BackendStr | None = None,
@@ -1207,6 +1225,8 @@ class FusedCompose(nn.Module):
             output_backend: Target output format (``"numpy"``,
                 ``"numpy_hwc"``, ``"torch"``, or ``None``). Forwarded to
                 :meth:`__init__`.
+            randomness: Batch randomness policy forwarded to :meth:`__init__`
+                or :meth:`from_config`.
             specs: List of :class:`TransformSpec` objects. When provided,
                 all other geometric keyword arguments must be at their
                 defaults (mutually exclusive). Keyword-only.
@@ -1273,13 +1293,14 @@ class FusedCompose(nn.Module):
 
             if backend is not None:
                 return cls.from_config(
-                    specs,
+                    specs=specs,
                     backend=backend,
                     interpolation=interpolation,
                     padding_mode=padding_mode,
                     reorder=reorder,
                     data_keys=data_keys,
                     output_backend=output_backend,
+                    randomness=randomness,
                 )
 
             return cls._from_param_specs(
@@ -1289,6 +1310,7 @@ class FusedCompose(nn.Module):
                 reorder=reorder,
                 data_keys=data_keys,
                 output_backend=output_backend,
+                randomness=_coerce_randomness_policy(randomness),
             )
 
         # When backend is set and geometric kwargs are provided (no specs),
@@ -1307,13 +1329,14 @@ class FusedCompose(nn.Module):
                 vflip_p=vflip_p,
             )
             return cls.from_config(
-                config_specs,
+                specs=config_specs,
                 backend=backend,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 reorder=reorder,
                 data_keys=data_keys,
                 output_backend=output_backend,
+                randomness=randomness,
             )
 
         # Collect geometric param specs
@@ -1343,12 +1366,13 @@ class FusedCompose(nn.Module):
         # Both handle empty _segments correctly; do not branch on isinstance(_adapter, ...).
         if not has_affine and not has_flips:
             return cls(
-                [],
+                transforms=[],
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 data_keys=data_keys,
                 output_backend=output_backend,
                 reorder=reorder,
+                randomness=randomness,
             )
 
         # Build internal transforms and adapter
@@ -1368,7 +1392,8 @@ class FusedCompose(nn.Module):
         instance = cls.__new__(cls)
         nn.Module.__init__(instance)
 
-        segments = build_segments(transforms, adapter, interpolation, padding_mode)
+        randomness_policy = _coerce_randomness_policy(randomness)
+        segments = build_segments(transforms, adapter, interpolation, padding_mode, randomness_policy)
         instance._setup_instance(
             transforms=transforms,
             reorder=reorder,
@@ -1378,6 +1403,7 @@ class FusedCompose(nn.Module):
             adapter=adapter,
             segments=segments,
             output_backend=output_backend,
+            randomness=randomness_policy,
         )
 
         return instance
@@ -1391,6 +1417,7 @@ class FusedCompose(nn.Module):
         reorder: ReorderPolicy,
         data_keys: list[str] | None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
+        randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     ) -> FusedCompose:
         """Build a from_params pipeline from a list of TransformSpec objects.
 
@@ -1423,7 +1450,7 @@ class FusedCompose(nn.Module):
                 param_value = cls._extract_param_range_from_spec(spec)
                 param_specs = {param_key: param_value}
                 transforms.append(
-                    _DirectParamTransform(param_specs, prob=spec.prob),
+                    _DirectParamTransform(param_specs=param_specs, prob=spec.prob),
                 )
             else:
                 msg = f"Unsupported op for from_params: {spec.operation!r}"
@@ -1431,7 +1458,7 @@ class FusedCompose(nn.Module):
 
         if not transforms:
             return cls(
-                [],
+                transforms=[],
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 data_keys=data_keys,
@@ -1442,7 +1469,7 @@ class FusedCompose(nn.Module):
         instance = cls.__new__(cls)
         nn.Module.__init__(instance)
 
-        segments = build_segments(transforms, adapter, interpolation, padding_mode)
+        segments = build_segments(transforms, adapter, interpolation, padding_mode, randomness)
         instance._setup_instance(
             transforms=transforms,
             reorder=reorder,
@@ -1452,6 +1479,7 @@ class FusedCompose(nn.Module):
             adapter=adapter,
             segments=segments,
             output_backend=output_backend,
+            randomness=randomness,
         )
 
         return instance
@@ -1586,6 +1614,7 @@ def _build_mixed_segments(
     reorder: ReorderPolicy,
     interpolation: InterpolationStr | None,
     padding_mode: PaddingModeStr | None,
+    randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
 ) -> tuple[TransformAdapter, list[object], dict[int, TransformAdapter]]:
     """Build segments for a mixed-backend pipeline.
 
@@ -1602,6 +1631,7 @@ def _build_mixed_segments(
         reorder: Reorder policy (applied within each same-backend group).
         interpolation: Interpolation mode forwarded to segments.
         padding_mode: Padding mode forwarded to segments.
+        randomness: Batch randomness policy forwarded to segments.
 
     Returns:
         A 3-tuple ``(primary_adapter, segments, transform_adapters)`` where:
@@ -1655,10 +1685,11 @@ def _build_mixed_segments(
         elif reorder == ReorderPolicy.AGGRESSIVE:
             group_transforms = reorder_aggressive(group_transforms, adapter)
         group_segments = build_segments(
-            group_transforms,
-            adapter,
-            interpolation,
-            padding_mode,
+            transforms=group_transforms,
+            adapter=adapter,
+            interpolation=interpolation,
+            padding_mode=padding_mode,
+            randomness=randomness,
             use_numpy=(backend_name == Backend.ALBUMENTATIONS),
         )
         all_segments.extend(group_segments)

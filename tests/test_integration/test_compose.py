@@ -142,6 +142,16 @@ class TestTransformMatrix:
         assert pipe.transform_matrix is not None
         assert pipe.transform_matrix.shape == torch.Size([1, 3, 3])
 
+    def test_single_transform_matrix_preserves_sampled_rotation(self):
+        """A single-transform fast path records the sampled matrix, not identity."""
+        pipe = Compose([kornia_aug.RandomRotation(degrees=(30.0, 30.0), p=1.0)])
+        pipe(torch.rand(1, 3, 16, 16))
+
+        matrix = pipe.transform_matrix
+        assert matrix is not None
+        identity = torch.eye(3, dtype=matrix.dtype, device=matrix.device).unsqueeze(0)
+        assert not torch.allclose(matrix, identity, rtol=1e-4, atol=1e-6)
+
     def test_batch_shape(self):
         """transform_matrix batch dimension matches input batch size."""
         pipe = Compose([kornia_aug.RandomRotation(30, p=1.0)])

@@ -54,6 +54,20 @@ class ReorderPolicy(Enum):
     AGGRESSIVE = "aggressive"
 
 
+class RandomnessPolicy(Enum):
+    """Controls how batch randomness is sampled by fused segments.
+
+    Attributes:
+        BACKEND: Preserve each backend's native batch-randomness semantics.
+        PER_SAMPLE: Prefer one independent probability/parameter draw per batch
+            item when the adapter exposes a canonical per-sample sampler.
+
+    """
+
+    BACKEND = "backend"
+    PER_SAMPLE = "per_sample"
+
+
 class InterpolationMode(IntEnum):
     """Interpolation modes ordered by quality (higher = finer).
 

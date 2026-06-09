@@ -296,6 +296,19 @@ class TestV2Parity:
             torch.testing.assert_close(matrix[idx], matrix[0], atol=1e-6, rtol=0.0)
 
     @pytest.mark.skipif(not _TORCHVISION_V2_AVAILABLE, reason="torchvision v2 required")
+    def test_v2_rotation_per_sample_randomness_uses_independent_matrices(self):
+        """randomness='per_sample' overrides v2 batch-shared canonical sampling."""
+        img = _rand_image(batch_size=4)
+        pipe = Compose([T2.RandomRotation(degrees=30)], randomness="per_sample")
+
+        torch.manual_seed(42)
+        _ = pipe(img)
+
+        matrix = pipe.transform_matrix
+        assert matrix is not None
+        assert any(not torch.allclose(matrix[idx], matrix[0], atol=1e-6, rtol=0.0) for idx in range(1, img.shape[0]))
+
+    @pytest.mark.skipif(not _TORCHVISION_V2_AVAILABLE, reason="torchvision v2 required")
     def test_v2_affine_uses_one_matrix_for_the_batch(self):
         """v2.RandomAffine samples a single affine matrix replicated across the batch."""
         img = _rand_image(batch_size=4)

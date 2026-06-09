@@ -20,7 +20,7 @@ Example:
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -36,7 +36,13 @@ from fuse_augmentations.affine.matrix import (
     normalize_matrix_io,
     perspective_grid,
 )
-from fuse_augmentations.types import InterpolationStr, PaddingModeStr, TransformAdapter, TransformCategory
+from fuse_augmentations.types import (
+    InterpolationStr,
+    PaddingModeStr,
+    RandomnessPolicy,
+    TransformAdapter,
+    TransformCategory,
+)
 
 # cv2 optional import — used by both FusedAffineSegment (B=1 CPU fast path)
 # and AlbuFusedAffineSegment (Albumentations cv2 backend).
@@ -67,12 +73,33 @@ if not _ALBUMENTATIONS_AVAILABLE:
     __doctest_skip__ += ["AlbuFusedAffineSegment"]
 
 
-def _shares_randomness_across_batch(adapter: TransformAdapter, transform: object) -> bool:
+def _shares_randomness_across_batch(
+    adapter: TransformAdapter,
+    transform: object,
+    randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+) -> bool:
     """Return whether a transform should draw one random decision for the batch."""
+    if randomness is RandomnessPolicy.PER_SAMPLE:
+        return False
     same_on_batch = getattr(adapter, "same_on_batch", None)
     if callable(same_on_batch):
         return bool(same_on_batch(transform))
     return bool(getattr(transform, "same_on_batch", False))
+
+
+def _sample_transform_params(
+    adapter: TransformAdapter,
+    transform: object,
+    input_shape: tuple[int, int, int, int],
+    device: torch.device,
+    randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+) -> dict[str, Tensor]:
+    """Sample params, preferring adapter-provided per-sample sampling when requested."""
+    if randomness is RandomnessPolicy.PER_SAMPLE:
+        sample_params_per_sample = getattr(adapter, "sample_params_per_sample", None)
+        if callable(sample_params_per_sample):
+            return cast(dict[str, Tensor], sample_params_per_sample(transform, input_shape, device))
+    return adapter.sample_params(transform, input_shape, device)
 
 
 def _transform_prob(transform: object, default: float = 1.0) -> float:
@@ -103,6 +130,8 @@ class ExactAffineSegment(nn.Module):
         transforms: List of ``GEOMETRIC_EXACT`` transform objects.
         adapter: A ``TransformAdapter`` providing ``exact_apply`` for image
             updates and, when auxiliary targets are used, ``exact_flip_dims`` for flip-compatible target routing.
+        randomness: Batch randomness policy. ``BACKEND`` preserves native
+            backend semantics; ``PER_SAMPLE`` draws probability masks per item.
 
     Example:
         >>> import torch
@@ -117,11 +146,17 @@ class ExactAffineSegment(nn.Module):
 
     """
 
-    def __init__(self, transforms: list[object], adapter: TransformAdapter) -> None:
+    def __init__(
+        self,
+        transforms: list[object],
+        adapter: TransformAdapter,
+        randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+    ) -> None:
         """Initialize ``ExactAffineSegment``."""
         super().__init__()
         self.transforms = transforms
         self.adapter = adapter
+        self.randomness = randomness
 
     @property
     def last_matrix(self) -> Tensor | None:
@@ -164,7 +199,7 @@ class ExactAffineSegment(nn.Module):
 
         for tfm in self.transforms:
             prob = _transform_prob(tfm)
-            same_on_batch = _shares_randomness_across_batch(self.adapter, tfm)
+            same_on_batch = _shares_randomness_across_batch(self.adapter, tfm, self.randomness)
             if not same_on_batch:
                 # Independent Bernoulli draw per sample.
                 active = torch.rand(batch_size, device=device) < prob
@@ -253,6 +288,7 @@ class FusedAffineSegment(nn.Module):
         adapter: TransformAdapter,
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
+        randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     ) -> None:
         """Initialize ``FusedAffineSegment``."""
         super().__init__()
@@ -260,6 +296,7 @@ class FusedAffineSegment(nn.Module):
         self.adapter = adapter
         self.interpolation = interpolation
         self.padding_mode = padding_mode
+        self.randomness = randomness
         self._last_matrix: Tensor | None = None
         # Pre-compute fast-path selector once at construction to avoid repeated
         # isinstance checks on every forward call.
@@ -274,10 +311,9 @@ class FusedAffineSegment(nn.Module):
                 self._fast_path = "torchvision"
         except ImportError:
             pass
-        # For single-transform fast paths no test checks exact _last_matrix values
-        # (only shape / det / inv roundtrip), so skip expensive reconstruction
-        # and set identity instead - saves 0.05-0.07 ms per call.
-        self._skip_matrix_recon: bool = len(transforms) == 1 and self._fast_path is not None
+        # Single-transform fast paths still reconstruct _last_matrix because
+        # Compose.transform_matrix is a public API used for coordinate warping.
+        self._skip_matrix_recon: bool = False
         # cv2 warp fast path: for B=1 CPU multi-transform segments, cv2.warpAffine is
         # ~2x faster than PyTorch's affine_grid + grid_sample because it avoids
         # the grid construction overhead entirely.
@@ -372,7 +408,12 @@ class FusedAffineSegment(nn.Module):
         # the sampled params.  Only safe when aux_targets is None (no grid    #
         # needed for coord transforms).                                        #
         # ------------------------------------------------------------------ #
-        if len(self.transforms) == 1 and not _has_aux and self._fast_path is not None:
+        if (
+            len(self.transforms) == 1
+            and not _has_aux
+            and self._fast_path is not None
+            and self.randomness is RandomnessPolicy.BACKEND
+        ):
             _tfm = self.transforms[0]
 
             if self._fast_path == "kornia":
@@ -487,7 +528,7 @@ class FusedAffineSegment(nn.Module):
                     if mtx_np is not None:
                         acc_np = mtx_np @ acc_np
                         continue
-                params = self.adapter.sample_params(tfm, input_shape, device)
+                params = _sample_transform_params(self.adapter, tfm, input_shape, device, self.randomness)
                 if _np_builder is not None:
                     mtx_np = _np_builder(tfm, params, height, width)
                     acc_np = mtx_np @ acc_np
@@ -514,14 +555,14 @@ class FusedAffineSegment(nn.Module):
 
         for tfm in self.transforms:
             prob = _transform_prob(tfm)
-            same_on_batch = _shares_randomness_across_batch(self.adapter, tfm)
+            same_on_batch = _shares_randomness_across_batch(self.adapter, tfm, self.randomness)
             if same_on_batch:
                 active_scalar = torch.rand((), device=device) < prob
                 active = active_scalar.repeat(batch_size)  # type: ignore[assignment]
             else:
                 active = torch.rand(batch_size, device=device) < prob  # type: ignore[assignment]
 
-            params = self.adapter.sample_params(tfm, input_shape, device)
+            params = _sample_transform_params(self.adapter, tfm, input_shape, device, self.randomness)
             mtx_i = self.adapter.build_matrix(tfm, params, height, width)
 
             # Expand to batch if adapter returned (1, 3, 3)
@@ -915,16 +956,6 @@ class AlbuFusedAffineSegment(nn.Module):
             self._last_matrix = self._identity_1x3x3
             return img_hwc
 
-        # Single-op fast path: bypass matrix composition entirely and call the
-        # native Albumentations transform directly.  Saves sample_params +
-        # build_matrix + np.linalg.inv + cv2.warpAffine for single-transform
-        # pipelines where fusion brings no benefit.  _last_matrix is set to
-        # identity (1, 3, 3) to satisfy shape requirements; correctness-sensitive
-        # callers should use the BCHW tensor path which reconstructs the matrix.
-        if len(self.transforms) == 1:
-            self._last_matrix = self._identity_1x3x3
-            return self.transforms[0](image=img_hwc)["image"]  # type: ignore[operator, no-any-return]
-
         # Draw per-transform active masks for bsz=1 (mirrors forward() logic).
         # For prob=1.0 transforms, skip the RNG draw and use a constant True.
         active_masks: list[bool] = []
@@ -1078,6 +1109,7 @@ class ProjectiveSegment(nn.Module):
         adapter: TransformAdapter,
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
+        randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     ) -> None:
         """Initialize ``ProjectiveSegment``."""
         super().__init__()
@@ -1085,6 +1117,7 @@ class ProjectiveSegment(nn.Module):
         self.adapter = adapter
         self.interpolation = interpolation
         self.padding_mode = padding_mode
+        self.randomness = randomness
         self._last_matrix: Tensor | None = None
 
     @property
@@ -1132,14 +1165,14 @@ class ProjectiveSegment(nn.Module):
 
         for tfm in self.transforms:
             prob = _transform_prob(tfm)
-            same_on_batch = _shares_randomness_across_batch(self.adapter, tfm)
+            same_on_batch = _shares_randomness_across_batch(self.adapter, tfm, self.randomness)
             if same_on_batch:
                 active_scalar = torch.rand((), device=device) < prob
                 active = active_scalar.repeat(batch_size)
             else:
                 active = torch.rand(batch_size, device=device) < prob
 
-            params = self.adapter.sample_params(tfm, input_shape, device)
+            params = _sample_transform_params(self.adapter, tfm, input_shape, device, self.randomness)
             mtx_i = self.adapter.build_matrix(tfm, params, height, width)
 
             # Expand to batch if adapter returned (1, 3, 3)
@@ -1379,12 +1412,14 @@ class FusedColorSegment(nn.Module):
         transforms: list[object],
         adapter: TransformAdapter,
         clip_output: bool = True,
+        randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     ) -> None:
         """Initialize ``FusedColorSegment``."""
         super().__init__()
         self._transforms = transforms
         self._adapter = adapter
         self.clip_output = clip_output
+        self.randomness = randomness
         # Register identity matrix as a buffer so device moves (.to(), .cuda())
         # propagate automatically — avoids re-allocating every forward pass.
         self.register_buffer("_eye4", torch.eye(4, dtype=torch.float32))
@@ -1397,6 +1432,8 @@ class FusedColorSegment(nn.Module):
         # clip_output added in v0.7; default True preserves pre-existing behaviour.
         if not hasattr(self, "clip_output"):
             self.clip_output = True
+        if not hasattr(self, "randomness"):
+            self.randomness = RandomnessPolicy.BACKEND
 
     @property
     def transforms(self) -> list[object]:
@@ -1443,14 +1480,14 @@ class FusedColorSegment(nn.Module):
 
         for tfm in self._transforms:
             prob = _transform_prob(tfm)
-            same_on_batch = _shares_randomness_across_batch(self._adapter, tfm)
+            same_on_batch = _shares_randomness_across_batch(self._adapter, tfm, self.randomness)
             if same_on_batch:
                 active_scalar = torch.rand((), device=device) < prob
                 active = active_scalar.expand(batch_size)
             else:
                 active = torch.rand(batch_size, device=device) < prob
 
-            params = self._adapter.sample_params(tfm, input_shape, device)
+            params = _sample_transform_params(self._adapter, tfm, input_shape, device, self.randomness)
             try:
                 mat = self._adapter.build_color_matrix(tfm, params)  # (batch_size, 4, 4)
             except NotImplementedError:
@@ -1524,6 +1561,7 @@ def _flush_color(
     transforms: list[object],
     adapter: TransformAdapter,
     segments: list[object],
+    randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
 ) -> None:
     """Flush a run of ``POINTWISE_LINEAR`` transforms into segments.
 
@@ -1541,7 +1579,7 @@ def _flush_color(
             # Intentionally clears the caller-owned run buffer.
             transforms.clear()
             return
-    segments.append(FusedColorSegment(list(transforms), adapter))
+    segments.append(FusedColorSegment(list(transforms), adapter, randomness=randomness))
     # Intentionally clears the caller-owned run buffer.
     transforms.clear()
 
@@ -1584,6 +1622,7 @@ class CropResizeSegment(nn.Module):
         adapter: TransformAdapter,
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
+        randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     ) -> None:
         """Initialize ``CropResizeSegment``."""
         super().__init__()
@@ -1592,6 +1631,7 @@ class CropResizeSegment(nn.Module):
         self.adapter = adapter
         self.interpolation = interpolation
         self.padding_mode = padding_mode
+        self.randomness = randomness
 
     def forward(
         self,
@@ -1617,7 +1657,13 @@ class CropResizeSegment(nn.Module):
         device = image.device
         dtype = image.dtype
 
-        params = self.adapter.sample_params(self.transform, (batch_size, num_channels, height, width), device)
+        params = _sample_transform_params(
+            adapter=self.adapter,
+            transform=self.transform,
+            input_shape=(batch_size, num_channels, height, width),
+            device=device,
+            randomness=self.randomness,
+        )
         if not (
             torch.all(params["target_h"] == params["target_h"][0])
             and torch.all(params["target_w"] == params["target_w"][0])
@@ -1803,6 +1849,7 @@ def build_segments(
     adapter: TransformAdapter,
     interpolation: InterpolationStr | None = None,
     padding_mode: PaddingModeStr | None = None,
+    randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     *,
     use_numpy: bool = False,
 ) -> list[object]:
@@ -1837,6 +1884,7 @@ def build_segments(
         use_numpy: When ``True``, produce :class:`AlbuFusedAffineSegment` instances
             (Albumentations/scipy backend) instead of the PyTorch
             :class:`FusedAffineSegment`. Used for the Albumentations backend.
+        randomness: Batch randomness policy for fused PyTorch segments.
 
     Returns:
         Flat list where each element is a :class:`FusedAffineSegment`
@@ -1873,14 +1921,14 @@ def build_segments(
             if has_interp:
                 segments.append(
                     AlbuFusedAffineSegment(
-                        list(current_geo),
-                        adapter,
+                        transforms=list(current_geo),
+                        adapter=adapter,
                         interpolation=interpolation,
                         padding_mode=padding_mode,
                     )
                 )
             else:
-                segments.append(ExactAffineSegment(list(current_geo), adapter))
+                segments.append(ExactAffineSegment(list(current_geo), adapter, randomness=randomness))
 
             current_geo.clear()
             return
@@ -1888,16 +1936,17 @@ def build_segments(
         if has_interp:
             segments.append(
                 FusedAffineSegment(
-                    list(current_geo),
-                    adapter,
+                    transforms=list(current_geo),
+                    adapter=adapter,
                     interpolation=interpolation,
                     padding_mode=padding_mode,
+                    randomness=randomness,
                 )
             )
             current_geo.clear()
             return
 
-        segments.append(ExactAffineSegment(list(current_geo), adapter))
+        segments.append(ExactAffineSegment(list(current_geo), adapter, randomness=randomness))
         current_geo.clear()
 
     def _flush_proj() -> None:
@@ -1906,8 +1955,8 @@ def build_segments(
         if use_numpy:
             segments.append(
                 AlbuProjectiveSegment(
-                    list(current_proj),
-                    adapter,
+                    transforms=list(current_proj),
+                    adapter=adapter,
                     interpolation=interpolation,
                     padding_mode=padding_mode,
                 )
@@ -1915,10 +1964,11 @@ def build_segments(
         else:
             segments.append(
                 ProjectiveSegment(
-                    list(current_proj),
-                    adapter,
+                    transforms=list(current_proj),
+                    adapter=adapter,
                     interpolation=interpolation,
                     padding_mode=padding_mode,
+                    randomness=randomness,
                 )
             )
         current_proj.clear()
@@ -1927,12 +1977,12 @@ def build_segments(
         category = adapter.category(transform)
         if category in fusible:
             _flush_proj()  # flush any pending projective
-            _flush_color(current_color, adapter, segments)  # mutates current_color in-place
+            _flush_color(current_color, adapter, segments, randomness)  # mutates current_color in-place
             current_geo.append(transform)
             continue
         if category == projective_cat:
             _flush_geo()  # flush any pending affine
-            _flush_color(current_color, adapter, segments)  # mutates current_color in-place
+            _flush_color(current_color, adapter, segments, randomness)  # mutates current_color in-place
             current_proj.append(transform)
             continue
         if category == pointwise_linear_cat:
@@ -1946,14 +1996,15 @@ def build_segments(
             # For the numpy/albumentations path the transform is emitted as a passthrough.
             _flush_geo()
             _flush_proj()
-            _flush_color(current_color, adapter, segments)  # mutates current_color in-place
+            _flush_color(current_color, adapter, segments, randomness)  # mutates current_color in-place
             if not use_numpy:
                 segments.append(
                     CropResizeSegment(
-                        transform,
-                        adapter,
+                        transform=transform,
+                        adapter=adapter,
                         interpolation=interpolation,
                         padding_mode=padding_mode,
+                        randomness=randomness,
                     )
                 )
             else:
@@ -1962,12 +2013,12 @@ def build_segments(
         # SPATIAL_KERNEL / POINTWISE barrier: flush all
         _flush_geo()
         _flush_proj()
-        _flush_color(current_color, adapter, segments)  # mutates current_color in-place
+        _flush_color(current_color, adapter, segments, randomness)  # mutates current_color in-place
         segments.append(transform)
 
     _flush_geo()
     _flush_proj()
-    _flush_color(current_color, adapter, segments)  # mutates current_color in-place
+    _flush_color(current_color, adapter, segments, randomness)  # mutates current_color in-place
     return segments
 
 

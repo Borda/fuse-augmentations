@@ -12,7 +12,7 @@ import torch
 
 from fuse_augmentations._compat import _KORNIA_AVAILABLE
 from fuse_augmentations.compose import AugmentationSequential, Compose, FusedCompose
-from fuse_augmentations.types import ReorderPolicy
+from fuse_augmentations.types import RandomnessPolicy, ReorderPolicy
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
@@ -59,6 +59,26 @@ class TestReorderPolicyAggressive:
         """Every ReorderPolicy member is accepted without error and stored on the pipe."""
         pipe = Compose([], reorder=policy)
         assert pipe.reorder is policy
+
+
+class TestRandomnessPolicy:
+    """All RandomnessPolicy values are accepted by Compose."""
+
+    @pytest.mark.parametrize("policy", list(RandomnessPolicy))
+    def test_all_policies_accepted(self, policy):
+        """Every RandomnessPolicy member is accepted without error and stored on the pipe."""
+        pipe = Compose([], randomness=policy)
+        assert pipe.randomness is policy
+
+    def test_string_policy_accepted(self):
+        """String policy values are normalized to RandomnessPolicy members."""
+        pipe = Compose([], randomness="per_sample")
+        assert pipe.randomness is RandomnessPolicy.PER_SAMPLE
+
+    def test_unknown_policy_raises(self):
+        """Unknown randomness policies fail during construction."""
+        with pytest.raises(ValueError, match="unknown randomness policy"):
+            Compose([], randomness="per_batch")
 
 
 class TestAliases:

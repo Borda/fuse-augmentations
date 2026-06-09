@@ -61,8 +61,8 @@ A pipeline of three affine transforms saves two interpolation passes. At trainin
 - Automatic fusion of consecutive geometric transforms -- no manual configuration needed.
 - Use `ReorderPolicy.POINTWISE` to bubble color ops past geometric chains, enabling fusion across non-consecutive geometric runs.
 - All affine transforms from each supported backend (Kornia, TorchVision, Albumentations) are mapped and fusible -- not just a subset.
-- Per-sample randomness: independent probability draws per image in the batch.
-- Auxiliary target support: masks, bounding boxes (`xyxy` and `xywh`), and keypoints warped by the same composed matrix.
+- Backend-preserving randomness by default, with opt-in `randomness="per_sample"` for independent draws where the adapter exposes canonical sampling.
+- Auxiliary target support: masks, bounding boxes (`xyxy` and `xywh`), and keypoints warped by the same composed matrix for fused/interpolating geometric segments and flip-only exact chains.
 - Multi-backend: Kornia, TorchVision, and Albumentations transforms in the same pipeline.
 - Backend-free mode: construct a pipeline from numeric parameter ranges with no framework imports.
 - Meta-config mode: describe a pipeline as a list of `TransformSpec` objects and resolve it to any supported backend at construction time -- swap backends without rewriting the pipeline.
@@ -284,6 +284,10 @@ Supported `data_keys` values:
 | `"bbox_xywh"` | `(B, N, 4)`    | Pixel-space `[x, y, w, h]`; converted internally to xyxy     |
 | `"keypoints"` | `(B, N, 2)`    | Pixel-space `[x, y]`; exact homogeneous transform            |
 
+Exact discrete chains support auxiliary targets only for flip-compatible ops.
+Non-flip exact ops such as `RandomRotate90`, `D4`, and `Transpose` are image-only
+in exact mode and raise when masks, boxes, or keypoints are present.
+
 ## 🔌 Backend-Free Pipelines
 
 No Kornia or TorchVision import needed:
@@ -305,7 +309,7 @@ pipe = Compose.from_params(
 out = pipe(image)
 ```
 
-`from_params` accepts: `rotation`, `scale`, `scale_x`, `scale_y`, `shear_x`, `shear_y`, `translate_x`, `translate_y`, `hflip_p`, `vflip_p`, `interpolation` (`"bilinear"`, `"nearest"`, `"bicubic"`), `padding_mode` (`"zeros"`, `"border"`, `"reflection"`), `reorder`, `data_keys`, `output_backend`, `specs`. (`brightness` and `contrast` are reserved for a future version.)
+`from_params` accepts: `rotation`, `scale`, `scale_x`, `scale_y`, `shear_x`, `shear_y`, `translate_x`, `translate_y`, `hflip_p`, `vflip_p`, `interpolation` (`"bilinear"`, `"nearest"`, `"bicubic"`), `padding_mode` (`"zeros"`, `"border"`, `"reflection"`), `reorder`, `data_keys`, `output_backend`, `randomness`, `specs`. (`brightness` and `contrast` are reserved for a future version.)
 
 > **Note**: `from_params` and `from_config` default to `ReorderPolicy.POINTWISE`, while `Compose()` defaults to `ReorderPolicy.NONE`. Pass `reorder=ReorderPolicy.NONE` explicitly if you need to preserve the declared order in a `from_params` pipeline.
 
@@ -349,6 +353,19 @@ out = pipe(image_tensor)  # returns NumPy (H, W, C) array directly
 `output_backend` values: `"numpy"` / `"numpy_hwc"` (channel-last NumPy array), `"torch"` or `None` (native tensor, default). Conversion applies to single-tensor output only -- when `data_keys` returns a tuple, set `output_backend=None` and convert manually.
 
 `NumpyToTorchConverter` accepts arrays of shape `(H, W)`, `(H, W, C)`, or `(B, H, W, C)`. `uint8` inputs are normalised to `float32 [0, 1]`; `float32` inputs are passed through unchanged.
+
+### Randomness Policy
+
+`randomness="backend"` is the default and preserves the native backend's batch sampling semantics. For example, TorchVision v2 transforms sample one parameter set for the whole batched tensor, and `Compose` preserves that by default.
+
+Use `randomness="per_sample"` to ask fused segments to draw independent probability and parameter samples per image where the adapter exposes canonical sampling:
+
+```python
+pipe = Compose(
+    [aug_tv.RandomRotation(degrees=30)],
+    randomness="per_sample",
+)
+```
 
 ## 🎨 Color Fusion (POINTWISE_LINEAR)
 
@@ -544,10 +561,10 @@ pipe = Compose(
 )
 
 out = pipe(image)
-# fused(Rotate, RandomHorizontalFlip) -> color(ColorJitter)
+# fused(Rotate) -> exact(RandomHorizontalFlip) -> color(ColorJitter)
 ```
 
-Each transform is resolved to the correct adapter at construction time. Framework-specific behavior (parameter sampling, matrix building, passthrough for operations not yet fusible) is handled by `KorniaAdapter`, `TorchVisionAdapter`, or `AlbumentationsAdapter`.
+Each transform is resolved to the correct adapter at construction time. Backend boundaries split fusion groups, so transforms from different frameworks can share one `Compose` pipeline but are not fused into the same matrix segment. Framework-specific behavior (parameter sampling, matrix building, passthrough for operations not yet fusible) is handled by `KorniaAdapter`, `TorchVisionAdapter`, or `AlbumentationsAdapter`.
 
 ## 🔀 Reorder Policy
 
@@ -701,6 +718,7 @@ Pipelines survive `pickle` round-trips, so they work transparently with `torch.n
 - **Spatial-kernel ops** (GaussianBlur, Sharpen) act as fusion barriers; transforms on either side of a barrier form separate segments. These are not yet fusible.
 - **Padding mode** is segment-level: all transforms in a fused run share the padding mode passed to `Compose` (or the adapter default). Individual transforms cannot override it per-segment.
 - **Crop+resize ops** (`RandomResizedCrop`): `CropResizeSegment` applies one interpolation pass at the target output size, but the output spatial dimensions differ from the input. `data_keys` auxiliary targets (masks, bounding boxes, keypoints) are warped through the crop affine matrix at the target size.
+- **Exact discrete aux targets**: flip-only exact chains support masks, boxes, and keypoints. Non-flip exact ops such as `RandomRotate90`, `D4`, and `Transpose` are image-only when routed through `ExactAffineSegment`.
 - **Albumentations + auxiliary targets**: Albumentations fused segments (`AlbuFusedAffineSegment`, `AlbuProjectiveSegment`) do not support auxiliary-target routing in this release. Constructing a `Compose` with an Albumentations pipeline and `data_keys` containing more than the image key raises `ValueError` at construction time.
 - **Gradients**: image transforms are differentiable; mask sampling (`mode='nearest'`) is not.
 - **`output_backend` with multi-target `data_keys`**: when `data_keys` contains more than one entry the pipeline returns a tuple, and `output_backend` conversion is NOT applied. Convert manually or set `output_backend=None` in that case.

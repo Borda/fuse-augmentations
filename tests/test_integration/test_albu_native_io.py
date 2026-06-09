@@ -57,13 +57,16 @@ class TestAlbuDictInput:
         assert isinstance(out, torch.Tensor), "tensor input must return tensor"
         assert out.shape == tensor.shape
 
-    def test_transform_matrix_populated(self):
-        """pipe.transform_matrix must be (1,3,3) after a dict-input forward pass."""
+    def test_transform_matrix_populated_with_sampled_rotation(self):
+        """Dict-input single-transform fast path records the sampled matrix."""
         img = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
-        pipe = Compose([albu.Rotate(limit=30, p=1.0)])
+        pipe = Compose([albu.Rotate(limit=(30, 30), p=1.0)])
         pipe(image=img)
-        assert pipe.transform_matrix is not None
-        assert pipe.transform_matrix.shape == (1, 3, 3)
+        matrix = pipe.transform_matrix
+        assert matrix is not None
+        assert matrix.shape == (1, 3, 3)
+        identity = torch.eye(3, dtype=matrix.dtype, device=matrix.device).unsqueeze(0)
+        assert not torch.allclose(matrix, identity, rtol=1e-4, atol=1e-6)
 
     def test_empty_pipeline_passthrough(self):
         """Compose([]) must return input dict unchanged."""
