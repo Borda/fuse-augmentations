@@ -265,7 +265,10 @@ def inv3x3(matrix: torch.Tensor) -> torch.Tensor:
 
     Raises:
         ValueError: If any matrix in the batch has a near-zero determinant
-            (eager mode only).
+            (eager mode only). Note this aborts the WHOLE batch when a single
+            sample draws a degenerate transform — keep scale ranges bounded so
+            per-axis scale stays well above ``sqrt(finfo.eps)`` (≈3.5e-4 for
+            float32) to avoid rare training crashes.
 
     Example:
         >>> import torch

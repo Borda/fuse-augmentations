@@ -21,16 +21,6 @@ if _KORNIA_AVAILABLE:
 pytestmark = [pytest.mark.integration, pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia >= 0.6.12 required")]
 
 
-@pytest.fixture
-def image8x8_batch1() -> torch.Tensor:
-    return torch.rand(1, 3, 8, 8)
-
-
-@pytest.fixture
-def image32x32_batch2() -> torch.Tensor:
-    return torch.rand(2, 3, 32, 32)
-
-
 class TestSingleTransformNoFusion:
     """Validate behavior for one-transform pipelines."""
 

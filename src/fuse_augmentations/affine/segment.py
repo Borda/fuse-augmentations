@@ -887,6 +887,17 @@ class AlbuFusedAffineSegment(nn.Module):
         interp_flag = self._interp_flag
         border_flag = self._border_flag
 
+        # same_on_batch transforms share ONE param draw across the whole batch —
+        # matching the shared activation draw above. Sample once here so every
+        # sample gets identical geometry (previously only the activation was
+        # shared while params were re-drawn per sample).
+        shared_mtx: dict[int, MatrixArray] = {}
+        for t_idx, tfm in enumerate(self.transforms):
+            if bool(getattr(tfm, "same_on_batch", False)) and bool(np.any(active_masks[t_idx])):
+                params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
+                mtx_shared = self.adapter.build_matrix(tfm, params, height, width)
+                shared_mtx[t_idx] = mtx_shared[0].double().cpu().numpy()
+
         output_np: list[ImageArray] = []
 
         for b_idx in range(batch_size):
@@ -898,6 +909,10 @@ class AlbuFusedAffineSegment(nn.Module):
                 # must not consume RNG draws, otherwise entry points diverge under a
                 # fixed seed for any prob < 1.0 chain.
                 if not active_masks[t_idx][b_idx]:
+                    continue
+                if t_idx in shared_mtx:
+                    any_active = True
+                    acc = shared_mtx[t_idx] @ acc
                     continue
                 params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
                 mtx_i = self.adapter.build_matrix(tfm, params, height, width)
@@ -1017,6 +1032,11 @@ class AlbuFusedAffineSegment(nn.Module):
                 # Identical output to albumentations; saves ~19µs vs get_params_dependent_on_data.
                 angle = tfm.py_random.uniform(*tfm.limit)  # type: ignore[attr-defined]
                 _rad = math.radians(angle)
+                # NOTE: rows below are the TRANSPOSE of matrix.rotation_matrix —
+                # deliberate, mirroring Albumentations' clockwise-positive angle
+                # convention. Pinned by the A.Rotate parity tests in
+                # tests/test_integration/adapters/test_albument.py; keep in sync
+                # with the adapter convention if either changes.
                 _cos, _sin = math.cos(_rad), math.sin(_rad)
                 _center_x = width / 2.0 - 0.5
                 _center_y = height / 2.0 - 0.5
@@ -1351,6 +1371,15 @@ class AlbuProjectiveSegment(nn.Module):
         cv2_interp = _CV2_INTERP.get(self.interpolation, _CV2_INTERP.get("bilinear", 1))
         cv2_border = _CV2_BORDER.get(self.padding_mode, _CV2_BORDER.get("zeros", 0))
 
+        # same_on_batch transforms share ONE param draw across the whole batch,
+        # matching the shared activation draw above (mirrors AlbuFusedAffineSegment).
+        shared_mtx: dict[int, MatrixArray] = {}
+        for t_idx, tfm in enumerate(self.transforms):
+            if bool(getattr(tfm, "same_on_batch", False)) and bool(np.any(active_masks[t_idx])):
+                params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
+                mtx_shared = self.adapter.build_matrix(tfm, params, height, width)
+                shared_mtx[t_idx] = mtx_shared[0].double().cpu().numpy()
+
         output_np: list[ImageArray] = []
 
         for b_idx in range(batch_size):
@@ -1362,6 +1391,10 @@ class AlbuProjectiveSegment(nn.Module):
                 # must not consume RNG draws, otherwise entry points diverge under a
                 # fixed seed for any prob < 1.0 chain.
                 if not active_masks[t_idx][b_idx]:
+                    continue
+                if t_idx in shared_mtx:
+                    any_active = True
+                    acc = shared_mtx[t_idx] @ acc
                     continue
                 params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
                 mtx_i = self.adapter.build_matrix(tfm, params, height, width)

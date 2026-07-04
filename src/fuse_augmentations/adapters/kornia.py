@@ -672,7 +672,16 @@ class KorniaAdapter:
                 "k90": params["times"].to(device=device, dtype=torch.int64) % 4,
             }
 
-        # Unsupported transform type — return empty
+        # Unsupported transform type — warn loudly: the caller falls back to an
+        # identity _last_matrix, which silently misreports geometry if this path
+        # is ever reached by a genuinely geometric transform.
+        warnings.warn(
+            f"convert_native_params has no handler for {ttype.__name__}; caller will fall back "
+            "to an identity transform matrix. If this transform is geometric, its effect will "
+            "not be reflected in transform_matrix / aux-target warps.",
+            UserWarning,
+            stacklevel=2,
+        )
         return {}
 
 

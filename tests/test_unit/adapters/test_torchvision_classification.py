@@ -150,13 +150,6 @@ class TestTorchVisionAdapterCategory:
 
 
 @pytest.mark.skipif(not _TORCHVISION_V2_AVAILABLE, reason="missing torchvision.transforms.v2")
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "_v1_transform_cls is an undocumented TorchVision internal, stable 0.15-0.20; "
-        "may be removed in future TorchVision versions"
-    ),
-)
 def test_v1_transform_cls_attribute_exists_on_v2_transform():
     """V2 transforms expose _v1_transform_cls, used by the adapter for v1/v2 detection."""
     transform = Tv2.RandomHorizontalFlip(p=1.0)

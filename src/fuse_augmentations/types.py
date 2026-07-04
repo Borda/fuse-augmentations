@@ -222,6 +222,13 @@ class TransformAdapter(Protocol):
         Adapters that support non-flip discrete ops (e.g. 90-degree rotations, transposes) can instead dispatch via
         ``torch.rot90``, ``.permute``, etc.
 
+        Warning:
+            Implementations for stochastic discrete ops (``RandomRotate90``, ``D4``) draw their own random
+            parameters internally, independent of :meth:`sample_params`. Never combine an ``exact_apply``
+            image path with a :meth:`sample_params`-derived matrix for the SAME transform in one forward —
+            the two draws are unrelated and image vs coordinate outputs would diverge. Current segments keep
+            these paths mutually exclusive.
+
         Args:
             transform: The backend transform object (GEOMETRIC_EXACT category).
             image: ``(batch_size, channels, height, width)`` input tensor.
@@ -463,7 +470,7 @@ class SegmentDescriptor:
 
     Args:
         kind: Segment type. One of ``"fused"``, ``"exact"``, ``"projective"``,
-            ``"color"``, or ``"passthrough"``.
+            ``"color"``, ``"crop_resize"``, or ``"passthrough"``.
         transforms: Class names of the transforms in this segment, in
             execution order.
         n_warps_saved: Number of ``grid_sample`` interpolation passes

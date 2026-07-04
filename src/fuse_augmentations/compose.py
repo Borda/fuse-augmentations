@@ -535,6 +535,9 @@ class FusedCompose(nn.Module):
         if len(args) == 1 and not kwargs and self.data_keys is None:
             _exact_fast = self._single_exact_fast
             if _exact_fast is not None:
+                # Exact segments produce no matrix; clear any stale value so the
+                # transform_matrix "None after exact/passthrough-only" contract holds.
+                self._last_transform_matrix = None
                 image = _exact_fast[0].call_nonfused(_exact_fast[1], cast(Tensor, args[0]))
                 return self._convert_primary_output(image)
 
@@ -696,6 +699,10 @@ class FusedCompose(nn.Module):
             multi-target ``data_keys`` mode is active.
 
         """
+        # Reset per-call state up front so transform_matrix returns None when this
+        # forward executes only exact/passthrough segments (no stale matrix from a
+        # previous call survives).
+        self._last_transform_matrix = None
         if self.data_keys is None:
             # Backward-compatible single-tensor path
             if len(args) != 1:
@@ -842,6 +849,11 @@ class FusedCompose(nn.Module):
             The composed matrix for the last fused affine or projective segment, or ``None`` if no such segment has
             been executed yet (including before the first call to :meth:`forward` or if the last forward contained
             only passthrough transforms).
+
+        Note:
+            This is per-instance mutable state written on every ``forward``. Reading it from another
+            thread while a shared instance is running ``forward`` is racy; use one pipeline instance
+            per thread (or read the matrix in the same thread that ran the forward pass).
 
         """
         return self._last_transform_matrix
@@ -1248,7 +1260,11 @@ class FusedCompose(nn.Module):
                 ``"numpy_hwc"``, ``"torch"``, or ``None``). Forwarded to
                 :meth:`__init__`.
             randomness: Batch randomness policy forwarded to :meth:`__init__`
-                or :meth:`from_config`.
+                or :meth:`from_config`. NOTE: in backend-free mode
+                (``backend=None``) this value is stored but has no effect on
+                parameter sampling — the direct-param path always draws
+                independent per-sample parameters. It only changes behaviour
+                when ``backend=`` is set (delegation to :meth:`from_config`).
             specs: List of :class:`TransformSpec` objects. When provided,
                 all other geometric keyword arguments must be at their
                 defaults (mutually exclusive). Keyword-only.
@@ -1486,6 +1502,7 @@ class FusedCompose(nn.Module):
                 data_keys=data_keys,
                 output_backend=output_backend,
                 reorder=reorder,
+                randomness=randomness,
             )
 
         instance = cls.__new__(cls)

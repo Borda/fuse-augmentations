@@ -384,7 +384,7 @@ pipe = Compose(
 )
 out = pipe(image)
 print(pipe.fusion_plan)
-# fused(RandomRotation) -> color(RandomBrightness, RandomContrast)
+# fused(RandomRotation) → color(RandomBrightness, RandomContrast)
 ```
 
 The `"color"` kind appears in `fusion_plan_descriptors` for `FusedColorSegment` runs; its `n_warps_saved` reflects eliminated sequential color applies.
@@ -423,7 +423,7 @@ pipe = Compose(
 
 out = pipe(image)  # (B, C, 224, 224)
 print(pipe.fusion_plan)
-# fused(RandomRotation) -> crop_resize(RandomResizedCrop) -> exact(RandomHorizontalFlip)
+# fused(RandomRotation) → crop_resize(RandomResizedCrop) → exact(RandomHorizontalFlip)
 ```
 
 The output tensor has the target spatial size specified in the `RandomResizedCrop` constructor. Supported in all three backends: Kornia, TorchVision (v1 and v2), and Albumentations.
@@ -563,7 +563,7 @@ pipe = Compose(
 )
 
 out = pipe(image)
-# fused(Rotate) -> exact(RandomHorizontalFlip) -> color(ColorJitter)
+# fused(Rotate) → exact(RandomHorizontalFlip) → color(ColorJitter)
 ```
 
 Each transform is resolved to the correct adapter at construction time. Backend boundaries split fusion groups, so transforms from different frameworks can share one `Compose` pipeline but are not fused into the same matrix segment. Framework-specific behavior (parameter sampling, matrix building, passthrough for operations not yet fusible) is handled by `KorniaAdapter`, `TorchVisionAdapter`, or `AlbumentationsAdapter`.
@@ -586,7 +586,7 @@ pipe = Compose(
 )
 
 print(pipe.fusion_plan)
-# fused(RandomRotation, RandomHorizontalFlip) -> color(ColorJitter)
+# fused(RandomRotation, RandomHorizontalFlip) → color(ColorJitter)
 ```
 
 **`ReorderPolicy.NONE`** (default for `Compose()`): preserves declared order, merges consecutive fusible transforms.
@@ -608,7 +608,7 @@ pipe = Compose(...)  # built in a previous step
 out = pipe(image)
 
 print(pipe.fusion_plan)
-# fused(RandomRotation, RandomAffine) -> passthrough(RandomGaussianBlur) -> exact(RandomHorizontalFlip)
+# fused(RandomRotation, RandomAffine) → passthrough(RandomGaussianBlur) → exact(RandomHorizontalFlip)
 
 print(pipe.n_warps_saved)
 # 1  -- one interpolation pass saved

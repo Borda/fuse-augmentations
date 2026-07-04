@@ -17,6 +17,7 @@ Example:
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from functools import cache
 from typing import Literal
@@ -199,6 +200,14 @@ def translate_params(op_name: OpStr, backend: BackendStr, params: dict[str, obje
     def _move_param(source_key: str, target_key: str) -> None:
         if source_key in kwargs:
             value = kwargs.pop(source_key)
+            if target_key in kwargs and kwargs[target_key] != value:
+                warnings.warn(
+                    f"Both {source_key!r} and {target_key!r} were provided for op {op_name!r}; "
+                    f"keeping {target_key!r}={kwargs[target_key]!r} and discarding "
+                    f"{source_key!r}={value!r}.",
+                    UserWarning,
+                    stacklevel=3,
+                )
             kwargs.setdefault(target_key, value)
 
     if op_name in {"rotation", "affine"}:

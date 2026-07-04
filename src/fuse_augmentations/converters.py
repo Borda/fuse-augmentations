@@ -20,7 +20,9 @@ class NumpyToTorchConverter:
     """Convert NumPy HWC/BHWC arrays to ``(batch_size, channels, height, width)`` torch tensors.
 
     All pipeline outputs are ``(batch_size, channels, height, width)`` ``torch.Tensor`` regardless of backend. ``uint8``
-    inputs are normalised to ``float32`` in ``[0, 1]``; ``float32`` inputs are passed through unchanged.
+    inputs are normalised to ``float32`` in ``[0, 1]`` (÷255); ``uint16`` likewise (÷65535); ``float32`` inputs are
+    passed through unchanged. Any other dtype (``float64``, ``float16``, signed integers) is cast to ``float32``
+    WITHOUT rescaling — values keep their original range.
 
     """
 
@@ -67,8 +69,13 @@ class NumpyToTorchConverter:
 
         if tensor.dtype == torch.uint8:
             tensor = tensor.to(torch.float32) / 255.0
+        elif tensor.dtype == torch.uint16:
+            # Same semantics as uint8: unsigned integer images normalise to [0, 1].
+            tensor = tensor.to(torch.float32) / 65535.0
         elif tensor.dtype != torch.float32:
-            # Keep the pipeline invariant: image tensors are float32.
+            # Keep the pipeline invariant: image tensors are float32. NOTE: other
+            # integer dtypes (int16/int32/...) are cast WITHOUT rescaling — values
+            # keep their original range; only uint8/uint16 are normalised.
             tensor = tensor.to(torch.float32)
 
         # (batch_size, height, width, channels) -> (batch_size, channels, height, width)

@@ -258,6 +258,10 @@ class AlbumentationsAdapter:
             result: dict[str, torch.Tensor] = {
                 "_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64),
             }
+            # NOTE: real Albumentations transforms have no same_on_batch attribute
+            # (Kornia concept) — this branch serves duck-typed wrappers/test doubles
+            # that opt into batch-shared sampling; genuine albu objects always take
+            # the per-sample path.
             same_on_batch = bool(getattr(transform, "same_on_batch", False))
 
             if TRANSFORM_REGISTRY and isinstance(transform, _RandomRotate90):
@@ -526,7 +530,7 @@ class AlbumentationsAdapter:
             image_np = image[idx_sample].permute(1, 2, 0).cpu().numpy()
             output_np = transform(image=image_np)["image"]  # type: ignore[operator]
             # (height, width, channels) → (channels, height, width) tensor
-            ndarray_results.append(torch.as_tensor(np.ascontiguousarray(output_np).copy()).permute(2, 0, 1))
+            ndarray_results.append(torch.as_tensor(np.ascontiguousarray(output_np)).permute(2, 0, 1))
 
         return torch.stack(ndarray_results).to(device=device, dtype=dtype)
 
@@ -610,6 +614,8 @@ def _apply_discrete_exact(
     """
     ttype = type(transform)
     batch_size = int(image.shape[0])
+    # See sample_params: same_on_batch only exists on duck-typed wrappers/test
+    # doubles; genuine Albumentations transforms always take the per-sample path.
     same_on_batch = bool(getattr(transform, "same_on_batch", False))
 
     if TRANSFORM_REGISTRY and ttype is _RandomRotate90:

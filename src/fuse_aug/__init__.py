@@ -15,3 +15,4 @@ Example:
 """
 
 from fuse_augmentations import *  # noqa: F403
+from fuse_augmentations import __version__  # metadata dunder — excluded from star-import, re-export explicitly

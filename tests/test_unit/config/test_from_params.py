@@ -19,21 +19,6 @@ from fuse_augmentations.compose import FusedCompose as Compose
 from fuse_augmentations.types import TransformSpec
 
 
-@pytest.fixture
-def image8x8_batch1() -> torch.Tensor:
-    return torch.rand(1, 3, 8, 8)
-
-
-@pytest.fixture
-def image8x8_batch2() -> torch.Tensor:
-    return torch.rand(2, 3, 8, 8)
-
-
-@pytest.fixture
-def image16x16_batch2() -> torch.Tensor:
-    return torch.rand(2, 3, 16, 16)
-
-
 class TestFromParamsIdentity:
     """All-None params produce an identity pipeline."""
 

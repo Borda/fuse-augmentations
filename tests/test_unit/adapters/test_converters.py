@@ -176,6 +176,13 @@ class TestNumpyToTorchConverterDtypesAndGrayscale:
         assert tensor_out.dtype == torch.float32
         assert torch.allclose(tensor_out[0], torch.from_numpy(ndarray_in).permute(2, 0, 1).to(torch.float32))
 
+    def test_uint16_normalised(self) -> None:
+        """Uint16 input is normalised to float32 [0, 1] by dividing by 65535."""
+        ndarray_in = np.full((4, 4, 3), 65535, dtype=np.uint16)
+        tensor_out = NumpyToTorchConverter().convert(ndarray_in)
+        assert tensor_out.dtype == torch.float32
+        assert torch.allclose(tensor_out, torch.ones(1, 3, 4, 4))
+
     def test_int32_cast_without_rescale(self) -> None:
         """Int32 input is cast to float32 with values preserved (no 255 normalisation)."""
         ndarray_in = np.arange(12, dtype=np.int32).reshape(2, 2, 3)
