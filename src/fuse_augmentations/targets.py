@@ -150,8 +150,10 @@ def transform_bbox_xyxy(boxes: Tensor, mtx_forward: Tensor) -> Tensor:
 
     # Perspective division (for affine, homogeneous_w_raw=1 so this is a no-op)
     homogeneous_w_raw = transformed[:, :, 2, :]  # (B, N, 4) — homogeneous w
-    # Guard against zero or extremely small |w| to avoid inf/NaN from division
-    eps = torch.finfo(homogeneous_w_raw.dtype).tiny
+    # Guard against zero or extremely small |w| to avoid inf/NaN from division.
+    # Use finfo.eps (not finfo.tiny): dividing by tiny overflows float32 to inf,
+    # so a tiny-based clamp does not actually prevent non-finite outputs.
+    eps = torch.finfo(homogeneous_w_raw.dtype).eps
     small_mask = homogeneous_w_raw.abs() < eps
     sign_val = torch.sign(homogeneous_w_raw)
     sign_val = torch.where(sign_val == 0, torch.ones_like(sign_val), sign_val)

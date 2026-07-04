@@ -6,7 +6,7 @@ Covers:
 - build_segments treats POINTWISE_LINEAR as a segment barrier (pass-through)
 - Property-based tests for the 4x4 homogeneous color-space affine fusion law:
     (M2, b2) o (M1, b1) = (M2*M1, M2*b1 + b2)
-  This validates the mathematical foundation proved in docs/math/fusible-categories-proofs.md
+  This validates the mathematical foundation of the color composition law
   and will be the correctness invariant for FusedColorSegment when implemented.
 
 """
@@ -312,8 +312,7 @@ class TestPointwiseLinearSegmentation:
 
 
 #
-# These tests validate the mathematical foundation of POINTWISE_LINEAR fusion
-# proved in docs/math/fusible-categories-proofs.md section 1.2:
+# These tests validate the mathematical foundation of POINTWISE_LINEAR fusion:
 #
 #   (M2, b2) o (M1, b1) = (M2*M1, M2*b1 + b2)
 #
@@ -344,7 +343,7 @@ def _apply_color_matrix(mat: torch.Tensor, color: torch.Tensor) -> torch.Tensor:
 class TestColorMatrixFusionAlgebra:
     """Property-based tests for the 4x4 homogeneous color-space affine fusion law.
 
-    Validates (M2, b2) ∘ (M1, b1) = (M2*M1, M2*b1 + b2) as proved in docs/math/fusible-categories-proofs.md section 1.2.
+    Validates the affine composition law (M2, b2) ∘ (M1, b1) = (M2*M1, M2*b1 + b2).
 
     """
 

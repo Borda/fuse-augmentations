@@ -399,7 +399,7 @@ Supported color operations per backend:
 
 By default, `FusedColorSegment` clamps the fused output to `[0, 1]` after the matrix multiply (`clip_output=True`). Pass `clip_output=False` when constructing a `FusedColorSegment` directly if your pipeline intentionally produces values outside this range.
 
-See `docs/math/fusible-categories-proofs.md` for the mathematical proof of the 4×4 homogeneous color-space affine composition law.
+Color fusion relies on each supported op being a per-channel affine map `c' = alpha * c + beta`, expressible as a 4×4 homogeneous matrix -- composing N such ops reduces to a single matrix product, so one fused multiply replaces N sequential applies.
 
 ## ✂️ Crop+Resize (`CROP_RESIZE_FIXED`)
 

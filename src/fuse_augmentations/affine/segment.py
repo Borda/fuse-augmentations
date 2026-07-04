@@ -57,7 +57,10 @@ try:
     _CV2_BORDER: dict[str, int] = {
         "zeros": _cv2.BORDER_CONSTANT,
         "border": _cv2.BORDER_REPLICATE,
-        "reflection": _cv2.BORDER_REFLECT,
+        # torch grid_sample(padding_mode="reflection", align_corners=True) reflects
+        # about the edge sample without duplicating it — cv2.BORDER_REFLECT_101,
+        # not cv2.BORDER_REFLECT (which duplicates the edge pixel).
+        "reflection": _cv2.BORDER_REFLECT_101,
     }
     _CV2_WARP_INVERSE_MAP: int = _cv2.WARP_INVERSE_MAP
 except ImportError:

@@ -91,6 +91,22 @@ class TestFromParamsScale:
         out = pipe(image16x16_batch2)
         assert not torch.isnan(out).any(), "Scale produced NaN values"
 
+    def test_uniform_scale_is_isotropic(self):
+        """A plain scale=(low, high) range draws ONE factor per sample shared by both axes, as documented."""
+        from fuse_augmentations.compose import _DirectParamAdapter, _DirectParamTransform
+
+        tfm = _DirectParamTransform({"scale": (0.5, 1.5)})
+        params = _DirectParamAdapter.sample_params(tfm, (64, 3, 16, 16), torch.device("cpu"))
+        assert torch.equal(params["scale_x"], params["scale_y"])
+
+    def test_explicit_axis_scales_stay_independent(self):
+        """Explicit scale_x/scale_y ranges keep independent per-axis draws (anisotropic by request)."""
+        from fuse_augmentations.compose import _DirectParamAdapter, _DirectParamTransform
+
+        tfm = _DirectParamTransform({"scale_x": (0.5, 1.5), "scale_y": (0.5, 1.5)})
+        params = _DirectParamAdapter.sample_params(tfm, (64, 3, 16, 16), torch.device("cpu"))
+        assert not torch.equal(params["scale_x"], params["scale_y"])
+
 
 class TestFromParamsHFlip:
     """hflip_p=1.0 produces a horizontal flip."""

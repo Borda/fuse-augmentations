@@ -426,3 +426,44 @@ class TestCallNonfused:
 
         assert out is image
         assert transform.calls == []
+
+
+@pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="torchvision not installed")
+class TestNumpyB1FastPathRotation:
+    """Rotation branch of the fused numpy batch_size=1 builder (CPU cv2 fast path).
+
+    Uses a real v1 RandomRotation with a fixed degrees range so get_params returns a deterministic angle. A non-
+    multiple-of-90 angle distinguishes the sin/cos entries -- a sin<->cos swap passes at 0/90/180 degrees.
+
+    """
+
+    @staticmethod
+    def _fixed_rotation(angle_deg: float):
+        """Return a v1 RandomRotation whose degrees range pins the sampled angle to angle_deg."""
+        from torchvision.transforms import RandomRotation
+
+        return RandomRotation(degrees=(angle_deg, angle_deg))
+
+    def test_fixed_angle_produces_true_rotation_entries(self):
+        """At a fixed 30-degree angle the matrix must carry cos in [0,0] and sin (not cos) in [1,0]."""
+        mtx = _mod.sample_and_build_matrix_numpy_b1_tv(self._fixed_rotation(30.0), (1, 3, 16, 16), 16, 16)
+        angle_rad = math.radians(30.0)
+        assert mtx is not None
+        assert mtx[0, 0] == pytest.approx(math.cos(angle_rad))
+        assert mtx[1, 0] == pytest.approx(math.sin(angle_rad))
+        assert mtx[0, 1] == pytest.approx(-math.sin(angle_rad))
+        assert mtx[1, 1] == pytest.approx(math.cos(angle_rad))
+
+    def test_rotation_block_is_orthonormal(self):
+        """The 2x2 rotation block has determinant 1 -- fails if both entries use cosine."""
+        mtx = _mod.sample_and_build_matrix_numpy_b1_tv(self._fixed_rotation(30.0), (1, 3, 16, 16), 16, 16)
+        det = mtx[0, 0] * mtx[1, 1] - mtx[0, 1] * mtx[1, 0]
+        assert det == pytest.approx(1.0)
+
+    def test_matches_two_step_builder(self):
+        """Fused sampler agrees with the two-step build_matrix_numpy_b1_tv for the same fixed angle."""
+        transform = self._fixed_rotation(30.0)
+        mtx_fused = _mod.sample_and_build_matrix_numpy_b1_tv(transform, (1, 3, 16, 16), 16, 16)
+        params = {"angle_rad": torch.tensor([math.radians(30.0)])}
+        mtx_two_step = _mod.build_matrix_numpy_b1_tv(transform, params, 16, 16)
+        torch.testing.assert_close(torch.from_numpy(mtx_fused), torch.from_numpy(mtx_two_step))

@@ -705,3 +705,47 @@ class TestProjectiveSegmentBuildSegments:
 
         with pytest.raises(ImportError, match="opencv-python"):
             AlbuProjectiveSegment([projective_transform], adapter)
+
+
+@pytest.mark.skipif(not _CV2_AVAILABLE, reason="missing cv2")
+class TestCv2ReflectionBorderParity:
+    """The cv2 border constant for "reflection" must match torch grid_sample reflection semantics.
+
+    torch grid_sample(padding_mode="reflection", align_corners=True) reflects about the edge sample without duplicating
+    it, which is cv2.BORDER_REFLECT_101 -- cv2.BORDER_REFLECT duplicates the edge pixel and produces off-by-one borders
+    relative to the torch path.
+
+    """
+
+    def test_reflection_maps_to_border_reflect_101(self):
+        """The _CV2_BORDER table maps "reflection" to BORDER_REFLECT_101, not BORDER_REFLECT."""
+        assert segment_mod._CV2_BORDER["reflection"] == segment_mod._cv2.BORDER_REFLECT_101
+
+    def test_translated_border_pixels_match_torch_grid_sample(self):
+        """A +2px translation warped via cv2 with the mapped border equals the torch reflection path."""
+        import numpy as np
+
+        height, width = 3, 6
+        image = torch.arange(height * width, dtype=torch.float32).reshape(1, 1, height, width)
+        shift = 2.0
+
+        pix_x = torch.arange(width, dtype=torch.float32) - shift
+        pix_y = torch.arange(height, dtype=torch.float32)
+        norm_x = 2.0 * pix_x / (width - 1) - 1.0
+        norm_y = 2.0 * pix_y / (height - 1) - 1.0
+        grid_y, grid_x = torch.meshgrid(norm_y, norm_x, indexing="ij")
+        grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0)
+        out_torch = torch.nn.functional.grid_sample(
+            image, grid, mode="bilinear", padding_mode="reflection", align_corners=True
+        )
+
+        mtx_fwd = np.array([[1.0, 0.0, shift], [0.0, 1.0, 0.0]], dtype=np.float64)
+        out_cv2 = segment_mod._cv2.warpAffine(
+            image[0, 0].numpy(),
+            mtx_fwd,
+            (width, height),
+            flags=segment_mod._cv2.INTER_LINEAR,
+            borderMode=segment_mod._CV2_BORDER["reflection"],
+        )
+
+        assert np.allclose(out_torch[0, 0].numpy(), out_cv2, atol=1e-5)

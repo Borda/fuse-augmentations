@@ -1861,8 +1861,14 @@ class _DirectParamAdapter:
             scale_x_range = specs.get("scale_x") or specs.get("scale")
             scale_y_range = specs.get("scale_y") or specs.get("scale")
             if scale_x_range is not None and scale_y_range is not None:
-                result["scale_x"] = torch.empty(batch_size, device=device).uniform_(*scale_x_range)
-                result["scale_y"] = torch.empty(batch_size, device=device).uniform_(*scale_y_range)
+                if "scale_x" not in specs and "scale_y" not in specs:
+                    # Uniform 'scale' promises isotropic scaling: one draw shared by both axes
+                    scale = torch.empty(batch_size, device=device).uniform_(*scale_x_range)
+                    result["scale_x"] = scale
+                    result["scale_y"] = scale.clone()
+                else:
+                    result["scale_x"] = torch.empty(batch_size, device=device).uniform_(*scale_x_range)
+                    result["scale_y"] = torch.empty(batch_size, device=device).uniform_(*scale_y_range)
             if scale_x_range is not None and scale_y_range is None:
                 result["scale_x"] = torch.empty(batch_size, device=device).uniform_(*scale_x_range)
                 result["scale_y"] = torch.ones(batch_size, device=device)

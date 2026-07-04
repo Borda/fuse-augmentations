@@ -1006,7 +1006,7 @@ def sample_and_build_matrix_numpy_b1_tv(
         angle_deg = float(ttype.get_params(transform.degrees))  # type: ignore[attr-defined]
         angle_rad = math.radians(angle_deg)
         cos_a = math.cos(angle_rad)
-        sin_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
         return np.array(
             [
                 [cos_a, -sin_a, center_x * (1.0 - cos_a) + center_y * sin_a],

@@ -140,3 +140,45 @@ class TestNumpyToTorchConverterEdgeCases:
         converter = NumpyToTorchConverter()
         with pytest.raises(ValueError, match="Expected 2-D/3-D/4-D"):
             converter.convert(ndarray_in)
+
+
+class TestNumpyToTorchConverterDtypesAndGrayscale:
+    """2-D grayscale layout path and non-{uint8, float32} dtype casts."""
+
+    def test_hw_grayscale_to_1_1_h_w(self) -> None:
+        """2-D (H, W) input is expanded to a (1, 1, H, W) tensor."""
+        ndarray_in = np.random.rand(8, 10).astype(np.float32)
+        tensor_out = NumpyToTorchConverter().convert(ndarray_in)
+        assert tensor_out.shape == (1, 1, 8, 10)
+        assert torch.allclose(tensor_out[0, 0], torch.from_numpy(ndarray_in))
+
+    def test_hw_grayscale_uint8_normalised(self) -> None:
+        """2-D uint8 input is expanded to (1, 1, H, W) and normalised to float32 [0, 1]."""
+        ndarray_in = np.full((4, 4), 255, dtype=np.uint8)
+        tensor_out = NumpyToTorchConverter().convert(ndarray_in)
+        assert tensor_out.shape == (1, 1, 4, 4)
+        assert tensor_out.dtype == torch.float32
+        assert torch.allclose(tensor_out, torch.ones(1, 1, 4, 4))
+
+    def test_float64_cast_to_float32(self) -> None:
+        """Float64 input is cast to float32 without rescaling."""
+        ndarray_in = np.random.rand(6, 6, 3)  # float64 in [0, 1]
+        tensor_out = NumpyToTorchConverter().convert(ndarray_in)
+        assert tensor_out.dtype == torch.float32
+        assert tensor_out.shape == (1, 3, 6, 6)
+        expected = torch.from_numpy(ndarray_in.astype(np.float32)).permute(2, 0, 1)
+        assert torch.allclose(tensor_out[0], expected)
+
+    def test_float16_cast_to_float32(self) -> None:
+        """Float16 input is cast to float32 without rescaling."""
+        ndarray_in = np.random.rand(4, 4, 3).astype(np.float16)
+        tensor_out = NumpyToTorchConverter().convert(ndarray_in)
+        assert tensor_out.dtype == torch.float32
+        assert torch.allclose(tensor_out[0], torch.from_numpy(ndarray_in).permute(2, 0, 1).to(torch.float32))
+
+    def test_int32_cast_without_rescale(self) -> None:
+        """Int32 input is cast to float32 with values preserved (no 255 normalisation)."""
+        ndarray_in = np.arange(12, dtype=np.int32).reshape(2, 2, 3)
+        tensor_out = NumpyToTorchConverter().convert(ndarray_in)
+        assert tensor_out.dtype == torch.float32
+        assert float(tensor_out.max()) == 11.0
