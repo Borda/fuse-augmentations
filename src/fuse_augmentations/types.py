@@ -263,6 +263,16 @@ class TransformAdapter(Protocol):
         form).  The default implementation raises ``NotImplementedError`` so that adapters without colour-fusion
         support fall back to passthrough segmentation automatically.
 
+        Accuracy caveats vs native backends (inherent to single-matrix fusion):
+
+        - No intermediate clamping: native backends clamp to ``[0, 1]`` after EACH op; a fused matrix
+          cannot represent clamping between ops, so out-of-gamut intermediates diverge from native.
+          :class:`~fuse_augmentations.affine.segment.FusedColorSegment` clamps only the FINAL result
+          (``clip_output=True`` default).
+        - Contrast uses a fixed midpoint 0.5 (``c' = cf*c + (1-cf)*0.5``); TorchVision/Kornia native
+          contrast is relative to the per-image mean luminance, so images whose mean is far from 0.5
+          diverge from native output.
+
         Args:
             transform: The backend transform object (``POINTWISE_LINEAR`` category).
             params: Canonical parameter dict from :meth:`sample_params`.

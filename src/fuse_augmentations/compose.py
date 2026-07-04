@@ -201,6 +201,21 @@ class FusedCompose(nn.Module):
                     )
                 backend = unique_backends.pop()
                 adapter = _adapter_for_backend(backend)
+                # Unrecognised transforms fall back to this backend's adapter for
+                # passthrough dispatch. Kornia/TorchVision adapters call transforms
+                # tensor-style, which is compatible with custom torch callables, but
+                # the Albumentations adapter uses the dict convention
+                # ``transform(image=<ndarray>)``, which silently misbehaves or breaks
+                # on foreign objects — reject that combination up front.
+                if backend == Backend.ALBUMENTATIONS and any(bknd is None for bknd in per_backends):
+                    unknown_names = [
+                        type(tfm).__name__ for tfm, bknd in zip(transforms, per_backends, strict=False) if bknd is None
+                    ]
+                    raise ValueError(
+                        f"Unrecognised transform(s) {unknown_names} cannot be dispatched through the "
+                        "Albumentations adapter (dict calling convention transform(image=...)). "
+                        "Remove them or use a registered Albumentations transform."
+                    )
                 if reorder == ReorderPolicy.POINTWISE:
                     transforms = reorder_pointwise(transforms, adapter)
                 elif reorder == ReorderPolicy.AGGRESSIVE:
@@ -504,6 +519,13 @@ class FusedCompose(nn.Module):
             self._last_transform_matrix = self._single_albu_direct_seg.last_matrix
             return {"image": img}
         if self._is_albu_native and "image" in kwargs and isinstance(kwargs["image"], np.ndarray):
+            if len(kwargs) > 1:
+                extra_keys = sorted(key for key in kwargs if key != "image")
+                raise NotImplementedError(
+                    f"The Albumentations native dict path only transforms 'image'; auxiliary "
+                    f"keys {extra_keys} would be silently dropped. Auxiliary targets are not "
+                    "supported on this path — pass tensors with data_keys instead."
+                )
             return self._forward_albu_native(kwargs["image"])
 
         # Single-transform tensor fast paths: bypass nn.Module.__call__ overhead
@@ -1210,10 +1232,10 @@ class FusedCompose(nn.Module):
                 or ``None``.
             hflip_p: Probability of horizontal flip per sample. Default 0.0.
             vflip_p: Probability of vertical flip per sample. Default 0.0.
-            brightness: Reserved for v0.4. Raises ``NotImplementedError`` if
-                not ``None``.
-            contrast: Reserved for v0.4. Raises ``NotImplementedError`` if not
-                ``None``.
+            brightness: Reserved for a future release. Raises
+                ``NotImplementedError`` if not ``None``.
+            contrast: Reserved for a future release. Raises
+                ``NotImplementedError`` if not ``None``.
             interpolation: Interpolation mode for the ``grid_sample`` warp.
                 One of ``"bilinear"`` (default), ``"nearest"``, ``"bicubic"``.
             padding_mode: Padding for out-of-bounds samples.
@@ -1260,10 +1282,10 @@ class FusedCompose(nn.Module):
 
         """
         if brightness is not None:
-            msg = "brightness not yet supported, planned v0.4"
+            msg = "brightness fusion is not yet implemented in from_params; use a backend color transform instead"
             raise NotImplementedError(msg)
         if contrast is not None:
-            msg = "contrast not yet supported, planned v0.4"
+            msg = "contrast fusion is not yet implemented in from_params; use a backend color transform instead"
             raise NotImplementedError(msg)
 
         # --- specs= overload path ---

@@ -418,3 +418,97 @@ class TestFusedComposeWithCropResize:
         image = torch.rand(2, 3, 96, 96)
         out = pipe(image)
         assert out.shape == torch.Size([2, 3, 48, 48])
+
+
+class _FixedCropAdapter:
+    """Stub adapter returning deterministic crop params for coordinate-level testing.
+
+    Every call to sample_params returns the same fixed crop region regardless of input shape or transform. build_matrix
+    delegates to crop_resize_matrix.
+
+    """
+
+    def __init__(
+        self,
+        top: float,
+        left: float,
+        crop_h: float,
+        crop_w: float,
+        target_h: float,
+        target_w: float,
+    ) -> None:
+        """Store fixed crop coordinates and output size."""
+        self._top = top
+        self._left = left
+        self._crop_h = crop_h
+        self._crop_w = crop_w
+        self._target_h = target_h
+        self._target_w = target_w
+
+    def sample_params(
+        self,
+        transform: object,
+        input_shape: tuple[int, int, int, int],
+        device: torch.device,
+    ) -> dict[str, torch.Tensor]:
+        """Return fixed crop parameter tensors broadcast to batch_size."""
+        batch_size = input_shape[0]
+        return {
+            "crop_top": torch.full((batch_size,), self._top, dtype=torch.float32, device=device),
+            "crop_left": torch.full((batch_size,), self._left, dtype=torch.float32, device=device),
+            "crop_h": torch.full((batch_size,), self._crop_h, dtype=torch.float32, device=device),
+            "crop_w": torch.full((batch_size,), self._crop_w, dtype=torch.float32, device=device),
+            "target_h": torch.full((batch_size,), self._target_h, dtype=torch.float32, device=device),
+            "target_w": torch.full((batch_size,), self._target_w, dtype=torch.float32, device=device),
+        }
+
+    @staticmethod
+    def build_matrix(
+        transform: object,
+        params: dict[str, torch.Tensor],
+        height: int,
+        width: int,
+    ) -> torch.Tensor:
+        """Build forward affine matrix from fixed crop params via crop_resize_matrix."""
+        return crop_resize_matrix(
+            top=params["crop_top"],
+            left=params["crop_left"],
+            crop_h=params["crop_h"],
+            crop_w=params["crop_w"],
+            target_h=params["target_h"],
+            target_w=params["target_w"],
+        )
+
+
+class TestCropResizeSegmentDeterministicCoords:
+    """CropResizeSegment warps aux targets to mathematically expected pixel positions.
+
+    Geometry: 16x16 input, crop at top=4, left=4, crop_h=8, crop_w=8, target=8x8.
+    Forward matrix is a pure translation by (-4, -4) with scale_x = scale_y = 1.0
+    because (target-1)/(crop-1) = 7/7 = 1.0.
+
+    """
+
+    @pytest.fixture
+    def seg(self) -> CropResizeSegment:
+        """Return CropResizeSegment backed by stub adapter with fixed crop params."""
+        adapter = _FixedCropAdapter(top=4.0, left=4.0, crop_h=8.0, crop_w=8.0, target_h=8.0, target_w=8.0)
+        return CropResizeSegment(transform=object(), adapter=adapter)
+
+    def test_keypoint_maps_to_expected_output(self, seg: CropResizeSegment) -> None:
+        """Keypoint at (8, 8) in 16x16 maps to (4, 4) after top=left=4 8x8->8x8 crop."""
+        image = torch.rand(1, 3, 16, 16)
+        keypoints = torch.tensor([[[8.0, 8.0]]])  # (B=1, N=1, 2) — [x, y]
+        _, aux = seg(image, aux_targets={"keypoints": keypoints})
+        out_kp = aux["keypoints"]
+        assert out_kp.shape == (1, 1, 2)
+        assert torch.allclose(out_kp[0, 0], torch.tensor([4.0, 4.0]), atol=1e-4)
+
+    def test_bbox_xyxy_maps_to_expected_output(self, seg: CropResizeSegment) -> None:
+        """Bbox [4,4,12,12] maps to [0,0,8,8] after top=left=4 8x8->8x8 crop."""
+        image = torch.rand(1, 3, 16, 16)
+        boxes = torch.tensor([[[4.0, 4.0, 12.0, 12.0]]])  # (B=1, N=1, 4)
+        _, aux = seg(image, aux_targets={"bbox_xyxy": boxes})
+        out_boxes = aux["bbox_xyxy"]
+        assert out_boxes.shape == (1, 1, 4)
+        assert torch.allclose(out_boxes[0, 0], torch.tensor([0.0, 0.0, 8.0, 8.0]), atol=1e-4)

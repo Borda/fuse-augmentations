@@ -399,6 +399,8 @@ Supported color operations per backend:
 
 By default, `FusedColorSegment` clamps the fused output to `[0, 1]` after the matrix multiply (`clip_output=True`). Pass `clip_output=False` when constructing a `FusedColorSegment` directly if your pipeline intentionally produces values outside this range.
 
+> **Accuracy note**: fusion clamps only the final fused result, while native backends clamp after each op — chains with out-of-gamut intermediates can diverge slightly from native output. Fused contrast also uses a fixed 0.5 midpoint (`c' = cf * c + (1 - cf) * 0.5`), whereas TorchVision/Kornia native contrast is relative to the per-image mean luminance; images whose mean is far from 0.5 will differ from native output.
+
 Color fusion relies on each supported op being a per-channel affine map `c' = alpha * c + beta`, expressible as a 4×4 homogeneous matrix -- composing N such ops reduces to a single matrix product, so one fused multiply replaces N sequential applies.
 
 ## ✂️ Crop+Resize (`CROP_RESIZE_FIXED`)
@@ -421,7 +423,7 @@ pipe = Compose(
 
 out = pipe(image)  # (B, C, 224, 224)
 print(pipe.fusion_plan)
-# fused(RandomRotation) -> crop_resize(RandomResizedCrop) -> fused(RandomHorizontalFlip)
+# fused(RandomRotation) -> crop_resize(RandomResizedCrop) -> exact(RandomHorizontalFlip)
 ```
 
 The output tensor has the target spatial size specified in the `RandomResizedCrop` constructor. Supported in all three backends: Kornia, TorchVision (v1 and v2), and Albumentations.
@@ -606,7 +608,7 @@ pipe = Compose(...)  # built in a previous step
 out = pipe(image)
 
 print(pipe.fusion_plan)
-# fused(RandomRotation, RandomAffine) -> passthrough(RandomGaussianBlur) -> fused(RandomHorizontalFlip)
+# fused(RandomRotation, RandomAffine) -> passthrough(RandomGaussianBlur) -> exact(RandomHorizontalFlip)
 
 print(pipe.n_warps_saved)
 # 1  -- one interpolation pass saved

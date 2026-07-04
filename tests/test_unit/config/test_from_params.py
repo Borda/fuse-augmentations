@@ -14,7 +14,9 @@ from __future__ import annotations
 import pytest
 import torch
 
+from fuse_augmentations._compat import _KORNIA_AVAILABLE
 from fuse_augmentations.compose import FusedCompose as Compose
+from fuse_augmentations.types import TransformSpec
 
 
 @pytest.fixture
@@ -185,3 +187,35 @@ class TestFromParamsDegenerateScale:
         pipe = Compose.from_params(scale=(0.0, 0.0))
         with pytest.raises(ValueError, match="Near-singular matrix"):
             pipe(image16x16_batch2)
+
+
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
+class TestFromParamsBackendRouting:
+    """from_params with backend= routes through _geometric_kwargs_to_specs and from_config."""
+
+    def test_rotation_backend_kornia_returns_fused_compose(self) -> None:
+        """from_params(rotation=..., backend='kornia') returns a FusedCompose instance."""
+        pipe = Compose.from_params(rotation=(-30.0, 30.0), backend="kornia")
+        assert isinstance(pipe, Compose)
+
+    def test_rotation_backend_kornia_shape_preserved(self) -> None:
+        """from_params(rotation=..., backend='kornia') forward pass preserves image shape."""
+        pipe = Compose.from_params(rotation=(-30.0, 30.0), backend="kornia")
+        image = torch.rand(2, 3, 16, 16)
+        out = pipe(image)
+        assert out.shape == image.shape
+
+    def test_rotation_backend_kornia_has_fused_segment(self) -> None:
+        """from_params(rotation=..., backend='kornia') fusion plan contains a fused segment."""
+        pipe = Compose.from_params(rotation=(-30.0, 30.0), backend="kornia")
+        kinds = [d.kind for d in pipe.fusion_plan_descriptors]
+        assert "fused" in kinds
+
+    def test_specs_and_backend_routes_to_from_config(self) -> None:
+        """from_params(specs=[...], backend='kornia') delegates to from_config, preserves shape."""
+        spec = TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=1.0)
+        pipe = Compose.from_params(specs=[spec], backend="kornia")
+        assert isinstance(pipe, Compose)
+        image = torch.rand(2, 3, 16, 16)
+        out = pipe(image)
+        assert out.shape == image.shape

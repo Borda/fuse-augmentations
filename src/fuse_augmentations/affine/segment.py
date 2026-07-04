@@ -523,7 +523,14 @@ class FusedAffineSegment(nn.Module):
             _np_fused = self._np_fused_builder
             for tfm in self.transforms:
                 prob = _transform_prob(tfm)
-                active = bool(np.random.rand() < prob) if prob < 1.0 else True
+                # Draw the activation gate from the torch RNG, unconditionally, so
+                # it responds to torch.manual_seed (np.random was uncontrollable
+                # from the torch seed). NOTE: full cross-backend param-draw parity
+                # does NOT hold for prob<1 chains — the torch path below samples
+                # params for inactive transforms (vectorized, masked via
+                # torch.where) while this path skips them, so RNG stream positions
+                # diverge after the first inactive transform.
+                active = bool((torch.rand(()) < prob).item())
                 if not active:
                     continue
                 if _np_fused is not None:
@@ -692,7 +699,14 @@ def _inv3x3_affine_np(mtx: MatrixArray) -> MatrixArray:
     """
     m00, m01, trans_x = mtx[0, 0], mtx[0, 1], mtx[0, 2]
     m10, m11, trans_y = mtx[1, 0], mtx[1, 1], mtx[1, 2]
-    inv_det = 1.0 / (m00 * m11 - m01 * m10)
+    det = m00 * m11 - m01 * m10
+    # Match the torch path (matrix.inv3x3), which raises for near-singular
+    # matrices at float32 eps — without this guard the division silently
+    # produces inf/NaN that propagates into cv2.warpAffine.
+    if abs(det) < 1.1920928955078125e-07:  # torch.finfo(torch.float32).eps
+        msg = f"Singular affine matrix cannot be inverted (|det|={abs(det):.3e} < float32 eps)."
+        raise ValueError(msg)
+    inv_det = 1.0 / det
     return np.array(
         [
             [m11 * inv_det, -m01 * inv_det, (m01 * trans_y - m11 * trans_x) * inv_det],
@@ -880,13 +894,15 @@ class AlbuFusedAffineSegment(nn.Module):
             any_active = False
 
             for t_idx, tfm in enumerate(self.transforms):
-                active = bool(active_masks[t_idx][b_idx])
+                # Skip BEFORE sampling (matching forward_numpy): inactive transforms
+                # must not consume RNG draws, otherwise entry points diverge under a
+                # fixed seed for any prob < 1.0 chain.
+                if not active_masks[t_idx][b_idx]:
+                    continue
                 params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
                 mtx_i = self.adapter.build_matrix(tfm, params, height, width)
-
-                if active:
-                    any_active = True
-                    acc = mtx_i[0].double().cpu().numpy() @ acc
+                any_active = True
+                acc = mtx_i[0].double().cpu().numpy() @ acc
 
             composed_batch[b_idx] = torch.as_tensor(acc.copy())
 
@@ -1342,13 +1358,15 @@ class AlbuProjectiveSegment(nn.Module):
             any_active = False
 
             for t_idx, tfm in enumerate(self.transforms):
-                active = bool(active_masks[t_idx][b_idx])
+                # Skip BEFORE sampling (matching forward_numpy): inactive transforms
+                # must not consume RNG draws, otherwise entry points diverge under a
+                # fixed seed for any prob < 1.0 chain.
+                if not active_masks[t_idx][b_idx]:
+                    continue
                 params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
                 mtx_i = self.adapter.build_matrix(tfm, params, height, width)
-
-                if active:
-                    any_active = True
-                    acc = mtx_i[0].double().cpu().numpy() @ acc
+                any_active = True
+                acc = mtx_i[0].double().cpu().numpy() @ acc
 
             composed_batch[b_idx] = torch.as_tensor(
                 acc.copy(),

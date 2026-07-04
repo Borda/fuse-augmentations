@@ -500,6 +500,13 @@ class AlbumentationsAdapter:
         Converts the ``(batch_size, channels, height, width)`` tensor to ``(height, width, channels)`` numpy arrays
         per sample, calls the transform, and converts the results back.
 
+        Warning:
+            The transform receives ``float32`` arrays in ``[0, 1]`` (the pipeline invariant). Albumentations
+            transforms that assume ``uint8`` ``[0, 255]`` input (e.g. ``ISONoise``, ``RandomFog``,
+            ``ImageCompression`` and several other noise/compression ops) may produce wrong-magnitude or
+            no-op results on such input without raising. Use float-safe transforms on the passthrough path,
+            or apply uint8-expecting transforms outside the pipeline.
+
         Args:
             transform: An Albumentations transform instance.
             image: ``(batch_size, channels, height, width)`` float32 image tensor.

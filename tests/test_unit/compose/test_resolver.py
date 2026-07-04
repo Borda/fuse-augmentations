@@ -241,3 +241,27 @@ class TestTranslateParams:
         """Unknown backend name raises ValueError mentioning 'unknown backend'."""
         with pytest.raises(ValueError, match="unknown backend"):
             translate_params("rotation", "bad_backend", {})
+
+    def test_translate_kornia_pixels_key_remapped(self) -> None:
+        """Translate op for kornia remaps 'pixels' to translate_x and translate_y defaults."""
+        result = translate_params("translate", "kornia", {"pixels": 10})
+        assert result.get("translate_x") == 10
+        assert result.get("translate_y") == 10
+        assert "pixels" not in result
+
+    def test_translate_kornia_translate_key_remapped(self) -> None:
+        """Translate op for kornia remaps 'translate' key to translate_x and translate_y defaults."""
+        result = translate_params("translate", "kornia", {"translate": (0.1, 0.3)})
+        assert result.get("translate_x") == (0.1, 0.3)
+        assert result.get("translate_y") == (0.1, 0.3)
+        assert "translate" not in result
+
+    def test_rotation90_kornia_injects_times_default(self) -> None:
+        """Rotation90 op for kornia injects times=(0, 3) when kwargs are empty."""
+        result = translate_params("rotation90", "kornia", {})
+        assert result.get("times") == (0, 3)
+
+    def test_rotation90_kornia_preserves_existing_times(self) -> None:
+        """Rotation90 op for kornia preserves user-supplied times value via setdefault semantics."""
+        result = translate_params("rotation90", "kornia", {"times": (1, 2)})
+        assert result.get("times") == (1, 2)

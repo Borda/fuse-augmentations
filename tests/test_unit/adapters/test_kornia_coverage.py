@@ -143,3 +143,27 @@ class TestRegistryCompleteness:
         expected = {"RandomRotation", "RandomAffine", "RandomHorizontalFlip", "RandomVerticalFlip"}
         missing = expected - names
         assert not missing, f"Registry missing baseline transforms: {missing}"
+
+
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
+class TestKorniaPerSampleSampling:
+    """KorniaAdapter.sample_params draws independent per-item values for batch > 1."""
+
+    def test_random_translate_produces_distinct_values_per_item(self, adapter: KorniaAdapter) -> None:
+        """For batch=32, RandomTranslate sample_params returns statistically distinct translate_x values.
+
+        With same_on_batch=False (Kornia default) and 32 independent continuous draws from translate=(0.3, 0.3), the
+        probability that all 32 values are identical is negligible.
+
+        """
+        import kornia.augmentation as K
+
+        batch_size = 32
+        tfm = K.RandomTranslate(translate_x=(-0.3, 0.3), translate_y=(-0.3, 0.3), p=1.0)
+        params = adapter.sample_params(tfm, (batch_size, 3, 16, 16), torch.device("cpu"))
+        tx = params["translate_x"]
+        expected_shape = (batch_size,)
+        assert tx.shape == expected_shape, f"Expected translate_x shape {expected_shape}, got {tx.shape}"
+        assert not bool((tx == tx[0]).all()), (
+            "All translate_x values identical — expected per-item diversity for batch=32"
+        )

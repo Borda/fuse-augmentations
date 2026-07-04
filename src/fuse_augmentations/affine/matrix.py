@@ -274,12 +274,17 @@ def inv3x3(matrix: torch.Tensor) -> torch.Tensor:
         True
 
     """
-    eps = torch.finfo(matrix.dtype).eps * 1e3
+    # Single singularity threshold shared by BOTH branches so eager and compiled
+    # execution agree on which matrices count as near-singular. The eager path
+    # raises; the compile path clamps at the SAME threshold (data-dependent raises
+    # are not compile-safe), so outputs only differ below eps, where the eager
+    # path would have raised anyway.
+    eps = torch.finfo(matrix.dtype).eps
 
     if not _is_compiling():
         # Fast path: single LAPACK call, ~6x faster than Cramer's rule
         det = torch.linalg.det(matrix)
-        if (det.abs() < eps * 1e-3).any():
+        if (det.abs() < eps).any():
             msg = (
                 f"Near-singular matrix detected (min |det|={det.abs().min().item():.2e}). "
                 "Check for extreme scale values or degenerate transforms."
@@ -334,17 +339,21 @@ def _is_compiling() -> bool:
 def normalize_matrix(matrix: torch.Tensor, height: int, width: int) -> torch.Tensor:
     """Apply normalization sandwich ``N @ matrix @ N_inv`` for affine_grid input.
 
-    Converts a pixel-space matrix to normalized ``[-1, 1]`` space
-    with ``align_corners=True``. The matrix ``matrix`` is the composed forward
-    transform (src->dst). ``affine_grid`` interprets the normalized theta
-    as the mapping that generates sampling coordinates for ``grid_sample``.
+    Converts a pixel-space matrix to normalized ``[-1, 1]`` space with
+    ``align_corners=True``. The sandwich is direction-agnostic — it re-expresses
+    whatever pixel-space map is passed in normalized coordinates. Callers in this
+    library pass the INVERSE (dst->src / sampling) matrix, because ``affine_grid``
+    interprets the normalized theta as the map that generates sampling coordinates
+    for ``grid_sample`` (output position -> input position). Passing the forward
+    (src->dst) matrix here produces an inverted warp.
 
     The normalization matrix is::
 
         mtx_normalize = [[2/(width-1), 0, -1], [0, 2/(height-1), -1], [0, 0, 1]]
 
     Args:
-        matrix: ``(batch_size, 3, 3)`` pixel-space forward matrix.
+        matrix: ``(batch_size, 3, 3)`` pixel-space sampling (dst->src) matrix, i.e.
+            the inverse of the composed forward transform.
         height: Image height in pixels. Must be >= 2.
         width: Image width in pixels. Must be >= 2.
 

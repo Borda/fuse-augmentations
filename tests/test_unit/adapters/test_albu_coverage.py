@@ -129,3 +129,19 @@ class TestRegistryCompleteness:
         expected = {"Affine", "Rotate", "ShiftScaleRotate", "HorizontalFlip", "VerticalFlip"}
         missing = expected - names
         assert not missing, f"Registry missing baseline transforms: {missing}"
+
+
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
+class TestCallNonfusedNumpy:
+    """AlbumentationsAdapter.call_nonfused_numpy round-trips a HWC array through a transform."""
+
+    def test_horizontal_flip_mirrors_image(self) -> None:
+        """HorizontalFlip(p=1.0) reverses column order of the HWC array."""
+        import albumentations as albu
+        import numpy as np
+
+        image_hwc = np.arange(48, dtype=np.float32).reshape(4, 4, 3)
+        tfm = albu.HorizontalFlip(p=1.0)
+        out = AlbumentationsAdapter.call_nonfused_numpy(tfm, image_hwc)
+        expected = image_hwc[:, ::-1, :]
+        np.testing.assert_array_equal(out, expected)
