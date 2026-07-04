@@ -1,0 +1,90 @@
+name: CI perf regression gate
+
+# Triggers:
+#   - Pull requests touching src/ or experiments/ (gate fires on code changes only)
+#   - Manual dispatch (re-run on demand or to update baseline)
+#   - Weekly schedule (Monday 03:17 UTC) for trend tracking even without PRs
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "experiments/**"
+  workflow_dispatch: {}
+  schedule:
+    - cron: "17 3 * * 1"
+
+# Cancel superseded PR runs; keep scheduled/main runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  perf-gate:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    env:
+      UV_TORCH_BACKEND: cpu
+      PYTHON_VERSION: "3.12"
+    # Total budget: ~10 min install + ~60 s benchmark + buffer.
+    timeout-minutes: 30
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+
+      - name: 🐍 Install uv
+        uses: astral-sh/setup-uv@v7.2.0
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+          activate-environment: true
+
+      # [all] covers albumentations + kornia + torchvision needed by optimize_score.py.
+      - name: 📦 Install package with all extras
+        timeout-minutes: 10
+        run: |
+          uv pip install -e ".[all]"
+          uv pip list
+
+      # optimize_score.py prints two lines:
+      #   real_score=X.XXXX
+      #   theoretical_target=X.XXXX
+      # Extract both, write ci_score.json for the gate and artifact upload.
+      - name: 🏃 Run benchmark
+        timeout-minutes: 15
+        run: |
+          uv run python experiments/optimize_score.py | tee /tmp/bench_raw.txt
+          REAL_SCORE=$(grep '^real_score=' /tmp/bench_raw.txt | cut -d= -f2)
+          THEORETICAL=$(grep '^theoretical_target=' /tmp/bench_raw.txt | cut -d= -f2)
+          python3 -c "import json,os; score={'real_score':float('$REAL_SCORE'),'theoretical_target':float('$THEORETICAL'),'runner':os.environ.get('RUNNER_OS','ubuntu-latest'),'python_version':os.environ.get('PYTHON_VERSION','3.12'),'git_sha':os.environ.get('GITHUB_SHA','unknown')[:12]}; json.dump(score,open('ci_score.json','w'),indent=2); print('ci_score.json written:',score)"
+
+      # Gate logic (see .github/scripts/ci_perf_gate_compare.py for details):
+      #   - Baseline absent -> neutral pass + bootstrap instructions in summary.
+      #   - Baseline present -> fail if real_score < baseline * 0.95.
+      # Summary is written before the exit so it appears even on gate failure.
+      - name: 🔍 Compare against baseline and write summary
+        run: |
+          python3 .github/scripts/ci_perf_gate_compare.py \
+            --current ci_score.json \
+            --baseline .github/perf_baseline/ci_baseline_score.json \
+            --threshold 0.95 \
+            ${GITHUB_STEP_SUMMARY:+--summary-file "$GITHUB_STEP_SUMMARY"}
+
+      # Always upload regardless of gate result so the artifact is available
+      # for both debugging regressions and bootstrapping a new baseline.
+      - name: 📤 Upload score artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-score-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci_score.json
+          retention-days: 90

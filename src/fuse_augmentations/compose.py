@@ -84,6 +84,15 @@ if TYPE_CHECKING:
 
 _KNOWN_DATA_KEYS = {"input", "mask", "bbox_xyxy", "bbox_xywh", "keypoints"}
 
+# Plan-time segment dispatch tags. Computed once per pipeline at construction and
+# stored on the instance so ``forward`` loops over integer tags instead of running
+# an isinstance chain per segment per call. Kept as plain ints (not bound methods)
+# so the dispatch plan survives the default nn.Module pickle round-trip.
+_TAG_MATRIX = 0  # sets last_matrix: FusedAffine/AlbuFusedAffine/Projective/AlbuProjective
+_TAG_PLAIN = 1  # no matrix: ExactAffine/FusedColor/CropResize
+_TAG_PASSTHROUGH = 2  # _PassthroughSegment: adapter.call_nonfused
+_TAG_LEGACY = 3  # pre-wrapper pickles / unknown segment — resolve adapter by index
+
 
 def _coerce_randomness_policy(randomness: RandomnessPolicy | str) -> RandomnessPolicy:
     """Normalize a randomness policy argument."""
@@ -286,6 +295,13 @@ class FusedCompose(nn.Module):
         self._last_transform_matrix: Tensor | None = None
         self._last_matrix_segment: object | None = None  # deferred resolution
         self._transform_adapters: dict[int, TransformAdapter] = transform_adapters or {}
+
+        # Plan-time dispatch: precompute one integer tag per segment so forward()
+        # loops without an isinstance chain. data_keys is constructor state, so the
+        # single-tensor vs multi-target split is resolved once here as well.
+        self._seg_dispatch_tags: list[int] = self._build_dispatch_tags()
+        self._multi_target: bool = data_keys is not None
+        self._aux_keys: list[str] = list(data_keys[1:]) if data_keys is not None else []
 
         # Pre-compute single-segment fast-path: when the pipeline contains
         # exactly one ExactAffineSegment with a single transform, forward()
@@ -699,137 +715,133 @@ class FusedCompose(nn.Module):
             multi-target ``data_keys`` mode is active.
 
         """
-        # Reset per-call state up front so transform_matrix returns None when this
-        # forward executes only exact/passthrough segments (no stale matrix from a
-        # previous call survives).
-        self._last_transform_matrix = None
-        if self.data_keys is None:
-            # Backward-compatible single-tensor path
+        # data_keys is constructor state: dispatch to the pre-resolved single-tensor
+        # or multi-target path instead of re-parsing it on every call.
+        if not self._multi_target:
             if len(args) != 1:
                 msg = f"Expected 1 argument (data_keys is None), got {len(args)}"
                 raise TypeError(msg)
-            image = args[0]
-            aux_targets: dict[str, torch.Tensor] | None = None
-        else:
-            if len(args) != len(self.data_keys):
-                msg = f"Expected {len(self.data_keys)} arguments for data_keys={self.data_keys}, got {len(args)}"
-                raise TypeError(msg)
-            # Build aux_targets dict from positional args
-            image = args[0]
-            aux_keys = list(self.data_keys[1:])
-            # Forbid duplicate auxiliary keys to avoid silent overwrites in aux_targets
-            if len(aux_keys) != len(set(aux_keys)):
-                msg = (
-                    "Duplicate entries detected in auxiliary data_keys "
-                    f"(data_keys[1:]): {aux_keys}. Auxiliary keys must be unique."
-                )
-                raise ValueError(msg)
-            aux_targets = {}
-            for key, val in zip(aux_keys, args[1:], strict=True):
-                aux_targets[key] = val
+            return self._forward_single(args[0])
+        return self._forward_multi(args)
 
-        # Single ExactAffineSegment fast path: bypass the segment's
-        # nn.Module.__call__ and probability machinery by calling the native
-        # adapter directly.  Only safe for single-tensor mode (no aux_targets)
-        # because ExactAffineSegment has no last_matrix to propagate.
+    def _build_dispatch_tags(self) -> list[int]:
+        """Assign one integer dispatch tag to every segment (see the ``_TAG_*`` constants)."""
+        tags: list[int] = []
+        for seg in self._segments:
+            if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment, ProjectiveSegment, AlbuProjectiveSegment)):
+                tags.append(_TAG_MATRIX)
+            elif isinstance(seg, (ExactAffineSegment, FusedColorSegment, CropResizeSegment)):
+                tags.append(_TAG_PLAIN)
+            elif isinstance(seg, _PassthroughSegment):
+                tags.append(_TAG_PASSTHROUGH)
+            else:
+                tags.append(_TAG_LEGACY)
+        return tags
+
+    def _dispatch_tags(self) -> list[int]:
+        """Return the per-segment dispatch tags, rebuilding them for pre-tag pickles."""
+        tags = getattr(self, "_seg_dispatch_tags", None)
+        if tags is None:
+            tags = self._build_dispatch_tags()
+            self._seg_dispatch_tags = tags
+        return tags
+
+    def _forward_single(self, image: torch.Tensor) -> torch.Tensor | NDArray[Any]:
+        """Run the pipeline in single-tensor mode (``data_keys is None``)."""
+        # Reset per-call state so transform_matrix returns None when only
+        # exact/passthrough segments run (no stale matrix from a previous call).
+        self._last_transform_matrix = None
+
+        # Whole-pipeline single-segment fast paths: bypass the segment's
+        # nn.Module.__call__ and probability machinery entirely.
         _exact_fast = self._single_exact_fast
-        if _exact_fast is not None and aux_targets is None:
+        if _exact_fast is not None:
             image = _exact_fast[0].call_nonfused(_exact_fast[1], image)
             return self._convert_primary_output(image)
-
-        # Single-transform FusedAffineSegment fast path: same bypass for
-        # single-transform GEOMETRIC_INTERP pipelines (a-group rotate/scale/shear).
         _fast_seg = self._single_fused_fast_seg
-        if _fast_seg is not None and aux_targets is None:
+        if _fast_seg is not None:
             image = cast(Tensor, _fast_seg.forward(image, None))
             self._last_transform_matrix = _fast_seg.last_matrix
             return self._convert_primary_output(image)
 
-        for seg in self._segments:
-            if isinstance(seg, FusedAffineSegment):
-                # Call forward directly to skip nn.Module.__call__ overhead
-                # (~10-15 us: hook dispatch, _call_impl indirection) for the
-                # common case of no registered hooks.
-                result = seg.forward(image, aux_targets)
-                if aux_targets is not None:
-                    image, aux_targets = result
-                else:
-                    image = cast(Tensor, result)
+        # Per-segment: call ``forward`` directly (skips nn.Module.__call__ per
+        # segment — this generalises the single-op bypass to every segment in a
+        # multi-segment pipeline).
+        for seg, tag in zip(self._segments, self._dispatch_tags(), strict=True):
+            if tag == _TAG_MATRIX:
+                image = cast(Tensor, seg.forward(image, None))
                 self._last_transform_matrix = seg.last_matrix
-                continue
-
-            if isinstance(seg, AlbuFusedAffineSegment):
-                result = seg(image, aux_targets)
-                if aux_targets is not None:
-                    image, aux_targets = result
-                else:
-                    image = cast(Tensor, result)
-                self._last_transform_matrix = seg.last_matrix
-                continue
-
-            if isinstance(seg, (ProjectiveSegment, AlbuProjectiveSegment)):
-                result = seg(image, aux_targets)
-                if aux_targets is not None:
-                    image, aux_targets = result
-                else:
-                    image = cast(Tensor, result)
-                self._last_transform_matrix = seg.last_matrix
-                continue
-
-            if isinstance(seg, ExactAffineSegment):
-                result = seg(image, aux_targets)
-                if aux_targets is not None:
-                    image, aux_targets = result
-                else:
-                    image = result
-                continue
-
-            if isinstance(seg, FusedColorSegment):
-                result = seg(image, aux_targets)
-                if aux_targets is not None:
-                    image, aux_targets = result
-                else:
-                    image = result
-                continue
-
-            if isinstance(seg, CropResizeSegment):
-                result = seg(image, aux_targets)
-                if aux_targets is not None:
-                    image, aux_targets = result
-                else:
-                    image = result
-                continue
-
-            if isinstance(seg, _PassthroughSegment):
+            elif tag == _TAG_PLAIN:
+                image = cast(Tensor, seg.forward(image, None))
+            elif tag == _TAG_PASSTHROUGH:
                 image = seg.adapter.call_nonfused(seg.transform, image)
-                continue
+            else:
+                image = self._legacy_passthrough(seg, image)
+        return self._convert_primary_output(image)
 
-            # Legacy passthrough support for pre-wrapper pickles.
-            # Try index-based lookup by finding this transform's position.
-            pt_adapter = None
-            for idx, orig_tfm in enumerate(self.original_transforms):
-                if orig_tfm is seg:
-                    pt_adapter = self._transform_adapters.get(idx, self._adapter)
-                    break
-            if pt_adapter is None:
-                msg = f"Unknown segment type {type(seg).__name__!r} — update FusedCompose.forward dispatch"
-                raise RuntimeError(msg)
-            image = pt_adapter.call_nonfused(seg, image)
+    def _forward_multi(self, args: tuple[torch.Tensor, ...]) -> torch.Tensor | NDArray[Any] | tuple[torch.Tensor, ...]:
+        """Run the pipeline in multi-target mode (``data_keys`` is set)."""
+        self._last_transform_matrix = None
+        data_keys = cast("list[str]", self.data_keys)
+        if len(args) != len(data_keys):
+            msg = f"Expected {len(data_keys)} arguments for data_keys={self.data_keys}, got {len(args)}"
+            raise TypeError(msg)
+        image = args[0]
+        aux_targets = self._build_aux_targets(args)
 
-        if self.data_keys is None:
+        for seg, tag in zip(self._segments, self._dispatch_tags(), strict=True):
+            if tag == _TAG_MATRIX:
+                image, aux_targets = seg.forward(image, aux_targets)
+                self._last_transform_matrix = seg.last_matrix
+            elif tag == _TAG_PLAIN:
+                image, aux_targets = seg.forward(image, aux_targets)
+            elif tag == _TAG_PASSTHROUGH:
+                image = seg.adapter.call_nonfused(seg.transform, image)
+            else:
+                image = self._legacy_passthrough(seg, image)
+        return self._assemble_multi_output(image, aux_targets, args)
+
+    def _build_aux_targets(self, args: tuple[torch.Tensor, ...]) -> dict[str, torch.Tensor]:
+        """Build the auxiliary-target dict from positional args, rejecting duplicate keys."""
+        aux_keys = self._aux_keys
+        # Forbid duplicate auxiliary keys to avoid silent overwrites in aux_targets.
+        if len(aux_keys) != len(set(aux_keys)):
+            msg = (
+                "Duplicate entries detected in auxiliary data_keys "
+                f"(data_keys[1:]): {aux_keys}. Auxiliary keys must be unique."
+            )
+            raise ValueError(msg)
+        return dict(zip(aux_keys, args[1:], strict=True))
+
+    def _assemble_multi_output(
+        self,
+        image: torch.Tensor,
+        aux_targets: dict[str, torch.Tensor],
+        args: tuple[torch.Tensor, ...],
+    ) -> torch.Tensor | NDArray[Any] | tuple[torch.Tensor, ...]:
+        """Assemble the multi-target return value in ``data_keys`` order."""
+        data_keys = cast("list[str]", self.data_keys)
+        if len(data_keys) == 1:
             return self._convert_primary_output(image)
-        if len(self.data_keys) == 1:
-            return self._convert_primary_output(image)
-        # Return tuple in data_keys order (aux_targets is guaranteed non-None here
-        # because data_keys is set and has >1 entry)
-        _aux: dict[str, torch.Tensor] = aux_targets or {}
         result_list: list[torch.Tensor] = []
-        for idx, key in enumerate(self.data_keys):
+        for idx, key in enumerate(data_keys):
             if idx == 0:
                 result_list.append(image)
             else:
-                result_list.append(_aux.get(key, args[idx]))
+                result_list.append(aux_targets.get(key, args[idx]))
         return tuple(result_list)
+
+    def _legacy_passthrough(self, seg: object, image: torch.Tensor) -> torch.Tensor:
+        """Dispatch a legacy (pre-wrapper) passthrough segment by resolving its adapter by index."""
+        pt_adapter = None
+        for idx, orig_tfm in enumerate(self.original_transforms):
+            if orig_tfm is seg:
+                pt_adapter = self._transform_adapters.get(idx, self._adapter)
+                break
+        if pt_adapter is None:
+            msg = f"Unknown segment type {type(seg).__name__!r} — update FusedCompose.forward dispatch"
+            raise RuntimeError(msg)
+        return cast(Tensor, pt_adapter.call_nonfused(seg, image))
 
     @property
     def transform_matrix(self) -> torch.Tensor | None:

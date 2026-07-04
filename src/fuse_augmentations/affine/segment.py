@@ -75,6 +75,82 @@ if not _KORNIA_AVAILABLE:
 if not _ALBUMENTATIONS_AVAILABLE:
     __doctest_skip__ += ["AlbuFusedAffineSegment"]
 
+# Dtype used to compose and invert the (B, 3, 3) affine/projective chain on the
+# torch path. float64 keeps matrix accumulation independent of chain length; the
+# result is cast back to the image dtype at the grid_sample boundary. The cv2 and
+# NumPy paths already accumulate in float64.
+_COMPOSE_DTYPE: torch.dtype = torch.float64
+
+
+def _matrix_compose_dtype(image_dtype: torch.dtype, device: torch.device, num_transforms: int) -> torch.dtype:
+    """Pick the dtype used to accumulate and invert a matrix chain.
+
+    A single transform has no chain to accumulate, so it stays in the image dtype
+    (keeps single-op output bit-for-bit compatible with the native warp). Longer
+    chains use float64 to remove chain-length-dependent drift, except on MPS, which
+    has no float64 support — there the accumulation falls back to the image dtype
+    (typically float32), trading the extra precision for device compatibility.
+
+    Args:
+        image_dtype: Dtype of the image tensor being warped.
+        device: Device the image lives on.
+        num_transforms: Number of transforms fused in the segment.
+
+    Returns:
+        The dtype to use for matrix composition and inversion.
+
+    """
+    if num_transforms <= 1 or device.type == "mps":
+        return image_dtype
+    return _COMPOSE_DTYPE
+
+
+def _scatter_active_matrices(
+    mtx: Tensor,
+    active: Tensor | None,
+    batch_size: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tensor:
+    """Place per-sample matrices into a ``(batch_size, 3, 3)`` identity-filled batch.
+
+    Kornia stores sampled parameters for the ACTIVE subset only (the samples whose
+    per-sample probability draw passed), so a reconstructed matrix can have shape
+    ``(n_active, 3, 3)`` rather than ``(batch_size, 3, 3)``. This scatters those
+    active matrices back into their batch positions, leaving identity on the samples
+    the probability mask skipped.
+
+    Args:
+        mtx: Reconstructed matrices, shape ``(batch_size, 3, 3)``, ``(n_active, 3, 3)``, or ``(1, 3, 3)``.
+        active: Boolean ``(batch_size,)`` mask of applied samples, or ``None`` when the transform always applies.
+        batch_size: Target batch size.
+        device: Target device.
+        dtype: Target dtype.
+
+    Returns:
+        A ``(batch_size, 3, 3)`` matrix batch.
+
+    """
+    if active is None:
+        if mtx.shape[0] == 1 and batch_size > 1:
+            return mtx.expand(batch_size, -1, -1)
+        return mtx
+    full = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).repeat(batch_size, 1, 1)
+    if mtx.shape[0] == batch_size:
+        # Full-batch matrices: keep active rows, identity on the rest.
+        return torch.where(active[:, None, None], mtx, full)
+    if mtx.shape[0] == 1:
+        return torch.where(active[:, None, None], mtx.expand(batch_size, -1, -1), full)
+    n_active = int(active.sum().item())
+    if mtx.shape[0] == n_active:
+        full[active] = mtx
+        return full
+    msg = (
+        f"Cannot align a reconstructed matrix batch of shape {tuple(mtx.shape)} with a batch of "
+        f"{batch_size} ({n_active} active). Expected the batch size, the active count, or 1."
+    )
+    raise RuntimeError(msg)
+
 
 def _shares_randomness_across_batch(
     adapter: TransformAdapter,
@@ -447,20 +523,17 @@ class FusedAffineSegment(nn.Module):
                         # All samples skipped (prob=0.0) — identity for the whole batch.
                         _mtx = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1)
                     else:
-                        if _mtx.shape[0] == 1 and batch_size > 1:
-                            _mtx = _mtx.expand(batch_size, -1, -1)
                         _mtx = _mtx.to(device=device, dtype=dtype)
-                        # Mask samples skipped by per-sample probability (batch_prob).
+                        # Kornia stores params for the ACTIVE subset only, so at
+                        # batch>1 with prob<1 the matrix has shape (n_active, 3, 3).
+                        # Scatter into a full-batch identity keyed by batch_prob so
+                        # skipped samples stay identity and shapes never mismatch.
+                        _active = None
                         if _bp_raw is not None:
                             _active = _bp_raw.to(device=device).bool()
                             if _active.shape[0] == 1 and batch_size > 1:
                                 _active = _active.expand(batch_size)
-                            _eye3 = torch.eye(3, device=device, dtype=dtype)
-                            _mtx = torch.where(
-                                _active[:, None, None],
-                                _mtx,
-                                _eye3.unsqueeze(0).expand(batch_size, -1, -1),
-                            )
+                        _mtx = _scatter_active_matrices(_mtx, _active, batch_size, device, dtype)
                 else:
                     _mtx = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1)
                 self._last_matrix = _mtx.detach().clone()
@@ -510,7 +583,9 @@ class FusedAffineSegment(nn.Module):
         # the PyTorch warp backend with cv2.  Only activates when:             #
         # - B=1, CPU, no CUDA, no aux_targets, cv2 available, >1 transform    #
         # ------------------------------------------------------------------ #
-        if self._cv2_warp and batch_size == 1 and not _has_aux and not image.is_cuda:
+        # Gate on CPU tensors only: the cv2 warp round-trips through NumPy
+        # (image[0]...numpy()), which raises on any non-CPU device (CUDA and MPS).
+        if self._cv2_warp and batch_size == 1 and not _has_aux and image.device.type == "cpu":
             acc_np = np.eye(3, dtype=np.float64)
             # Select the numpy-native matrix builder when available (avoids
             # creating intermediate torch tensors that are immediately converted
@@ -559,8 +634,17 @@ class FusedAffineSegment(nn.Module):
             image = torch.from_numpy(warped).permute(2, 0, 1).unsqueeze(0)
             return image.to(device=device, dtype=dtype)
 
-        eye = torch.eye(3, device=device, dtype=dtype)
-        eye_batch = eye.unsqueeze(0).expand(batch_size, -1, -1)
+        # Compose and invert a multi-transform affine chain in float64: the
+        # (B, 3, 3) matmul/inverse cost is negligible next to the H x W warp, and
+        # float64 removes the chain-length-dependent drift that float32 accumulation
+        # introduces. The normalized matrix is cast back to the image dtype only at
+        # the affine_grid boundary; ``_last_matrix`` and aux-target routing use the
+        # image dtype so the public matrix contract is unchanged. A single transform
+        # has no chain to accumulate, so it stays in the image dtype — this keeps the
+        # common single-op case bit-for-bit compatible with the native warp. MPS has
+        # no float64 support, so chains there fall back to the image dtype too.
+        compose_dtype = _matrix_compose_dtype(dtype, device, len(self.transforms))
+        eye_batch = torch.eye(3, device=device, dtype=compose_dtype).unsqueeze(0).expand(batch_size, -1, -1)
         acc = eye_batch.clone()
 
         for tfm in self.transforms:
@@ -579,16 +663,17 @@ class FusedAffineSegment(nn.Module):
             if mtx_i.shape[0] == 1 and batch_size > 1:
                 mtx_i = mtx_i.expand(batch_size, -1, -1)
 
-            # Ensure adapter output is on the same device and dtype as the image
-            mtx_i = mtx_i.to(device=device, dtype=dtype)
+            # Accumulate in the compose dtype; the adapter builds in float32.
+            mtx_i = mtx_i.to(device=device, dtype=compose_dtype)
 
             mtx_i = torch.where(active[:, None, None], mtx_i, eye_batch)  # type: ignore[index]
             acc = matmul3x3(mtx_i, acc)
 
-        self._last_matrix = acc.detach().clone()
+        acc_img = acc.to(dtype=dtype)
+        self._last_matrix = acc_img.detach().clone()
 
         mtx_inv = inv3x3(acc)
-        mtx_norm = normalize_matrix(mtx_inv, height, width)
+        mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
 
         grid = F.affine_grid(mtx_norm[:, :2, :], [batch_size, num_channels, height, width], align_corners=True)
         image = F.grid_sample(
@@ -614,13 +699,13 @@ class FusedAffineSegment(nn.Module):
                     aux_targets[key] = transform_mask(val, grid)
                     continue
                 if key == "bbox_xyxy":
-                    aux_targets[key] = transform_bbox_xyxy(val, acc)
+                    aux_targets[key] = transform_bbox_xyxy(val, acc_img)
                     continue
                 if key == "bbox_xywh":
-                    aux_targets[key] = transform_bbox_xywh(val, acc)
+                    aux_targets[key] = transform_bbox_xywh(val, acc_img)
                     continue
                 if key == "keypoints":
-                    aux_targets[key] = transform_keypoints(val, acc)
+                    aux_targets[key] = transform_keypoints(val, acc_img)
 
         if not _has_aux:
             return image
@@ -1196,8 +1281,14 @@ class ProjectiveSegment(nn.Module):
         device = image.device
         dtype = image.dtype
 
-        eye = torch.eye(3, device=device, dtype=dtype)
-        eye_batch = eye.unsqueeze(0).expand(batch_size, -1, -1)
+        # Compose and invert a multi-transform projective chain in float64 (see
+        # FusedAffineSegment for rationale); the normalized matrix is cast to the
+        # image dtype only at the perspective_grid boundary, and ``_last_matrix`` /
+        # aux routing use the image dtype to preserve the public matrix contract. A
+        # single transform stays in the image dtype (no chain to accumulate); MPS
+        # chains also fall back to the image dtype (no float64 support).
+        compose_dtype = _matrix_compose_dtype(dtype, device, len(self.transforms))
+        eye_batch = torch.eye(3, device=device, dtype=compose_dtype).unsqueeze(0).expand(batch_size, -1, -1)
         acc = eye_batch.clone()
 
         input_shape = (batch_size, num_channels, height, width)
@@ -1218,16 +1309,17 @@ class ProjectiveSegment(nn.Module):
             if mtx_i.shape[0] == 1 and batch_size > 1:
                 mtx_i = mtx_i.expand(batch_size, -1, -1)
 
-            # Ensure adapter output is on the same device and dtype as the image
-            mtx_i = mtx_i.to(device=device, dtype=dtype)
+            # Accumulate in the compose dtype; the adapter builds in float32.
+            mtx_i = mtx_i.to(device=device, dtype=compose_dtype)
 
             mtx_i = torch.where(active[:, None, None], mtx_i, eye_batch)
             acc = matmul3x3(mtx_i, acc)
 
-        self._last_matrix = acc.detach().clone()
+        acc_img = acc.to(dtype=dtype)
+        self._last_matrix = acc_img.detach().clone()
 
         mtx_inv = inv3x3(acc)
-        mtx_norm = normalize_matrix(mtx_inv, height, width)
+        mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
 
         grid = perspective_grid(mtx_norm, height, width)
         image = F.grid_sample(
@@ -1253,13 +1345,13 @@ class ProjectiveSegment(nn.Module):
                     aux_targets[key] = transform_mask(val, grid)
                     continue
                 if key == "bbox_xyxy":
-                    aux_targets[key] = transform_bbox_xyxy(val, acc)
+                    aux_targets[key] = transform_bbox_xyxy(val, acc_img)
                     continue
                 if key == "bbox_xywh":
-                    aux_targets[key] = transform_bbox_xywh(val, acc)
+                    aux_targets[key] = transform_bbox_xywh(val, acc_img)
                     continue
                 if key == "keypoints":
-                    aux_targets[key] = transform_keypoints(val, acc)
+                    aux_targets[key] = transform_keypoints(val, acc_img)
 
         if not _has_aux:
             return image

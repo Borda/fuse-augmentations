@@ -52,10 +52,10 @@ optional-dependencies.kornia = [
 optional-dependencies.torchvision = [
   "torchvision>=0.15",
 ]
+urls."Source Code" = "https://github.com/Borda/fuse-augmentations"
 urls.Changelog = "https://github.com/Borda/fuse-augmentations/blob/main/CHANGELOG.md"
 urls.Homepage = "https://github.com/Borda/fuse-augmentations"
 urls.Issues = "https://github.com/Borda/fuse-augmentations/issues"
-urls."Source Code" = "https://github.com/Borda/fuse-augmentations"
 
 [dependency-groups]
 dev = [
