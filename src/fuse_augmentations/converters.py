@@ -47,6 +47,13 @@ class NumpyToTorchConverter:
                 ambiguous and does not look like ``(H, W, C)``.
 
         """
+        import numpy as np_mod
+
+        if array.dtype == np_mod.uint16:
+            # Normalise in numpy space: torch < 2.3 has no uint16 dtype and torch.from_numpy
+            # rejects np.uint16 arrays. Same semantics as uint8: unsigned ints -> [0, 1].
+            array = array.astype(np_mod.float32) / 65535.0
+
         tensor = torch.from_numpy(array)
         if tensor.ndim == 2:
             # (H, W) -> (1, H, W, 1)
@@ -69,9 +76,6 @@ class NumpyToTorchConverter:
 
         if tensor.dtype == torch.uint8:
             tensor = tensor.to(torch.float32) / 255.0
-        elif tensor.dtype == torch.uint16:
-            # Same semantics as uint8: unsigned integer images normalise to [0, 1].
-            tensor = tensor.to(torch.float32) / 65535.0
         elif tensor.dtype != torch.float32:
             # Keep the pipeline invariant: image tensors are float32. NOTE: other
             # integer dtypes (int16/int32/...) are cast WITHOUT rescaling — values

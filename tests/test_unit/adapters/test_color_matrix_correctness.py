@@ -77,7 +77,8 @@ def _apply_color_matrix(matrix: torch.Tensor, image: torch.Tensor) -> torch.Tens
 class TestKorniaColorMatrixCorrectness:
     """Numerical correctness for Kornia color transforms."""
 
-    adapter = KorniaAdapter()  # stateless; shared class-level instance replaces autouse fixture
+    # Stateless shared instance; guarded — class body executes at collection even under skipif.
+    adapter = KorniaAdapter() if _KORNIA_AVAILABLE else None
 
     @pytest.mark.parametrize(
         "transform_factory",
@@ -184,7 +185,8 @@ class TestKorniaColorMatrixCorrectness:
 class TestTorchVisionColorMatrixCorrectness:
     """Numerical correctness for TorchVision color transforms."""
 
-    adapter = TorchVisionAdapter()  # stateless; shared class-level instance replaces autouse fixture
+    # Stateless shared instance; guarded — class body executes at collection even under skipif.
+    adapter = TorchVisionAdapter() if _TORCHVISION_AVAILABLE else None
 
     def test_color_jitter_shape(self):
         """ColorJitter build_color_matrix returns (B, 4, 4) tensor."""
@@ -236,7 +238,8 @@ class TestTorchVisionColorMatrixCorrectness:
 class TestAlbumentationsColorMatrixCorrectness:
     """Numerical correctness for Albumentations color transforms."""
 
-    adapter = AlbumentationsAdapter()  # stateless; shared class-level instance replaces autouse fixture
+    # Stateless shared instance; guarded — class body executes at collection even under skipif.
+    adapter = AlbumentationsAdapter() if _ALBUMENTATIONS_AVAILABLE else None
 
     def test_shape(self):
         """RandomBrightnessContrast build_color_matrix returns (B, 4, 4) tensor."""

@@ -286,7 +286,9 @@ class FusedCompose(nn.Module):
         self.data_keys: list[str] | None = data_keys
         self.randomness: RandomnessPolicy = randomness
         self._adapter: TransformAdapter | None = adapter
-        self._segments: list[object] = _wrap_passthrough_segments(
+        # Heterogeneous by design: fused/color/exact/crop segments, passthrough wrappers, or raw
+        # legacy transforms — dispatched at runtime via _seg_dispatch_tags, so elements stay Any.
+        self._segments: list[Any] = _wrap_passthrough_segments(
             segments=segments,
             default_adapter=adapter,
             transform_adapters=transform_adapters,
@@ -624,22 +626,22 @@ class FusedCompose(nn.Module):
             for idx_segment, seg in enumerate(self._segments):
                 tag = _tags[idx_segment]
                 if tag == 0:  # AlbuFusedAffineSegment
-                    img_hwc = seg.forward_numpy(img_hwc)  # type: ignore[attr-defined]
-                    self._last_transform_matrix = seg.last_matrix  # type: ignore[attr-defined]
+                    img_hwc = seg.forward_numpy(img_hwc)
+                    self._last_transform_matrix = seg.last_matrix
                 elif tag == 1:  # ExactAffineSegment
-                    for tfm in seg.transforms:  # type: ignore[attr-defined]
+                    for tfm in seg.transforms:
                         img_hwc = tfm(image=img_hwc)["image"]
                 elif tag == 2:  # FusedColorSegment
-                    for tfm in seg._transforms:  # type: ignore[attr-defined]
+                    for tfm in seg._transforms:
                         img_hwc = tfm(image=img_hwc)["image"]
                 elif tag == 3:  # CropResizeSegment
-                    for tfm in seg.transforms:  # type: ignore[attr-defined]
+                    for tfm in seg.transforms:
                         img_hwc = tfm(image=img_hwc)["image"]
                 elif tag == 4:  # Passthrough(Albu adapter)
-                    img_hwc = AlbumentationsAdapter.call_nonfused_numpy(seg.transform, img_hwc)  # type: ignore[attr-defined]
+                    img_hwc = AlbumentationsAdapter.call_nonfused_numpy(seg.transform, img_hwc)
                 elif tag == 5:  # Passthrough(non-Albu adapter)
                     msg = (
-                        f"Passthrough segment adapter {type(seg.adapter).__name__!r} does not "  # type: ignore[attr-defined]
+                        f"Passthrough segment adapter {type(seg.adapter).__name__!r} does not "
                         "support the Albumentations native I/O path. Use tensor input instead."
                     )
                     raise RuntimeError(msg)
@@ -869,7 +871,7 @@ class FusedCompose(nn.Module):
         if pt_adapter is None:
             msg = f"Unknown segment type {type(seg).__name__!r} — update FusedCompose.forward dispatch"
             raise RuntimeError(msg)
-        return cast(Tensor, pt_adapter.call_nonfused(seg, image))
+        return pt_adapter.call_nonfused(seg, image)
 
     @property
     def transform_matrix(self) -> torch.Tensor | None:
@@ -1305,7 +1307,7 @@ class FusedCompose(nn.Module):
 
         Example:
             >>> from fuse_augmentations.compose import FusedCompose
-            >>> "hflip" in FusedCompose.supported_ops("kornia")
+            >>> "hflip" in FusedCompose.supported_ops("kornia")  # doctest: +SKIP
             True
 
         """
