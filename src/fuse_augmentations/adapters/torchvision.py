@@ -39,7 +39,7 @@ from fuse_augmentations.affine.matrix import (
     rotation_matrix,
     vflip_matrix,
 )
-from fuse_augmentations.types import TransformCategory
+from fuse_augmentations.types import SamplingSemantics, TransformCategory
 
 # ---------------------------------------------------------------------------
 # Transform registry -- lazy import guards (torchvision is optional)
@@ -152,6 +152,20 @@ class TorchVisionAdapter:
         True
 
     """
+
+    #: Canonical op names TorchVision can build (mirrors ``resolver._torchvision_registry``; no shear/translate/
+    #: rotation90 wrappers). ``rotation90`` is a known gap for this backend.
+    capabilities: frozenset[str] = frozenset({
+        "rotation",
+        "affine",
+        "hflip",
+        "vflip",
+        "scale",
+        "perspective",
+    })
+
+    #: v2 transforms draw one parameter set per batch; the v1 fallback draws per sample.
+    sampling_semantics: SamplingSemantics = "per_batch"
 
     @staticmethod
     def category(transform: object) -> TransformCategory:

@@ -31,7 +31,7 @@ from fuse_augmentations.affine.matrix import (
     translate_matrix,
     vflip_matrix,
 )
-from fuse_augmentations.types import TransformCategory
+from fuse_augmentations.types import SamplingSemantics, TransformCategory
 
 # ---------------------------------------------------------------------------
 # Transform registry - lazy import guards kornia as optional dependency
@@ -90,6 +90,22 @@ class KorniaAdapter:
         True
 
     """
+
+    #: Canonical op names Kornia can build (mirrors ``resolver._kornia_registry``).
+    capabilities: frozenset[str] = frozenset({
+        "rotation",
+        "affine",
+        "shear",
+        "translate",
+        "hflip",
+        "vflip",
+        "scale",
+        "perspective",
+        "rotation90",
+    })
+
+    #: Kornia draws one parameter set per batch.
+    sampling_semantics: SamplingSemantics = "per_batch"
 
     @staticmethod
     def category(transform: object) -> TransformCategory:

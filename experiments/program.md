@@ -14,7 +14,7 @@ Primary objectives by priority:
 
 `real_score > theoretical_target` is a valid and expected outcome for b-group TV/Kornia cases (flips are nearly free in native, giving super-theoretical ratios). Do not modify `optimize_score.py` to clamp or renormalise scores.
 
-**Revised ceiling (Albu 2.0)**: The printed `theoretical_target` (~2.375) assumes Albu 1.x behavior where N sequential affine ops each dispatch a separate `cv2.warpAffine`. Albumentations 2.0 already composes consecutive affine matrices internally — native b02 (3 ops, ~0.243 ms) is nearly identical to native a01 (1 op, ~0.225 ms). Both fused and native execute exactly one warp. As a result, b01–b04 can never approach 2–5× regardless of optimization; the realistic geomean ceiling with the current 45-case mix is **~1.85–1.95**. Treat the printed `theoretical_target` as a display artifact of the benchmark formula; use 1.85–1.95 as the practical stopping criterion.
+**Ceiling correction (2026-07-09, blueprint §14)**: an earlier revision here claimed Albumentations 2.0 composes consecutive affine matrices internally and capped the realistic geomean at ~1.85–1.95. Source-verified FALSE — Albu 2.0.8 dispatches one `cv2.warpAffine` per transform, with no cross-transform matrix composition (`.plans/active/blueprint_arch_redesign_superior_speed.md` §14). The printed `theoretical_target` IS the campaign ceiling. Near-identical native b02-vs-a01 timings reflect cv2's low per-warp cost at bench image sizes, not matrix composition.
 
 ## Sequence naming conventions
 
@@ -46,7 +46,7 @@ Every kept commit must not break:
 08. `pickle.dumps(pipe)` / `pickle.loads(...)` round-trips without error (DataLoader workers).
 09. `FusedCompose(transforms)(image)` call signature unchanged — no new required arguments.
 10. `FusedCompose(albu_transforms)(image=ndarray)` returns `{"image": ndarray}` matching `A.Compose` convention.
-11. Any change to `_types.py` is **additive only** — new enum members are allowed; no renames, value changes, or removal of `GEOMETRIC`, `POINTWISE`, `COLOR`, `SPATIAL_KERNEL`, or `CROP_RESIZE`.
+11. Any change to `types.py` is **additive only** — new enum members are allowed; no renames, value changes, or removal of `GEOMETRIC`, `POINTWISE`, `COLOR`, `SPATIAL_KERNEL`, or `CROP_RESIZE`.
 
 ## Metric
 
@@ -56,7 +56,7 @@ direction: higher
 baseline: 1.6550  # confirmed on 45-case metric (2026-04-02)
 ```
 
-`theoretical_target` is printed on every run. Campaign success = `real_score ≥ 1.85` (revised practical ceiling — see Goal section). No `target:` is set — the campaign runs to `max_iterations`; stop when `real_score ≥ 1.85` or diminishing-returns window fires.
+`theoretical_target` is printed on every run and IS the ceiling (see Ceiling correction in Goal section). No `target:` is set — the campaign runs to `max_iterations`; stop on the diminishing-returns window.
 
 ## Guard
 
@@ -70,14 +70,14 @@ command: uv run pytest tests/ -x -q --tb=short
 max_iterations: 20
 agent_strategy: perf
 scope_files:
-  - src/fuse_augmentations/_compose.py
-  - src/fuse_augmentations/affine/_segment.py
-  - src/fuse_augmentations/affine/_matrix.py
+  - src/fuse_augmentations/compose.py
+  - src/fuse_augmentations/affine/segment.py
+  - src/fuse_augmentations/affine/matrix.py
   - src/fuse_augmentations/_interpolation.py
-  - src/fuse_augmentations/adapters/_albumentations.py
-  - src/fuse_augmentations/adapters/_kornia.py
-  - src/fuse_augmentations/adapters/_torchvision.py
-  - src/fuse_augmentations/_types.py
+  - src/fuse_augmentations/adapters/albumentations.py
+  - src/fuse_augmentations/adapters/kornia.py
+  - src/fuse_augmentations/adapters/torchvision.py
+  - src/fuse_augmentations/types.py
   - experiments/bench_augmentation_pipelines.py
 compute: local
 ```
@@ -86,7 +86,7 @@ compute: local
 
 `optimize_score.py` runs in ~60 s on the expanded 45-case metric (WARMUP=10 + REPS=50 × 45 cases × 2 backends per case) — within the 120 s `VERIFY_TIMEOUT_SEC` limit.
 
-The 45-case printed `theoretical_target` ≈ 2.375 = geomean([1⁵ × 2×3×4×5×5 × 3×3×4×4×5]^3)^(1/45). This formula assumes Albu 1.x (N separate warps); it is NOT the achievable ceiling with Albu 2.0. The realistic ceiling is **~1.85–1.95** — use this as the campaign's practical target.
+The 45-case printed `theoretical_target` ≈ 2.375 = geomean([1⁵ × 2×3×4×5×5 × 3×3×4×4×5]^3)^(1/45). Albu 2.0.8 verified to dispatch N separate warps (blueprint §14) — the formula's assumption HOLDS and this is the achievable ceiling; actual progress remains bounded by colour-op time fractions in d-group.
 
 Kornia d-group results with `AGGRESSIVE` reordering are bounded by colour-op time; even perfect geo-fusion leaves the colour ops unsaved. The d-group Kornia ceiling with `__agr` is ≈ 1.1–2.1× — this is expected, not a bug.
 

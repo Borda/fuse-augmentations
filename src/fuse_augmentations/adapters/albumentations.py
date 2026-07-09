@@ -39,7 +39,7 @@ from numpy.typing import NDArray
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
 from fuse_augmentations.affine.matrix import crop_resize_matrix, hflip_matrix, matmul3x3, rotation_matrix, vflip_matrix
-from fuse_augmentations.types import TransformCategory
+from fuse_augmentations.types import SamplingSemantics, TransformCategory
 
 __doctest_skip__: list[str] = []
 if not _ALBUMENTATIONS_AVAILABLE:
@@ -194,6 +194,21 @@ class AlbumentationsAdapter:
         True
 
     """
+
+    #: Canonical op names Albumentations can build (mirrors ``resolver._albumentations_registry``; no shear/translate
+    #: wrappers).
+    capabilities: frozenset[str] = frozenset({
+        "rotation",
+        "affine",
+        "hflip",
+        "vflip",
+        "scale",
+        "perspective",
+        "rotation90",
+    })
+
+    #: Albumentations draws one parameter set per sample (cv2 per-image loop).
+    sampling_semantics: SamplingSemantics = "per_sample"
 
     @staticmethod
     def category(transform: object) -> TransformCategory:

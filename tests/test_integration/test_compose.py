@@ -84,6 +84,25 @@ class TestSerialization:
         loaded = torch.load(buf, weights_only=False)
         assert isinstance(loaded, Compose)
 
+    def test_setstate_rebuilds_dispatch_attrs(self, image8x8_batch1):
+        """Old-pickle simulation: missing dispatch attrs are rebuilt by __setstate__."""
+        pipe = Compose([kornia_aug.RandomRotation(30, p=1.0), kornia_aug.RandomHorizontalFlip(p=1.0)])
+        state = pipe.__dict__.copy()
+        for attr in ("_seg_dispatch_tags", "_multi_target", "_aux_keys"):
+            state.pop(attr, None)
+
+        loaded = Compose.__new__(Compose)
+        loaded.__setstate__(state)
+
+        assert loaded._seg_dispatch_tags == pipe._seg_dispatch_tags
+        assert loaded._multi_target == pipe._multi_target
+        assert loaded._aux_keys == pipe._aux_keys
+        torch.manual_seed(42)
+        out_orig = pipe(image8x8_batch1)
+        torch.manual_seed(42)
+        out_loaded = loaded(image8x8_batch1)
+        assert torch.allclose(out_orig, out_loaded)
+
 
 class TestNWarpsSaved:
     """Validate warp-savings accounting for representative pipelines."""

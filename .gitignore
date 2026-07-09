@@ -214,6 +214,7 @@ __marimo__/
 .codex/logs/
 
 # Claude Code temporary files
+.claude/agent-memory/
 .claude/logs/
 .claude/state/
 .claude/worktrees/

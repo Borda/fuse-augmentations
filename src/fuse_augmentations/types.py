@@ -10,6 +10,9 @@ from typing import Any, Literal, Protocol, runtime_checkable
 import torch
 from torch import Tensor
 
+#: Whether an adapter samples one parameter set per image (``"per_sample"``) or one per batch (``"per_batch"``).
+SamplingSemantics = Literal["per_sample", "per_batch"]
+
 
 class TransformCategory(Enum):
     """Category of an augmentation transform for fusion classification.
@@ -143,6 +146,19 @@ class TransformAdapter(Protocol):
 
     Implementations bridge framework-specific transforms (Kornia, Albumentations, TorchVision) to the canonical
     parameter representation used by FusedAffineSegment.
+
+    Optional descriptive members (read via ``fuse_augmentations._backend.adapter_capabilities`` and direct
+    ``getattr``, so absence is tolerated for backwards compatibility):
+
+    - ``capabilities: frozenset[str]`` — canonical op names (see
+      :data:`~fuse_augmentations.resolver.SUPPORTED_OPS`) the adapter can build.
+    - ``sampling_semantics: SamplingSemantics`` — whether the adapter draws one parameter set per sample or one per
+      batch.
+
+    These are intentionally **not** declared as Protocol members: doing so would make ``@runtime_checkable``
+    ``isinstance`` require them, breaking adapters that predate the attributes. Instead they are read defensively via
+    ``fuse_augmentations._backend.adapter_capabilities`` and ``getattr``, so absence is tolerated. ``isinstance``
+    therefore continues to check only the methods below.
 
     """
 

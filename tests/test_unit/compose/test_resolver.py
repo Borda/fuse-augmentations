@@ -8,9 +8,17 @@ resolution.
 from __future__ import annotations
 
 import pytest
+import torch
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
-from fuse_augmentations.resolver import SUPPORTED_BACKENDS, SUPPORTED_OPS, resolve_op, translate_params
+from fuse_augmentations.resolver import (
+    SUPPORTED_BACKENDS,
+    SUPPORTED_OPS,
+    _registry_for,
+    capability_matrix,
+    resolve_op,
+    translate_params,
+)
 
 
 class TestSupportedConstants:
@@ -265,3 +273,88 @@ class TestTranslateParams:
         """Rotation90 op for kornia preserves user-supplied times value via setdefault semantics."""
         result = translate_params("rotation90", "kornia", {"times": (1, 2)})
         assert result.get("times") == (1, 2)
+
+
+class TestCapabilityMatrix:
+    """capability_matrix() and _registry_for() — config-time backend x op coverage (WP-3 / B2)."""
+
+    def test_keys_equal_supported_backends(self) -> None:
+        """capability_matrix() has exactly one entry per SUPPORTED_BACKENDS member."""
+        assert set(capability_matrix()) == set(SUPPORTED_BACKENDS)
+
+    def test_values_are_frozensets(self) -> None:
+        """Every capability_matrix() value is a frozenset of op names."""
+        assert all(isinstance(ops, frozenset) for ops in capability_matrix().values())
+
+    def test_capabilities_subset_of_supported_ops(self) -> None:
+        """Each backend's capabilities are a subset of the canonical SUPPORTED_OPS vocabulary."""
+        assert all(ops <= SUPPORTED_OPS for ops in capability_matrix().values())
+
+    @pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
+    def test_torchvision_lacks_rotation90(self) -> None:
+        """Rotation90 is a known TorchVision gap and is absent from its capability set."""
+        assert "rotation90" not in capability_matrix()["torchvision"]
+
+    @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
+    def test_kornia_supports_rotation90(self) -> None:
+        """Kornia does build rotation90, so it appears in its capability set."""
+        assert "rotation90" in capability_matrix()["kornia"]
+
+    def test_registry_for_unknown_backend_is_empty(self) -> None:
+        """A backend with no registered builder (e.g. a future 'native') yields an empty registry, not KeyError."""
+        assert _registry_for("native") == {}
+
+
+class TestComposeCapabilityApi:
+    """FusedCompose.supported_ops / capability_matrix classmethods (WP-3 / B2)."""
+
+    @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
+    def test_supported_ops_nonempty(self) -> None:
+        """Compose.supported_ops('kornia') returns a non-empty frozenset."""
+        from fuse_augmentations import Compose
+
+        ops = Compose.supported_ops("kornia")
+        assert isinstance(ops, frozenset)
+        assert ops
+
+    def test_capability_matrix_classmethod_matches_resolver(self) -> None:
+        """Compose.capability_matrix() delegates to the resolver capability_matrix()."""
+        from fuse_augmentations import Compose
+
+        assert Compose.capability_matrix() == capability_matrix()
+
+
+class TestFromConfigAggregatedValidation:
+    """from_config validates all specs pre-construction and aggregates every offender (WP-3 / B2)."""
+
+    @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
+    def test_aggregated_error_lists_all_offenders(self) -> None:
+        """A pipeline with several bad ops raises one ValueError naming every offender, not just the first."""
+        from fuse_augmentations import Compose, TransformSpec
+
+        specs = [
+            TransformSpec(operation="rotation", params={}, prob=1.0),
+            TransformSpec(operation="not_a_real_op", params={}, prob=1.0),
+            TransformSpec(operation="another_fake_op", params={}, prob=1.0),
+        ]
+        with pytest.raises(ValueError, match="not_a_real_op") as exc_info:
+            Compose.from_config(specs, backend="kornia")
+        assert "another_fake_op" in str(exc_info.value)
+
+    @pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
+    def test_warn_skip_drops_unsupported_and_builds(self) -> None:
+        """on_unsupported='warn_skip' drops the unsupported op with a warning and builds a runnable pipeline."""
+        import warnings as _warnings
+
+        from fuse_augmentations import Compose, TransformSpec
+
+        specs = [
+            TransformSpec(operation="hflip", params={}, prob=1.0),
+            TransformSpec(operation="rotation90", params={}, prob=1.0),  # unsupported by torchvision
+        ]
+        with _warnings.catch_warnings(record=True) as recorded:
+            _warnings.simplefilter("always")
+            pipe = Compose.from_config(specs, backend="torchvision", on_unsupported="warn_skip")
+        assert any("rotation90" in str(w.message) for w in recorded)
+        result = pipe(torch.zeros(1, 3, 8, 8))
+        assert result.shape == (1, 3, 8, 8)

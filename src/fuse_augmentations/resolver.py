@@ -161,6 +161,50 @@ _BACKEND_REGISTRY_BUILDERS: dict[str, Callable[[], dict[str, type]]] = {
 }
 
 
+def _registry_for(backend: str) -> dict[str, type]:
+    """Return the op -> class registry for *backend*, tolerating backends without one.
+
+    A backend with no registered builder (e.g. a future ``"native"`` backend added by WP-12 before it grows a
+    registry, grill G13) yields an empty dict rather than a ``KeyError``. A backend whose optional dependency is not
+    installed also yields an empty dict, so capability queries never require the backend to be importable.
+
+    Args:
+        backend: Backend name.
+
+    Returns:
+        The backend's op -> class registry, or an empty dict when the backend has no builder or is not installed.
+
+    """
+    builder = _BACKEND_REGISTRY_BUILDERS.get(backend)
+    if builder is None:
+        return {}
+    try:
+        return builder()
+    except (ImportError, ModuleNotFoundError):
+        return {}
+
+
+def capability_matrix() -> dict[str, frozenset[str]]:
+    """Return the backend -> supported canonical-op-names map for all supported backends.
+
+    The op vocabulary is anchored on each backend's resolver registry keys (a subset of
+    :data:`SUPPORTED_OPS`). Backends whose optional dependency is not installed report an empty frozenset rather than
+    raising, so this is a pure, side-effect-free capability query.
+
+    Returns:
+        Mapping from each backend in :data:`SUPPORTED_BACKENDS` to the frozenset of canonical op names it can build.
+
+    Example:
+        >>> matrix = capability_matrix()
+        >>> set(matrix) == set(SUPPORTED_BACKENDS)
+        True
+        >>> "rotation90" in matrix["torchvision"]
+        False
+
+    """
+    return {backend: frozenset(_registry_for(backend)) for backend in SUPPORTED_BACKENDS}
+
+
 def translate_params(op_name: OpStr, backend: BackendStr, params: dict[str, object]) -> dict[str, object]:
     """Translate canonical ``TransformSpec.params`` into backend ctor kwargs.
 

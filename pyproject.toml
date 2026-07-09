@@ -57,6 +57,13 @@ urls.Changelog = "https://github.com/Borda/fuse-augmentations/blob/main/CHANGELO
 urls.Homepage = "https://github.com/Borda/fuse-augmentations"
 urls.Issues = "https://github.com/Borda/fuse-augmentations/issues"
 
+# Experimental third-party adapter extension point (see fuse_augmentations._backend.register_adapter).
+# Downstream packages expose an adapter by declaring, in THEIR pyproject.toml:
+#   [project.entry-points."fuse_augmentations.adapters"]
+#   my_adapter = "my_pkg.module:register"   # a zero-arg callable that calls register_adapter(...)
+# Entries are loaded LAZILY on the first backend-detection miss, never at package import.
+# The three built-in adapters self-register at import and are intentionally NOT listed here,
+# so this project declares no entries of its own (an empty group is dropped by pyproject-fmt).
 [dependency-groups]
 dev = [
   "hypothesis>=6.100",

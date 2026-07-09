@@ -492,6 +492,34 @@ class FusedCompose(nn.Module):
                 "support aux_targets in this release. Remove extra data_keys or use a non-Albumentations pipeline."
             )
 
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore instance state, rebuilding dispatch attributes absent from older pickles.
+
+        The three plan-time dispatch attributes (``_seg_dispatch_tags``,
+        ``_multi_target``, ``_aux_keys``) are computed in :meth:`_setup_instance`
+        and read directly by :meth:`forward` and :meth:`_build_aux_targets` with no
+        per-call fallback. Pickles produced before these attributes existed would
+        raise :class:`AttributeError` on the first call after unpickling, so this
+        hook reconstructs them from ``data_keys`` and the restored segments. Within
+        a single version every attribute is already present, so this is a no-op.
+
+        Args:
+            state: The pickled instance ``__dict__`` restored by :mod:`pickle`.
+
+        Examples:
+            >>> import pickle
+            >>> from fuse_augmentations import Compose  # doctest: +SKIP
+            >>> pipe = Compose([...])  # doctest: +SKIP
+            >>> reloaded = pickle.loads(pickle.dumps(pipe))  # doctest: +SKIP
+
+        """
+        super().__setstate__(state)  # type: ignore[no-untyped-call]
+        if not hasattr(self, "_multi_target"):
+            self._multi_target = self.data_keys is not None
+            self._aux_keys = list(self.data_keys[1:]) if self.data_keys else []
+        if getattr(self, "_seg_dispatch_tags", None) is None:
+            self._seg_dispatch_tags = self._build_dispatch_tags()
+
     def __call__(self, *args: object, **kwargs: object) -> object:
         """Route to the Albumentations native dict path or the standard tensor path.
 
@@ -1086,12 +1114,17 @@ class FusedCompose(nn.Module):
         data_keys: list[str] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
         randomness: RandomnessPolicy | Literal["backend", "per_sample"] = RandomnessPolicy.BACKEND,
+        on_unsupported: Literal["raise", "warn_skip"] = "raise",
     ) -> FusedCompose:
         """Create a FusedCompose pipeline from a list of TransformSpec objects.
 
         Resolves each spec's operation to the corresponding backend transform
         class, instantiates it with the spec's params and per-sample probability,
         then builds the pipeline via ``cls(transforms, ...)``.
+
+        All specs are validated against the backend's capability matrix **before** any transform is constructed, so an
+        unsupported op is reported together with every other offender in a single aggregated error rather than failing
+        on the first one.
 
         Args:
             specs: List of :class:`TransformSpec` objects describing the
@@ -1106,14 +1139,18 @@ class FusedCompose(nn.Module):
                 ``"numpy_hwc"``, ``"torch"``, or ``None``). Forwarded to
                 :meth:`__init__`.
             randomness: Batch randomness policy forwarded to :meth:`__init__`.
+            on_unsupported: Policy for specs whose op the backend cannot build.
+                ``"raise"`` (default) aggregates all offenders into one
+                ``ValueError``; ``"warn_skip"`` drops each unsupported spec with
+                a ``UserWarning`` and builds a pipeline from the rest.
 
         Returns:
             A configured ``FusedCompose`` instance.
 
         Raises:
-            ValueError: If ``backend`` is not in :data:`~fuse_augmentations.resolver.SUPPORTED_BACKENDS`,
-                or if a spec's operation is not supported by the chosen backend.
-                This validation applies even when ``specs`` is empty.
+            ValueError: If ``backend`` is not in :data:`~fuse_augmentations.resolver.SUPPORTED_BACKENDS`; or, when
+                ``on_unsupported="raise"``, if any spec's operation is unknown or unsupported by the chosen backend
+                (all offenders reported together). This validation applies even when ``specs`` is empty.
 
         Example:
             >>> import torch
@@ -1125,67 +1162,14 @@ class FusedCompose(nn.Module):
             torch.Size([1, 3, 8, 8])
 
         """
-        from fuse_augmentations.resolver import SUPPORTED_BACKENDS, SUPPORTED_OPS, resolve_op, translate_params
+        from fuse_augmentations.resolver import SUPPORTED_BACKENDS
 
         if backend not in SUPPORTED_BACKENDS:
             msg = f"unknown backend {backend!r}; supported: {sorted(SUPPORTED_BACKENDS)}"
             raise ValueError(msg)
 
-        if not specs:
-            return cls(
-                [],
-                interpolation=interpolation,
-                padding_mode=padding_mode,
-                data_keys=data_keys,
-                reorder=reorder,
-                output_backend=output_backend,
-                randomness=randomness,
-            )
-
-        transforms: list[object] = []
-        for spec in specs:
-            if "prob" in spec.params:
-                msg = (
-                    f"TransformSpec.params must not include 'prob'; "
-                    f"use TransformSpec.prob for operation {spec.operation!r} instead."
-                )
-                raise ValueError(msg)
-            if spec.operation not in SUPPORTED_OPS:
-                msg = f"unknown operation {spec.operation!r}; supported: {sorted(SUPPORTED_OPS)}"
-                raise ValueError(msg)
-            op_name = cast("OpStr", spec.operation)
-            tfm_cls = resolve_op(op_name, backend)
-            kwargs = translate_params(op_name, backend, dict(spec.params))
-            # Most backends accept p= for per-transform probability.
-            # Some (e.g. TorchVision rotation) don't; pass it and let
-            # the backend ignore it via **kwargs or TypeError fallback.
-            try:
-                tfm = tfm_cls(**kwargs, p=spec.prob)
-            except TypeError as exc:
-                # Re-raise unless this is specifically a rejected p keyword.
-                # Constructor errors about other kwargs/types must not be masked.
-                exc_msg = str(exc).lower()
-                is_p_keyword_rejection = "'p'" in exc_msg and (
-                    "unexpected keyword" in exc_msg or "keyword argument" in exc_msg or "does not accept" in exc_msg
-                )
-                if not is_p_keyword_rejection:
-                    raise
-                # Backend class does not accept p= (e.g. TorchVision RandomRotation)
-                tfm = tfm_cls(**kwargs)
-                # Attach prob as attribute so the fused engine can read it
-                p_set = False
-                with contextlib.suppress(AttributeError, TypeError):
-                    tfm.prob = spec.prob
-                    p_set = True
-                if not p_set and spec.prob != 1.0:
-                    warnings.warn(
-                        f"TransformSpec.prob={spec.prob!r} for operation {spec.operation!r} could not be applied to "
-                        f"{tfm_cls.__name__!r} (backend does not accept p= and attribute is read-only). "
-                        "The transform will always be applied (prob=1.0 effective).",
-                        UserWarning,
-                        stacklevel=3,
-                    )
-            transforms.append(tfm)
+        kept_specs = cls._validate_specs(specs, backend, on_unsupported)
+        transforms = [cls._build_transform(spec, backend) for spec in kept_specs]
 
         return cls(
             transforms,
@@ -1196,6 +1180,155 @@ class FusedCompose(nn.Module):
             output_backend=output_backend,
             randomness=randomness,
         )
+
+    @staticmethod
+    def _validate_specs(
+        specs: list[TransformSpec],
+        backend: BackendStr,
+        on_unsupported: Literal["raise", "warn_skip"],
+    ) -> list[TransformSpec]:
+        """Validate every spec via ``resolve_op`` before any construction, aggregating all failures.
+
+        Rejects ``prob`` inside ``params`` (always an error), then probes each op with ``resolve_op`` (the same gate
+        construction uses). Under ``"raise"`` every offending spec's message is collected and reported in one
+        aggregated ``ValueError``; under ``"warn_skip"`` the offenders are dropped with a ``UserWarning`` and the
+        surviving specs are returned.
+
+        Args:
+            specs: The specs to validate.
+            backend: Target backend name.
+            on_unsupported: ``"raise"`` or ``"warn_skip"``.
+
+        Returns:
+            The specs to build (all of *specs* under ``"raise"``; only supported ones under ``"warn_skip"``).
+
+        Raises:
+            ValueError: On a ``prob``-in-``params`` spec, or (under ``"raise"``) when any op is unsupported.
+
+        """
+        from fuse_augmentations.resolver import SUPPORTED_OPS, resolve_op
+
+        offenders: list[str] = []
+        kept: list[TransformSpec] = []
+        for spec in specs:
+            if "prob" in spec.params:
+                msg = (
+                    f"TransformSpec.params must not include 'prob'; "
+                    f"use TransformSpec.prob for operation {spec.operation!r} instead."
+                )
+                raise ValueError(msg)
+            if spec.operation not in SUPPORTED_OPS:
+                offenders.append(f"unknown operation {spec.operation!r}; supported: {sorted(SUPPORTED_OPS)}")
+                continue
+            try:
+                resolve_op(cast("OpStr", spec.operation), backend)
+            except ValueError as exc:
+                offenders.append(str(exc))
+            else:
+                kept.append(spec)
+
+        if not offenders:
+            return kept
+        if on_unsupported == "warn_skip":
+            warnings.warn(
+                "from_config skipping unsupported specs:\n  - " + "\n  - ".join(offenders),
+                UserWarning,
+                stacklevel=3,
+            )
+            return kept
+        raise ValueError("from_config could not resolve all specs:\n  - " + "\n  - ".join(offenders))
+
+    @staticmethod
+    def _build_transform(spec: TransformSpec, backend: BackendStr) -> object:
+        """Instantiate one backend transform from a validated spec.
+
+        Applies the per-transform probability via the backend ``p=`` kwarg when accepted, falling back to a ``prob``
+        attribute (or a warning) for backends that reject it.
+
+        Args:
+            spec: A spec already validated as supported by *backend*.
+            backend: Target backend name.
+
+        Returns:
+            The constructed backend transform object.
+
+        """
+        from fuse_augmentations.resolver import resolve_op, translate_params
+
+        op_name = cast("OpStr", spec.operation)
+        tfm_cls = resolve_op(op_name, backend)
+        kwargs = translate_params(op_name, backend, dict(spec.params))
+        # Most backends accept p= for per-transform probability.
+        # Some (e.g. TorchVision rotation) don't; pass it and let
+        # the backend ignore it via **kwargs or TypeError fallback.
+        try:
+            return tfm_cls(**kwargs, p=spec.prob)
+        except TypeError as exc:
+            # Re-raise unless this is specifically a rejected p keyword.
+            # Constructor errors about other kwargs/types must not be masked.
+            exc_msg = str(exc).lower()
+            is_p_keyword_rejection = "'p'" in exc_msg and (
+                "unexpected keyword" in exc_msg or "keyword argument" in exc_msg or "does not accept" in exc_msg
+            )
+            if not is_p_keyword_rejection:
+                raise
+        # Backend class does not accept p= (e.g. TorchVision RandomRotation)
+        tfm = tfm_cls(**kwargs)
+        # Attach prob as attribute so the fused engine can read it
+        p_set = False
+        with contextlib.suppress(AttributeError, TypeError):
+            tfm.prob = spec.prob
+            p_set = True
+        if not p_set and spec.prob != 1.0:
+            warnings.warn(
+                f"TransformSpec.prob={spec.prob!r} for operation {spec.operation!r} could not be applied to "
+                f"{tfm_cls.__name__!r} (backend does not accept p= and attribute is read-only). "
+                "The transform will always be applied (prob=1.0 effective).",
+                UserWarning,
+                stacklevel=3,
+            )
+        return tfm
+
+    @classmethod
+    def supported_ops(cls, backend: BackendStr) -> frozenset[str]:
+        """Return the canonical op names *backend* can build.
+
+        Args:
+            backend: Backend name (must be in :data:`~fuse_augmentations.resolver.SUPPORTED_BACKENDS`).
+
+        Returns:
+            Frozenset of canonical op names the backend supports (empty if the backend's optional dependency is not
+            installed).
+
+        Raises:
+            KeyError: If *backend* is not in :data:`~fuse_augmentations.resolver.SUPPORTED_BACKENDS`.
+
+        Example:
+            >>> from fuse_augmentations.compose import FusedCompose
+            >>> "hflip" in FusedCompose.supported_ops("kornia")
+            True
+
+        """
+        from fuse_augmentations.resolver import capability_matrix
+
+        return capability_matrix()[backend]
+
+    @classmethod
+    def capability_matrix(cls) -> dict[str, frozenset[str]]:
+        """Return the backend -> supported-op-names map across all supported backends.
+
+        Returns:
+            Mapping from each supported backend to the frozenset of canonical op names it can build.
+
+        Example:
+            >>> from fuse_augmentations.compose import FusedCompose
+            >>> sorted(FusedCompose.capability_matrix())
+            ['albumentations', 'kornia', 'torchvision']
+
+        """
+        from fuse_augmentations.resolver import capability_matrix
+
+        return capability_matrix()
 
     @classmethod
     def from_params(
