@@ -333,7 +333,15 @@ def _albu_thunks(seq: Sequence, device: Device, batch: int) -> tuple[Callable, C
         return native_thunk, fused_thunk
 
     # Non-CPU: native has no GPU path; the fused tensor path is probed via warmup.
-    fused = _to_device(_build_fused(tfms, seq.reorder), device.torch_device)
+    # cv2 warping requires a CPU round-trip, so on GPU/MPS the fused Albu path opts
+    # into execution="torch" (one batched grid_sample) to warp natively on device.
+    reorder = seq.reorder
+    fused_pipe = (
+        FuseCompose(copy.deepcopy(tfms), execution="torch")
+        if reorder is None
+        else FuseCompose(copy.deepcopy(tfms), reorder=reorder, execution="torch")
+    )
+    fused = _to_device(fused_pipe, device.torch_device)
     image = torch.rand(batch, 3, IMAGE_HEIGHT, IMAGE_WIDTH, device=device.torch_device)
 
     def native_thunk() -> object:

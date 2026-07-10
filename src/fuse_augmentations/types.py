@@ -112,6 +112,14 @@ PaddingModeStr = Literal["zeros", "border", "reflection"]
 #: String literal type for the ``kind`` field of :class:`SegmentDescriptor`.
 SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color", "crop_resize"]
 
+#: String literal type for the ``execution`` strategy of the Albumentations fused
+#: segments. ``"cv2"`` (default) applies one ``cv2.warp*`` per sample -- bit-exact
+#: with the native cv2 backend and the fastest choice on CPU at small batch sizes.
+#: ``"torch"`` composes the same per-sample matrices but applies one batched
+#: ``grid_sample`` for the whole batch, giving batch-size-independent throughput and
+#: a native GPU/MPS warp; its border/bilinear numerics differ slightly from cv2.
+ExecutionStr = Literal["cv2", "torch"]
+
 
 @runtime_checkable
 class BackendConverter(Protocol):

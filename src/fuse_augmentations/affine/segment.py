@@ -39,6 +39,7 @@ from fuse_augmentations.affine.matrix import (
     perspective_grid,
 )
 from fuse_augmentations.types import (
+    ExecutionStr,
     InterpolationStr,
     PaddingModeStr,
     RandomnessPolicy,
@@ -189,6 +190,100 @@ def _transform_prob(transform: object, default: float = 1.0) -> float:
     if prob is not None:
         return float(prob)
     return float(getattr(transform, "p", default))
+
+
+def _validate_execution(execution: str) -> ExecutionStr:
+    """Validate and return an Albumentations execution-strategy value.
+
+    Args:
+        execution: The requested strategy; must be ``"cv2"`` or ``"torch"``.
+
+    Returns:
+        The validated strategy string.
+
+    Raises:
+        ValueError: If ``execution`` is neither ``"cv2"`` nor ``"torch"``.
+
+    Examples:
+        >>> _validate_execution("cv2")
+        'cv2'
+        >>> _validate_execution("torch")
+        'torch'
+
+    """
+    if execution not in ("cv2", "torch"):
+        msg = f"execution must be 'cv2' or 'torch', got {execution!r}."
+        raise ValueError(msg)
+    return cast(ExecutionStr, execution)
+
+
+def _grid_sample_affine_batched(
+    image: Tensor,
+    acc: Tensor,
+    interpolation: InterpolationStr,
+    padding_mode: PaddingModeStr,
+) -> tuple[Tensor, Tensor]:
+    """Warp ``image`` by an affine matrix batch with one ``affine_grid`` + ``grid_sample`` pass.
+
+    Inverts the composed forward matrix, normalizes it to the ``[-1, 1]`` grid
+    convention, builds an affine grid, and resamples the whole batch at once. This
+    is the single batched affine executor shared by the torch affine segment and
+    the Albumentations torch execution strategy.
+
+    Args:
+        image: ``(batch_size, channels, height, width)`` float input tensor.
+        acc: ``(batch_size, 3, 3)`` composed forward matrix. Any floating dtype;
+            the inversion runs in this dtype, so callers pass float64 on CPU/CUDA
+            and float32 on MPS (which has no float64).
+        interpolation: ``grid_sample`` interpolation mode.
+        padding_mode: ``grid_sample`` padding mode.
+
+    Returns:
+        A ``(warped_image, grid)`` tuple; the grid is reused to warp mask aux targets.
+
+    """
+    batch_size, num_channels, height, width = image.shape
+    dtype = image.dtype
+    mtx_inv = inv3x3(acc)
+    mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
+
+    grid = F.affine_grid(mtx_norm[:, :2, :], [batch_size, num_channels, height, width], align_corners=True)
+    warped = F.grid_sample(image, grid, mode=interpolation, padding_mode=padding_mode, align_corners=True)
+    return warped, grid
+
+
+def _grid_sample_perspective_batched(
+    image: Tensor,
+    acc: Tensor,
+    interpolation: InterpolationStr,
+    padding_mode: PaddingModeStr,
+) -> tuple[Tensor, Tensor]:
+    """Warp ``image`` by a homography batch with one ``perspective_grid`` + ``grid_sample`` pass.
+
+    Like :func:`_grid_sample_affine_batched` but builds a perspective grid (with
+    the perspective division ``F.affine_grid`` cannot express), so it handles the
+    full ``3x3`` homography. Shared by the torch projective segment and the
+    Albumentations projective torch execution strategy.
+
+    Args:
+        image: ``(batch_size, channels, height, width)`` float input tensor.
+        acc: ``(batch_size, 3, 3)`` composed forward homography (float64 on
+            CPU/CUDA, float32 on MPS).
+        interpolation: ``grid_sample`` interpolation mode.
+        padding_mode: ``grid_sample`` padding mode.
+
+    Returns:
+        A ``(warped_image, grid)`` tuple.
+
+    """
+    _, _, height, width = image.shape
+    dtype = image.dtype
+    mtx_inv = inv3x3(acc)
+    mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
+
+    grid = perspective_grid(mtx_norm, height, width)
+    warped = F.grid_sample(image, grid, mode=interpolation, padding_mode=padding_mode, align_corners=True)
+    return warped, grid
 
 
 class ExactAffineSegment(nn.Module):
@@ -903,20 +998,12 @@ class FusedAffineSegment(_BaseAffineSegment):
             A ``(warped_image, grid)`` tuple.
 
         """
-        batch_size, num_channels, height, width = image.shape
-        dtype = image.dtype
-        mtx_inv = inv3x3(acc)
-        mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
-
-        grid = F.affine_grid(mtx_norm[:, :2, :], [batch_size, num_channels, height, width], align_corners=True)
-        image = F.grid_sample(
+        return _grid_sample_affine_batched(
             image,
-            grid,
-            mode=self.interpolation or "bilinear",
-            padding_mode=self.padding_mode or "zeros",
-            align_corners=True,
+            acc,
+            self.interpolation or "bilinear",
+            self.padding_mode or "zeros",
         )
-        return image, grid
 
     @staticmethod
     def _route_d4_aux(aux_targets: dict[str, Tensor], d4_op: str, acc_img: Tensor) -> None:
@@ -1280,6 +1367,7 @@ class AlbuFusedAffineSegment(nn.Module):
         adapter: TransformAdapter,
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
+        execution: ExecutionStr = "cv2",
     ) -> None:
         """Initialize ``AlbuFusedAffineSegment``."""
         super().__init__()
@@ -1287,6 +1375,7 @@ class AlbuFusedAffineSegment(nn.Module):
         self.adapter = adapter
         self.interpolation = interpolation or "bilinear"
         self.padding_mode = padding_mode or "zeros"
+        self.execution: ExecutionStr = _validate_execution(execution)
         self._last_matrix: Tensor | None = None
         # Pre-compute cv2 flags once instead of dict-lookups per call.
         self._interp_flag: int = _CV2_INTERP.get(self.interpolation, _CV2_INTERP.get("bilinear", 1))
@@ -1377,18 +1466,41 @@ class AlbuFusedAffineSegment(nn.Module):
                 "auxiliary targets alongside the image."
             )
 
-        batch_size, num_channels, height, width = image.shape
-        device = image.device
-        dtype = image.dtype
+        batch_size = image.shape[0]
 
-        # Compose a (batch_size, 3, 3) forward matrix tensor for last_matrix storage
-        composed_batch = (
-            torch.eye(3, dtype=torch.float64, device=device).unsqueeze(0).expand(batch_size, -1, -1).clone()
-        )
+        # Compose the per-sample forward matrices with Albumentations' own
+        # per-sample sampling (numpy RNG stream). This is identical for both
+        # execution strategies — only the warp backend below differs — so the
+        # sampled geometry is byte-for-byte the same whether the batch is warped
+        # by cv2 (default) or a batched grid_sample.
+        accs, any_active = self._compose_matrices(image)
+        composed_batch = self._stack_matrices(accs)
+        self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
 
         if batch_size == 0 or len(self.transforms) == 0:
-            self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
             return image
+
+        if self.execution == "torch":
+            return self._warp_torch(image, composed_batch)
+        return self._warp_cv2(image, accs, any_active)
+
+    def _compose_matrices(self, image: Tensor) -> tuple[list[MatrixArray], list[bool]]:
+        """Compose the per-sample forward affine matrices via Albumentations sampling.
+
+        Runs the exact per-sample activation draws and ``sample_params`` calls that
+        the cv2 path has always used, so the numpy RNG stream is unchanged. The
+        result feeds either the cv2 or the batched-torch warp.
+
+        Args:
+            image: ``(batch_size, channels, height, width)`` input tensor.
+
+        Returns:
+            A ``(accs, any_active)`` pair: ``accs`` is a per-sample list of
+            ``(3, 3)`` float64 forward matrices; ``any_active[b]`` is ``True`` when
+            at least one transform applied to sample ``b`` (identity otherwise).
+
+        """
+        batch_size, num_channels, height, width = image.shape
 
         # Pre-draw per-transform active masks before the sample loop so that
         # same_on_batch=True collapses to a single Bernoulli draw shared across all samples.
@@ -1402,9 +1514,6 @@ class AlbuFusedAffineSegment(nn.Module):
             else:
                 active_masks.append(np.random.rand(batch_size) < prob)
 
-        interp_flag = self._interp_flag
-        border_flag = self._border_flag
-
         # same_on_batch transforms share ONE param draw across the whole batch —
         # matching the shared activation draw above. Sample once here so every
         # sample gets identical geometry (previously only the activation was
@@ -1416,12 +1525,11 @@ class AlbuFusedAffineSegment(nn.Module):
                 mtx_shared = self.adapter.build_matrix(tfm, params, height, width)
                 shared_mtx[t_idx] = mtx_shared[0].double().cpu().numpy()
 
-        output_np: list[ImageArray] = []
-
+        accs: list[MatrixArray] = []
+        any_active: list[bool] = []
         for b_idx in range(batch_size):
             acc: MatrixArray = np.eye(3, dtype=np.float64)
-            any_active = False
-
+            active = False
             for t_idx, tfm in enumerate(self.transforms):
                 # Skip BEFORE sampling (matching forward_numpy): inactive transforms
                 # must not consume RNG draws, otherwise entry points diverge under a
@@ -1429,42 +1537,96 @@ class AlbuFusedAffineSegment(nn.Module):
                 if not active_masks[t_idx][b_idx]:
                     continue
                 if t_idx in shared_mtx:
-                    any_active = True
+                    active = True
                     acc = shared_mtx[t_idx] @ acc
                     continue
                 params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
                 mtx_i = self.adapter.build_matrix(tfm, params, height, width)
-                any_active = True
+                active = True
                 acc = mtx_i[0].double().cpu().numpy() @ acc
+            accs.append(acc)
+            any_active.append(active)
+        return accs, any_active
 
-            composed_batch[b_idx] = torch.as_tensor(acc.copy())
+    @staticmethod
+    def _stack_matrices(accs: list[MatrixArray]) -> Tensor:
+        """Stack per-sample ``(3, 3)`` numpy matrices into a CPU ``(B, 3, 3)`` float64 tensor.
 
+        The batch is built on CPU because the source matrices are numpy (CPU) and
+        MPS has no float64 support; callers move and cast it as needed (the torch
+        warp path casts to a device-safe dtype before touching the accelerator).
+
+        Args:
+            accs: Per-sample forward matrices from :meth:`_compose_matrices`.
+
+        Returns:
+            A CPU ``(len(accs), 3, 3)`` float64 tensor, or a ``(0, 3, 3)`` tensor
+            when ``accs`` is empty.
+
+        """
+        if not accs:
+            return torch.empty((0, 3, 3), dtype=torch.float64)
+        return torch.as_tensor(np.stack(accs), dtype=torch.float64)
+
+    def _warp_cv2(self, image: Tensor, accs: list[MatrixArray], any_active: list[bool]) -> Tensor:
+        """Warp each sample with one ``cv2.warpAffine`` (default CPU strategy).
+
+        Args:
+            image: ``(B, C, H, W)`` input tensor.
+            accs: Per-sample forward matrices from :meth:`_compose_matrices`.
+            any_active: Per-sample activity flags; inactive samples pass through untouched.
+
+        Returns:
+            The warped ``(B, C, H, W)`` tensor on the input device and dtype.
+
+        """
+        batch_size, num_channels, height, width = image.shape
+        device = image.device
+        dtype = image.dtype
+        interp_flag = self._interp_flag
+        border_flag = self._border_flag
+
+        output_np: list[ImageArray] = []
+        for b_idx in range(batch_size):
             img_np = image[b_idx].permute(1, 2, 0).cpu().numpy()
-
-            if not any_active:
+            if not any_active[b_idx]:
                 output_np.append(img_np)
                 continue
-
             # acc is the composed forward (src->dst) matrix; invert to get dst->src for _warp
-            m_dst2src = np.linalg.inv(acc)
-
+            m_dst2src = np.linalg.inv(accs[b_idx])
             if num_channels == 1:
                 img_np = img_np[:, :, 0]
                 warped = _warp(img_np, m_dst2src, width, height, interp_flag, border_flag)
                 warped = warped[:, :, np.newaxis]
             else:
                 warped = _warp(img_np, m_dst2src, width, height, interp_flag, border_flag)
-
             output_np.append(warped)
 
-        # Stack back to (B, C, H, W)
-        stacked = torch.stack([
+        return torch.stack([
             torch.as_tensor(np.ascontiguousarray(img).copy()).permute(2, 0, 1) for img in output_np
         ]).to(device=device, dtype=dtype)
 
-        self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
+    def _warp_torch(self, image: Tensor, composed_batch: Tensor) -> Tensor:
+        """Warp the whole batch with one ``grid_sample`` (opt-in torch strategy).
 
-        return stacked
+        Applies a single batched ``affine_grid`` + ``grid_sample`` using the
+        matrices already composed by :meth:`_compose_matrices`, so the sampled
+        geometry matches the cv2 path exactly; only the resampling backend differs.
+        Inactive samples keep identity and pass through the near-identity warp.
+
+        Args:
+            image: ``(B, C, H, W)`` input tensor (any device — this path is the GPU/MPS warp).
+            composed_batch: ``(B, 3, 3)`` float64 forward matrices (built on CPU).
+
+        Returns:
+            The warped ``(B, C, H, W)`` tensor on the input device and dtype.
+
+        """
+        # MPS has no float64; invert/normalize in float32 there (mirrors the torch twins).
+        acc_dtype = _matrix_compose_dtype(image.dtype, image.device, len(self.transforms))
+        acc = composed_batch.to(device=image.device, dtype=acc_dtype)
+        warped, _ = _grid_sample_affine_batched(image, acc, self.interpolation, self.padding_mode)
+        return warped
 
     def forward_numpy(self, img_hwc: NDArray[Any]) -> NDArray[Any]:
         """Apply fused affine chain to a single HWC NumPy image (no tensor conversion).
@@ -1714,20 +1876,12 @@ class ProjectiveSegment(_BaseAffineSegment):
             A ``(warped_image, grid)`` tuple.
 
         """
-        _, _, height, width = image.shape
-        dtype = image.dtype
-        mtx_inv = inv3x3(acc)
-        mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
-
-        grid = perspective_grid(mtx_norm, height, width)
-        image = F.grid_sample(
+        return _grid_sample_perspective_batched(
             image,
-            grid,
-            mode=self.interpolation or "bilinear",
-            padding_mode=self.padding_mode or "zeros",
-            align_corners=True,
+            acc,
+            self.interpolation or "bilinear",
+            self.padding_mode or "zeros",
         )
-        return image, grid
 
 
 # ---------------------------------------------------------------------------
@@ -1759,10 +1913,14 @@ class AlbuProjectiveSegment(nn.Module):
         adapter: TransformAdapter,
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
+        execution: ExecutionStr = "cv2",
     ) -> None:
         """Initialize ``AlbuProjectiveSegment``."""
         super().__init__()
-        if _cv2 is None:
+        self.execution: ExecutionStr = _validate_execution(execution)
+        # cv2 is only required for the default cv2 warp strategy; the torch
+        # strategy warps with grid_sample and needs no OpenCV.
+        if _cv2 is None and self.execution == "cv2":
             raise ImportError(
                 "AlbuProjectiveSegment requires opencv-python because it uses cv2.warpPerspective under the hood."
             )
@@ -1808,20 +1966,39 @@ class AlbuProjectiveSegment(nn.Module):
                 "auxiliary targets alongside the image."
             )
 
-        batch_size, num_channels, height, width = image.shape
-        device = image.device
-        dtype = image.dtype
+        batch_size = image.shape[0]
 
-        # Compose a (batch_size, 3, 3) forward matrix tensor for last_matrix storage
-        composed_batch = (
-            torch.eye(3, dtype=torch.float64, device=device).unsqueeze(0).expand(batch_size, -1, -1).clone()
-        )
+        # Compose per-sample forward homographies with Albumentations' own
+        # per-sample sampling (numpy RNG stream) — identical for both execution
+        # strategies; only the warp backend differs.
+        accs, any_active = self._compose_matrices(image)
+        composed_batch = self._stack_matrices(accs)
+        self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
 
         if batch_size == 0 or len(self.transforms) == 0:
-            self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
             return image
 
-        # Pre-draw per-transform active masks
+        if self.execution == "torch":
+            return self._warp_torch(image, composed_batch)
+        return self._warp_cv2(image, accs, any_active)
+
+    def _compose_matrices(self, image: Tensor) -> tuple[list[MatrixArray], list[bool]]:
+        """Compose per-sample forward homographies via Albumentations sampling.
+
+        Runs the exact per-sample activation draws and ``sample_params`` calls the
+        cv2 path has always used, so the numpy RNG stream is unchanged.
+
+        Args:
+            image: ``(batch_size, channels, height, width)`` input tensor.
+
+        Returns:
+            A ``(accs, any_active)`` pair: ``accs`` is a per-sample list of
+            ``(3, 3)`` float64 forward homographies; ``any_active[b]`` is ``True``
+            when at least one transform applied to sample ``b``.
+
+        """
+        batch_size, num_channels, height, width = image.shape
+
         active_masks: list[Any] = []
         for tfm in self.transforms:
             prob = _transform_prob(tfm)
@@ -1832,9 +2009,6 @@ class AlbuProjectiveSegment(nn.Module):
             else:
                 active_masks.append(np.random.rand(batch_size) < prob)
 
-        cv2_interp = _CV2_INTERP.get(self.interpolation, _CV2_INTERP.get("bilinear", 1))
-        cv2_border = _CV2_BORDER.get(self.padding_mode, _CV2_BORDER.get("zeros", 0))
-
         # same_on_batch transforms share ONE param draw across the whole batch,
         # matching the shared activation draw above (mirrors AlbuFusedAffineSegment).
         shared_mtx: dict[int, MatrixArray] = {}
@@ -1844,12 +2018,11 @@ class AlbuProjectiveSegment(nn.Module):
                 mtx_shared = self.adapter.build_matrix(tfm, params, height, width)
                 shared_mtx[t_idx] = mtx_shared[0].double().cpu().numpy()
 
-        output_np: list[ImageArray] = []
-
+        accs: list[MatrixArray] = []
+        any_active: list[bool] = []
         for b_idx in range(batch_size):
             acc: MatrixArray = np.eye(3, dtype=np.float64)
-            any_active = False
-
+            active = False
             for t_idx, tfm in enumerate(self.transforms):
                 # Skip BEFORE sampling (matching forward_numpy): inactive transforms
                 # must not consume RNG draws, otherwise entry points diverge under a
@@ -1857,29 +2030,62 @@ class AlbuProjectiveSegment(nn.Module):
                 if not active_masks[t_idx][b_idx]:
                     continue
                 if t_idx in shared_mtx:
-                    any_active = True
+                    active = True
                     acc = shared_mtx[t_idx] @ acc
                     continue
                 params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
                 mtx_i = self.adapter.build_matrix(tfm, params, height, width)
-                any_active = True
+                active = True
                 acc = mtx_i[0].double().cpu().numpy() @ acc
+            accs.append(acc)
+            any_active.append(active)
+        return accs, any_active
 
-            composed_batch[b_idx] = torch.as_tensor(
-                acc.copy(),
-                device=composed_batch.device,
-                dtype=composed_batch.dtype,
-            )
+    @staticmethod
+    def _stack_matrices(accs: list[MatrixArray]) -> Tensor:
+        """Stack per-sample ``(3, 3)`` numpy homographies into a CPU ``(B, 3, 3)`` float64 tensor.
 
+        Built on CPU (numpy source, and MPS has no float64); the torch warp path
+        casts to a device-safe dtype and moves to the accelerator.
+
+        Args:
+            accs: Per-sample forward homographies from :meth:`_compose_matrices`.
+
+        Returns:
+            A CPU ``(len(accs), 3, 3)`` float64 tensor, or a ``(0, 3, 3)`` tensor
+            when ``accs`` is empty.
+
+        """
+        if not accs:
+            return torch.empty((0, 3, 3), dtype=torch.float64)
+        return torch.as_tensor(np.stack(accs), dtype=torch.float64)
+
+    def _warp_cv2(self, image: Tensor, accs: list[MatrixArray], any_active: list[bool]) -> Tensor:
+        """Warp each sample with one ``cv2.warpPerspective`` (default CPU strategy).
+
+        Args:
+            image: ``(B, C, H, W)`` input tensor.
+            accs: Per-sample forward homographies from :meth:`_compose_matrices`.
+            any_active: Per-sample activity flags; inactive samples pass through untouched.
+
+        Returns:
+            The warped ``(B, C, H, W)`` tensor on the input device and dtype.
+
+        """
+        batch_size, _, height, width = image.shape
+        device = image.device
+        dtype = image.dtype
+        cv2_interp = _CV2_INTERP.get(self.interpolation, _CV2_INTERP.get("bilinear", 1))
+        cv2_border = _CV2_BORDER.get(self.padding_mode, _CV2_BORDER.get("zeros", 0))
+
+        output_np: list[ImageArray] = []
+        for b_idx in range(batch_size):
             img_np = image[b_idx].permute(1, 2, 0).cpu().numpy()
-
-            if not any_active:
+            if not any_active[b_idx]:
                 output_np.append(img_np)
                 continue
-
-            # acc is the composed forward (src→dst) matrix; invert to get dst→src
-            mtx_inv = np.linalg.inv(acc)
-
+            # acc is the composed forward (src->dst) matrix; invert to get dst->src
+            mtx_inv = np.linalg.inv(accs[b_idx])
             warped: ImageArray = _cv2.warpPerspective(
                 img_np,
                 mtx_inv,  # dst->src inverse map
@@ -1892,14 +2098,29 @@ class AlbuProjectiveSegment(nn.Module):
                 warped = warped[..., None]
             output_np.append(warped)
 
-        # Stack back to (B, C, H, W)
-        stacked = torch.stack([
+        return torch.stack([
             torch.as_tensor(np.ascontiguousarray(img).copy()).permute(2, 0, 1) for img in output_np
         ]).to(device=device, dtype=dtype)
 
-        self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
+    def _warp_torch(self, image: Tensor, composed_batch: Tensor) -> Tensor:
+        """Warp the whole batch with one perspective ``grid_sample`` (opt-in torch strategy).
 
-        return stacked
+        Uses the homographies already composed by :meth:`_compose_matrices`, so the
+        sampled geometry matches the cv2 path exactly; only the resampling backend
+        differs. Inactive samples keep identity and pass through the near-identity warp.
+
+        Args:
+            image: ``(B, C, H, W)`` input tensor (any device — this path is the GPU/MPS warp).
+            composed_batch: ``(B, 3, 3)`` float64 forward homographies on the image device.
+
+        Returns:
+            The warped ``(B, C, H, W)`` tensor on the input device and dtype.
+
+        """
+        acc_dtype = _matrix_compose_dtype(image.dtype, image.device, len(self.transforms))
+        acc = composed_batch.to(device=image.device, dtype=acc_dtype)
+        warped, _ = _grid_sample_perspective_batched(image, acc, self.interpolation, self.padding_mode)
+        return warped
 
 
 class FusedColorSegment(nn.Module):
@@ -2371,6 +2592,7 @@ def build_segments(
     *,
     use_numpy: bool = False,
     route_coords_via_grid: bool = False,
+    execution: ExecutionStr = "cv2",
 ) -> list[object]:
     """Split a transform list into fused segments and passthrough transforms.
 
@@ -2411,6 +2633,10 @@ def build_segments(
             exact-dispatch still applies it losslessly while routing boxes/keypoints
             through the composed pixel matrix — avoiding the ``ExactAffineSegment``
             box/keypoint limitation without an interpolation penalty. Torch path only.
+        execution: Execution strategy forwarded to the Albumentations fused segments
+            (``use_numpy=True`` path). ``"cv2"`` (default) warps each sample with
+            OpenCV; ``"torch"`` opts into one batched ``grid_sample`` for the whole
+            batch. Ignored for the PyTorch backends.
 
     Returns:
         Flat list where each element is a :class:`FusedAffineSegment`
@@ -2451,6 +2677,7 @@ def build_segments(
                         adapter=adapter,
                         interpolation=interpolation,
                         padding_mode=padding_mode,
+                        execution=execution,
                     )
                 )
             else:
@@ -2490,6 +2717,7 @@ def build_segments(
                     adapter=adapter,
                     interpolation=interpolation,
                     padding_mode=padding_mode,
+                    execution=execution,
                 )
             )
         else:

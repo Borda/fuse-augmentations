@@ -175,13 +175,26 @@ Pipeline:  Rotate, Translate, HFlip, Brightness, Contrast
   backend:        [warp 1]                          [pixel op]    1 warp + 1 pixel op  ✓
 ```
 
+### Execution strategies for Albumentations pipelines
+
+Fused Albumentations segments support an `execution` flag on `Compose`:
+
+- `execution="cv2"` (default) — each sample in the batch is warped with one `cv2.warpAffine`/`cv2.warpPerspective` call. Outputs are bit-identical to earlier releases and to what the composed cv2 matrices produce natively; this is the fastest choice on CPU at small batch sizes.
+- `execution="torch"` (opt-in) — the same per-sample matrices (identical random sampling stream) are applied as **one batched** `grid_sample` for the whole batch, giving batch-size-independent throughput and native GPU/MPS execution. Border handling and bilinear sub-pixel weights differ slightly from cv2 (interior pixels agree to ~1e-3 on smooth content), so this strategy is opt-in rather than a silent default change.
+
+```python
+pipe = Compose(albu_transforms, execution="torch")  # batched grid_sample path
+```
+
+On CUDA/MPS devices the torch strategy is the natural choice — the cv2 path would require a CPU round-trip.
+
 ## 📖 API Reference
 
 ### Core
 
 | Class / Function                      | Description                                                                                                                                                                                                                        |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Compose`                             | Main entry point. Wraps a list of transforms, groups them into fusible runs, and fuses each group on `forward()`. Accepts `output_backend="numpy"` to return NumPy arrays. Aliases: `FusedCompose`, `AugmentationSequential`.      |
+| `Compose`                             | Main entry point. Wraps a list of transforms, groups them into fusible runs, and fuses each group on `forward()`. Accepts `output_backend="numpy"` to return NumPy arrays and \`execution="cv2"                                    |
 | `Compose.from_params(...)`            | Classmethod. Build a backend-free pipeline from numeric parameter ranges, or from a `specs` list of `TransformSpec` objects. Defaults to `ReorderPolicy.POINTWISE`.                                                                |
 | `Compose.from_config(specs, backend)` | Classmethod. Resolve a list of `TransformSpec` objects to a specific backend and build the pipeline -- no backend imports needed at spec time. Defaults to `ReorderPolicy.POINTWISE`.                                              |
 | `TransformSpec`                       | Frozen dataclass for declarative, backend-agnostic pipeline configuration: `operation`, `params`, `prob`. JSON-serialisable via `to_dict()` / `from_dict()`.                                                                       |

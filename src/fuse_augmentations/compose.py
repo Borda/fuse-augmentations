@@ -56,11 +56,13 @@ from fuse_augmentations.affine.segment import (
     FusedAffineSegment,
     FusedColorSegment,
     ProjectiveSegment,
+    _validate_execution,
     build_segments,
     reorder_aggressive,
     reorder_pointwise,
 )
 from fuse_augmentations.types import (
+    ExecutionStr,
     InterpolationStr,
     PaddingModeStr,
     RandomnessPolicy,
@@ -195,6 +197,15 @@ class FusedCompose(nn.Module):
             backend semantics, including TorchVision v2 batch-shared sampling.
             ``"per_sample"`` asks adapters with canonical samplers to draw
             independent parameters per batch item.
+        execution: Warp strategy for the Albumentations fused segments.
+            ``"cv2"`` (default) warps each sample with OpenCV -- bit-exact with the
+            native cv2 backend and fastest on CPU at small batch sizes.
+            ``"torch"`` composes the same per-sample matrices (identical sampling
+            and RNG) but applies one batched ``grid_sample`` for the whole batch,
+            giving batch-size-independent throughput and a native GPU/MPS warp; its
+            border/bilinear numerics differ slightly from cv2. Only affects
+            Albumentations pipelines; the Kornia/TorchVision backends already run
+            the torch engine.
         **backend_kwargs: Reserved for backend-specific options (currently unused).
 
     """
@@ -208,11 +219,13 @@ class FusedCompose(nn.Module):
         data_keys: list[str] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
         randomness: RandomnessPolicy | Literal["backend", "per_sample"] = RandomnessPolicy.BACKEND,
+        execution: ExecutionStr = "cv2",
         **backend_kwargs: object,
     ) -> None:
         """Initialize ``FusedCompose``."""
         super().__init__()
         randomness_policy = _coerce_randomness_policy(randomness)
+        execution = _validate_execution(execution)
 
         if reorder not in (ReorderPolicy.NONE, ReorderPolicy.POINTWISE, ReorderPolicy.AGGRESSIVE):
             msg = f"ReorderPolicy.{reorder.name} not yet supported"
@@ -266,6 +279,7 @@ class FusedCompose(nn.Module):
                     randomness=randomness_policy,
                     use_numpy=(backend == Backend.ALBUMENTATIONS),
                     route_coords_via_grid=_has_coord_aux(data_keys),
+                    execution=execution,
                 )
             else:
                 # Mixed-backend path: group by backend, build segments per group
@@ -277,6 +291,7 @@ class FusedCompose(nn.Module):
                     padding_mode=padding_mode,
                     randomness=randomness_policy,
                     route_coords_via_grid=_has_coord_aux(data_keys),
+                    execution=execution,
                 )
 
         self._setup_instance(
@@ -290,6 +305,7 @@ class FusedCompose(nn.Module):
             transform_adapters=tfm_adapters,
             output_backend=output_backend,
             randomness=randomness_policy,
+            execution=execution,
         )
 
     def _setup_instance(
@@ -304,6 +320,7 @@ class FusedCompose(nn.Module):
         transform_adapters: dict[int, TransformAdapter] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+        execution: ExecutionStr = "cv2",
     ) -> None:
         """Assign all instance attributes.
 
@@ -316,6 +333,7 @@ class FusedCompose(nn.Module):
         self.padding_mode: PaddingModeStr | None = padding_mode
         self.data_keys: list[str] | None = data_keys
         self.randomness: RandomnessPolicy = randomness
+        self.execution: ExecutionStr = execution
         self._adapter: TransformAdapter | None = adapter
         # Heterogeneous by design: fused/color/exact/crop segments, passthrough wrappers, or raw
         # legacy transforms — dispatched at runtime via _seg_dispatch_tags, so elements stay Any.
@@ -552,6 +570,9 @@ class FusedCompose(nn.Module):
             self._aux_keys = list(self.data_keys[1:]) if self.data_keys else []
         if getattr(self, "_seg_dispatch_tags", None) is None:
             self._seg_dispatch_tags = self._build_dispatch_tags()
+        if not hasattr(self, "execution"):
+            # Pickles predating the execution flag default to the cv2 strategy.
+            self.execution = "cv2"
 
     def __call__(self, *args: object, **kwargs: object) -> object:
         """Route to the Albumentations native dict path or the standard tensor path.
@@ -1834,6 +1855,7 @@ def _build_mixed_segments(
     randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     *,
     route_coords_via_grid: bool = False,
+    execution: ExecutionStr = "cv2",
 ) -> tuple[TransformAdapter, list[object], dict[int, TransformAdapter]]:
     """Build segments for a mixed-backend pipeline.
 
@@ -1853,6 +1875,8 @@ def _build_mixed_segments(
         randomness: Batch randomness policy forwarded to segments.
         route_coords_via_grid: Forwarded to ``build_segments`` — routes all-exact runs
             through the grid path when box/keypoint aux targets are present.
+        execution: Forwarded to ``build_segments`` — Albumentations warp strategy
+            (``"cv2"`` default, ``"torch"`` opt-in batched grid_sample).
 
     Returns:
         A 3-tuple ``(primary_adapter, segments, transform_adapters)`` where:
@@ -1913,6 +1937,7 @@ def _build_mixed_segments(
             randomness=randomness,
             use_numpy=(backend_name == Backend.ALBUMENTATIONS),
             route_coords_via_grid=route_coords_via_grid,
+            execution=execution,
         )
         all_segments.extend(group_segments)
 
