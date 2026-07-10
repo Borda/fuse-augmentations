@@ -1,6 +1,8 @@
 """Affine warp segment classes and matrix primitives."""
 
 from fuse_augmentations.affine.matrix import (
+    apply_d4_image,
+    classify_d4_batch,
     crop_resize_matrix,
     hflip_matrix,
     inv3x3,
@@ -37,7 +39,9 @@ __all__ = [
     "FusedAffineSegment",
     "FusedColorSegment",
     "ProjectiveSegment",
+    "apply_d4_image",
     "build_segments",
+    "classify_d4_batch",
     "crop_resize_matrix",
     "hflip_matrix",
     "inv3x3",

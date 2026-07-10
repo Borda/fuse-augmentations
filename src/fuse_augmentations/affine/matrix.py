@@ -225,6 +225,183 @@ def vflip_matrix(height: int, batch_size: int, device: torch.device, dtype: torc
     return matrix
 
 
+# Canonical D4 (dihedral group of the square) forward pixel matrices, keyed by op
+# name. Each returns the (3, 3) forward pixel matrix that maps an INPUT pixel
+# coordinate to its OUTPUT position in the [0, W-1] x [0, H-1], align_corners=True
+# convention. Feeding ``inv3x3`` of one of these to ``affine_grid`` reproduces the
+# corresponding ``torch.flip`` / ``torch.rot90`` result bit-for-bit (verified against
+# grid_sample). ``rot90``/``rot270``/``transpose``/``anti_transpose`` swap the two
+# spatial axes, so they are shape-preserving only when ``height == width``.
+_D4_OPS: tuple[str, ...] = (
+    "identity",
+    "hflip",
+    "vflip",
+    "rot180",
+    "rot90",
+    "rot270",
+    "transpose",
+    "anti_transpose",
+)
+# Ops whose linear part swaps the x and y axes (valid only on square images).
+_D4_AXIS_SWAP: frozenset[str] = frozenset({"rot90", "rot270", "transpose", "anti_transpose"})
+# Scale-free absolute tolerance on the pre-round residual (pixel units). Composing an
+# exactly-90-degree kornia rotation with a flip leaves a residual that scales with the
+# translation column (~4e-8 at 16 px up to ~9e-5 at 2048 px), whereas a sub-degree-off
+# rotation (89.99 degrees) leaves >=1.3e-3 at every size — the two stay ~2000x apart.
+# A FIXED 1e-4 sits between them at all realistic sizes: it accepts the true quarter-turn
+# (<=9e-5 through 2048 px) and rejects the near-quarter-turn. Deliberately NOT scaled by
+# the matrix magnitude — a magnitude-scaled tolerance widens the angular window with size
+# and would silently snap near-90-degree rotations to an exact 90.
+_D4_RESIDUAL_EPS: float = 1e-4
+
+
+def _d4_forward_matrix(name: str, height: int, width: int) -> torch.Tensor:
+    """Build the canonical ``(3, 3)`` float64 forward pixel matrix for a D4 op.
+
+    Args:
+        name: One of :data:`_D4_OPS`.
+        height: Image height in pixels.
+        width: Image width in pixels.
+
+    Returns:
+        ``(3, 3)`` float64 forward pixel matrix.
+
+    Raises:
+        ValueError: If ``name`` is not a recognised D4 op.
+
+    """
+    w1 = float(width - 1)
+    h1 = float(height - 1)
+    if name == "identity":
+        rows = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    elif name == "hflip":
+        rows = [[-1.0, 0.0, w1], [0.0, 1.0, 0.0]]
+    elif name == "vflip":
+        rows = [[1.0, 0.0, 0.0], [0.0, -1.0, h1]]
+    elif name == "rot180":
+        rows = [[-1.0, 0.0, w1], [0.0, -1.0, h1]]
+    elif name == "rot90":  # torch.rot90(k=1, dims=[2, 3])
+        rows = [[0.0, 1.0, 0.0], [-1.0, 0.0, w1]]
+    elif name == "rot270":  # torch.rot90(k=3, dims=[2, 3])
+        rows = [[0.0, -1.0, h1], [1.0, 0.0, 0.0]]
+    elif name == "transpose":  # swap x and y
+        rows = [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]
+    elif name == "anti_transpose":
+        rows = [[0.0, -1.0, h1], [-1.0, 0.0, w1]]
+    else:
+        msg = f"Unknown D4 op name: {name!r}"
+        raise ValueError(msg)
+    matrix = torch.zeros(3, 3, dtype=torch.float64)
+    matrix[:2, :] = torch.tensor(rows, dtype=torch.float64)
+    matrix[2, 2] = 1.0
+    return matrix
+
+
+def classify_d4_batch(matrix: torch.Tensor, height: int, width: int) -> str | None:
+    """Classify a ``(B, 3, 3)`` forward matrix as a shared D4 op via exact integers.
+
+    Rounds the matrix to the nearest integer and *verifies* every entry is within a
+    tight, scale-free absolute epsilon (``_D4_RESIDUAL_EPS``) of that integer, then
+    checks equality against the eight canonical D4 forward matrices for the given
+    ``(height, width)``. Returns the op name only when EVERY batch element is the same
+    D4 element; otherwise ``None`` so the caller stays on the interpolating grid path.
+
+    The epsilon is a fixed ``1e-4`` in pixel units (``_D4_RESIDUAL_EPS``), NOT a fraction
+    of the matrix magnitude. A true quarter-turn (composed with flips) deviates from
+    integer only by the ``sin(pi/2)`` float error propagated through the translation
+    column (<=~9e-5 up to 2048 px), which passes; a near-quarter-turn such as an
+    89.99-degree rotation leaves a residual of >=1.3e-3 at every size, which is rejected —
+    so a sub-degree rotation is never silently snapped to an exact 90 degrees. Because the
+    epsilon is scale-free, the angular acceptance window shrinks as the image grows,
+    rather than widening (which a magnitude-scaled tolerance would do). A matrix whose net
+    translation differs from the border-preserving canonical form is likewise rejected.
+
+    Axis-swapping ops (``rot90``/``rot270``/``transpose``/``anti_transpose``) are
+    reported only for square images (``height == width``); on non-square images they
+    would change output dimensions and cannot replace a same-size warp.
+
+    Args:
+        matrix: ``(B, 3, 3)`` forward pixel matrix (input -> output), any dtype.
+        height: Image height in pixels.
+        width: Image width in pixels.
+
+    Returns:
+        A member of :data:`_D4_OPS` when the whole batch shares one D4 element,
+        else ``None``.
+
+    Example:
+        >>> import torch
+        >>> from fuse_augmentations.affine.matrix import hflip_matrix, classify_d4_batch
+        >>> m = hflip_matrix(width=8, batch_size=2, device=torch.device("cpu"), dtype=torch.float32)
+        >>> classify_d4_batch(m, height=8, width=8)
+        'hflip'
+
+    """
+    # Work in float32 on the source device: MPS has no float64, and D4 entries are
+    # small integers (linear part in {0, +/-1}, translation up to max(H, W)-1) so
+    # float32 resolves them exactly at realistic image sizes.
+    mat = matrix.detach().to(dtype=torch.float32)
+    rounded = torch.round(mat)
+    # Scale-free absolute residual gate (see _D4_RESIDUAL_EPS): accepts a true
+    # quarter-turn, rejects a sub-degree-off rotation, at every realistic image size.
+    if not bool((mat - rounded).abs().max().item() <= _D4_RESIDUAL_EPS):
+        return None
+    matched: str | None = None
+    for name in _D4_OPS:
+        if name in _D4_AXIS_SWAP and height != width:
+            continue
+        canonical = _d4_forward_matrix(name, height, width).to(dtype=torch.float32, device=mat.device)
+        if bool(torch.equal(rounded, canonical.unsqueeze(0).expand_as(rounded))):
+            matched = name
+            break
+    return matched
+
+
+def apply_d4_image(image: torch.Tensor, name: str) -> torch.Tensor:
+    """Apply a D4 op to an image (or image-like) tensor via ``flip`` / ``rot90``.
+
+    Uses only lossless index operations (``tensor.flip``, ``torch.rot90``,
+    ``transpose``) so no interpolation error is introduced. The op is applied to the
+    trailing two dims ``(..., H, W)``, so masks (single-channel) and multi-channel
+    images share the same code path.
+
+    Args:
+        image: ``(..., H, W)`` tensor.
+        name: One of :data:`_D4_OPS`.
+
+    Returns:
+        The transformed tensor.
+
+    Raises:
+        ValueError: If ``name`` is not a recognised D4 op.
+
+    Example:
+        >>> import torch
+        >>> from fuse_augmentations.affine.matrix import apply_d4_image
+        >>> apply_d4_image(torch.zeros(1, 1, 4, 4), "rot90").shape
+        torch.Size([1, 1, 4, 4])
+
+    """
+    if name == "identity":
+        return image
+    if name == "hflip":
+        return image.flip(dims=[-1])
+    if name == "vflip":
+        return image.flip(dims=[-2])
+    if name == "rot180":
+        return torch.rot90(image, k=2, dims=[-2, -1])
+    if name == "rot90":
+        return torch.rot90(image, k=1, dims=[-2, -1])
+    if name == "rot270":
+        return torch.rot90(image, k=3, dims=[-2, -1])
+    if name == "transpose":
+        return image.transpose(-2, -1)
+    if name == "anti_transpose":
+        return torch.rot90(image, k=1, dims=[-2, -1]).flip(dims=[-1])
+    msg = f"Unknown D4 op name: {name!r}"
+    raise ValueError(msg)
+
+
 def matmul3x3(matrix_a: torch.Tensor, matrix_b: torch.Tensor) -> torch.Tensor:
     """Batch 3x3 matrix multiply.
 

@@ -83,6 +83,35 @@ if TYPE_CHECKING:
     from fuse_augmentations.resolver import BackendStr, OpStr
 
 _KNOWN_DATA_KEYS = {"input", "mask", "bbox_xyxy", "bbox_xywh", "keypoints"}
+# Coordinate aux targets that ExactAffineSegment cannot route through a non-flip exact
+# op: their per-sample rotation is not recoverable without re-sampling. When present, an
+# all-exact geometric run is routed through the (still-lossless for D4) grid path.
+_COORD_DATA_KEYS = {"bbox_xyxy", "bbox_xywh", "keypoints"}
+
+
+def _has_coord_aux(data_keys: list[str] | None) -> bool:
+    """Return whether ``data_keys`` carries any box/keypoint auxiliary target.
+
+    Args:
+        data_keys: The pipeline's positional data-key names, or ``None``.
+
+    Returns:
+        ``True`` if any coordinate aux key (``bbox_xyxy``/``bbox_xywh``/``keypoints``)
+        is present, else ``False``.
+
+    Examples:
+        >>> _has_coord_aux(["input", "keypoints"])
+        True
+        >>> _has_coord_aux(["input", "mask"])
+        False
+        >>> _has_coord_aux(None)
+        False
+
+    """
+    if data_keys is None:
+        return False
+    return any(key in _COORD_DATA_KEYS for key in data_keys)
+
 
 # Plan-time segment dispatch tags. Computed once per pipeline at construction and
 # stored on the instance so ``forward`` loops over integer tags instead of running
@@ -236,6 +265,7 @@ class FusedCompose(nn.Module):
                     padding_mode=padding_mode,
                     randomness=randomness_policy,
                     use_numpy=(backend == Backend.ALBUMENTATIONS),
+                    route_coords_via_grid=_has_coord_aux(data_keys),
                 )
             else:
                 # Mixed-backend path: group by backend, build segments per group
@@ -246,6 +276,7 @@ class FusedCompose(nn.Module):
                     interpolation=interpolation,
                     padding_mode=padding_mode,
                     randomness=randomness_policy,
+                    route_coords_via_grid=_has_coord_aux(data_keys),
                 )
 
         self._setup_instance(
@@ -1801,6 +1832,8 @@ def _build_mixed_segments(
     interpolation: InterpolationStr | None,
     padding_mode: PaddingModeStr | None,
     randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+    *,
+    route_coords_via_grid: bool = False,
 ) -> tuple[TransformAdapter, list[object], dict[int, TransformAdapter]]:
     """Build segments for a mixed-backend pipeline.
 
@@ -1818,6 +1851,8 @@ def _build_mixed_segments(
         interpolation: Interpolation mode forwarded to segments.
         padding_mode: Padding mode forwarded to segments.
         randomness: Batch randomness policy forwarded to segments.
+        route_coords_via_grid: Forwarded to ``build_segments`` — routes all-exact runs
+            through the grid path when box/keypoint aux targets are present.
 
     Returns:
         A 3-tuple ``(primary_adapter, segments, transform_adapters)`` where:
@@ -1877,6 +1912,7 @@ def _build_mixed_segments(
             padding_mode=padding_mode,
             randomness=randomness,
             use_numpy=(backend_name == Backend.ALBUMENTATIONS),
+            route_coords_via_grid=route_coords_via_grid,
         )
         all_segments.extend(group_segments)
 

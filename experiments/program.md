@@ -14,7 +14,7 @@ Primary objectives by priority:
 
 `real_score > theoretical_target` is a valid and expected outcome for b-group TV/Kornia cases (flips are nearly free in native, giving super-theoretical ratios). Do not modify `optimize_score.py` to clamp or renormalise scores.
 
-**Ceiling correction (2026-07-09, blueprint §14)**: an earlier revision here claimed Albumentations 2.0 composes consecutive affine matrices internally and capped the realistic geomean at ~1.85–1.95. Source-verified FALSE — Albu 2.0.8 dispatches one `cv2.warpAffine` per transform, with no cross-transform matrix composition (`.plans/active/blueprint_arch_redesign_superior_speed.md` §14). The printed `theoretical_target` IS the campaign ceiling. Near-identical native b02-vs-a01 timings reflect cv2's low per-warp cost at bench image sizes, not matrix composition.
+**Ceiling correction (2026-07-09)**: an earlier revision here claimed Albumentations 2.0 composes consecutive affine matrices internally and capped the realistic geomean at ~1.85–1.95. Source-verified FALSE — Albu 2.0.8 dispatches one `cv2.warpAffine` per transform, with no cross-transform matrix composition (checked against the installed Albumentations 2.0.8 source, 2026-07-09). The printed `theoretical_target` IS the campaign ceiling. Near-identical native b02-vs-a01 timings reflect cv2's low per-warp cost at bench image sizes, not matrix composition.
 
 ## Sequence naming conventions
 
@@ -86,7 +86,7 @@ compute: local
 
 `optimize_score.py` runs in ~60 s on the expanded 45-case metric (WARMUP=10 + REPS=50 × 45 cases × 2 backends per case) — within the 120 s `VERIFY_TIMEOUT_SEC` limit.
 
-The 45-case printed `theoretical_target` ≈ 2.375 = geomean([1⁵ × 2×3×4×5×5 × 3×3×4×4×5]^3)^(1/45). Albu 2.0.8 verified to dispatch N separate warps (blueprint §14) — the formula's assumption HOLDS and this is the achievable ceiling; actual progress remains bounded by colour-op time fractions in d-group.
+The 45-case printed `theoretical_target` ≈ 2.375 = geomean([1⁵ × 2×3×4×5×5 × 3×3×4×4×5]^3)^(1/45). Albu 2.0.8 verified to dispatch N separate warps (installed-source check, 2026-07-09) — the formula's assumption HOLDS and this is the achievable ceiling; actual progress remains bounded by colour-op time fractions in d-group.
 
 Kornia d-group results with `AGGRESSIVE` reordering are bounded by colour-op time; even perfect geo-fusion leaves the colour ops unsaved. The d-group Kornia ceiling with `__agr` is ≈ 1.1–2.1× — this is expected, not a bug.
 

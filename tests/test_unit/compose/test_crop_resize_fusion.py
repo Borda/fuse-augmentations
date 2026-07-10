@@ -23,7 +23,7 @@ import torch.nn.functional as F
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
 from fuse_augmentations.affine.matrix import crop_resize_matrix, inv3x3, normalize_matrix, normalize_matrix_io
-from fuse_augmentations.affine.segment import CropResizeSegment, FusedAffineSegment, build_segments
+from fuse_augmentations.affine.segment import CropResizeSegment, _FusedGeoCropSegment, build_segments
 from fuse_augmentations.compose import FusedCompose
 from fuse_augmentations.types import TransformCategory
 
@@ -272,21 +272,31 @@ class TestBuildSegmentsCropResize:
         assert not isinstance(segments[0], CropResizeSegment)
 
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
-    def test_crop_resize_flushes_preceding_geo(self):
-        """A preceding GEOMETRIC_INTERP run is flushed into its own segment before the CropResizeSegment.
+    def test_crop_resize_fuses_preceding_geo(self):
+        """A preceding GEOMETRIC_INTERP run fuses with the crop into one warp.
 
-        Crop-resize changes output resolution, so it cannot be merged into a same-size affine chain. The builder must
-        emit two segments — a fused affine segment for the rotation followed by the crop-resize segment — not one
-        combined segment.
+        On the torch path a crop-resize immediately after a fusible geometric run composes
+        ``M_crop @ M_geo`` into a single ``_FusedGeoCropSegment`` — one ``grid_sample`` at the
+        crop's target size instead of a fused-affine warp followed by a separate crop warp.
 
         """
         rotate_transform = kornia_aug.RandomRotation(degrees=30.0, p=1.0)
         crop_transform = kornia_aug.RandomResizedCrop(size=(64, 64), scale=(0.5, 1.0))
         adapter = KorniaAdapter()
         segments = build_segments([rotate_transform, crop_transform], adapter, use_numpy=False)
-        assert len(segments) == 2
-        assert isinstance(segments[0], FusedAffineSegment)
-        assert isinstance(segments[1], CropResizeSegment)
+        assert len(segments) == 1
+        assert isinstance(segments[0], _FusedGeoCropSegment)
+        assert not isinstance(segments[0], CropResizeSegment)
+
+    @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
+    def test_crop_resize_without_preceding_geo_stays_standalone(self):
+        """A crop-resize with no pending geometric run stays a standalone CropResizeSegment."""
+        crop_transform = kornia_aug.RandomResizedCrop(size=(64, 64), scale=(0.5, 1.0))
+        adapter = KorniaAdapter()
+        segments = build_segments([crop_transform], adapter, use_numpy=False)
+        assert len(segments) == 1
+        assert isinstance(segments[0], CropResizeSegment)
+        assert not isinstance(segments[0], _FusedGeoCropSegment)
 
 
 class TestCropResizeSegmentForward:
@@ -375,7 +385,13 @@ class TestFusionPlanDescriptors:
         assert descs[0].n_warps_saved == 0
 
     def test_full_pipeline_descriptor_kinds(self):
-        """Rotation → CropResize → HFlip gives [fused, crop_resize, exact]."""
+        """Rotation → CropResize → HFlip gives [fused, exact].
+
+        The rotation fuses with the crop-resize into one ``fused`` segment,
+        so no standalone ``crop_resize`` descriptor remains; the trailing flip is a
+        separate ``exact`` segment.
+
+        """
         transforms = [
             kornia_aug.RandomRotation(degrees=30.0, p=1.0),
             kornia_aug.RandomResizedCrop(size=(64, 64), scale=(0.5, 1.0)),
@@ -383,7 +399,20 @@ class TestFusionPlanDescriptors:
         ]
         pipe = FusedCompose(transforms, adapter=KorniaAdapter())
         kinds = [desc.kind for desc in pipe.fusion_plan_descriptors]
-        assert kinds == ["fused", "crop_resize", "exact"]
+        assert kinds == ["fused", "exact"]
+
+    def test_fused_geo_crop_descriptor_counts_crop(self):
+        """[rotate, RandomResizedCrop] fuses to one ``fused`` descriptor saving 1 warp."""
+        transforms = [
+            kornia_aug.RandomRotation(degrees=30.0, p=1.0),
+            kornia_aug.RandomResizedCrop(size=(64, 64), scale=(0.5, 1.0)),
+        ]
+        pipe = FusedCompose(transforms, adapter=KorniaAdapter())
+        descs = pipe.fusion_plan_descriptors
+        assert len(descs) == 1
+        assert descs[0].kind == "fused"
+        assert descs[0].n_warps_saved == 1
+        assert pipe.n_warps_saved == 1
 
 
 class TestFusedComposeWithCropResize:

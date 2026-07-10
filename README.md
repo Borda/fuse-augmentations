@@ -284,9 +284,12 @@ Supported `data_keys` values:
 | `"bbox_xywh"` | `(B, N, 4)`    | Pixel-space `[x, y, w, h]`; converted internally to xyxy     |
 | `"keypoints"` | `(B, N, 2)`    | Pixel-space `[x, y]`; exact homogeneous transform            |
 
-Exact discrete chains support auxiliary targets only for flip-compatible ops.
-Non-flip exact ops such as `RandomRotate90`, `D4`, and `Transpose` are image-only
-in exact mode and raise when masks, boxes, or keypoints are present.
+Exact discrete chains route all auxiliary targets. Masks are transformed by the same
+lossless flip/rotation applied to the image, for every exact op including non-flip ops
+(`RandomRotate90`, `D4`, `Transpose`). Boxes and keypoints are routed through the
+composed pixel matrix: flip-only exact chains stay lossless, and a chain containing a
+non-flip exact op is executed on the interpolating grid path when box/keypoint targets
+are present, so they are always routed and never raise.
 
 ## 🔌 Backend-Free Pipelines
 
@@ -720,7 +723,6 @@ Pipelines survive `pickle` round-trips, so they work transparently with `torch.n
 - **Spatial-kernel ops** (GaussianBlur, Sharpen) act as fusion barriers; transforms on either side of a barrier form separate segments. These are not yet fusible.
 - **Padding mode** is segment-level: all transforms in a fused run share the padding mode passed to `Compose` (or the adapter default). Individual transforms cannot override it per-segment.
 - **Crop+resize ops** (`RandomResizedCrop`): `CropResizeSegment` applies one interpolation pass at the target output size, but the output spatial dimensions differ from the input. `data_keys` auxiliary targets (masks, bounding boxes, keypoints) are warped through the crop affine matrix at the target size.
-- **Exact discrete aux targets**: flip-only exact chains support masks, boxes, and keypoints. Non-flip exact ops such as `RandomRotate90`, `D4`, and `Transpose` are image-only when routed through `ExactAffineSegment`.
 - **Albumentations + auxiliary targets**: Albumentations fused segments (`AlbuFusedAffineSegment`, `AlbuProjectiveSegment`) do not support auxiliary-target routing in this release. Constructing a `Compose` with an Albumentations pipeline and `data_keys` containing more than the image key raises `ValueError` at construction time.
 - **Gradients**: image transforms are differentiable; mask sampling (`mode='nearest'`) is not.
 - **`output_backend` with multi-target `data_keys`**: when `data_keys` contains more than one entry the pipeline returns a tuple, and `output_backend` conversion is NOT applied. Convert manually or set `output_backend=None` in that case.

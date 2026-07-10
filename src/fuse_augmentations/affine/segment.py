@@ -30,6 +30,8 @@ from torch import Tensor, nn
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
 from fuse_augmentations.affine.matrix import (
+    apply_d4_image,
+    classify_d4_batch,
     inv3x3,
     matmul3x3,
     normalize_matrix,
@@ -71,7 +73,7 @@ except ImportError:
 
 __doctest_skip__: list[str] = []
 if not _KORNIA_AVAILABLE:
-    __doctest_skip__ += [".", "ExactAffineSegment"]
+    __doctest_skip__ += [".", "ExactAffineSegment", "_FusedGeoCropSegment"]
 if not _ALBUMENTATIONS_AVAILABLE:
     __doctest_skip__ += ["AlbuFusedAffineSegment"]
 
@@ -201,9 +203,11 @@ class ExactAffineSegment(nn.Module):
     application probability and applying the exact transform only to active samples. The fused engine prefers a ``prob``
     attribute when present and falls back to backend ``p`` for native transform objects.
 
-    Auxiliary-target routing currently remains flip-only: mask/box/keypoint updates rely on
-    :meth:`TransformAdapter.exact_flip_dims`, so non-flip exact ops raise at runtime when ``aux_targets`` are present
-    and at least one sample is active.
+    Auxiliary-target routing: masks route for every exact op (a non-flip op's mask is transformed by the same
+    lossless rotation applied to the image, sharing its per-sample sampling); boxes/keypoints route for flips via
+    :meth:`TransformAdapter.exact_flip_dims`. A geometric run that combines a non-flip exact op with box/keypoint
+    targets is built as a :class:`FusedAffineSegment` (grid path) instead, so those targets are always routed --
+    ``build_segments`` receives that hint via its ``route_coords_via_grid`` flag.
 
     Args:
         transforms: List of ``GEOMETRIC_EXACT`` transform objects.
@@ -291,57 +295,123 @@ class ExactAffineSegment(nn.Module):
             if not bool(active.any().item()):
                 continue
 
-            # Apply the exact transform only to the active subset to avoid
-            # failures on inactive samples (e.g. shape constraints).
-            active_idx = active.nonzero(as_tuple=True)[0]
+            # A flip exposes its axes via exact_flip_dims; a non-flip D4 op (rot90,
+            # transpose) raises there. For non-flip ops the mask is routed by applying
+            # the identical op to it (sharing the image's per-sample sampling — see
+            # _apply_exact_with_mask), while boxes/keypoints still raise (no per-sample
+            # matrix is recoverable without re-sampling).
+            try:
+                flip_dims: list[int] | None = self.adapter.exact_flip_dims(tfm)
+            except (TypeError, NotImplementedError):
+                flip_dims = None
 
-            if batch_size == 1 or bool(active.all().item()):
-                # Fast path: all samples active — apply directly, no scatter needed.
-                image = self.adapter.exact_apply(tfm, image)
-            else:
-                # Partial scatter: clone then overwrite only the active rows.
-                transformed_active = self.adapter.exact_apply(tfm, image[active_idx])
-                image = image.clone()
-                image[active_idx] = transformed_active
-            # Transform auxiliary targets with the same per-sample active mask.
-            # Flip-based aux routing uses exact_flip_dims; non-flip exact ops
-            # (rot90, transpose) do not yet support auxiliary targets.
+            image = self._apply_exact_with_mask(tfm, image, active, aux_targets, flip_dims)
             if aux_targets:
-                try:
-                    flip_dims = self.adapter.exact_flip_dims(tfm)
-                except (TypeError, NotImplementedError) as exc:
-                    if bool(active.any().item()):
-                        msg = (
-                            f"Exact transform {type(tfm).__name__!r} does not support auxiliary-target routing "
-                            "in ExactAffineSegment. This would misalign mask/boxes/keypoints. "
-                            "Use flip-only exact chains when passing aux targets, or route through an "
-                            "interpolating fused segment."
-                        )
-                        raise RuntimeError(msg) from exc
-                    continue
-                is_hflip = 3 in flip_dims
-                is_vflip = 2 in flip_dims
-                for key in list(aux_targets.keys()):
-                    val = aux_targets[key]
-                    if key == "mask":
-                        flipped_val = val.flip(dims=flip_dims)
-                        aux_targets[key] = torch.where(active[:, None, None, None], flipped_val, val)
-                        continue
-                    if key == "bbox_xyxy":
-                        aux_targets[key] = _flip_bbox_xyxy(val, active, is_hflip, is_vflip, _height, width)
-                        continue
-                    if key == "bbox_xywh":
-                        # Convert xywh -> xyxy, flip, convert back
-                        xyxy = _xywh_to_xyxy(val)
-                        xyxy = _flip_bbox_xyxy(xyxy, active, is_hflip, is_vflip, _height, width)
-                        aux_targets[key] = _xyxy_to_xywh(xyxy)
-                        continue
-                    if key == "keypoints":
-                        aux_targets[key] = _flip_keypoints(val, active, is_hflip, is_vflip, _height, width)
+                self._route_exact_coord_aux(tfm, flip_dims, active, aux_targets, _height, width)
 
         if not _has_aux:
             return image
         return image, aux_targets
+
+    def _apply_exact_with_mask(
+        self,
+        tfm: object,
+        image: Tensor,
+        active: Tensor,
+        aux_targets: dict[str, Tensor],
+        flip_dims: list[int] | None,
+    ) -> Tensor:
+        """Apply an exact op to the image, stacking the mask for non-flip ops.
+
+        For a non-flip D4 op (rot90/transpose) with a mask, the mask is concatenated
+        onto the image channels for a single :meth:`TransformAdapter.exact_apply` call
+        so both share the identical per-sample random draw (e.g. the same ``rot90``
+        count ``k``) — a separate call would re-sample and misalign them. Flip ops are
+        deterministic per axis and route the mask via ``exact_flip_dims`` afterwards,
+        so no stacking is needed. The active subset is scattered back so inactive
+        samples are untouched.
+
+        Args:
+            tfm: The exact transform to apply.
+            image: ``(B, C, H, W)`` input batch.
+            active: ``(B,)`` bool mask of samples this transform applies to.
+            aux_targets: Aux dict; its ``"mask"`` entry is updated in place for
+                non-flip ops.
+            flip_dims: Result of ``exact_flip_dims`` (``None`` for non-flip ops).
+
+        Returns:
+            The transformed ``(B, C, H, W)`` image.
+
+        """
+        mask = aux_targets.get("mask")
+        # Only non-flip ops need the mask stacked to share sampling; flips route it
+        # afterwards via exact_flip_dims, so the image-only path is kept unchanged.
+        stack_mask = mask is not None and flip_dims is None
+        num_channels = image.shape[1]
+        stack = torch.cat([image, mask], dim=1) if mask is not None and stack_mask else image
+
+        active_idx = active.nonzero(as_tuple=True)[0]
+        if image.shape[0] == 1 or bool(active.all().item()):
+            stack_out = self.adapter.exact_apply(tfm, stack)
+        else:
+            transformed = self.adapter.exact_apply(tfm, stack[active_idx])
+            stack_out = stack.clone()
+            stack_out[active_idx] = transformed
+
+        if not stack_mask:
+            return stack_out
+        aux_targets["mask"] = stack_out[:, num_channels:]
+        return stack_out[:, :num_channels]
+
+    def _route_exact_coord_aux(
+        self,
+        tfm: object,
+        flip_dims: list[int] | None,
+        active: Tensor,
+        aux_targets: dict[str, Tensor],
+        height: int,
+        width: int,
+    ) -> None:
+        """Route flip-based mask/box/keypoint aux with per-sample masking.
+
+        Flips route mask (via ``exact_flip_dims``), boxes and keypoints with per-sample
+        ``active`` masking. Non-flip exact ops (rot90/transpose) have their mask handled
+        by :meth:`_apply_exact_with_mask` and return here without touching coord targets:
+        a pipeline carrying box/keypoint aux is built with such runs routed through the
+        interpolating grid segment instead (see ``build_segments`` ``route_coords_via_grid``),
+        so a non-flip exact op never reaches this method with coord targets.
+
+        Args:
+            tfm: The exact transform.
+            flip_dims: ``exact_flip_dims`` result, or ``None`` for non-flip ops.
+            active: ``(B,)`` bool mask of active samples.
+            aux_targets: Aux dict, updated in place.
+            height: Image height in pixels.
+            width: Image width in pixels.
+
+        """
+        if flip_dims is None:
+            # Non-flip exact op: mask already routed in _apply_exact_with_mask; coord
+            # targets are handled by the grid segment upstream, so nothing to do here.
+            return
+        is_hflip = 3 in flip_dims
+        is_vflip = 2 in flip_dims
+        for key in list(aux_targets.keys()):
+            val = aux_targets[key]
+            if key == "mask":
+                flipped_val = val.flip(dims=flip_dims)
+                aux_targets[key] = torch.where(active[:, None, None, None], flipped_val, val)
+                continue
+            if key == "bbox_xyxy":
+                aux_targets[key] = _flip_bbox_xyxy(val, active, is_hflip, is_vflip, height, width)
+                continue
+            if key == "bbox_xywh":
+                xyxy = _xywh_to_xyxy(val)
+                xyxy = _flip_bbox_xyxy(xyxy, active, is_hflip, is_vflip, height, width)
+                aux_targets[key] = _xyxy_to_xywh(xyxy)
+                continue
+            if key == "keypoints":
+                aux_targets[key] = _flip_keypoints(val, active, is_hflip, is_vflip, height, width)
 
 
 class FusedAffineSegment(nn.Module):
@@ -624,6 +694,13 @@ class FusedAffineSegment(nn.Module):
             np.copyto(self._cv2_last_mat_buf[0].numpy(), acc_np, casting="unsafe")
             self._last_matrix = self._cv2_last_mat_buf
 
+            # Symbolic-exactness fast path on the cv2 B=1 branch: a chain that composes
+            # to a D4 element is applied losslessly via flip/rot90, skipping the cv2 warp
+            # entirely (zero interpolation). No aux here (gated above).
+            d4_op = classify_d4_batch(self._cv2_last_mat_buf, height, width)
+            if d4_op is not None:
+                return apply_d4_image(image, d4_op).to(device=device, dtype=dtype)
+
             m_inv_np = _inv3x3_affine_np(acc_np)
             img_np = image[0].permute(1, 2, 0).contiguous().numpy()
             if num_channels == 1:
@@ -672,6 +749,19 @@ class FusedAffineSegment(nn.Module):
         acc_img = acc.to(dtype=dtype)
         self._last_matrix = acc_img.detach().clone()
 
+        # Symbolic-exactness fast path: when the whole batch composes to one D4-group
+        # element (flip / 90-degree rotation, zero net translation beyond the
+        # border-preserving form), apply it losslessly via flip/rot90 instead of
+        # grid_sample -- zero interpolation error. Non-D4 chains fall through unchanged.
+        d4_op = classify_d4_batch(acc, height, width)
+        if d4_op is not None:
+            image = apply_d4_image(image, d4_op)
+            if aux_targets:
+                self._route_d4_aux(aux_targets, d4_op, acc_img)
+            if not _has_aux:
+                return image
+            return image, aux_targets
+
         mtx_inv = inv3x3(acc)
         mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
 
@@ -710,6 +800,232 @@ class FusedAffineSegment(nn.Module):
         if not _has_aux:
             return image
         return image, aux_targets
+
+    @staticmethod
+    def _route_d4_aux(aux_targets: dict[str, Tensor], d4_op: str, acc_img: Tensor) -> None:
+        """Route aux targets through an exact D4 op with zero interpolation.
+
+        The mask is transformed by the same lossless ``flip``/``rot90`` op applied to
+        the image (no nearest-resample); boxes and keypoints go through the exact
+        composed forward pixel matrix ``acc_img`` (integer-valued for a D4 chain), the
+        same convention as the interpolating path. Mutates ``aux_targets`` in place.
+
+        Args:
+            aux_targets: Auxiliary targets to transform (``"mask"``, ``"bbox_xyxy"``,
+                ``"bbox_xywh"``, ``"keypoints"``).
+            d4_op: The D4 op name from :func:`classify_d4_batch`.
+            acc_img: ``(B, 3, 3)`` composed forward pixel matrix in the image dtype.
+
+        """
+        from fuse_augmentations.targets import (
+            transform_bbox_xywh,
+            transform_bbox_xyxy,
+            transform_keypoints,
+        )
+
+        for key in list(aux_targets.keys()):
+            val = aux_targets[key]
+            if key == "mask":
+                aux_targets[key] = apply_d4_image(val, d4_op)
+                continue
+            if key == "bbox_xyxy":
+                aux_targets[key] = transform_bbox_xyxy(val, acc_img)
+                continue
+            if key == "bbox_xywh":
+                aux_targets[key] = transform_bbox_xywh(val, acc_img)
+                continue
+            if key == "keypoints":
+                aux_targets[key] = transform_keypoints(val, acc_img)
+
+
+class _FusedGeoCropSegment(FusedAffineSegment):
+    """Fuse a preceding geometric run and a ``CROP_RESIZE_FIXED`` op into one warp.
+
+    A ``RandomResizedCrop`` immediately after a fusible geometric run
+    (``GEOMETRIC_INTERP``/``GEOMETRIC_EXACT``) is normally a hard segment
+    boundary — the geo run does one ``grid_sample`` at input size, then
+    :class:`CropResizeSegment` does a second one at target size. This segment
+    composes both into a single matrix ``M_crop @ M_geo`` and applies exactly one
+    ``grid_sample`` at the crop's ``(target_h, target_w)`` output size, saving an
+    interpolation pass and improving precision (one resample instead of two).
+
+    The crop reads the geo chain's output, so the forward composite is
+    ``M_crop @ M_geo`` (geo applied first, crop after). Like
+    :class:`CropResizeSegment`, per-sample probability is *not* applied to the
+    crop (shape-changing ops must produce a uniform output size); the geo run's
+    per-sample ``prob`` gates are honoured exactly as in :class:`FusedAffineSegment`.
+
+    ``transforms`` is ``[*geo_transforms, crop_transform]`` so the inherited
+    fusion-plan machinery (``n_warps_saved``, ``fusion_plan``, ``transform_matrix``)
+    counts the crop as one more fused op and exposes the full geo∘crop matrix.
+
+    Args:
+        geo_transforms: The preceding fusible geometric transforms, in order.
+        crop_transform: A single ``CROP_RESIZE_FIXED`` transform.
+        adapter: A ``TransformAdapter`` providing ``sample_params`` and ``build_matrix``.
+        interpolation: Interpolation mode (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
+            Defaults to ``"bilinear"`` when ``None``.
+        padding_mode: Padding mode (``"zeros"``, ``"border"``, ``"reflection"``).
+            Defaults to ``"zeros"`` when ``None``.
+        randomness: Batch randomness policy for the fused geometric run.
+
+    Example:
+        >>> import torch
+        >>> import kornia.augmentation as K
+        >>> from fuse_augmentations.affine.segment import _FusedGeoCropSegment
+        >>> from fuse_augmentations.adapters.kornia import KorniaAdapter
+        >>> geo = K.RandomHorizontalFlip(p=1.0)
+        >>> crop = K.RandomResizedCrop((8, 8), scale=(0.5, 0.5), ratio=(1.0, 1.0))
+        >>> seg = _FusedGeoCropSegment([geo], crop, KorniaAdapter())
+        >>> seg(torch.zeros(1, 3, 16, 16)).shape
+        torch.Size([1, 3, 8, 8])
+
+    """
+
+    def __init__(
+        self,
+        geo_transforms: list[object],
+        crop_transform: object,
+        adapter: TransformAdapter,
+        interpolation: InterpolationStr | None = None,
+        padding_mode: PaddingModeStr | None = None,
+        randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+    ) -> None:
+        """Initialize ``_FusedGeoCropSegment``."""
+        # nn.Module state only; skip FusedAffineSegment.__init__'s cv2/numpy
+        # fast-path wiring (it keys on len(transforms) and would try to resolve a
+        # numpy builder for the crop transform — this segment overrides forward).
+        nn.Module.__init__(self)
+        self.geo_transforms = geo_transforms
+        self.crop_transform = crop_transform
+        # transforms holds the full fused run so inherited fusion-plan machinery
+        # (n_warps_saved = n-1, fusion_plan naming) counts the crop as fused.
+        self.transforms: list[object] = [*geo_transforms, crop_transform]
+        self.adapter = adapter
+        self.interpolation = interpolation
+        self.padding_mode = padding_mode
+        self.randomness = randomness
+        self._last_matrix: Tensor | None = None
+
+    def forward(
+        self,
+        image: Tensor,
+        aux_targets: dict[str, Tensor] | None = None,
+    ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
+        """Apply the fused geo∘crop chain via one ``grid_sample`` at the target size.
+
+        Args:
+            image: ``(batch_size, channels, height_in, width_in)`` float input tensor.
+            aux_targets: Optional dict of auxiliary targets to transform alongside
+                the image (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``,
+                ``"keypoints"``). Masks are warped with the output grid; boxes and
+                keypoints via the composed forward matrix.
+
+        Returns:
+            ``(batch_size, channels, height_out, width_out)`` tensor when
+            ``aux_targets`` is ``None``; ``(tensor, aux_targets)`` tuple otherwise.
+
+        """
+        _has_aux = aux_targets is not None
+        batch_size, num_channels, height, width = image.shape
+        device = image.device
+        dtype = image.dtype
+        input_shape = (batch_size, num_channels, height, width)
+
+        # Accumulate the geometric run exactly as FusedAffineSegment does, but the
+        # chain always has >1 fused op (geo + crop), so compose in float64 where
+        # available. The crop matrix has no per-sample prob gate.
+        compose_dtype = _matrix_compose_dtype(dtype, device, len(self.transforms))
+        eye_batch = torch.eye(3, device=device, dtype=compose_dtype).unsqueeze(0).expand(batch_size, -1, -1)
+        acc = eye_batch.clone()
+
+        for tfm in self.geo_transforms:
+            prob = _transform_prob(tfm)
+            if _shares_randomness_across_batch(self.adapter, tfm, self.randomness):
+                active = (torch.rand((), device=device) < prob).repeat(batch_size)
+            else:
+                active = torch.rand(batch_size, device=device) < prob
+            params = _sample_transform_params(self.adapter, tfm, input_shape, device, self.randomness)
+            mtx_i = self.adapter.build_matrix(tfm, params, height, width)
+            if mtx_i.shape[0] == 1 and batch_size > 1:
+                mtx_i = mtx_i.expand(batch_size, -1, -1)
+            mtx_i = mtx_i.to(device=device, dtype=compose_dtype)
+            mtx_i = torch.where(active[:, None, None], mtx_i, eye_batch)
+            acc = matmul3x3(mtx_i, acc)
+
+        target_h, target_w, mtx_crop = self._build_crop_matrix(input_shape, device, compose_dtype)
+        acc_full = matmul3x3(mtx_crop, acc)  # crop reads geo's output
+
+        self._last_matrix = acc_full.to(dtype=dtype).detach().clone()
+
+        mtx_inv = inv3x3(acc_full)
+        mtx_norm = normalize_matrix_io(mtx_inv, height, width, target_h, target_w).to(dtype=dtype)
+        grid = F.affine_grid(
+            mtx_norm[:, :2, :],
+            [batch_size, num_channels, target_h, target_w],
+            align_corners=True,
+        )
+        out = F.grid_sample(
+            image,
+            grid,
+            mode=self.interpolation or "bilinear",
+            padding_mode=self.padding_mode or "zeros",
+            align_corners=True,
+        )
+
+        if aux_targets:
+            self._warp_aux(aux_targets, grid, acc_full.to(dtype=dtype))
+
+        if not _has_aux:
+            return out
+        if aux_targets is None:
+            raise RuntimeError("internal error: aux_targets is None in return branch")
+        return out, aux_targets
+
+    def _build_crop_matrix(
+        self,
+        input_shape: tuple[int, int, int, int],
+        device: torch.device,
+        compose_dtype: torch.dtype,
+    ) -> tuple[int, int, Tensor]:
+        """Sample the crop and return ``(target_h, target_w, (B, 3, 3) crop matrix)``."""
+        batch_size, _, height, width = input_shape
+        params = _sample_transform_params(self.adapter, self.crop_transform, input_shape, device, self.randomness)
+        if not (
+            torch.all(params["target_h"] == params["target_h"][0])
+            and torch.all(params["target_w"] == params["target_w"][0])
+        ):
+            raise ValueError(
+                "_FusedGeoCropSegment requires a uniform target size across the batch "
+                f"(got target_h={params['target_h'].tolist()}, target_w={params['target_w'].tolist()})"
+            )
+        target_h = int(params["target_h"][0].item())
+        target_w = int(params["target_w"][0].item())
+        mtx_crop = self.adapter.build_matrix(self.crop_transform, params, height, width)
+        if mtx_crop.shape[0] == 1 and batch_size > 1:
+            mtx_crop = mtx_crop.expand(batch_size, -1, -1)
+        return target_h, target_w, mtx_crop.to(device=device, dtype=compose_dtype)
+
+    @staticmethod
+    def _warp_aux(aux_targets: dict[str, Tensor], grid: Tensor, mtx: Tensor) -> None:
+        """Warp auxiliary targets in place: mask via the output grid, coords via ``mtx``."""
+        from fuse_augmentations.targets import (
+            transform_bbox_xywh,
+            transform_bbox_xyxy,
+            transform_keypoints,
+            transform_mask,
+        )
+
+        for key in list(aux_targets.keys()):
+            val = aux_targets[key]
+            if key == "mask":
+                aux_targets[key] = transform_mask(val, grid)
+            elif key == "bbox_xyxy":
+                aux_targets[key] = transform_bbox_xyxy(val, mtx)
+            elif key == "bbox_xywh":
+                aux_targets[key] = transform_bbox_xywh(val, mtx)
+            elif key == "keypoints":
+                aux_targets[key] = transform_keypoints(val, mtx)
 
 
 # ---------------------------------------------------------------------------
@@ -1998,6 +2314,7 @@ def build_segments(
     randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     *,
     use_numpy: bool = False,
+    route_coords_via_grid: bool = False,
 ) -> list[object]:
     """Split a transform list into fused segments and passthrough transforms.
 
@@ -2031,6 +2348,13 @@ def build_segments(
             (Albumentations/scipy backend) instead of the PyTorch
             :class:`FusedAffineSegment`. Used for the Albumentations backend.
         randomness: Batch randomness policy for fused PyTorch segments.
+        route_coords_via_grid: When ``True`` (set by the caller when the pipeline
+            carries box/keypoint auxiliary targets), route an all-exact geometric run
+            through :class:`FusedAffineSegment` instead of :class:`ExactAffineSegment`.
+            An all-exact run always composes to a D4 element, so the fused segment's
+            exact-dispatch still applies it losslessly while routing boxes/keypoints
+            through the composed pixel matrix — avoiding the ``ExactAffineSegment``
+            box/keypoint limitation without an interpolation penalty. Torch path only.
 
     Returns:
         Flat list where each element is a :class:`FusedAffineSegment`
@@ -2079,7 +2403,12 @@ def build_segments(
             current_geo.clear()
             return
 
-        if has_interp:
+        # Route through the grid FusedAffineSegment when the run interpolates, OR when
+        # it is all-exact but the pipeline carries box/keypoint aux (ExactAffineSegment
+        # cannot route those). An all-exact run always composes to a D4 element, so the
+        # fused segment's exact-dispatch keeps it lossless while routing coords through
+        # the composed matrix.
+        if has_interp or route_coords_via_grid:
             segments.append(
                 FusedAffineSegment(
                     transforms=list(current_geo),
@@ -2137,13 +2466,31 @@ def build_segments(
             current_color.append(transform)
             continue
         if category == crop_resize_cat:
-            # CROP_RESIZE_FIXED: flush all pending runs, then emit a standalone segment.
-            # For the torch path this produces a CropResizeSegment (one grid_sample at target size).
-            # For the numpy/albumentations path the transform is emitted as a passthrough.
-            _flush_geo()
+            # CROP_RESIZE_FIXED. On the torch path, fuse into the immediately
+            # preceding fusible geometric run: compose M_crop @ M_geo and
+            # apply ONE grid_sample at the crop's target size instead of two.
+            # No pending geo run → emit a standalone CropResizeSegment. Projective
+            # and color runs still flush (crop only fuses with affine geo runs).
+            # The numpy/albumentations path emits the transform as a passthrough.
             _flush_proj()
             _flush_color(current_color, adapter, segments, randomness)  # mutates current_color in-place
-            if not use_numpy:
+            if use_numpy:
+                _flush_geo()
+                segments.append(transform)
+                continue
+            if current_geo:
+                segments.append(
+                    _FusedGeoCropSegment(
+                        geo_transforms=list(current_geo),
+                        crop_transform=transform,
+                        adapter=adapter,
+                        interpolation=interpolation,
+                        padding_mode=padding_mode,
+                        randomness=randomness,
+                    )
+                )
+                current_geo.clear()
+            else:
                 segments.append(
                     CropResizeSegment(
                         transform=transform,
@@ -2153,8 +2500,6 @@ def build_segments(
                         randomness=randomness,
                     )
                 )
-            else:
-                segments.append(transform)
             continue
         # SPATIAL_KERNEL / POINTWISE barrier: flush all
         _flush_geo()

@@ -125,7 +125,7 @@ def register_adapter(
 def _load_entrypoints() -> None:
     """Lazily load third-party adapters from the entry-point group (idempotent, failure-isolated).
 
-    Called on the first detection miss, never at package import (grill G8: avoids executing third-party code and
+    Called on the first detection miss, never at package import (avoids executing third-party code and
     paying its import cost on ``import fuse_augmentations``). Each entry point is loaded in isolation; a failing
     ``load()`` or ``register()`` is warned and skipped so one broken plugin cannot break detection for the rest.
 

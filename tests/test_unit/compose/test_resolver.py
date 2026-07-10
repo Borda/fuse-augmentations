@@ -276,7 +276,7 @@ class TestTranslateParams:
 
 
 class TestCapabilityMatrix:
-    """capability_matrix() and _registry_for() — config-time backend x op coverage (WP-3 / B2)."""
+    """capability_matrix() and _registry_for() — config-time backend x op coverage."""
 
     def test_keys_equal_supported_backends(self) -> None:
         """capability_matrix() has exactly one entry per SUPPORTED_BACKENDS member."""
@@ -306,7 +306,7 @@ class TestCapabilityMatrix:
 
 
 class TestComposeCapabilityApi:
-    """FusedCompose.supported_ops / capability_matrix classmethods (WP-3 / B2)."""
+    """FusedCompose.supported_ops / capability_matrix classmethods."""
 
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_supported_ops_nonempty(self) -> None:
@@ -325,7 +325,7 @@ class TestComposeCapabilityApi:
 
 
 class TestFromConfigAggregatedValidation:
-    """from_config validates all specs pre-construction and aggregates every offender (WP-3 / B2)."""
+    """from_config validates all specs pre-construction and aggregates every offender."""
 
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_aggregated_error_lists_all_offenders(self) -> None:

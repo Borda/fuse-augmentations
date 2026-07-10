@@ -1,4 +1,4 @@
-"""Differential test guarding float64 matrix-chain accumulation (blueprint P2).
+"""Differential test guarding float64 matrix-chain accumulation.
 
 The fused affine engine accumulates a multi-transform ``(B, 3, 3)`` chain in
 ``float64`` for chains longer than one op, then casts back to the image dtype at
@@ -156,7 +156,7 @@ class TestLongChainAccumulationPrecision:
         legitimate source flip of the ``_COMPOSE_DTYPE`` constant (segment.py) is
         still visible to these tests (setup captures the flipped value, teardown
         restores the same flipped value, and the guards see it) — that visibility
-        is exactly what the WP-15 acceptance revert relies on. The snapshot exists
+        is exactly what the acceptance revert check relies on. The snapshot exists
         only so that if any test in THIS class mutated the constant, teardown
         leaves the module global as it found it, keeping later tests clean. The
         production default is pinned separately by ``test_compose_dtype_constant_is_float64``,
@@ -208,7 +208,7 @@ class TestLongChainAccumulationPrecision:
 def test_forced_float32_selector_trips_the_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     """Forcing the selector to float32 for chains>1 collapses the guard margin.
 
-    Encodes the WP-15 acceptance check as an executable test: with
+    Encodes the acceptance check as an executable test: with
     ``_matrix_compose_dtype`` patched to always return float32, the
     selector-vs-float32 Frobenius margin that ``test_selector_accumulation_beats_float32``
     relies on no longer holds.

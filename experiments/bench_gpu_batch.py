@@ -66,6 +66,11 @@ QUICK_MAX_BATCH: int = 8  # --quick caps the batch sweep at this size
 _GEO_LABELS: tuple[str, ...] = ("a01_rotate", "b02_geom_3", "b04_geom_5", "b05_geom_5_warp")
 _MIXED_LABELS: tuple[str, ...] = ("d02_mixed_g3c3__agr", "d03_mixed_g4c3__agr")
 
+# Crop-fusion probe: a geo run + RandomResizedCrop that fuses into one warp on
+# the torch path. Reported alongside the other sequences but NOT part of any geomean
+# gate (the gate lives in optimize_score.py, whose case bank is unchanged).
+_CROP_TARGET: tuple[int, int] = (192, 192)
+
 
 @dataclass
 class Sequence:
@@ -112,7 +117,20 @@ def _load_sequences() -> tuple[list[Sequence], str]:
     for label, nb_geom, alb_tfms, k_tfms, tv_tfms in _MIXED_AGR_CASES:
         if label in _MIXED_LABELS:
             sequences.append(Sequence(label, nb_geom, k_tfms, tv_tfms, alb_tfms, reorder=ReorderPolicy.AGGRESSIVE))
+    sequences.append(_crop_fusion_sequence())
     return sequences, "imported"
+
+
+def _crop_fusion_sequence() -> Sequence:
+    """Build the geo+RandomResizedCrop probe (fuses to one warp on the torch path)."""
+    h_out, w_out = _CROP_TARGET
+    return Sequence(
+        "e01_geo_crop_fuse",
+        2,
+        [K.RandomRotation(20.0, p=1.0), K.RandomResizedCrop((h_out, w_out), scale=(0.6, 1.0))],
+        [tv.RandomRotation(20), tv.RandomResizedCrop((h_out, w_out), scale=(0.6, 1.0))],
+        [A.Rotate(limit=20, p=1.0), A.RandomResizedCrop(size=(h_out, w_out), scale=(0.6, 1.0), p=1.0)],
+    )
 
 
 def _fallback_sequences() -> list[Sequence]:
@@ -186,6 +204,7 @@ def _fallback_sequences() -> list[Sequence]:
             ],
             reorder=ReorderPolicy.AGGRESSIVE,
         ),
+        _crop_fusion_sequence(),
     ]
 
 

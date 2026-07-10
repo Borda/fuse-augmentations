@@ -164,8 +164,8 @@ _BACKEND_REGISTRY_BUILDERS: dict[str, Callable[[], dict[str, type]]] = {
 def _registry_for(backend: str) -> dict[str, type]:
     """Return the op -> class registry for *backend*, tolerating backends without one.
 
-    A backend with no registered builder (e.g. a future ``"native"`` backend added by WP-12 before it grows a
-    registry, grill G13) yields an empty dict rather than a ``KeyError``. A backend whose optional dependency is not
+    A backend with no registered builder (e.g. a future ``"native"`` backend added before it grows a
+    registry) yields an empty dict rather than a ``KeyError``. A backend whose optional dependency is not
     installed also yields an empty dict, so capability queries never require the backend to be importable.
 
     Args:

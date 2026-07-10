@@ -34,7 +34,7 @@ Determinism
 
 Observed PSNR on this machine (torch 2.10, kornia 0.8.2, torchvision 0.25.0,
 albumentations 2.0.8), smooth image, 4 px border cropped. Committed thresholds
-(grill G11) track these measured values at ~3 dB safety margin rather than the
+(2026-07-09 tightening pass) track these measured values at ~3 dB safety margin rather than the
 former ~90 dB gap, so a fusion-precision regression fails CI instead of passing
 silently:
 
@@ -94,7 +94,7 @@ _SHEAR_DEG = 8.0
 
 # PSNR(fused, reference) floor on a smooth image, in dB. The reference shares the
 # fused engine (torch grid_sample) for kornia / torchvision, so a single float32
-# pass sits far above this. Blueprint grill G11 target: fused-geometric >= 120 dB.
+# pass sits far above this. Original tightening target: fused-geometric >= 120 dB.
 # Measured (torch 2.10 / kornia 0.8.2 / tv 0.25.0): fused >= 134.4 dB on every
 # torch-backend geometric case, and 122.6 dB on the backend-free single-pass
 # proof. The floor is capped at (backend-free measured 122.6) - 3 dB safety, so
@@ -104,7 +104,7 @@ _MIN_FUSED_PSNR_DB = 118.0
 # albumentations fused warp is cv2, but the reference is torch grid_sample; the
 # constant cross-engine offset lowers the *absolute* PSNR without affecting the
 # fused-vs-native *relative* comparison, so the absolute floor is relaxed for albu.
-# Blueprint grill G11 target: albu >= 65 dB. Measured: 72.1 dB (2-op) and 66.6 dB
+# Original tightening target: albu >= 65 dB. Measured: 72.1 dB (2-op) and 66.6 dB
 # (3-op); the 3-op case caps the floor at 66.6 - 3 = 63.6 dB, so 65 is trimmed to
 # 62 to stay below measured - 3 dB on the tightest (3-op) albu case.
 _MIN_FUSED_PSNR_DB_CV2 = 62.0
@@ -113,10 +113,10 @@ _MIN_FUSED_PSNR_DB_CV2 = 62.0
 _PSNR_TIE_EPS_DB = 0.5
 
 # 2-op chain strict margin: fused must beat native by at least this (dB). Blueprint
-# grill G11 target: fused >= native + 20 dB. Achievable with margin on the torch
+# Original tightening target: fused >= native + 20 dB. Achievable with margin on the torch
 # backends (measured deltas +74 dB kornia, +122 dB tv), but albu's cross-engine
 # cv2-vs-torch offset caps its 2-op delta at +13.0 dB measured, so its floor is
-# trimmed to +10 dB (measured - 3 dB) rather than the +20 dB blueprint target.
+# trimmed to +10 dB (measured - 3 dB) rather than the +20 dB original target.
 # Carried per backend via the _BACKENDS params below.
 _MIN_DELTA_DB_TORCH = 20.0
 _MIN_DELTA_DB_CV2 = 10.0
