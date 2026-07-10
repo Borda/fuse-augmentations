@@ -132,34 +132,28 @@ class TestFusibleClosures:
         assert out_image.shape == (BATCH, CHANNELS, HEIGHT, WIDTH)
         assert out_mask.shape == (BATCH, 1, HEIGHT, WIDTH)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Albumentations fused segments + multi-target data_keys raise ValueError -- flips when Albu aux ships",
-    )
     @pytest.mark.skipif(not _ALBU_AVAILABLE, reason="albumentations required")
     def test_albu_pipeline_with_mask_constructs(self):
-        """DESIRED: an Albumentations pipeline with a mask data_key constructs.
+        """CLOSED: an Albumentations pipeline with a mask data_key constructs and runs.
 
-        Today ``Compose`` raises ValueError at construction when an Albumentations
-        pipeline is combined with ``data_keys`` beyond the image key. Routing aux
-        through the composed pixel matrix would let construction succeed.
+        Albumentations fused segments now route auxiliary targets through the
+        composed pixel matrix, so ``Compose`` no longer raises at construction and
+        the forward pass transforms both the image and the mask.
         """
         pipe = Compose(
             [albu.Affine(rotate=15, p=1.0), albu.HorizontalFlip(p=1.0)],
             data_keys=["input", "mask"],
         )
-        assert pipe is not None
+        out_image, out_mask = pipe(_image(), _mask())
+        assert out_image.shape == (BATCH, CHANNELS, HEIGHT, WIDTH)
+        assert out_mask.shape == (BATCH, 1, HEIGHT, WIDTH)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="output_backend skipped for multi-target tuple outputs -- flips when per-target conversion ships",
-    )
     def test_output_backend_applies_to_multi_target(self):
-        """DESIRED: output_backend conversion is applied to every multi-target output.
+        """CLOSED: output_backend conversion is applied per multi-target output.
 
-        Today, with more than one ``data_key``, the pipeline returns raw tensors
-        and skips ``output_backend`` conversion. Per-target conversion would make a
-        numpy backend yield numpy arrays for both image and mask.
+        With more than one ``data_key`` the pipeline converts image and mask
+        targets to the requested backend, so a numpy backend yields numpy arrays
+        for both.
         """
         import numpy as np
 

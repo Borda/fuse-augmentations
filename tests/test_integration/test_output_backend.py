@@ -106,20 +106,19 @@ class TestOutputBackend:
         assert isinstance(result, np.ndarray)
         assert result.shape == (8, 8, 3)
 
-    def test_output_backend_with_data_keys_warns(self) -> None:
-        """output_backend + data_keys emits UserWarning at construction time."""
-        with pytest.warns(UserWarning, match="output_backend.*data_keys"):
+    def test_output_backend_with_data_keys_no_construction_warning(self) -> None:
+        """output_backend + multi-target data_keys constructs without warning."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
             FusedCompose([], output_backend="numpy", data_keys=["input", "mask"])
 
-    def test_output_backend_with_data_keys_no_conversion(self) -> None:
-        """When data_keys is set, output_backend conversion is NOT applied (no-op)."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            pipe = FusedCompose([], output_backend="numpy", data_keys=["input", "mask"])
+    def test_output_backend_with_data_keys_converts_image_and_mask(self) -> None:
+        """When data_keys is set, output_backend conversion is applied per target."""
+        pipe = FusedCompose([], output_backend="numpy", data_keys=["input", "mask"])
 
         image = torch.rand(1, 3, 8, 8)
         mask = torch.zeros(1, 1, 8, 8)
         result = pipe(image, mask)
-        # Multi-key pipeline returns tuple of raw tensors regardless of output_backend.
+        # Multi-key pipeline returns a tuple; image and mask convert to numpy.
         assert isinstance(result, tuple)
-        assert all(isinstance(tensor, torch.Tensor) for tensor in result)
+        assert all(isinstance(array, np.ndarray) for array in result)

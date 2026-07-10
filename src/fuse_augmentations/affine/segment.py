@@ -1448,23 +1448,21 @@ class AlbuFusedAffineSegment(nn.Module):
 
         Args:
             image: ``(B, C, H, W)`` float32 input tensor.
-            aux_targets: Auxiliary targets (e.g. masks/boxes/keypoints). Currently
-                not supported by :class:`AlbuFusedAffineSegment`. Passing a
-                non-``None`` value will raise a ``RuntimeError`` to avoid
-                silently returning incorrectly aligned targets.
+            aux_targets: Optional dict of auxiliary targets to transform alongside
+                the image. Masks are resampled through a grid built from the same
+                composed matrix used for the image; bounding boxes and keypoints
+                are transformed through the composed forward pixel matrix. The
+                coordinate convention (center/``align_corners=True``) matches the
+                torch affine path exactly.
 
         Returns:
-            The transformed ``image`` tensor.
+            Bare ``image`` tensor when ``aux_targets`` is ``None``;
+            ``(image, aux_targets)`` tuple otherwise.
 
         """
-        if aux_targets is not None:
-            raise RuntimeError(
-                "AlbuFusedAffineSegment.forward does not yet support aux_targets. "
-                "Passing auxiliary targets here would result in misaligned masks/"
-                "boxes/keypoints. Please call this module with aux_targets=None, "
-                "or use a non-fused Albumentations pipeline that transforms "
-                "auxiliary targets alongside the image."
-            )
+        _has_aux = aux_targets is not None
+        if aux_targets is None:
+            aux_targets = {}
 
         batch_size = image.shape[0]
 
@@ -1478,11 +1476,78 @@ class AlbuFusedAffineSegment(nn.Module):
         self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
 
         if batch_size == 0 or len(self.transforms) == 0:
-            return image
+            return (image, aux_targets) if _has_aux else image
 
         if self.execution == "torch":
-            return self._warp_torch(image, composed_batch)
-        return self._warp_cv2(image, accs, any_active)
+            image = self._warp_torch(image, composed_batch)
+        else:
+            image = self._warp_cv2(image, accs, any_active)
+
+        if aux_targets:
+            self._route_aux(aux_targets, composed_batch, image)
+        return (image, aux_targets) if _has_aux else image
+
+    def _route_aux(self, aux_targets: dict[str, Tensor], composed_batch: Tensor, image: Tensor) -> None:
+        """Route auxiliary targets through the composed forward pixel matrix.
+
+        Masks are resampled with a grid built from the same composed matrix used
+        for the image warp; boxes and keypoints go through the composed forward
+        pixel matrix. This reuses the shared :mod:`~fuse_augmentations.targets`
+        builders so the numpy/cv2 path matches the torch affine path convention
+        (center/``align_corners=True``). Mutates ``aux_targets`` in place.
+
+        Args:
+            aux_targets: Auxiliary targets to transform (``"mask"``, ``"bbox_xyxy"``,
+                ``"bbox_xywh"``, ``"keypoints"``).
+            composed_batch: ``(B, 3, 3)`` composed forward matrix (CPU float64).
+            image: The warped image tensor, used to resolve the mask device/dtype.
+
+        """
+        acc_img = composed_batch.to(device=image.device, dtype=image.dtype)
+        grid: Tensor | None = None
+        if "mask" in aux_targets:
+            mask = aux_targets["mask"]
+            acc_mask = composed_batch.to(device=mask.device, dtype=torch.float32)
+            mtx_inv = inv3x3(acc_mask)
+            mtx_norm = normalize_matrix(mtx_inv, mask.shape[-2], mask.shape[-1]).to(dtype=torch.float32)
+            grid = F.affine_grid(
+                mtx_norm[:, :2, :],
+                [mask.shape[0], mask.shape[1], mask.shape[-2], mask.shape[-1]],
+                align_corners=True,
+            )
+        self._route_grid_aux(aux_targets, grid, acc_img)
+
+    @staticmethod
+    def _route_grid_aux(aux_targets: dict[str, Tensor], grid: Tensor | None, acc_img: Tensor) -> None:
+        """Route auxiliary targets through the warp grid and composed pixel matrix.
+
+        Mask entries use ``grid`` (nearest-neighbour resample); boxes and keypoints
+        use the composed forward pixel matrix ``acc_img``. Mutates ``aux_targets``
+        in place.
+
+        Args:
+            aux_targets: Auxiliary targets to transform.
+            grid: Sampling grid for the mask, or ``None`` when no mask is present.
+            acc_img: ``(B, 3, 3)`` composed forward pixel matrix in the image dtype.
+
+        """
+        from fuse_augmentations.targets import (
+            transform_bbox_xywh,
+            transform_bbox_xyxy,
+            transform_keypoints,
+            transform_mask,
+        )
+
+        for key in list(aux_targets.keys()):
+            val = aux_targets[key]
+            if key == "mask" and grid is not None:
+                aux_targets[key] = transform_mask(val, grid)
+            elif key == "bbox_xyxy":
+                aux_targets[key] = transform_bbox_xyxy(val, acc_img)
+            elif key == "bbox_xywh":
+                aux_targets[key] = transform_bbox_xywh(val, acc_img)
+            elif key == "keypoints":
+                aux_targets[key] = transform_keypoints(val, acc_img)
 
     def _compose_matrices(self, image: Tensor) -> tuple[list[MatrixArray], list[bool]]:
         """Compose the per-sample forward affine matrices via Albumentations sampling.
@@ -1949,22 +2014,21 @@ class AlbuProjectiveSegment(nn.Module):
 
         Args:
             image: ``(B, C, H, W)`` float32 input tensor.
-            aux_targets: Auxiliary targets (e.g. masks/boxes/keypoints). Currently
-                not supported by :class:`AlbuProjectiveSegment`. Passing a
-                non-``None`` value will raise a ``RuntimeError``.
+            aux_targets: Optional dict of auxiliary targets to transform alongside
+                the image. Masks are resampled through a perspective grid built
+                from the same composed homography used for the image; bounding
+                boxes and keypoints are transformed through the composed forward
+                homography (with perspective division). The coordinate convention
+                matches the torch projective path.
 
         Returns:
-            The transformed ``image`` tensor.
+            Bare ``image`` tensor when ``aux_targets`` is ``None``;
+            ``(image, aux_targets)`` tuple otherwise.
 
         """
-        if aux_targets is not None:
-            raise RuntimeError(
-                "AlbuProjectiveSegment.forward does not yet support aux_targets. "
-                "Passing auxiliary targets here would result in misaligned masks/"
-                "boxes/keypoints. Please call this module with aux_targets=None, "
-                "or use a non-fused Albumentations pipeline that transforms "
-                "auxiliary targets alongside the image."
-            )
+        _has_aux = aux_targets is not None
+        if aux_targets is None:
+            aux_targets = {}
 
         batch_size = image.shape[0]
 
@@ -1976,11 +2040,41 @@ class AlbuProjectiveSegment(nn.Module):
         self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
 
         if batch_size == 0 or len(self.transforms) == 0:
-            return image
+            return (image, aux_targets) if _has_aux else image
 
         if self.execution == "torch":
-            return self._warp_torch(image, composed_batch)
-        return self._warp_cv2(image, accs, any_active)
+            image = self._warp_torch(image, composed_batch)
+        else:
+            image = self._warp_cv2(image, accs, any_active)
+
+        if aux_targets:
+            self._route_aux(aux_targets, composed_batch, image)
+        return (image, aux_targets) if _has_aux else image
+
+    def _route_aux(self, aux_targets: dict[str, Tensor], composed_batch: Tensor, image: Tensor) -> None:
+        """Route auxiliary targets through the composed forward homography.
+
+        Masks are resampled with a perspective grid built from the same composed
+        homography used for the image warp; boxes and keypoints go through the
+        composed forward homography. Reuses the shared
+        :mod:`~fuse_augmentations.targets` builders so the numpy/cv2 path matches
+        the torch projective path convention. Mutates ``aux_targets`` in place.
+
+        Args:
+            aux_targets: Auxiliary targets to transform.
+            composed_batch: ``(B, 3, 3)`` composed forward homography (CPU float64).
+            image: The warped image tensor, used to resolve the box/keypoint dtype.
+
+        """
+        acc_img = composed_batch.to(device=image.device, dtype=image.dtype)
+        grid: Tensor | None = None
+        if "mask" in aux_targets:
+            mask = aux_targets["mask"]
+            acc_mask = composed_batch.to(device=mask.device, dtype=torch.float32)
+            mtx_inv = inv3x3(acc_mask)
+            mtx_norm = normalize_matrix(mtx_inv, mask.shape[-2], mask.shape[-1]).to(dtype=torch.float32)
+            grid = perspective_grid(mtx_norm, mask.shape[-2], mask.shape[-1])
+        AlbuFusedAffineSegment._route_grid_aux(aux_targets, grid, acc_img)
 
     def _compose_matrices(self, image: Tensor) -> tuple[list[MatrixArray], list[bool]]:
         """Compose per-sample forward homographies via Albumentations sampling.

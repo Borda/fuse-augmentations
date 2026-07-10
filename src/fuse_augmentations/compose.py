@@ -85,6 +85,14 @@ if TYPE_CHECKING:
     from fuse_augmentations.resolver import BackendStr, OpStr
 
 _KNOWN_DATA_KEYS = {"input", "mask", "bbox_xyxy", "bbox_xywh", "keypoints"}
+# Albumentations-style keyword aliases accepted by the dict-output call form
+# (``pipe(image=..., mask=..., bboxes=...)``). ``image`` maps to the ``"input"``
+# data key; ``bboxes`` maps to whichever box key the pipeline declared. Exact
+# data-key names are also accepted as their own aliases.
+_KWARG_ALIASES: dict[str, str | tuple[str, ...]] = {
+    "image": "input",
+    "bboxes": ("bbox_xyxy", "bbox_xywh"),
+}
 # Coordinate aux targets that ExactAffineSegment cannot route through a non-flip exact
 # op: their per-sample rotation is not recoverable without re-sampling. When present, an
 # all-exact geometric run is routed through the (still-lossless for D4) grid path.
@@ -183,16 +191,16 @@ class FusedCompose(nn.Module):
             Auxiliary keys (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``,
             ``"keypoints"``) are routed through segments and transformed alongside the image. Unknown keys are passed
             through unchanged with a ``UserWarning``. ``None`` preserves backward-compatible single-tensor input/output.
-            In this release, Albumentations fused affine segments do not support ``aux_targets``. If such a segment
-            exists and ``data_keys`` is set, construction raises ``ValueError``.
+            Albumentations fused segments route auxiliary targets through the composed pixel matrix, matching the
+            Kornia/TorchVision coordinate convention, so multi-target ``data_keys`` are supported for every backend.
         output_backend: Target output format. ``"numpy"`` (or its alias
             ``"numpy_hwc"``) converts the primary image output to a NumPy
             ``ndarray`` with channel-last layout: batched inputs of shape
             ``(batch_size, channels, height, width)`` become ``(batch_size, height, width, channels)``,
             while unbatched inputs of shape ``(channels, height, width)`` become ``(height, width, channels)`` (i.e.
             the batch dimension is implicit/squeezed). ``"torch"`` or ``None`` keeps the native ``torch.Tensor``
-            output. Conversion applies only to single-tensor output; when ``data_keys`` is active and a tuple is
-            returned, conversion is NOT applied.
+            output. For multi-target ``data_keys`` the conversion is applied per target: image and mask outputs are
+            converted, while coordinate targets (boxes, keypoints) stay tensors.
         randomness: Batch randomness policy. ``"backend"`` preserves native
             backend semantics, including TorchVision v2 batch-shared sampling.
             ``"per_sample"`` asks adapters with canonical samplers to draw
@@ -519,29 +527,9 @@ class FusedCompose(nn.Module):
                         stacklevel=3,
                     )
 
-        # Warn early when output_backend and multi-key data_keys are both set: conversion is a no-op in that
-        # case (forward() returns a tuple and only the single-tensor path applies conversion).
-        if self._output_converter is not None and data_keys is not None and len(data_keys) > 1:
-            warnings.warn(
-                "output_backend is set but data_keys contains more than one key. "
-                "output_backend conversion is NOT applied in this multi-target mode — "
-                "the pipeline returns a tuple of raw tensors. "
-                "When using multiple data_keys, set output_backend=None or perform conversion manually.",
-                UserWarning,
-                stacklevel=3,
-            )
-
-        # Albumentations fused segments only reject aux_targets (len > 1); single-key
-        # data_keys (image only) is fine because no aux dict is passed through.
-        if (
-            data_keys is not None
-            and len(data_keys) > 1
-            and any(isinstance(seg, (AlbuFusedAffineSegment, AlbuProjectiveSegment)) for seg in self._segments)
-        ):
-            raise ValueError(
-                "Albumentations fused segments (AlbuFusedAffineSegment, AlbuProjectiveSegment) do not "
-                "support aux_targets in this release. Remove extra data_keys or use a non-Albumentations pipeline."
-            )
+        # Albumentations fused segments route aux targets through the composed pixel
+        # matrix (same coordinate convention as the torch path), so multi-target
+        # data_keys are supported for both the cv2 and torch execution strategies.
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Restore instance state, rebuilding dispatch attributes absent from older pickles.
@@ -593,8 +581,10 @@ class FusedCompose(nn.Module):
                 decide routing.
 
         Returns:
-            ``dict`` with ``"image"`` key (HWC NumPy) for the Albu native path,
-            or whatever :meth:`forward` returns for the tensor path.
+            ``dict`` with ``"image"`` key (HWC NumPy) for the Albu native path;
+            a ``dict`` keyed by the caller's keyword names for a multi-target
+            keyword call (``image=..., mask=...``); or whatever :meth:`forward`
+            returns for the positional tensor path.
 
         Examples:
             >>> import numpy as np
@@ -607,6 +597,14 @@ class FusedCompose(nn.Module):
             True
 
         """
+        # Dict-out: an Albumentations-style keyword call (image=..., mask=..., etc.)
+        # on a multi-target pipeline routes the aux targets through the fused
+        # segments and returns a dict keyed by the caller's keyword names. Only
+        # the keyword entry adds dict output; the positional data_keys API is
+        # unchanged and still returns a tuple.
+        if kwargs and "image" in kwargs and self._multi_target and self._aux_keys:
+            return self._forward_kwargs_dict(kwargs)
+
         if (
             self._single_albu_direct_seg is not None
             and len(kwargs) == 1
@@ -742,6 +740,77 @@ class FusedCompose(nn.Module):
 
         return {"image": img_hwc}
 
+    def _resolve_kwarg_to_data_key(self, name: str) -> str:
+        """Map an Albumentations-style keyword name to a declared data key.
+
+        Args:
+            name: The keyword used in the call (e.g. ``"image"``, ``"bboxes"``,
+                or an exact data-key name like ``"bbox_xyxy"``).
+
+        Returns:
+            The matching entry from the pipeline's ``data_keys``.
+
+        Raises:
+            ValueError: If the keyword does not correspond to any declared data key.
+
+        """
+        data_keys = cast("list[str]", self.data_keys)
+        alias = _KWARG_ALIASES.get(name, name)
+        candidates: tuple[str, ...] = alias if isinstance(alias, tuple) else (alias,)
+        for candidate in candidates:
+            if candidate in data_keys:
+                return candidate
+        msg = (
+            f"Keyword {name!r} does not match any entry in data_keys={data_keys}. "
+            "Pass a keyword whose (aliased) name is one of the declared data keys."
+        )
+        raise ValueError(msg)
+
+    def _forward_kwargs_dict(self, kwargs: dict[str, object]) -> dict[str, object]:
+        """Run the pipeline for an Albumentations-style keyword call and return a dict.
+
+        Each keyword is mapped to a declared data key, the targets are ordered to
+        match ``data_keys``, routed through :meth:`forward`, and returned in a dict
+        keyed by the caller's original keyword names. The positional ``data_keys``
+        tuple API is unaffected — this dict form is added only for keyword calls.
+
+        Args:
+            kwargs: The keyword arguments from the call; must contain ``"image"``
+                and one entry per auxiliary ``data_keys`` target.
+
+        Returns:
+            A dict mapping each input keyword name to its transformed output.
+
+        Raises:
+            ValueError: If a keyword does not match a declared data key, or if the
+                keyword set does not cover exactly the pipeline's ``data_keys``.
+
+        """
+        data_keys = cast("list[str]", self.data_keys)
+        kwarg_to_key = {name: self._resolve_kwarg_to_data_key(name) for name in kwargs}
+        # Reject aliasing collisions (e.g. both ``bboxes`` and ``bbox_xyxy``) before
+        # inverting the map — otherwise one input would be silently dropped.
+        key_to_kwarg: dict[str, str] = {}
+        for name, key in kwarg_to_key.items():
+            if key in key_to_kwarg:
+                msg = (
+                    f"Keywords {key_to_kwarg[key]!r} and {name!r} both resolve to data key {key!r}. "
+                    "Pass exactly one keyword per declared data key."
+                )
+                raise ValueError(msg)
+            key_to_kwarg[key] = name
+        if sorted(key_to_kwarg) != sorted(data_keys):
+            msg = (
+                f"Keyword call resolved to data keys {sorted(key_to_kwarg)}, but the pipeline "
+                f"declares data_keys={data_keys}. Pass exactly one keyword per declared data key."
+            )
+            raise ValueError(msg)
+
+        ordered_args = tuple(cast("torch.Tensor", kwargs[key_to_kwarg[key]]) for key in data_keys)
+        result = self._forward_multi(ordered_args)
+        outputs = result if isinstance(result, tuple) else (result,)
+        return {key_to_kwarg[key]: outputs[idx] for idx, key in enumerate(data_keys)}
+
     def _convert_primary_output(self, image: torch.Tensor) -> torch.Tensor | NDArray[Any]:
         """Convert the primary image output to the requested backend."""
         if self._output_converter is None:
@@ -790,11 +859,10 @@ class FusedCompose(nn.Module):
             values from the preceding fused segment. This is by design -
             passthrough backends do not expose a target-routing API.
 
-            ``output_backend`` conversion applies to the primary image output only.
-            When ``data_keys`` has more than one entry a tuple is returned and
-            conversion is NOT applied -- aux_targets (masks, bboxes, keypoints)
-            require backend-specific handling. Use ``output_backend=None`` when
-            multi-target ``data_keys`` mode is active.
+            ``output_backend`` conversion is applied per target in multi-target
+            mode: image and mask outputs are converted to the requested backend,
+            while coordinate targets (boxes, keypoints) remain tensors because the
+            channel-last image layout does not apply to them.
 
         """
         # data_keys is constructor state: dispatch to the pre-resolved single-tensor
@@ -878,10 +946,37 @@ class FusedCompose(nn.Module):
             elif tag == _TAG_PLAIN:
                 image, aux_targets = seg.forward(image, aux_targets)
             elif tag == _TAG_PASSTHROUGH:
+                if aux_targets:
+                    self._warn_passthrough_aux_skip(seg.transform)
                 image = seg.adapter.call_nonfused(seg.transform, image)
             else:
+                if aux_targets:
+                    self._warn_passthrough_aux_skip(seg)
                 image = self._legacy_passthrough(seg, image)
         return self._assemble_multi_output(image, aux_targets, args)
+
+    @staticmethod
+    def _warn_passthrough_aux_skip(transform: object) -> None:
+        """Warn that a passthrough transform does not route auxiliary targets.
+
+        Passthrough (non-fused) transforms — including geometric spatial-kernel
+        ops such as elastic/grid/optical distortion — apply to the image only. Any
+        auxiliary targets (masks, boxes, keypoints) skip the transform and stay
+        aligned to the pre-passthrough geometry, so they silently desync from the
+        image. This warning surfaces that at runtime.
+
+        Args:
+            transform: The passthrough transform being executed.
+
+        """
+        warnings.warn(
+            f"Passthrough transform {type(transform).__name__!r} applies to the image only; "
+            "auxiliary targets (masks, boxes, keypoints) are NOT routed through it and will "
+            "misalign with the image. Move geometric ops before passthrough barriers, or "
+            "transform the auxiliary targets manually.",
+            UserWarning,
+            stacklevel=3,
+        )
 
     def _build_aux_targets(self, args: tuple[torch.Tensor, ...]) -> dict[str, torch.Tensor]:
         """Build the auxiliary-target dict from positional args, rejecting duplicate keys."""
@@ -901,17 +996,40 @@ class FusedCompose(nn.Module):
         aux_targets: dict[str, torch.Tensor],
         args: tuple[torch.Tensor, ...],
     ) -> torch.Tensor | NDArray[Any] | tuple[torch.Tensor, ...]:
-        """Assemble the multi-target return value in ``data_keys`` order."""
+        """Assemble the multi-target return value in ``data_keys`` order.
+
+        When ``output_backend`` is set, the conversion is applied per target: the
+        image and every mask are converted (both are ``(B, C, H, W)`` tensors);
+        coordinate targets (boxes, keypoints) are left as tensors because the
+        NumPy image converter's channel-last layout does not apply to them.
+
+        """
         data_keys = cast("list[str]", self.data_keys)
         if len(data_keys) == 1:
             return self._convert_primary_output(image)
-        result_list: list[torch.Tensor] = []
+        result_list: list[torch.Tensor | NDArray[Any]] = []
         for idx, key in enumerate(data_keys):
-            if idx == 0:
-                result_list.append(image)
-            else:
-                result_list.append(aux_targets.get(key, args[idx]))
-        return tuple(result_list)
+            value = image if idx == 0 else aux_targets.get(key, args[idx])
+            result_list.append(self._convert_target_output(key, value))
+        return cast("tuple[torch.Tensor, ...]", tuple(result_list))
+
+    def _convert_target_output(self, key: str, value: torch.Tensor) -> torch.Tensor | NDArray[Any]:
+        """Apply the output-backend conversion to a single multi-target output.
+
+        Args:
+            key: The target's ``data_keys`` name (``"input"``, ``"mask"``,
+                ``"bbox_xyxy"``, ``"bbox_xywh"``, or ``"keypoints"``).
+            value: The transformed target tensor.
+
+        Returns:
+            The converted value for image/mask targets (a NumPy array when
+            ``output_backend="numpy"``), or the unmodified tensor for coordinate
+            targets and when no converter is configured.
+
+        """
+        if self._output_converter is None or key not in ("input", "mask"):
+            return value
+        return self._convert_primary_output(value)
 
     def _legacy_passthrough(self, seg: object, image: torch.Tensor) -> torch.Tensor:
         """Dispatch a legacy (pre-wrapper) passthrough segment by resolving its adapter by index."""

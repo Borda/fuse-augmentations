@@ -366,7 +366,7 @@ pipe = Compose.from_params(
 out = pipe(image_tensor)  # returns NumPy (H, W, C) array directly
 ```
 
-`output_backend` values: `"numpy"` / `"numpy_hwc"` (channel-last NumPy array), `"torch"` or `None` (native tensor, default). Conversion applies to single-tensor output only -- when `data_keys` returns a tuple, set `output_backend=None` and convert manually.
+`output_backend` values: `"numpy"` / `"numpy_hwc"` (channel-last NumPy array), `"torch"` or `None` (native tensor, default). Conversion is applied per target: the image and mask outputs are converted to the requested backend, while coordinate targets (bounding boxes, keypoints) stay as tensors because the channel-last image layout does not apply to them.
 
 `NumpyToTorchConverter` accepts arrays of shape `(H, W)`, `(H, W, C)`, or `(B, H, W, C)`. `uint8` inputs are normalised to `float32 [0, 1]`; `float32` inputs are passed through unchanged.
 
@@ -736,9 +736,8 @@ Pipelines survive `pickle` round-trips, so they work transparently with `torch.n
 - **Spatial-kernel ops** (GaussianBlur, Sharpen) act as fusion barriers; transforms on either side of a barrier form separate segments. These are not yet fusible.
 - **Padding mode** is segment-level: all transforms in a fused run share the padding mode passed to `Compose` (or the adapter default). Individual transforms cannot override it per-segment.
 - **Crop+resize ops** (`RandomResizedCrop`): `CropResizeSegment` applies one interpolation pass at the target output size, but the output spatial dimensions differ from the input. `data_keys` auxiliary targets (masks, bounding boxes, keypoints) are warped through the crop affine matrix at the target size.
-- **Albumentations + auxiliary targets**: Albumentations fused segments (`AlbuFusedAffineSegment`, `AlbuProjectiveSegment`) do not support auxiliary-target routing in this release. Constructing a `Compose` with an Albumentations pipeline and `data_keys` containing more than the image key raises `ValueError` at construction time.
+- **Geometric passthrough ops** (`ElasticTransform`, `GridDistortion`, `OpticalDistortion`) act as spatial-kernel fusion barriers and apply to the **image only** in multi-target `data_keys` pipelines -- masks, bounding boxes, and keypoints are NOT routed through them and will silently misalign with the image. This applies to all backends (Kornia, TorchVision, Albumentations); the pipeline emits a `UserWarning` at runtime when such a passthrough executes with auxiliary targets present. Place geometric ops before the barrier, or transform the auxiliary targets manually.
 - **Gradients**: image transforms are differentiable; mask sampling (`mode='nearest'`) is not.
-- **`output_backend` with multi-target `data_keys`**: when `data_keys` contains more than one entry the pipeline returns a tuple, and `output_backend` conversion is NOT applied. Convert manually or set `output_backend=None` in that case.
 
 ## 🤝 Contributing
 

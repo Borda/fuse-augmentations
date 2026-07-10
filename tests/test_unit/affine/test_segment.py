@@ -685,16 +685,23 @@ class TestProjectiveSegmentBuildSegments:
         assert torch.allclose(out_aux["mask"], mask, atol=1e-5)
 
     @pytest.mark.skipif(not _CV2_AVAILABLE, reason="missing cv2")
-    def test_albu_projective_segment_raises_on_aux_targets(self):
-        """AlbuProjectiveSegment raises RuntimeError when aux_targets is not None."""
+    def test_albu_projective_segment_routes_aux_targets(self):
+        """AlbuProjectiveSegment routes an aux mask through the composed homography."""
         adapter = _StubAdapter()
         projective_transform = self._proj_transform()
         seg = AlbuProjectiveSegment([projective_transform], adapter)
 
         img = torch.rand(2, 3, 8, 8)
         mask = torch.rand(2, 1, 8, 8)
-        with pytest.raises(RuntimeError, match="aux_targets"):
-            seg(img, aux_targets={"mask": mask})
+        result = seg(img, aux_targets={"mask": mask})
+
+        assert isinstance(result, tuple)
+        out_img, out_aux = result
+        assert out_img.shape == img.shape
+        assert out_aux["mask"].shape == mask.shape
+        # Identity homography: image and mask pass through unchanged.
+        assert torch.allclose(out_img, img, atol=1e-5)
+        assert torch.allclose(out_aux["mask"], mask, atol=1e-5)
 
     def test_albu_projective_segment_requires_cv2(self, monkeypatch: pytest.MonkeyPatch):
         """AlbuProjectiveSegment raises a clear ImportError when cv2 is unavailable."""
