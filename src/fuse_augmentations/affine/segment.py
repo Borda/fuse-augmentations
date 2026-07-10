@@ -414,7 +414,173 @@ class ExactAffineSegment(nn.Module):
                 aux_targets[key] = _flip_keypoints(val, active, is_hflip, is_vflip, height, width)
 
 
-class FusedAffineSegment(nn.Module):
+class _BaseAffineSegment(nn.Module):
+    """Shared matrix-composition engine for the torch-backed fused segments.
+
+    Holds the single copy of the per-sample matrix accumulation loop and the
+    auxiliary-target routing that :class:`FusedAffineSegment` (affine) and
+    :class:`ProjectiveSegment` (homography) both use. Subclasses supply the warp
+    itself via :meth:`_apply_grid` -- affine grids for the affine segment, a
+    perspective grid for the projective one. The composition, float64
+    chain-length handling, probability masking, and pixel-matrix contract are
+    identical across both, so they live here once.
+
+    Args:
+        transforms: List of geometric transform objects to fuse.
+        adapter: A ``TransformAdapter`` that bridges the transforms to canonical
+            parameters and matrices.
+        interpolation: Optional interpolation mode override (``"bilinear"``,
+            ``"nearest"``, ``"bicubic"``). Defaults to ``"bilinear"`` when ``None``.
+        padding_mode: Optional padding mode override (``"zeros"``, ``"border"``,
+            ``"reflection"``). Defaults to ``"zeros"`` when ``None``.
+        randomness: Batch randomness policy for the fused run.
+
+    """
+
+    def __init__(
+        self,
+        transforms: list[object],
+        adapter: TransformAdapter,
+        interpolation: InterpolationStr | None = None,
+        padding_mode: PaddingModeStr | None = None,
+        randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+    ) -> None:
+        """Initialize the shared matrix-composition state."""
+        super().__init__()
+        self.transforms = transforms
+        self.adapter = adapter
+        self.interpolation = interpolation
+        self.padding_mode = padding_mode
+        self.randomness = randomness
+        self._last_matrix: Tensor | None = None
+
+    @property
+    def last_matrix(self) -> Tensor | None:
+        """Return the ``(B, 3, 3)`` composed forward matrix from the last forward pass.
+
+        Returns:
+            The detached, cloned composed matrix, or ``None`` before the first call to :meth:`forward`.
+
+        """
+        return self._last_matrix
+
+    def _compose(self, image: Tensor) -> tuple[Tensor, Tensor]:
+        """Accumulate the per-transform ``(B, 3, 3)`` matrix chain into one matrix.
+
+        Draws each transform's per-sample activation, samples its parameters,
+        builds its matrix, masks skipped samples back to identity, and folds the
+        chain into a single composed forward matrix. Composition runs in the
+        chain-length-independent dtype from :func:`_matrix_compose_dtype` (float64
+        for chains, image dtype for single ops and MPS); the composed matrix is
+        also returned cast to the image dtype for the public matrix contract.
+
+        Args:
+            image: ``(batch_size, channels, height, width)`` float input tensor.
+
+        Returns:
+            A ``(acc, acc_img)`` tuple: ``acc`` is the composed forward matrix in
+            the compose dtype (for inversion and exactness checks), ``acc_img`` is
+            the same matrix cast to the image dtype (for ``_last_matrix`` and
+            auxiliary-target routing).
+
+        """
+        batch_size, num_channels, height, width = image.shape
+        device = image.device
+        dtype = image.dtype
+        input_shape = (batch_size, num_channels, height, width)
+
+        # Compose and invert the multi-transform chain in float64: the (B, 3, 3)
+        # matmul cost is negligible next to the H x W warp, and float64 removes the
+        # chain-length-dependent drift that float32 accumulation introduces. The
+        # composed matrix is cast back to the image dtype only where the public
+        # contract needs it (``_last_matrix``, aux routing). A single transform has
+        # no chain to accumulate, so it stays in the image dtype -- keeping the
+        # common single-op case bit-for-bit compatible with the native warp. MPS
+        # has no float64, so chains there fall back to the image dtype too.
+        compose_dtype = _matrix_compose_dtype(dtype, device, len(self.transforms))
+        eye_batch = torch.eye(3, device=device, dtype=compose_dtype).unsqueeze(0).expand(batch_size, -1, -1)
+        acc = eye_batch.clone()
+
+        for tfm in self.transforms:
+            prob = _transform_prob(tfm)
+            same_on_batch = _shares_randomness_across_batch(self.adapter, tfm, self.randomness)
+            if same_on_batch:
+                active_scalar = torch.rand((), device=device) < prob
+                active = active_scalar.repeat(batch_size)
+            else:
+                active = torch.rand(batch_size, device=device) < prob
+
+            params = _sample_transform_params(self.adapter, tfm, input_shape, device, self.randomness)
+            mtx_i = self.adapter.build_matrix(tfm, params, height, width)
+
+            # Expand to batch if adapter returned (1, 3, 3)
+            if mtx_i.shape[0] == 1 and batch_size > 1:
+                mtx_i = mtx_i.expand(batch_size, -1, -1)
+
+            # Accumulate in the compose dtype; the adapter builds in float32.
+            mtx_i = mtx_i.to(device=device, dtype=compose_dtype)
+
+            mtx_i = torch.where(active[:, None, None], mtx_i, eye_batch)
+            acc = matmul3x3(mtx_i, acc)
+
+        return acc, acc.to(dtype=dtype)
+
+    def _apply_grid(self, image: Tensor, acc: Tensor) -> tuple[Tensor, Tensor]:
+        """Warp ``image`` by the composed matrix and return the warped image and grid.
+
+        Subclass hook: :class:`FusedAffineSegment` builds an ``F.affine_grid`` from
+        the inverse of the composed matrix, :class:`ProjectiveSegment` builds a
+        perspective grid. Both invert the composed forward matrix, normalize it to
+        the ``[-1, 1]`` grid convention, and run one ``F.grid_sample``.
+
+        Args:
+            image: ``(batch_size, channels, height, width)`` float input tensor.
+            acc: ``(batch_size, 3, 3)`` composed forward matrix in the compose dtype.
+
+        Returns:
+            A ``(warped_image, grid)`` tuple; the grid is reused to warp mask aux targets.
+
+        """
+        raise NotImplementedError
+
+    @staticmethod
+    def _route_grid_aux(aux_targets: dict[str, Tensor], grid: Tensor, acc_img: Tensor) -> None:
+        """Route auxiliary targets through the warp grid and composed pixel matrix.
+
+        The mask is resampled with the same ``grid`` used for the image; boxes and
+        keypoints go through the composed forward pixel matrix ``acc_img``. Mutates
+        ``aux_targets`` in place. Shared by the affine and projective forward paths.
+
+        Args:
+            aux_targets: Auxiliary targets to transform (``"mask"``, ``"bbox_xyxy"``,
+                ``"bbox_xywh"``, ``"keypoints"``).
+            grid: The sampling grid produced by :meth:`_apply_grid`.
+            acc_img: ``(batch_size, 3, 3)`` composed forward pixel matrix in the image dtype.
+
+        """
+        from fuse_augmentations.targets import (
+            transform_bbox_xywh,
+            transform_bbox_xyxy,
+            transform_keypoints,
+            transform_mask,
+        )
+
+        for key in list(aux_targets.keys()):
+            val = aux_targets[key]
+            if key == "mask":
+                aux_targets[key] = transform_mask(val, grid)
+                continue
+            if key == "bbox_xyxy":
+                aux_targets[key] = transform_bbox_xyxy(val, acc_img)
+                continue
+            if key == "bbox_xywh":
+                aux_targets[key] = transform_bbox_xywh(val, acc_img)
+                continue
+            if key == "keypoints":
+                aux_targets[key] = transform_keypoints(val, acc_img)
+
+
+class FusedAffineSegment(_BaseAffineSegment):
     """Fused affine segment that composes geometric transforms into one grid_sample call.
 
     Accumulates per-sample ``(B, 3, 3)`` forward affine matrices for every transform in the segment, inverts the
@@ -440,13 +606,7 @@ class FusedAffineSegment(nn.Module):
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     ) -> None:
         """Initialize ``FusedAffineSegment``."""
-        super().__init__()
-        self.transforms = transforms
-        self.adapter = adapter
-        self.interpolation = interpolation
-        self.padding_mode = padding_mode
-        self.randomness = randomness
-        self._last_matrix: Tensor | None = None
+        super().__init__(transforms, adapter, interpolation, padding_mode, randomness)
         # Pre-compute fast-path selector once at construction to avoid repeated
         # isinstance checks on every forward call.
         self._fast_path: str | None = None
@@ -512,16 +672,6 @@ class FusedAffineSegment(nn.Module):
         # writes.  Avoids per-call torch.eye + unsqueeze + expand + clone (~4-6 us)
         # when device and dtype match.
         self._eye_1x3x3_f32: Tensor = torch.eye(3, dtype=torch.float32).unsqueeze(0)
-
-    @property
-    def last_matrix(self) -> Tensor | None:
-        """Return the ``(B, 3, 3)`` composed forward matrix from the last forward pass.
-
-        Returns:
-            The detached, cloned composed matrix, or ``None`` before the first call to :meth:`forward`.
-
-        """
-        return self._last_matrix
 
     def forward(
         self,
@@ -711,42 +861,8 @@ class FusedAffineSegment(nn.Module):
             image = torch.from_numpy(warped).permute(2, 0, 1).unsqueeze(0)
             return image.to(device=device, dtype=dtype)
 
-        # Compose and invert a multi-transform affine chain in float64: the
-        # (B, 3, 3) matmul/inverse cost is negligible next to the H x W warp, and
-        # float64 removes the chain-length-dependent drift that float32 accumulation
-        # introduces. The normalized matrix is cast back to the image dtype only at
-        # the affine_grid boundary; ``_last_matrix`` and aux-target routing use the
-        # image dtype so the public matrix contract is unchanged. A single transform
-        # has no chain to accumulate, so it stays in the image dtype — this keeps the
-        # common single-op case bit-for-bit compatible with the native warp. MPS has
-        # no float64 support, so chains there fall back to the image dtype too.
-        compose_dtype = _matrix_compose_dtype(dtype, device, len(self.transforms))
-        eye_batch = torch.eye(3, device=device, dtype=compose_dtype).unsqueeze(0).expand(batch_size, -1, -1)
-        acc = eye_batch.clone()
-
-        for tfm in self.transforms:
-            prob = _transform_prob(tfm)
-            same_on_batch = _shares_randomness_across_batch(self.adapter, tfm, self.randomness)
-            if same_on_batch:
-                active_scalar = torch.rand((), device=device) < prob
-                active = active_scalar.repeat(batch_size)  # type: ignore[assignment]
-            else:
-                active = torch.rand(batch_size, device=device) < prob  # type: ignore[assignment]
-
-            params = _sample_transform_params(self.adapter, tfm, input_shape, device, self.randomness)
-            mtx_i = self.adapter.build_matrix(tfm, params, height, width)
-
-            # Expand to batch if adapter returned (1, 3, 3)
-            if mtx_i.shape[0] == 1 and batch_size > 1:
-                mtx_i = mtx_i.expand(batch_size, -1, -1)
-
-            # Accumulate in the compose dtype; the adapter builds in float32.
-            mtx_i = mtx_i.to(device=device, dtype=compose_dtype)
-
-            mtx_i = torch.where(active[:, None, None], mtx_i, eye_batch)  # type: ignore[index]
-            acc = matmul3x3(mtx_i, acc)
-
-        acc_img = acc.to(dtype=dtype)
+        # Compose the multi-transform affine chain into one matrix (shared engine).
+        acc, acc_img = self._compose(image)
         self._last_matrix = acc_img.detach().clone()
 
         # Symbolic-exactness fast path: when the whole batch composes to one D4-group
@@ -762,6 +878,33 @@ class FusedAffineSegment(nn.Module):
                 return image
             return image, aux_targets
 
+        image, grid = self._apply_grid(image, acc)
+
+        # Transform auxiliary targets using the composed forward matrix
+        if aux_targets:
+            self._route_grid_aux(aux_targets, grid, acc_img)
+
+        if not _has_aux:
+            return image
+        return image, aux_targets
+
+    def _apply_grid(self, image: Tensor, acc: Tensor) -> tuple[Tensor, Tensor]:
+        """Warp ``image`` with a single ``F.affine_grid`` + ``grid_sample`` pass.
+
+        Inverts the composed forward matrix, normalizes it to the ``[-1, 1]`` grid
+        convention, builds an affine grid, and resamples. The grid is returned so
+        the caller can reuse it to warp mask auxiliary targets.
+
+        Args:
+            image: ``(batch_size, channels, height, width)`` float input tensor.
+            acc: ``(batch_size, 3, 3)`` composed forward matrix in the compose dtype.
+
+        Returns:
+            A ``(warped_image, grid)`` tuple.
+
+        """
+        batch_size, num_channels, height, width = image.shape
+        dtype = image.dtype
         mtx_inv = inv3x3(acc)
         mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
 
@@ -773,33 +916,7 @@ class FusedAffineSegment(nn.Module):
             padding_mode=self.padding_mode or "zeros",
             align_corners=True,
         )
-
-        # Transform auxiliary targets using the composed forward matrix
-        if aux_targets:
-            from fuse_augmentations.targets import (
-                transform_bbox_xywh,
-                transform_bbox_xyxy,
-                transform_keypoints,
-                transform_mask,
-            )
-
-            for key in list(aux_targets.keys()):
-                val = aux_targets[key]
-                if key == "mask":
-                    aux_targets[key] = transform_mask(val, grid)
-                    continue
-                if key == "bbox_xyxy":
-                    aux_targets[key] = transform_bbox_xyxy(val, acc_img)
-                    continue
-                if key == "bbox_xywh":
-                    aux_targets[key] = transform_bbox_xywh(val, acc_img)
-                    continue
-                if key == "keypoints":
-                    aux_targets[key] = transform_keypoints(val, acc_img)
-
-        if not _has_aux:
-            return image
-        return image, aux_targets
+        return image, grid
 
     @staticmethod
     def _route_d4_aux(aux_targets: dict[str, Tensor], d4_op: str, acc_img: Tensor) -> None:
@@ -1525,13 +1642,15 @@ class AlbuFusedAffineSegment(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-class ProjectiveSegment(nn.Module):
+class ProjectiveSegment(_BaseAffineSegment):
     """Fused projective segment that composes homography matrices into one grid_sample call.
 
     Identical to :class:`FusedAffineSegment` in accumulation and auxiliary-target
-    handling, but uses :func:`~fuse_augmentations.affine.matrix.perspective_grid`
-    instead of ``F.affine_grid`` so the full ``3x3`` homography (including
-    perspective division) is applied correctly.
+    handling -- both share the :class:`_BaseAffineSegment` composition engine --
+    but overrides :meth:`_apply_grid` to use
+    :func:`~fuse_augmentations.affine.matrix.perspective_grid` instead of
+    ``F.affine_grid`` so the full ``3x3`` homography (including perspective
+    division) is applied correctly.
 
     Args:
         transforms: List of projective transform objects to fuse.
@@ -1542,33 +1661,6 @@ class ProjectiveSegment(nn.Module):
             ``"zeros"`` when ``None``.
 
     """
-
-    def __init__(
-        self,
-        transforms: list[object],
-        adapter: TransformAdapter,
-        interpolation: InterpolationStr | None = None,
-        padding_mode: PaddingModeStr | None = None,
-        randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
-    ) -> None:
-        """Initialize ``ProjectiveSegment``."""
-        super().__init__()
-        self.transforms = transforms
-        self.adapter = adapter
-        self.interpolation = interpolation
-        self.padding_mode = padding_mode
-        self.randomness = randomness
-        self._last_matrix: Tensor | None = None
-
-    @property
-    def last_matrix(self) -> Tensor | None:
-        """Return the ``(B, 3, 3)`` composed forward matrix from the last forward pass.
-
-        Returns:
-            The detached, cloned composed matrix, or ``None`` before the first call to :meth:`forward`.
-
-        """
-        return self._last_matrix
 
     def forward(
         self,
@@ -1593,47 +1685,37 @@ class ProjectiveSegment(nn.Module):
         if aux_targets is None:
             aux_targets = {}
 
-        batch_size, num_channels, height, width = image.shape
-        device = image.device
-        dtype = image.dtype
-
-        # Compose and invert a multi-transform projective chain in float64 (see
-        # FusedAffineSegment for rationale); the normalized matrix is cast to the
-        # image dtype only at the perspective_grid boundary, and ``_last_matrix`` /
-        # aux routing use the image dtype to preserve the public matrix contract. A
-        # single transform stays in the image dtype (no chain to accumulate); MPS
-        # chains also fall back to the image dtype (no float64 support).
-        compose_dtype = _matrix_compose_dtype(dtype, device, len(self.transforms))
-        eye_batch = torch.eye(3, device=device, dtype=compose_dtype).unsqueeze(0).expand(batch_size, -1, -1)
-        acc = eye_batch.clone()
-
-        input_shape = (batch_size, num_channels, height, width)
-
-        for tfm in self.transforms:
-            prob = _transform_prob(tfm)
-            same_on_batch = _shares_randomness_across_batch(self.adapter, tfm, self.randomness)
-            if same_on_batch:
-                active_scalar = torch.rand((), device=device) < prob
-                active = active_scalar.repeat(batch_size)
-            else:
-                active = torch.rand(batch_size, device=device) < prob
-
-            params = _sample_transform_params(self.adapter, tfm, input_shape, device, self.randomness)
-            mtx_i = self.adapter.build_matrix(tfm, params, height, width)
-
-            # Expand to batch if adapter returned (1, 3, 3)
-            if mtx_i.shape[0] == 1 and batch_size > 1:
-                mtx_i = mtx_i.expand(batch_size, -1, -1)
-
-            # Accumulate in the compose dtype; the adapter builds in float32.
-            mtx_i = mtx_i.to(device=device, dtype=compose_dtype)
-
-            mtx_i = torch.where(active[:, None, None], mtx_i, eye_batch)
-            acc = matmul3x3(mtx_i, acc)
-
-        acc_img = acc.to(dtype=dtype)
+        acc, acc_img = self._compose(image)
         self._last_matrix = acc_img.detach().clone()
 
+        image, grid = self._apply_grid(image, acc)
+
+        # Transform auxiliary targets using the composed forward matrix
+        if aux_targets:
+            self._route_grid_aux(aux_targets, grid, acc_img)
+
+        if not _has_aux:
+            return image
+        return image, aux_targets
+
+    def _apply_grid(self, image: Tensor, acc: Tensor) -> tuple[Tensor, Tensor]:
+        """Warp ``image`` with a single ``perspective_grid`` + ``grid_sample`` pass.
+
+        Inverts the composed forward homography, normalizes it to the ``[-1, 1]``
+        grid convention, builds a perspective grid (with the perspective division
+        ``F.affine_grid`` cannot express), and resamples. The grid is returned so
+        the caller can reuse it to warp mask auxiliary targets.
+
+        Args:
+            image: ``(batch_size, channels, height, width)`` float input tensor.
+            acc: ``(batch_size, 3, 3)`` composed forward homography in the compose dtype.
+
+        Returns:
+            A ``(warped_image, grid)`` tuple.
+
+        """
+        _, _, height, width = image.shape
+        dtype = image.dtype
         mtx_inv = inv3x3(acc)
         mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
 
@@ -1645,33 +1727,7 @@ class ProjectiveSegment(nn.Module):
             padding_mode=self.padding_mode or "zeros",
             align_corners=True,
         )
-
-        # Transform auxiliary targets using the composed forward matrix
-        if aux_targets:
-            from fuse_augmentations.targets import (
-                transform_bbox_xywh,
-                transform_bbox_xyxy,
-                transform_keypoints,
-                transform_mask,
-            )
-
-            for key in list(aux_targets.keys()):
-                val = aux_targets[key]
-                if key == "mask":
-                    aux_targets[key] = transform_mask(val, grid)
-                    continue
-                if key == "bbox_xyxy":
-                    aux_targets[key] = transform_bbox_xyxy(val, acc_img)
-                    continue
-                if key == "bbox_xywh":
-                    aux_targets[key] = transform_bbox_xywh(val, acc_img)
-                    continue
-                if key == "keypoints":
-                    aux_targets[key] = transform_keypoints(val, acc_img)
-
-        if not _has_aux:
-            return image
-        return image, aux_targets
+        return image, grid
 
 
 # ---------------------------------------------------------------------------
