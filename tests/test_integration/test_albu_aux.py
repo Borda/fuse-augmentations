@@ -212,24 +212,40 @@ class TestAlbuMultiTargetOutputBackend:
         assert out_image.shape == (BATCH, HEIGHT, WIDTH, CHANNELS)
 
 
-class TestPassthroughAuxWarning:
-    """A geometric passthrough barrier warns that auxiliary targets skip it."""
+class TestPassthroughAuxPolicy:
+    """Passthrough / auxiliary-target policy: coordinate-changing ops raise, kernel ops pass."""
 
-    def test_passthrough_with_mask_warns(self):
-        """A spatial-kernel passthrough with a mask present emits a UserWarning."""
+    def test_coordinate_changing_passthrough_with_mask_raises(self):
+        """A coordinate-changing passthrough (ElasticTransform) with a mask raises ValueError."""
+        pipe = Compose(
+            [albu.HorizontalFlip(p=1.0), albu.ElasticTransform(p=1.0)],
+            data_keys=["input", "mask"],
+        )
+        with pytest.raises(ValueError, match="Coordinate-changing passthrough"):
+            pipe(_image(), _mask())
+
+    def test_kernel_passthrough_with_mask_does_not_warn(self):
+        """A kernel passthrough (GaussianBlur) with a mask present does NOT warn — aux legitimately skips it."""
         pipe = Compose(
             [albu.HorizontalFlip(p=1.0), albu.GaussianBlur(p=1.0)],
             data_keys=["input", "mask"],
         )
-        with pytest.warns(UserWarning, match="auxiliary targets"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
             pipe(_image(), _mask())
 
     def test_image_only_call_does_not_warn(self):
-        """The same barrier does not warn for a single-tensor (image-only) call."""
+        """A kernel barrier does not warn for a single-tensor (image-only) call."""
         pipe = Compose([albu.HorizontalFlip(p=1.0), albu.GaussianBlur(p=1.0)])
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
             pipe(_image())
+
+    def test_coordinate_changing_passthrough_image_only_does_not_raise(self):
+        """A coordinate-changing passthrough on an image-only call does not raise (no aux to desync)."""
+        pipe = Compose([albu.HorizontalFlip(p=1.0), albu.ElasticTransform(p=1.0)])
+        result = pipe(_image())
+        assert result.shape == (BATCH, CHANNELS, HEIGHT, WIDTH)
 
 
 class TestKwargsAliasCollision:

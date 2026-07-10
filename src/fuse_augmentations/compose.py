@@ -56,14 +56,18 @@ from fuse_augmentations.affine.segment import (
     FusedAffineSegment,
     FusedColorSegment,
     ProjectiveSegment,
+    _clear_current_call_matrix,
+    _current_call_matrix,
     _validate_execution,
     build_segments,
     reorder_aggressive,
     reorder_pointwise,
 )
 from fuse_augmentations.types import (
+    ClipPolicyStr,
     ExecutionStr,
     InterpolationStr,
+    MaskInterpolationStr,
     PaddingModeStr,
     RandomnessPolicy,
     ReorderPolicy,
@@ -71,6 +75,7 @@ from fuse_augmentations.types import (
     TransformAdapter,
     TransformCategory,
     TransformSpec,
+    is_coordinate_changing_passthrough,
 )
 
 __doctest_skip__: list[str] = []
@@ -133,6 +138,34 @@ _TAG_PASSTHROUGH = 2  # _PassthroughSegment: adapter.call_nonfused
 _TAG_LEGACY = 3  # pre-wrapper pickles / unknown segment — resolve adapter by index
 
 
+def _apply_passthrough_substitution(transforms: list[object]) -> list[object]:
+    """Replace registered non-fusible passthrough ops with torch-native equivalents.
+
+    Each transform whose class name is registered in
+    :mod:`fuse_augmentations.substitution` is swapped for an already-installed
+    backend's torch-native equivalent (e.g. Albumentations ``GaussianBlur`` ->
+    Kornia ``RandomGaussianBlur``), keeping the pipeline on-device. Substitution is
+    behaviour-changing, so each swap emits a :class:`UserWarning`. Transforms without
+    a registered substitution — or whose target backend is not importable — are kept
+    unchanged.
+
+    Args:
+        transforms: The original transform list.
+
+    Returns:
+        A new list with substitutable transforms replaced; a fresh list is always
+        returned so the caller's input is not mutated.
+
+    """
+    from fuse_augmentations.substitution import try_substitute_passthrough
+
+    result: list[object] = []
+    for transform in transforms:
+        substitute = try_substitute_passthrough(transform)
+        result.append(substitute if substitute is not None else transform)
+    return result
+
+
 def _coerce_randomness_policy(randomness: RandomnessPolicy | str) -> RandomnessPolicy:
     """Normalize a randomness policy argument."""
     if isinstance(randomness, RandomnessPolicy):
@@ -142,6 +175,33 @@ def _coerce_randomness_policy(randomness: RandomnessPolicy | str) -> RandomnessP
     except ValueError as exc:
         msg = f"unknown randomness policy {randomness!r}; expected one of {[item.value for item in RandomnessPolicy]}"
         raise ValueError(msg) from exc
+
+
+def _validate_clip_policy(clip_policy: ClipPolicyStr | str) -> ClipPolicyStr:
+    """Validate and normalize the fused color-segment clipping policy.
+
+    Args:
+        clip_policy: ``"final"`` for one final clamp or ``"per_op_parity"`` for
+            range-aware native-style clamp boundaries.
+
+    Returns:
+        The validated policy string.
+
+    Raises:
+        ValueError: If *clip_policy* is not a supported policy.
+
+    """
+    if clip_policy in ("final", "per_op_parity"):
+        return cast("ClipPolicyStr", clip_policy)
+    msg = "unknown clip policy {!r}; expected 'final' or 'per_op_parity'"
+    raise ValueError(msg.format(clip_policy))
+
+
+def _validate_mask_interpolation(mask_interpolation: str) -> MaskInterpolationStr:
+    """Validate the auxiliary mask sampling mode and return its typed value."""
+    if mask_interpolation not in ("nearest", "bilinear"):
+        raise ValueError(f"invalid mask_interpolation {mask_interpolation!r}; expected 'nearest' or 'bilinear'")
+    return cast(MaskInterpolationStr, mask_interpolation)
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,8 +226,9 @@ class FusedCompose(nn.Module):
       contains *only* ``GEOMETRIC_EXACT`` ops (HFlip, VFlip). Transforms are
       applied via ``tensor.flip`` with zero interpolation error.
 
-    ``SPATIAL_KERNEL``, ``POINTWISE``, and ``POINTWISE_LINEAR`` transforms are
-    passed through to the backend adapter unchanged.
+    ``SPATIAL_KERNEL`` and nonlinear ``POINTWISE`` transforms are passed through
+    to the backend adapter unchanged. Supported ``POINTWISE_LINEAR`` color
+    transforms, including standard Normalize, are folded into a color segment.
 
     ``ReorderPolicy.POINTWISE`` is fully implemented: before segmentation,
     ``POINTWISE`` and ``POINTWISE_LINEAR`` ops are bubbled past geometric ops
@@ -214,6 +275,45 @@ class FusedCompose(nn.Module):
             border/bilinear numerics differ slightly from cv2. Only affects
             Albumentations pipelines; the Kornia/TorchVision backends already run
             the torch engine.
+        compile: Opt-in ``torch.compile`` of the warp core (matrix normalize ->
+            ``affine_grid`` -> ``grid_sample``) of the torch-backed fused segments.
+            Off by default. When ``True``, the compiled region is used only on
+            non-CPU tensors and only when the installed torch is new enough
+            (``>= 2.2``); otherwise the eager path runs and the flag is a no-op, so
+            the output is unchanged. Probability masking stays outside the compiled
+            region, so the graph has no data-dependent breaks. The first non-CPU call
+            pays a one-time compilation cost; ``dynamic=True`` avoids per-shape
+            recompiles.
+        antialias: Opt-in antialiasing for aggressive downscales. Off by default.
+            When ``True``, a crop-resize (or fused geo+crop) segment whose worst-axis
+            scale drops below ``0.5`` prefilters the input with a Gaussian
+            (mipmap-rule sigma) before the single warp, so the downscale no longer
+            aliases. A no-op when the scale is safe or the flag is off, keeping the
+            default output bit-identical; requires kornia for the blur (falls back to
+            the un-filtered warp when kornia is absent).
+        substitute_passthrough: When ``True`` (default ``False``), non-fusible
+            passthrough ops that have a registered torch-native equivalent in an
+            already-installed backend are replaced with that equivalent, so the
+            pipeline can stay on-device instead of paying a device-to-host round-trip.
+            The initial registry maps Albumentations ``GaussianBlur`` to Kornia
+            ``RandomGaussianBlur``. This is **behaviour-changing**: the substitute uses
+            a different kernel implementation, border handling, and per-call random
+            stream, so outputs and RNG differ from the original op — every substitution
+            emits a :class:`UserWarning`. Substitution happens only when the target
+            backend is importable; otherwise the original op is kept silently and runs
+            on the normal passthrough path. The default (``False``) leaves outputs
+            unchanged.
+        clip_policy: Clamp policy for fused color segments. ``"final"`` (default)
+            applies one clamp after the composed color matmul — most precise.
+            ``"per_op_parity"`` splits the fused color run at any op where a
+            composed intermediate would leave ``[0, 1]`` and clamps in between,
+            approximating the native per-op clamped chain on gamut-escaping
+            pipelines. Known gap: when a gamut-escaping op immediately precedes a
+            mean-relative contrast op, the contrast midpoint is taken from the
+            pre-clamp mean, so output can differ from native by ~1e-2.
+        mask_interpolation: Auxiliary mask sampling mode. ``"nearest"`` (default)
+            preserves hard labels; ``"bilinear"`` provides differentiable soft-mask
+            sampling and requires floating-point mask input.
         **backend_kwargs: Reserved for backend-specific options (currently unused).
 
     """
@@ -228,16 +328,31 @@ class FusedCompose(nn.Module):
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
         randomness: RandomnessPolicy | Literal["backend", "per_sample"] = RandomnessPolicy.BACKEND,
         execution: ExecutionStr = "cv2",
+        compile: bool = False,  # noqa: A002 — public flag name mirrors torch.compile; shadowing builtin is intentional
+        antialias: bool = False,
+        substitute_passthrough: bool = False,
+        clip_policy: ClipPolicyStr = "final",
+        mask_interpolation: MaskInterpolationStr = "nearest",
         **backend_kwargs: object,
     ) -> None:
         """Initialize ``FusedCompose``."""
         super().__init__()
         randomness_policy = _coerce_randomness_policy(randomness)
         execution = _validate_execution(execution)
+        clip_policy = _validate_clip_policy(clip_policy)
+        mask_interpolation = _validate_mask_interpolation(mask_interpolation)
 
         if reorder not in (ReorderPolicy.NONE, ReorderPolicy.POINTWISE, ReorderPolicy.AGGRESSIVE):
             msg = f"ReorderPolicy.{reorder.name} not yet supported"
             raise NotImplementedError(msg)
+
+        # Opt-in substitution: replace registered non-fusible passthrough ops with an
+        # already-installed backend's torch-native equivalent so the pipeline can stay
+        # on-device. Applied before backend detection so the substitute (a torch op)
+        # flows through the normal segmentation path. Behaviour-changing → each swap
+        # warns; default off leaves the transform list untouched.
+        if substitute_passthrough and transforms:
+            transforms = _apply_passthrough_substitution(transforms)
 
         adapter: TransformAdapter | None
         segments: list[object]
@@ -288,6 +403,10 @@ class FusedCompose(nn.Module):
                     use_numpy=(backend == Backend.ALBUMENTATIONS),
                     route_coords_via_grid=_has_coord_aux(data_keys),
                     execution=execution,
+                    compile_warp=compile,
+                    antialias=antialias,
+                    clip_policy=clip_policy,
+                    mask_interpolation=mask_interpolation,
                 )
             else:
                 # Mixed-backend path: group by backend, build segments per group
@@ -300,6 +419,10 @@ class FusedCompose(nn.Module):
                     randomness=randomness_policy,
                     route_coords_via_grid=_has_coord_aux(data_keys),
                     execution=execution,
+                    compile_warp=compile,
+                    antialias=antialias,
+                    clip_policy=clip_policy,
+                    mask_interpolation=mask_interpolation,
                 )
 
         self._setup_instance(
@@ -314,6 +437,10 @@ class FusedCompose(nn.Module):
             output_backend=output_backend,
             randomness=randomness_policy,
             execution=execution,
+            compile_warp=compile,
+            antialias=antialias,
+            clip_policy=clip_policy,
+            mask_interpolation=mask_interpolation,
         )
 
     def _setup_instance(
@@ -329,6 +456,10 @@ class FusedCompose(nn.Module):
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
         execution: ExecutionStr = "cv2",
+        compile_warp: bool = False,
+        antialias: bool = False,
+        clip_policy: ClipPolicyStr = "final",
+        mask_interpolation: MaskInterpolationStr = "nearest",
     ) -> None:
         """Assign all instance attributes.
 
@@ -342,6 +473,10 @@ class FusedCompose(nn.Module):
         self.data_keys: list[str] | None = data_keys
         self.randomness: RandomnessPolicy = randomness
         self.execution: ExecutionStr = execution
+        self.compile_warp: bool = compile_warp
+        self.antialias: bool = antialias
+        self.clip_policy: ClipPolicyStr = clip_policy
+        self.mask_interpolation: MaskInterpolationStr = _validate_mask_interpolation(mask_interpolation)
         self._adapter: TransformAdapter | None = adapter
         # Heterogeneous by design: fused/color/exact/crop segments, passthrough wrappers, or raw
         # legacy transforms — dispatched at runtime via _seg_dispatch_tags, so elements stay Any.
@@ -353,7 +488,18 @@ class FusedCompose(nn.Module):
         )
         self._last_transform_matrix: Tensor | None = None
         self._last_matrix_segment: object | None = None  # deferred resolution
+        self._fusion_plan_cache: tuple[bool, str] | None = None
+        self._fusion_plan_descriptors_cache: list[SegmentDescriptor] | None = None
         self._transform_adapters: dict[int, TransformAdapter] = transform_adapters or {}
+
+        # Device tracker: a zero-element buffer whose only purpose is to follow the
+        # module across ``.to(device)`` / ``.cuda()`` / ``.mps()`` so ``fusion_plan``
+        # can report whether the configured pipeline device is non-CPU (a CPU
+        # passthrough on a GPU pipeline is a poison pill worth surfacing). Geometric
+        # and passthrough segments hold no buffers of their own, so nothing else
+        # tracks the module's device.
+        if not hasattr(self, "_device_tracker"):
+            self.register_buffer("_device_tracker", torch.empty(0), persistent=False)
 
         # Plan-time dispatch: precompute one integer tag per segment so forward()
         # loops without an isinstance chain. data_keys is constructor state, so the
@@ -436,7 +582,7 @@ class FusedCompose(nn.Module):
         # Pre-computed Albumentations dict-input routing flag: avoids the
         # per-call lazy import + isinstance check in __call__ for Albu pipelines.
         _is_albu: bool = False
-        if adapter is not None:
+        if adapter is not None and not isinstance(adapter, _DirectParamAdapter):
             try:
                 from fuse_augmentations.adapters.albumentations import (
                     AlbumentationsAdapter as _AlbuAdapterCls,
@@ -561,8 +707,17 @@ class FusedCompose(nn.Module):
         if not hasattr(self, "execution"):
             # Pickles predating the execution flag default to the cv2 strategy.
             self.execution = "cv2"
+        if not hasattr(self, "clip_policy"):
+            self.clip_policy = "final"
+        if not hasattr(self, "mask_interpolation"):
+            # Pickles predating configurable mask sampling retain nearest behavior.
+            self.mask_interpolation = "nearest"
+        if not hasattr(self, "_fusion_plan_cache"):
+            self._fusion_plan_cache = None
+        if not hasattr(self, "_fusion_plan_descriptors_cache"):
+            self._fusion_plan_descriptors_cache = None
 
-    def __call__(self, *args: object, **kwargs: object) -> object:
+    def __call__(self, *args: object, return_matrix: bool = False, **kwargs: object) -> object:
         """Route to the Albumentations native dict path or the standard tensor path.
 
         When called with ``image=<numpy.ndarray>`` and the pipeline adapter is an
@@ -579,6 +734,8 @@ class FusedCompose(nn.Module):
             **kwargs: Keyword arguments.  When ``"image"`` is present,
                 ``isinstance(kwargs["image"], np.ndarray)`` is checked to
                 decide routing.
+            return_matrix: When ``True``, return the output together with the
+                matrix produced by the last fused geometric segment.
 
         Returns:
             ``dict`` with ``"image"`` key (HWC NumPy) for the Albu native path;
@@ -603,7 +760,7 @@ class FusedCompose(nn.Module):
         # the keyword entry adds dict output; the positional data_keys API is
         # unchanged and still returns a tuple.
         if kwargs and "image" in kwargs and self._multi_target and self._aux_keys:
-            return self._forward_kwargs_dict(kwargs)
+            return self._forward_kwargs_dict(kwargs, return_matrix=return_matrix)
 
         if (
             self._single_albu_direct_seg is not None
@@ -611,9 +768,13 @@ class FusedCompose(nn.Module):
             and "image" in kwargs
             and isinstance(kwargs["image"], np.ndarray)
         ):
+            _clear_current_call_matrix()
             img = self._single_albu_direct_seg.forward_numpy(kwargs["image"])
             self._last_transform_matrix = self._single_albu_direct_seg.last_matrix
-            return {"image": img}
+            result: object = {"image": img}
+            if return_matrix:
+                return result, _current_call_matrix()
+            return result
         if self._is_albu_native and "image" in kwargs and isinstance(kwargs["image"], np.ndarray):
             if len(kwargs) > 1:
                 extra_keys = sorted(key for key in kwargs if key != "image")
@@ -622,7 +783,11 @@ class FusedCompose(nn.Module):
                     f"keys {extra_keys} would be silently dropped. Auxiliary targets are not "
                     "supported on this path — pass tensors with data_keys instead."
                 )
-            return self._forward_albu_native(kwargs["image"])
+            _clear_current_call_matrix()
+            result = self._forward_albu_native(kwargs["image"])
+            if return_matrix:
+                return result, _current_call_matrix()
+            return result
 
         # Single-transform tensor fast paths: bypass nn.Module.__call__ overhead
         # (~10-15 us from hook dispatch, _call_impl indirection) for the
@@ -635,15 +800,17 @@ class FusedCompose(nn.Module):
                 # transform_matrix "None after exact/passthrough-only" contract holds.
                 self._last_transform_matrix = None
                 image = _exact_fast[0].call_nonfused(_exact_fast[1], cast(Tensor, args[0]))
-                return self._convert_primary_output(image)
+                result = self._convert_primary_output(image)
+                return (result, None) if return_matrix else result
 
             _fused_fast = self._single_fused_fast_seg
             if _fused_fast is not None:
                 image = cast(Tensor, _fused_fast.forward(cast(Tensor, args[0]), None))
-                self._last_transform_matrix = _fused_fast.last_matrix
-                return self._convert_primary_output(image)
+                self._last_transform_matrix = _current_call_matrix()
+                result = self._convert_primary_output(image)
+                return (result, _current_call_matrix()) if return_matrix else result
 
-        return super().__call__(*args, **kwargs)
+        return super().__call__(*args, return_matrix=return_matrix, **kwargs)
 
     def _forward_albu_native(self, img_hwc: NDArray[Any]) -> dict[str, NDArray[Any]]:
         """Execute the pipeline in Albumentations native dict-input mode.
@@ -766,7 +933,7 @@ class FusedCompose(nn.Module):
         )
         raise ValueError(msg)
 
-    def _forward_kwargs_dict(self, kwargs: dict[str, object]) -> dict[str, object]:
+    def _forward_kwargs_dict(self, kwargs: dict[str, object], *, return_matrix: bool = False) -> object:
         """Run the pipeline for an Albumentations-style keyword call and return a dict.
 
         Each keyword is mapped to a declared data key, the targets are ordered to
@@ -777,6 +944,8 @@ class FusedCompose(nn.Module):
         Args:
             kwargs: The keyword arguments from the call; must contain ``"image"``
                 and one entry per auxiliary ``data_keys`` target.
+            return_matrix: When ``True``, return the output dict and its last
+                fused geometric matrix.
 
         Returns:
             A dict mapping each input keyword name to its transformed output.
@@ -807,9 +976,13 @@ class FusedCompose(nn.Module):
             raise ValueError(msg)
 
         ordered_args = tuple(cast("torch.Tensor", kwargs[key_to_kwarg[key]]) for key in data_keys)
-        result = self._forward_multi(ordered_args)
+        result = self._forward_multi(ordered_args, return_matrix=return_matrix)
+        matrix = None
+        if return_matrix:
+            result, matrix = cast("tuple[object, Tensor | None]", result)
         outputs = result if isinstance(result, tuple) else (result,)
-        return {key_to_kwarg[key]: outputs[idx] for idx, key in enumerate(data_keys)}
+        output = {key_to_kwarg[key]: outputs[idx] for idx, key in enumerate(data_keys)}
+        return (output, matrix) if return_matrix else output
 
     def _convert_primary_output(self, image: torch.Tensor) -> torch.Tensor | NDArray[Any]:
         """Convert the primary image output to the requested backend."""
@@ -819,7 +992,11 @@ class FusedCompose(nn.Module):
         image_for_conversion = image.unsqueeze(0) if image.ndim == 3 else image
         return self._output_converter.convert(image_for_conversion)  # type: ignore[no-any-return]
 
-    def forward(self, *args: torch.Tensor) -> torch.Tensor | NDArray[Any] | tuple[torch.Tensor, ...]:
+    def forward(
+        self,
+        *args: torch.Tensor,
+        return_matrix: bool = False,
+    ) -> object:
         """Apply the augmentation pipeline to an image batch and optional auxiliary targets.
 
         **Single-tensor mode** (``data_keys=None``, default): accepts one image
@@ -840,12 +1017,18 @@ class FusedCompose(nn.Module):
                 order: ``"mask"`` as ``(B, C, H, W)`` float/int;
                 ``"bbox_xyxy"`` / ``"bbox_xywh"`` as ``(B, N, 4)`` float32;
                 ``"keypoints"`` as ``(B, N, 2)`` float32.
+            return_matrix: When ``True``, return the output and its last fused
+                geometric pixel matrix.
 
         Returns:
             Single ``Tensor`` or NumPy ``ndarray`` when ``data_keys`` is
             ``None`` or has one entry. NumPy output is returned only when
             ``output_backend="numpy"``. ``tuple[Tensor, ...]`` in
             ``data_keys`` order otherwise.
+
+            When ``return_matrix=True``, returns ``(output, matrix)`` where
+            ``matrix`` is the image-dtype pixel matrix from the last fused
+            geometric segment, or ``None`` when no such segment ran.
 
         Raises:
             TypeError: If the number of positional arguments does not match
@@ -871,8 +1054,8 @@ class FusedCompose(nn.Module):
             if len(args) != 1:
                 msg = f"Expected 1 argument (data_keys is None), got {len(args)}"
                 raise TypeError(msg)
-            return self._forward_single(args[0])
-        return self._forward_multi(args)
+            return self._forward_single(args[0], return_matrix=return_matrix)
+        return self._forward_multi(args, return_matrix=return_matrix)
 
     def _build_dispatch_tags(self) -> list[int]:
         """Assign one integer dispatch tag to every segment (see the ``_TAG_*`` constants)."""
@@ -896,23 +1079,28 @@ class FusedCompose(nn.Module):
             self._seg_dispatch_tags = tags
         return tags
 
-    def _forward_single(self, image: torch.Tensor) -> torch.Tensor | NDArray[Any]:
+    def _forward_single(self, image: torch.Tensor, *, return_matrix: bool = False) -> object:
         """Run the pipeline in single-tensor mode (``data_keys is None``)."""
         # Reset per-call state so transform_matrix returns None when only
         # exact/passthrough segments run (no stale matrix from a previous call).
         self._last_transform_matrix = None
+        _clear_current_call_matrix()
+        call_matrix: Tensor | None = None
 
         # Whole-pipeline single-segment fast paths: bypass the segment's
         # nn.Module.__call__ and probability machinery entirely.
         _exact_fast = self._single_exact_fast
         if _exact_fast is not None:
             image = _exact_fast[0].call_nonfused(_exact_fast[1], image)
-            return self._convert_primary_output(image)
+            result = self._convert_primary_output(image)
+            return (result, None) if return_matrix else result
         _fast_seg = self._single_fused_fast_seg
         if _fast_seg is not None:
             image = cast(Tensor, _fast_seg.forward(image, None))
-            self._last_transform_matrix = _fast_seg.last_matrix
-            return self._convert_primary_output(image)
+            call_matrix = _current_call_matrix()
+            self._last_transform_matrix = call_matrix
+            result = self._convert_primary_output(image)
+            return (result, call_matrix) if return_matrix else result
 
         # Per-segment: call ``forward`` directly (skips nn.Module.__call__ per
         # segment — this generalises the single-op bypass to every segment in a
@@ -920,18 +1108,22 @@ class FusedCompose(nn.Module):
         for seg, tag in zip(self._segments, self._dispatch_tags(), strict=True):
             if tag == _TAG_MATRIX:
                 image = cast(Tensor, seg.forward(image, None))
-                self._last_transform_matrix = seg.last_matrix
+                call_matrix = _current_call_matrix()
+                self._last_transform_matrix = call_matrix
             elif tag == _TAG_PLAIN:
                 image = cast(Tensor, seg.forward(image, None))
             elif tag == _TAG_PASSTHROUGH:
                 image = seg.adapter.call_nonfused(seg.transform, image)
             else:
                 image = self._legacy_passthrough(seg, image)
-        return self._convert_primary_output(image)
+        result = self._convert_primary_output(image)
+        return (result, call_matrix) if return_matrix else result
 
-    def _forward_multi(self, args: tuple[torch.Tensor, ...]) -> torch.Tensor | NDArray[Any] | tuple[torch.Tensor, ...]:
+    def _forward_multi(self, args: tuple[torch.Tensor, ...], *, return_matrix: bool = False) -> object:
         """Run the pipeline in multi-target mode (``data_keys`` is set)."""
         self._last_transform_matrix = None
+        _clear_current_call_matrix()
+        call_matrix: Tensor | None = None
         data_keys = cast("list[str]", self.data_keys)
         if len(args) != len(data_keys):
             msg = f"Expected {len(data_keys)} arguments for data_keys={self.data_keys}, got {len(args)}"
@@ -942,41 +1134,54 @@ class FusedCompose(nn.Module):
         for seg, tag in zip(self._segments, self._dispatch_tags(), strict=True):
             if tag == _TAG_MATRIX:
                 image, aux_targets = seg.forward(image, aux_targets)
-                self._last_transform_matrix = seg.last_matrix
+                call_matrix = _current_call_matrix()
+                self._last_transform_matrix = call_matrix
             elif tag == _TAG_PLAIN:
                 image, aux_targets = seg.forward(image, aux_targets)
             elif tag == _TAG_PASSTHROUGH:
                 if aux_targets:
-                    self._warn_passthrough_aux_skip(seg.transform)
+                    self._check_passthrough_aux_policy(seg.transform)
                 image = seg.adapter.call_nonfused(seg.transform, image)
             else:
                 if aux_targets:
-                    self._warn_passthrough_aux_skip(seg)
+                    self._check_passthrough_aux_policy(seg)
                 image = self._legacy_passthrough(seg, image)
-        return self._assemble_multi_output(image, aux_targets, args)
+        result = self._assemble_multi_output(image, aux_targets, args)
+        return (result, call_matrix) if return_matrix else result
 
     @staticmethod
-    def _warn_passthrough_aux_skip(transform: object) -> None:
-        """Warn that a passthrough transform does not route auxiliary targets.
+    def _check_passthrough_aux_policy(transform: object) -> None:
+        """Enforce the passthrough / auxiliary-target correctness policy.
 
-        Passthrough (non-fused) transforms — including geometric spatial-kernel
-        ops such as elastic/grid/optical distortion — apply to the image only. Any
-        auxiliary targets (masks, boxes, keypoints) skip the transform and stay
-        aligned to the pre-passthrough geometry, so they silently desync from the
-        image. This warning surfaces that at runtime.
+        Passthrough (non-fused) transforms apply to the image only; auxiliary targets
+        (masks, boxes, keypoints) skip them. Whether that is a bug depends on the op:
+
+        - **Coordinate-changing** passthrough ops (geometric distortion: elastic, grid,
+          optical distortion, thin-plate-spline, piecewise-affine) move image content,
+          so auxiliary targets that skip them silently desync from the image. This is a
+          correctness bug and raises :class:`ValueError`.
+        - **Kernel / pointwise** passthrough ops (blur, noise, gamma) leave geometry
+          unchanged, so auxiliary targets legitimately pass through untouched — no
+          warning is emitted.
 
         Args:
-            transform: The passthrough transform being executed.
+            transform: The passthrough transform being executed with auxiliary targets
+                present.
+
+        Raises:
+            ValueError: If ``transform`` is a coordinate-changing passthrough op, since
+                the auxiliary targets would silently desync from the image.
 
         """
-        warnings.warn(
-            f"Passthrough transform {type(transform).__name__!r} applies to the image only; "
-            "auxiliary targets (masks, boxes, keypoints) are NOT routed through it and will "
-            "misalign with the image. Move geometric ops before passthrough barriers, or "
-            "transform the auxiliary targets manually.",
-            UserWarning,
-            stacklevel=3,
-        )
+        if is_coordinate_changing_passthrough(transform):
+            msg = (
+                f"Coordinate-changing passthrough transform {type(transform).__name__!r} moves "
+                "image content but does NOT route auxiliary targets (masks, boxes, keypoints) — "
+                "they would silently desync from the image. Move geometric ops before the "
+                "passthrough barrier, transform the auxiliary targets manually, or remove this "
+                "op from a multi-target (data_keys) pipeline."
+            )
+            raise ValueError(msg)
 
     def _build_aux_targets(self, args: tuple[torch.Tensor, ...]) -> dict[str, torch.Tensor]:
         """Build the auxiliary-target dict from positional args, rejecting duplicate keys."""
@@ -1109,16 +1314,36 @@ class FusedCompose(nn.Module):
                     total += num_transforms - 1
         return total
 
+    def _plan_device(self) -> torch.device:
+        """Return the pipeline's configured device (follows ``.to(device)``)."""
+        tracker = getattr(self, "_device_tracker", None)
+        if tracker is not None:
+            return cast(Tensor, tracker).device
+        return torch.device("cpu")
+
     @property
     def fusion_plan(self) -> str:
         """Return a human-readable summary of what got fused and what didn't.
 
+        When the pipeline is configured on a non-CPU device (via ``.to(device)``),
+        each passthrough segment is annotated with a trailing ``" [CPU passthrough]"``
+        marker, because a non-fusible op forces a device-to-host round-trip on a
+        GPU/MPS pipeline (the "GPU poison pill"). On a CPU pipeline the marker is
+        omitted and the string is unchanged.
+
         Returns:
             Arrow-separated description of segments, e.g.
             ``"fused(RandomRotation, RandomHorizontalFlip) -> passthrough(GaussianBlur)"``.
-            Returns ``"empty"`` for an empty pipeline.
+            On a non-CPU pipeline the passthrough entry reads
+            ``"passthrough(GaussianBlur) [CPU passthrough]"``. Returns ``"empty"`` for
+            an empty pipeline.
 
         """
+        non_cpu = self._plan_device().type != "cpu"
+        cached = self._fusion_plan_cache
+        if cached is not None and cached[0] == non_cpu:
+            return cached[1]
+        marker = " [CPU passthrough]" if non_cpu else ""
         parts: list[str] = []
         for seg in self._segments:
             if isinstance(seg, (ProjectiveSegment, AlbuProjectiveSegment)):
@@ -1146,11 +1371,13 @@ class FusedCompose(nn.Module):
                 continue
 
             if isinstance(seg, _PassthroughSegment):
-                parts.append(f"passthrough({type(seg.transform).__name__})")
+                parts.append(f"passthrough({type(seg.transform).__name__}){marker}")
                 continue
 
-            parts.append(f"passthrough({type(seg).__name__})")
-        return " \u2192 ".join(parts) if parts else "empty"
+            parts.append(f"passthrough({type(seg).__name__}){marker}")
+        plan = " → ".join(parts) if parts else "empty"
+        self._fusion_plan_cache = (non_cpu, plan)
+        return plan
 
     @property
     def fusion_plan_descriptors(self) -> list[SegmentDescriptor]:
@@ -1182,6 +1409,9 @@ class FusedCompose(nn.Module):
             projective segments carry the adapter class name.
 
         """
+        cached = self._fusion_plan_descriptors_cache
+        if cached is not None:
+            return cached
 
         def _resolve_backend(seg: object) -> str | None:
             # from_params() uses _DirectParamAdapter; expose backend-free descriptors.
@@ -1259,6 +1489,10 @@ class FusedCompose(nn.Module):
                         transforms=(type(seg.transform).__name__,),
                         n_warps_saved=0,
                         backend=_resolve_backend(seg),
+                        # A crop+resize acts as a segment boundary (it changes output
+                        # dimensions), so it is a barrier for adjacent geometric runs.
+                        barrier="crop_resize",
+                        split_reason=self._passthrough_split_reason(seg),
                     )
                 )
                 continue
@@ -1268,12 +1502,78 @@ class FusedCompose(nn.Module):
                         kind="passthrough",
                         transforms=(type(seg.transform).__name__,),
                         n_warps_saved=0,
+                        barrier=self._passthrough_barrier_reason(seg.transform),
+                        split_reason=self._passthrough_split_reason(seg),
+                        refused="not_fusible",
                     )
                 )
                 continue
             # Legacy passthrough
-            descriptors.append(SegmentDescriptor(kind="passthrough", transforms=(type(seg).__name__,), n_warps_saved=0))
+            descriptors.append(
+                SegmentDescriptor(
+                    kind="passthrough",
+                    transforms=(type(seg).__name__,),
+                    n_warps_saved=0,
+                    barrier=self._passthrough_barrier_reason(seg),
+                    split_reason=self._passthrough_split_reason(seg),
+                    refused="not_fusible",
+                )
+            )
+        self._fusion_plan_descriptors_cache = descriptors
         return descriptors
+
+    def _passthrough_barrier_reason(self, transform: object) -> str:
+        """Classify why a passthrough transform forms a fusion barrier.
+
+        Args:
+            transform: The passthrough transform (the wrapped transform for a
+                :class:`_PassthroughSegment`, or the raw legacy segment object).
+
+        Returns:
+            ``"coordinate_change"`` for a geometric distortion op (elastic/grid/optical
+            distortion, thin-plate-spline, piecewise-affine) whose auxiliary targets
+            would desync, else ``"spatial_kernel"`` for a kernel/pointwise op.
+
+        """
+        if is_coordinate_changing_passthrough(transform):
+            return "coordinate_change"
+        return "spatial_kernel"
+
+    def _passthrough_split_reason(self, seg: object) -> str | None:
+        """Return why a run was split at ``seg``, or ``None`` when not applicable.
+
+        A passthrough that sits between two same-backend fused runs is a natural
+        barrier (not a *split* of an otherwise-fusible run). A passthrough at a
+        backend boundary in a mixed-backend pipeline additionally marks where the
+        backend changed. Only the mixed-backend case is reported here, as the single-
+        backend barrier reason is already carried by ``barrier``.
+
+        Args:
+            seg: The segment being described.
+
+        Returns:
+            ``"backend_boundary"`` when the pipeline is mixed-backend and this segment's
+            transform sits at a backend change, else ``None``.
+
+        """
+        if not self._transform_adapters:
+            return None
+        transform = seg.transform if isinstance(seg, _PassthroughSegment) else seg
+        seg_idx = next(
+            (idx for idx, orig in enumerate(self.original_transforms) if orig is transform),
+            None,
+        )
+        if seg_idx is None:
+            return None
+        this_adapter = self._transform_adapters.get(seg_idx)
+        neighbour_adapters = {
+            self._transform_adapters.get(idx)
+            for idx in (seg_idx - 1, seg_idx + 1)
+            if 0 <= idx < len(self.original_transforms)
+        }
+        neighbour_adapters.discard(None)
+        neighbour_adapters.discard(this_adapter)
+        return "backend_boundary" if neighbour_adapters else None
 
     @classmethod
     def from_config(
@@ -1286,7 +1586,9 @@ class FusedCompose(nn.Module):
         data_keys: list[str] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
         randomness: RandomnessPolicy | Literal["backend", "per_sample"] = RandomnessPolicy.BACKEND,
+        clip_policy: ClipPolicyStr = "final",
         on_unsupported: Literal["raise", "warn_skip"] = "raise",
+        mask_interpolation: MaskInterpolationStr = "nearest",
     ) -> FusedCompose:
         """Create a FusedCompose pipeline from a list of TransformSpec objects.
 
@@ -1302,7 +1604,8 @@ class FusedCompose(nn.Module):
             specs: List of :class:`TransformSpec` objects describing the
                 pipeline.
             backend: Backend name (``"kornia"``, ``"torchvision"``,
-                ``"albumentations"``).
+                ``"albumentations"``, or ``"native"``). The native backend
+                is fully batched and has no optional dependencies.
             interpolation: Interpolation mode for ``grid_sample`` warp.
             padding_mode: Padding mode for out-of-bounds samples.
             reorder: Reorder policy applied before segmentation.
@@ -1311,6 +1614,9 @@ class FusedCompose(nn.Module):
                 ``"numpy_hwc"``, ``"torch"``, or ``None``). Forwarded to
                 :meth:`__init__`.
             randomness: Batch randomness policy forwarded to :meth:`__init__`.
+            clip_policy: Clamp policy for fused color segments.
+            mask_interpolation: Auxiliary mask sampling mode forwarded to
+                :meth:`__init__`.
             on_unsupported: Policy for specs whose op the backend cannot build.
                 ``"raise"`` (default) aggregates all offenders into one
                 ``ValueError``; ``"warn_skip"`` drops each unsupported spec with
@@ -1341,6 +1647,18 @@ class FusedCompose(nn.Module):
             raise ValueError(msg)
 
         kept_specs = cls._validate_specs(specs, backend, on_unsupported)
+        if backend == "native":
+            return cls._from_param_specs(
+                specs=kept_specs,
+                interpolation=interpolation,
+                padding_mode=padding_mode,
+                reorder=reorder,
+                data_keys=data_keys,
+                output_backend=output_backend,
+                randomness=_coerce_randomness_policy(randomness),
+                route_coords_via_grid=_has_coord_aux(data_keys),
+                native=True,
+            )
         transforms = [cls._build_transform(spec, backend) for spec in kept_specs]
 
         return cls(
@@ -1351,6 +1669,8 @@ class FusedCompose(nn.Module):
             reorder=reorder,
             output_backend=output_backend,
             randomness=randomness,
+            clip_policy=clip_policy,
+            mask_interpolation=mask_interpolation,
         )
 
     @staticmethod
@@ -1428,7 +1748,7 @@ class FusedCompose(nn.Module):
         from fuse_augmentations.resolver import resolve_op, translate_params
 
         op_name = cast("OpStr", spec.operation)
-        tfm_cls = resolve_op(op_name, backend)
+        tfm_cls = cast(type, resolve_op(op_name, backend))
         kwargs = translate_params(op_name, backend, dict(spec.params))
         # Most backends accept p= for per-transform probability.
         # Some (e.g. TorchVision rotation) don't; pass it and let
@@ -1495,7 +1815,7 @@ class FusedCompose(nn.Module):
         Example:
             >>> from fuse_augmentations.compose import FusedCompose
             >>> sorted(FusedCompose.capability_matrix())
-            ['albumentations', 'kornia', 'torchvision']
+            ['albumentations', 'kornia', 'native', 'torchvision']
 
         """
         from fuse_augmentations.resolver import capability_matrix
@@ -1523,9 +1843,12 @@ class FusedCompose(nn.Module):
         data_keys: list[str] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
         randomness: RandomnessPolicy | Literal["backend", "per_sample"] = RandomnessPolicy.BACKEND,
+        clip_policy: ClipPolicyStr = "final",
+        mask_interpolation: MaskInterpolationStr = "nearest",
         *,
         specs: list[TransformSpec] | None = None,
         backend: BackendStr | None = None,
+        route_coords_via_grid: bool = False,
     ) -> FusedCompose:
         """Create a ``FusedCompose`` pipeline directly from parameter ranges.
 
@@ -1561,10 +1884,10 @@ class FusedCompose(nn.Module):
                 or ``None``.
             hflip_p: Probability of horizontal flip per sample. Default 0.0.
             vflip_p: Probability of vertical flip per sample. Default 0.0.
-            brightness: Reserved for a future release. Raises
-                ``NotImplementedError`` if not ``None``.
-            contrast: Reserved for a future release. Raises
-                ``NotImplementedError`` if not ``None``.
+            brightness: Maximum multiplicative brightness deviation. A value
+                of ``0.1`` samples factors in ``[0.9, 1.1]``.
+            contrast: Maximum multiplicative contrast deviation. A value of
+                ``0.1`` samples factors in ``[0.9, 1.1]`` around midpoint 0.5.
             interpolation: Interpolation mode for the ``grid_sample`` warp.
                 One of ``"bilinear"`` (default), ``"nearest"``, ``"bicubic"``.
             padding_mode: Padding for out-of-bounds samples.
@@ -1582,6 +1905,11 @@ class FusedCompose(nn.Module):
                 parameter sampling — the direct-param path always draws
                 independent per-sample parameters. It only changes behaviour
                 when ``backend=`` is set (delegation to :meth:`from_config`).
+            clip_policy: Clamp policy forwarded to fused color segments.
+            mask_interpolation: Auxiliary mask sampling mode forwarded to
+                :meth:`__init__` or :meth:`from_config`.
+            route_coords_via_grid: Force coordinate auxiliary targets through
+                the grid path for direct-param construction.
             specs: List of :class:`TransformSpec` objects. When provided,
                 all other geometric keyword arguments must be at their
                 defaults (mutually exclusive). Keyword-only.
@@ -1594,7 +1922,6 @@ class FusedCompose(nn.Module):
             A configured ``FusedCompose`` instance ready for inference or training.
 
         Raises:
-            NotImplementedError: If ``brightness`` or ``contrast`` is not ``None``.
             ValueError: If ``specs`` is provided together with any geometric keyword
                 argument (they are mutually exclusive).
             ValueError: If ``specs`` contains an op that is not supported in
@@ -1614,13 +1941,6 @@ class FusedCompose(nn.Module):
             torch.Size([2, 3, 64, 64])
 
         """
-        if brightness is not None:
-            msg = "brightness fusion is not yet implemented in from_params; use a backend color transform instead"
-            raise NotImplementedError(msg)
-        if contrast is not None:
-            msg = "contrast fusion is not yet implemented in from_params; use a backend color transform instead"
-            raise NotImplementedError(msg)
-
         # --- specs= overload path ---
         # Note: specs= is a convenience alias for declarative pipeline construction.
         # In a future minor version this dual-path may be split into a from_specs()
@@ -1641,6 +1961,8 @@ class FusedCompose(nn.Module):
                 translate_y is not None,
                 hflip_p != 0.0,
                 vflip_p != 0.0,
+                brightness is not None,
+                contrast is not None,
             ))
             if has_keyword_params:
                 msg = "specs and keyword params are mutually exclusive"
@@ -1656,6 +1978,8 @@ class FusedCompose(nn.Module):
                     data_keys=data_keys,
                     output_backend=output_backend,
                     randomness=randomness,
+                    clip_policy=clip_policy,
+                    mask_interpolation=mask_interpolation,
                 )
 
             return cls._from_param_specs(
@@ -1666,11 +1990,16 @@ class FusedCompose(nn.Module):
                 data_keys=data_keys,
                 output_backend=output_backend,
                 randomness=_coerce_randomness_policy(randomness),
+                clip_policy=clip_policy,
+                mask_interpolation=mask_interpolation,
+                route_coords_via_grid=route_coords_via_grid,
             )
 
         # When backend is set and geometric kwargs are provided (no specs),
         # convert the kwargs to TransformSpec objects and delegate to from_config.
         if backend is not None:
+            if backend != "native" and (brightness is not None or contrast is not None):
+                raise NotImplementedError("brightness and contrast from_params require backend='native'")
             config_specs = cls._geometric_kwargs_to_specs(
                 rotation=rotation,
                 scale=scale,
@@ -1683,6 +2012,11 @@ class FusedCompose(nn.Module):
                 hflip_p=hflip_p,
                 vflip_p=vflip_p,
             )
+            if backend == "native":
+                config_specs.extend(
+                    TransformSpec(operation=name, params={"factor": value})
+                    for name, value in cls._native_color_specs(brightness, contrast)
+                )
             return cls.from_config(
                 specs=config_specs,
                 backend=backend,
@@ -1692,6 +2026,8 @@ class FusedCompose(nn.Module):
                 data_keys=data_keys,
                 output_backend=output_backend,
                 randomness=randomness,
+                clip_policy=clip_policy,
+                mask_interpolation=mask_interpolation,
             )
 
         # Collect geometric param specs
@@ -1713,13 +2049,15 @@ class FusedCompose(nn.Module):
         if translate_y is not None:
             param_specs["translate_y"] = translate_y
 
+        color_specs = cls._native_color_specs(brightness, contrast)
         has_affine = bool(param_specs)
         has_flips = hflip_p > 0.0 or vflip_p > 0.0
+        has_color = bool(color_specs)
 
         # NOTE: The identity path (all params None) returns a normal __init__ instance
         # with _adapter=None. The non-identity path uses _DirectParamAdapter.
         # Both handle empty _segments correctly; do not branch on isinstance(_adapter, ...).
-        if not has_affine and not has_flips:
+        if not has_affine and not has_flips and not has_color:
             return cls(
                 transforms=[],
                 interpolation=interpolation,
@@ -1728,6 +2066,8 @@ class FusedCompose(nn.Module):
                 output_backend=output_backend,
                 reorder=reorder,
                 randomness=randomness,
+                clip_policy=clip_policy,
+                mask_interpolation=mask_interpolation,
             )
 
         # Build internal transforms and adapter
@@ -1743,12 +2083,23 @@ class FusedCompose(nn.Module):
         if vflip_p > 0.0:
             transforms.append(_DirectFlipTransform(flip_type="vflip", prob=vflip_p))
 
+        transforms.extend(_DirectParamTransform(param_specs={key: value}, prob=1.0) for key, value in color_specs)
+
         # Build instance bypassing detect_backend
         instance = cls.__new__(cls)
         nn.Module.__init__(instance)
 
         randomness_policy = _coerce_randomness_policy(randomness)
-        segments = build_segments(transforms, adapter, interpolation, padding_mode, randomness_policy)
+        segments = build_segments(
+            transforms,
+            adapter,
+            interpolation,
+            padding_mode,
+            randomness_policy,
+            clip_policy=clip_policy,
+            mask_interpolation=mask_interpolation,
+            route_coords_via_grid=route_coords_via_grid or _has_coord_aux(data_keys),
+        )
         instance._setup_instance(
             transforms=transforms,
             reorder=reorder,
@@ -1759,6 +2110,8 @@ class FusedCompose(nn.Module):
             segments=segments,
             output_backend=output_backend,
             randomness=randomness_policy,
+            clip_policy=clip_policy,
+            mask_interpolation=mask_interpolation,
         )
 
         return instance
@@ -1773,6 +2126,10 @@ class FusedCompose(nn.Module):
         data_keys: list[str] | None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+        clip_policy: ClipPolicyStr = "final",
+        mask_interpolation: MaskInterpolationStr = "nearest",
+        route_coords_via_grid: bool = False,
+        native: bool = False,
     ) -> FusedCompose:
         """Build a from_params pipeline from a list of TransformSpec objects.
 
@@ -1789,6 +2146,8 @@ class FusedCompose(nn.Module):
             "shear_y": "shear_y",
             "translate_x": "translate_x",
             "translate_y": "translate_y",
+            "brightness": "brightness",
+            "contrast": "contrast",
         }
 
         adapter = _DirectParamAdapter()
@@ -1807,6 +2166,21 @@ class FusedCompose(nn.Module):
                 transforms.append(
                     _DirectParamTransform(param_specs=param_specs, prob=spec.prob),
                 )
+            elif native and spec.operation == "shear":
+                transforms.append(
+                    _DirectParamTransform(
+                        param_specs={"shear_x": cls._extract_param_range_from_spec(spec)},
+                        prob=spec.prob,
+                    )
+                )
+            elif native and spec.operation == "translate":
+                param_value = cls._extract_param_range_from_spec(spec)
+                transforms.append(
+                    _DirectParamTransform(
+                        param_specs={"translate_x": param_value, "translate_y": param_value},
+                        prob=spec.prob,
+                    )
+                )
             else:
                 msg = f"Unsupported op for from_params: {spec.operation!r}"
                 raise ValueError(msg)
@@ -1820,12 +2194,23 @@ class FusedCompose(nn.Module):
                 output_backend=output_backend,
                 reorder=reorder,
                 randomness=randomness,
+                clip_policy=clip_policy,
+                mask_interpolation=mask_interpolation,
             )
 
         instance = cls.__new__(cls)
         nn.Module.__init__(instance)
 
-        segments = build_segments(transforms, adapter, interpolation, padding_mode, randomness)
+        segments = build_segments(
+            transforms,
+            adapter,
+            interpolation,
+            padding_mode,
+            randomness,
+            clip_policy=clip_policy,
+            mask_interpolation=mask_interpolation,
+            route_coords_via_grid=route_coords_via_grid or _has_coord_aux(data_keys),
+        )
         instance._setup_instance(
             transforms=transforms,
             reorder=reorder,
@@ -1836,9 +2221,26 @@ class FusedCompose(nn.Module):
             segments=segments,
             output_backend=output_backend,
             randomness=randomness,
+            clip_policy=clip_policy,
+            mask_interpolation=mask_interpolation,
         )
 
         return instance
+
+    @staticmethod
+    def _native_color_specs(
+        brightness: float | None,
+        contrast: float | None,
+    ) -> list[tuple[str, tuple[float, float]]]:
+        """Convert brightness/contrast deviations into native factor ranges."""
+        specs: list[tuple[str, tuple[float, float]]] = []
+        for name, deviation in (("brightness", brightness), ("contrast", contrast)):
+            if deviation is None:
+                continue
+            if deviation < 0.0:
+                raise ValueError(f"{name} must be non-negative, got {deviation!r}")
+            specs.append((name, (1.0 - deviation, 1.0 + deviation)))
+        return specs
 
     @staticmethod
     def _extract_param_range_from_spec(spec: TransformSpec) -> tuple[float, float]:
@@ -1850,8 +2252,12 @@ class FusedCompose(nn.Module):
             "scale_y": ("factor", "scale_y"),
             "shear_x": ("degrees", "shear_x"),
             "shear_y": ("degrees", "shear_y"),
+            "shear": ("degrees", "shear"),
             "translate_x": ("pixels", "translate_x"),
             "translate_y": ("pixels", "translate_y"),
+            "translate": ("pixels", "translate"),
+            "brightness": ("factor", "brightness"),
+            "contrast": ("factor", "contrast"),
         }
 
         allowed_keys = op_to_allowed_keys.get(spec.operation, ())
@@ -1974,6 +2380,10 @@ def _build_mixed_segments(
     *,
     route_coords_via_grid: bool = False,
     execution: ExecutionStr = "cv2",
+    compile_warp: bool = False,
+    antialias: bool = False,
+    clip_policy: ClipPolicyStr = "final",
+    mask_interpolation: MaskInterpolationStr = "nearest",
 ) -> tuple[TransformAdapter, list[object], dict[int, TransformAdapter]]:
     """Build segments for a mixed-backend pipeline.
 
@@ -1995,6 +2405,13 @@ def _build_mixed_segments(
             through the grid path when box/keypoint aux targets are present.
         execution: Forwarded to ``build_segments`` — Albumentations warp strategy
             (``"cv2"`` default, ``"torch"`` opt-in batched grid_sample).
+        compile_warp: Forwarded to ``build_segments`` — opt-in ``torch.compile`` of
+            the torch warp core (default off, no-op on CPU / older torch).
+        antialias: Forwarded to ``build_segments`` — opt-in downscale antialiasing on
+            crop-resize segments (default off, no-op above the scale threshold).
+        clip_policy: Forwarded to ``build_segments`` — color-segment clamp policy
+            (``"final"`` default, ``"per_op_parity"`` opt-in).
+        mask_interpolation: Forwarded to ``build_segments`` for auxiliary masks.
 
     Returns:
         A 3-tuple ``(primary_adapter, segments, transform_adapters)`` where:
@@ -2056,6 +2473,10 @@ def _build_mixed_segments(
             use_numpy=(backend_name == Backend.ALBUMENTATIONS),
             route_coords_via_grid=route_coords_via_grid,
             execution=execution,
+            compile_warp=compile_warp,
+            antialias=antialias,
+            clip_policy=clip_policy,
+            mask_interpolation=mask_interpolation,
         )
         all_segments.extend(group_segments)
 
@@ -2195,6 +2616,8 @@ class _DirectParamAdapter:
     def category(transform: object) -> TransformCategory:
         """Return the TransformCategory for a direct-param transform."""
         if isinstance(transform, _DirectParamTransform):
+            if "brightness" in transform.param_specs or "contrast" in transform.param_specs:
+                return TransformCategory.POINTWISE_LINEAR
             return TransformCategory.GEOMETRIC_INTERP
         if isinstance(transform, _DirectFlipTransform):
             return TransformCategory.GEOMETRIC_EXACT
@@ -2262,6 +2685,11 @@ class _DirectParamAdapter:
                     result["translate_y"] = torch.empty(batch_size, device=device).uniform_(*specs["translate_y"])
                 else:
                     result["translate_y"] = torch.zeros(batch_size, device=device)
+
+            if "brightness" in specs:
+                result["brightness_factor"] = torch.empty(batch_size, device=device).uniform_(*specs["brightness"])
+            if "contrast" in specs:
+                result["contrast_factor"] = torch.empty(batch_size, device=device).uniform_(*specs["contrast"])
 
             return result
 
@@ -2331,10 +2759,29 @@ class _DirectParamAdapter:
     def build_color_matrix(
         transform: object,
         params: dict[str, torch.Tensor],
+        mean: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """_DirectParamAdapter only handles geometric ops — color matrix not supported."""
-        msg = f"build_color_matrix not supported for {type(transform).__name__!r}"
-        raise NotImplementedError(msg)
+        """Build a homogeneous RGB matrix for native brightness or contrast."""
+        factor = params.get("brightness_factor", params.get("contrast_factor"))
+        if factor is None:
+            if isinstance(transform, _DirectParamTransform):
+                raise KeyError("native color factor is sampled at forward time")
+            msg = f"build_color_matrix not supported for {type(transform).__name__!r}"
+            raise NotImplementedError(msg)
+        batch_size = factor.shape[0]
+        matrix = torch.eye(4, device=factor.device, dtype=factor.dtype).unsqueeze(0).expand(batch_size, -1, -1).clone()
+        matrix[:, 0, 0] = factor
+        matrix[:, 1, 1] = factor
+        matrix[:, 2, 2] = factor
+        if "contrast_factor" in params:
+            midpoint = (
+                mean.to(device=factor.device, dtype=factor.dtype) if mean is not None else torch.full_like(factor, 0.5)
+            )
+            bias = (1.0 - factor) * midpoint
+            matrix[:, 0, 3] = bias
+            matrix[:, 1, 3] = bias
+            matrix[:, 2, 3] = bias
+        return matrix
 
     @staticmethod
     def exact_flip_dims(transform: object) -> list[int]:

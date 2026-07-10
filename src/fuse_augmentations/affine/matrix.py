@@ -17,6 +17,13 @@ from __future__ import annotations
 
 import torch
 
+_SINGULARITY_EPS_SCALE = 1.0
+
+
+def _singularity_threshold(dtype: torch.dtype) -> float:
+    """Return the shared near-singular determinant threshold for ``dtype``."""
+    return float(torch.finfo(dtype).eps) * _SINGULARITY_EPS_SCALE
+
 
 def rotation_matrix(angle_rad: torch.Tensor, height: int, width: int) -> torch.Tensor:
     """Build (batch_size, 3, 3) pixel-space forward rotation matrix around image center.
@@ -426,7 +433,7 @@ def matmul3x3(matrix_a: torch.Tensor, matrix_b: torch.Tensor) -> torch.Tensor:
     return torch.bmm(matrix_a, matrix_b)
 
 
-def inv3x3(matrix: torch.Tensor) -> torch.Tensor:
+def inv3x3(matrix: torch.Tensor, *, compiling: bool | None = None) -> torch.Tensor:
     """Batch 3x3 matrix inverse.
 
     Uses ``torch.linalg.inv`` on the eager path (single LAPACK call, ~6x faster
@@ -436,6 +443,15 @@ def inv3x3(matrix: torch.Tensor) -> torch.Tensor:
 
     Args:
         matrix: ``(batch_size, 3, 3)`` batch of matrices.
+        compiling: Which branch to take. ``None`` (default) detects the current
+            ``torch.compile`` tracing state via :func:`_is_compiling` — correct for
+            ordinary eager callers, but ambient detection is fragile when this
+            function is entered from a resumed dynamo frame (observed on torch
+            2.2 as a spurious graph break). Callers that KNOW they are inside a
+            compiled region (the module-level warp cores compiled by
+            :func:`fuse_augmentations.affine.segment._compiled_warp_fn`) pass
+            ``True`` explicitly so branch selection is a trace-time constant
+            rather than a runtime probe.
 
     Returns:
         ``(batch_size, 3, 3)`` batch of inverse matrices.
@@ -459,9 +475,10 @@ def inv3x3(matrix: torch.Tensor) -> torch.Tensor:
     # raises; the compile path clamps at the SAME threshold (data-dependent raises
     # are not compile-safe), so outputs only differ below eps, where the eager
     # path would have raised anyway.
-    eps = torch.finfo(matrix.dtype).eps
+    eps = _singularity_threshold(matrix.dtype)
 
-    if not _is_compiling():
+    is_compiling = _is_compiling() if compiling is None else compiling
+    if not is_compiling:
         # Fast path: single LAPACK call, ~6x faster than Cramer's rule
         det = torch.linalg.det(matrix)
         if (det.abs() < eps).any():
@@ -478,8 +495,9 @@ def inv3x3(matrix: torch.Tensor) -> torch.Tensor:
     m20, m21, m22 = matrix[:, 2, 0], matrix[:, 2, 1], matrix[:, 2, 2]
 
     det = m00 * (m11 * m22 - m12 * m21) - m01 * (m10 * m22 - m12 * m20) + m02 * (m10 * m21 - m11 * m20)
-    # Compile-safe singularity guard: clamp |det| to eps, preserve sign
-    det = det.sign() * det.abs().clamp(min=eps)
+    # Compile-safe singularity guard: clamp |det| to eps, preserving a non-zero sign.
+    safe_det = torch.where(det < 0, -det.new_tensor(eps), det.new_tensor(eps))
+    det = torch.where(det.abs() < eps, safe_det, det)
     inv_det = 1.0 / det
     adj = torch.stack(
         [
@@ -658,6 +676,46 @@ def crop_resize_matrix(
     row1 = torch.stack([zeros, scale_y, translation_y], dim=-1)
     row2 = torch.stack([zeros, zeros, ones], dim=-1)
     return torch.stack([row0, row1, row2], dim=-2)
+
+
+def estimate_scale(matrix: torch.Tensor) -> tuple[float, float]:
+    """Estimate the per-axis output-vs-input scale of a forward pixel matrix.
+
+    The two singular values of the ``2x2`` linear part of a forward affine
+    matrix are the axis-aligned scale factors the warp applies (independent of
+    any rotation or shear): a value ``< 1`` means that direction is *shrunk*
+    (downscaled, aliasing risk), ``> 1`` means it is magnified. This is used at
+    warp time to decide whether antialiasing is needed and, if so, how strong.
+    The worst-axis (minimum) singular value governs the aliasing decision, so
+    both are returned with the smaller one first.
+
+    When the batch composes to more than one matrix, the smallest scale across
+    the batch is used per axis, so a batch is antialiased whenever *any* sample
+    downscales past the threshold (uniform output, no per-sample branching).
+
+    Args:
+        matrix: ``(batch_size, 3, 3)`` forward pixel-space matrix (input pixel ->
+            output pixel). Any floating dtype and device.
+
+    Returns:
+        A ``(scale_min, scale_max)`` tuple of Python floats: the smaller and
+        larger per-axis scale factors, with ``scale_min <= scale_max``.
+
+    Example:
+        >>> import torch
+        >>> half = torch.eye(3).unsqueeze(0)
+        >>> half[:, 0, 0] = 0.25  # shrink x to a quarter
+        >>> half[:, 1, 1] = 0.5   # shrink y to a half
+        >>> lo, hi = estimate_scale(half)
+        >>> round(lo, 4), round(hi, 4)
+        (0.25, 0.5)
+
+    """
+    linear = matrix[:, :2, :2].to(dtype=torch.float32)
+    svals = torch.linalg.svdvals(linear)  # (batch_size, 2), descending
+    scale_min = float(svals[:, 1].min().item())
+    scale_max = float(svals[:, 0].min().item())
+    return scale_min, scale_max
 
 
 def normalize_matrix_io(

@@ -117,6 +117,7 @@ try:
     from albumentations import Affine as _Affine
     from albumentations import HorizontalFlip as _HorizontalFlip
     from albumentations import HueSaturationValue as _HueSaturationValue
+    from albumentations import Normalize as _Normalize
     from albumentations import Perspective as _Perspective
     from albumentations import RandomBrightnessContrast as _RandomBrightnessContrast
     from albumentations import RandomResizedCrop as _RandomResizedCrop
@@ -139,6 +140,7 @@ try:
         _Transpose: TransformCategory.GEOMETRIC_EXACT,
         _Perspective: TransformCategory.PROJECTIVE,
         _RandomBrightnessContrast: TransformCategory.POINTWISE_LINEAR,
+        _Normalize: TransformCategory.POINTWISE_LINEAR,
         # HueSaturationValue is pixel-wise (non-linear in RGB) — reorderable
         # but not linearly composable into a FusedColorSegment matrix.
         _HueSaturationValue: TransformCategory.POINTWISE,
@@ -154,6 +156,7 @@ try:
     _EXACT_DISCRETE_TYPES: frozenset[type] = frozenset({_RandomRotate90, _D4, _Transpose})
     _INTERP_TYPES: frozenset[type] = frozenset({_Affine, _Rotate, _SafeRotate, _ShiftScaleRotate})
     _COLOR_TYPES: frozenset[type] = frozenset({_RandomBrightnessContrast})
+    _NORMALIZE_TYPES: frozenset[type] = frozenset({_Normalize})
     _CROP_RESIZE_TYPES: frozenset[type] = frozenset({_RandomResizedCrop})
     # POINTWISE (non-linear color): reorderable but no matrix — return identity.
     _POINTWISE_TYPES: frozenset[type] = frozenset({_HueSaturationValue})
@@ -166,6 +169,7 @@ except ImportError:
     _EXACT_DISCRETE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _INTERP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _COLOR_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _NORMALIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _CROP_RESIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _POINTWISE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _ALL_REGISTRY_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
@@ -310,6 +314,9 @@ class AlbumentationsAdapter:
         # POINTWISE_LINEAR (color transforms): sample alpha/beta per batch element
         if _is_albu_instance(transform, _COLOR_TYPES):
             return _sample_color_params(transform, batch_size, device)
+
+        if _is_albu_instance(transform, _NORMALIZE_TYPES):
+            return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
 
         # CROP_RESIZE_FIXED: extract crop_coords from get_params_dependent_on_data
         if _is_albu_instance(transform, _CROP_RESIZE_TYPES):
@@ -480,6 +487,7 @@ class AlbumentationsAdapter:
     def build_color_matrix(
         transform: object,
         params: dict[str, torch.Tensor],
+        mean: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Build a ``(batch_size, 4, 4)`` homogeneous color-space affine matrix.
 
@@ -491,9 +499,13 @@ class AlbumentationsAdapter:
         - ``RandomBrightnessContrast``: ``c' = alpha * c + beta``
           Matrix: ``M = alpha * identity_3x3``, ``b = (beta, beta, beta)``.
 
+        Albumentations contrast (``alpha``) is applied around zero (``alpha * c``), not around a mean
+        luminance, so ``mean`` is unused here and accepted only for a uniform adapter signature.
+
         Args:
             transform: An Albumentations color transform instance.
             params: Parameter dict from ``sample_params()``.
+            mean: Unused; present for signature parity with mean-relative backends.
 
         Returns:
             ``(B, 4, 4)`` homogeneous color-space affine matrix.
@@ -502,11 +514,20 @@ class AlbumentationsAdapter:
             NotImplementedError: If the transform type is not supported.
 
         """
+        del mean  # Albumentations color ops have no mean-relative midpoint.
         if _is_albu_instance(transform, _COLOR_TYPES):
             return _build_brightness_contrast_matrix(params)
 
+        if _is_albu_instance(transform, _NORMALIZE_TYPES):
+            return _build_normalize_matrix(transform, params)
+
         msg = f"build_color_matrix not supported for {type(transform).__name__!r}"
         raise NotImplementedError(msg)
+
+    @staticmethod
+    def is_normalize(transform: object) -> bool:
+        """Return whether *transform* is a standard Albumentations Normalize transform."""
+        return _is_albu_instance(transform, _NORMALIZE_TYPES)
 
     @staticmethod
     def call_nonfused(
@@ -516,8 +537,13 @@ class AlbumentationsAdapter:
     ) -> torch.Tensor:
         """Apply an Albumentations transform directly via its native forward method.
 
-        Converts the ``(batch_size, channels, height, width)`` tensor to ``(height, width, channels)`` numpy arrays
-        per sample, calls the transform, and converts the results back.
+        Performs a single device-to-host transfer for the whole batch, applies the
+        transform per sample on the host (Albumentations is inherently per-image),
+        then performs a single host-to-device transfer of the stacked result. This
+        keeps exactly one D2H copy and one H2D copy per passthrough segment, rather
+        than one of each per sample. The per-sample transform calls, their order,
+        and their outputs are unchanged, so the returned values are bit-identical to
+        a per-sample round-trip.
 
         Warning:
             The transform receives ``float32`` arrays in ``[0, 1]`` (the pipeline invariant). Albumentations
@@ -539,15 +565,21 @@ class AlbumentationsAdapter:
         dtype = image.dtype
         batch_size = image.shape[0]
 
+        # One device→host transfer for the whole batch: permute to channel-last,
+        # move to host, materialise NumPy once. Albumentations must still be looped
+        # per image (its dict API is single-image), but the loop now runs entirely
+        # on the host over views of the single transferred array.
+        batch_hwc = image.permute(0, 2, 3, 1).cpu().numpy()  # (B, H, W, C) host
         ndarray_results = []
         for idx_sample in range(batch_size):
-            # (channels, height, width) → (height, width, channels) numpy
-            image_np = image[idx_sample].permute(1, 2, 0).cpu().numpy()
-            output_np = transform(image=image_np)["image"]  # type: ignore[operator]
-            # (height, width, channels) → (channels, height, width) tensor
-            ndarray_results.append(torch.as_tensor(np.ascontiguousarray(output_np)).permute(2, 0, 1))
+            output_np = transform(image=batch_hwc[idx_sample])["image"]  # type: ignore[operator]
+            ndarray_results.append(np.ascontiguousarray(output_np))
 
-        return torch.stack(ndarray_results).to(device=device, dtype=dtype)
+        # One host→device transfer for the whole batch: stack on the host, convert
+        # to a single tensor, permute back to channel-first, move to device once.
+        stacked_hwc = np.stack(ndarray_results)  # (B, H, W, C) host
+        result_bchw = torch.as_tensor(stacked_hwc).permute(0, 3, 1, 2)
+        return result_bchw.to(device=device, dtype=dtype)
 
     @staticmethod
     def call_nonfused_numpy(transform: object, image_hwc: NDArray[Any]) -> NDArray[Any]:
@@ -978,4 +1010,37 @@ def _build_brightness_contrast_matrix(params: dict[str, torch.Tensor]) -> torch.
     mat[:, 0, 3] = beta
     mat[:, 1, 3] = beta
     mat[:, 2, 3] = beta
+    return mat
+
+
+def _build_normalize_matrix(transform: object, params: dict[str, torch.Tensor]) -> torch.Tensor:
+    """Build exact standard Albumentations Normalize scaling as a color matrix.
+
+    Non-standard image-statistics normalization is intentionally excluded because its coefficients depend on the image
+    values and cannot be represented by fixed affine parameters.
+
+    """
+    normalize = cast(Any, transform)
+    if normalize.normalization != "standard":
+        raise NotImplementedError("Only standard Albumentations Normalize is affine-fusible")
+    max_pixel_value = normalize.max_pixel_value
+    if max_pixel_value is None:
+        raise NotImplementedError("Albumentations Normalize requires max_pixel_value for fusion")
+    batch_size = int(params["_batch_size"].item())
+    mean = torch.as_tensor(normalize.mean, dtype=torch.float32).flatten()
+    std = torch.as_tensor(normalize.std, dtype=torch.float32).flatten()
+    if mean.numel() == 1:
+        mean = mean.expand(3)
+    if std.numel() == 1:
+        std = std.expand(3)
+    if mean.numel() != 3 or std.numel() != 3:
+        raise NotImplementedError("Albumentations Normalize fusion requires three RGB mean/std values")
+    device = params["_batch_size"].device
+    mat = torch.eye(4, device=device, dtype=mean.dtype).unsqueeze(0).expand(batch_size, -1, -1).clone()
+    alpha = std.to(device=device).mul(float(max_pixel_value)).reciprocal()
+    beta = -mean.to(device=device).div(std.to(device=device))
+    mat[:, 0, 0] = alpha[0]
+    mat[:, 1, 1] = alpha[1]
+    mat[:, 2, 2] = alpha[2]
+    mat[:, :3, 3] = beta
     return mat

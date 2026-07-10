@@ -10,8 +10,9 @@ for callers that want to apply the same math outside of the pipeline
 (e.g. to transform a stored transform matrix after the fact).
 
 All functions are stateless and operate on PyTorch tensors with a leading batch
-dimension ``batch_size``. No gradient is tracked through ``transform_mask`` (nearest-neighbour
-sampling is not differentiable); the other three functions are differentiable.
+dimension ``batch_size``. Nearest-neighbour mask sampling preserves the historical
+non-differentiable behavior; bilinear sampling is available for float soft masks.
+The other three functions are differentiable.
 
 Example:
     >>> import torch
@@ -30,13 +31,17 @@ import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import Tensor
 
+from fuse_augmentations.types import MaskInterpolationStr
 
-def transform_mask(mask: Tensor, grid: Tensor) -> Tensor:
-    """Apply a precomputed affine grid to a segmentation mask using nearest-neighbour sampling.
 
-    Uses ``mode='nearest'`` unconditionally so integer class labels are preserved
-    without fractional mixing. Out-of-bounds samples are filled with 0 (class 0)
-    via ``padding_mode='zeros'``.
+def transform_mask(mask: Tensor, grid: Tensor, mode: MaskInterpolationStr = "nearest") -> Tensor:
+    """Apply a precomputed affine grid to a segmentation mask.
+
+    The default ``mode='nearest'`` preserves integer class labels without
+    fractional mixing and retains the historical no-gradient behavior. Use
+    ``mode='bilinear'`` for differentiable float soft masks; labels may mix at
+    boundaries. Out-of-bounds samples are filled with 0 via
+    ``padding_mode='zeros'``.
 
     Args:
         mask: Segmentation mask. Shape ``(batch_size, channels, height, width)``, typically ``channels=1``.
@@ -54,6 +59,8 @@ def transform_mask(mask: Tensor, grid: Tensor) -> Tensor:
             exactly represents integer class IDs up to ``2**24 - 1``
             (16777215); larger integer IDs may be rounded.
             Coordinates in normalised ``[-1, 1]`` space with ``align_corners=True``.
+        mode: Mask sampling mode, either ``"nearest"`` (default) or
+            ``"bilinear"``. Bilinear mode requires a floating-point mask.
 
     Returns:
         Warped mask with the same shape and dtype as ``mask``.
@@ -74,6 +81,11 @@ def transform_mask(mask: Tensor, grid: Tensor) -> Tensor:
         True
 
     """
+    if mode not in ("nearest", "bilinear"):
+        raise ValueError(f"unsupported mask interpolation mode {mode!r}; expected 'nearest' or 'bilinear'")
+    if mode == "bilinear" and not mask.is_floating_point():
+        raise TypeError("bilinear mask interpolation requires a floating-point mask")
+
     needs_cast_back = not mask.is_floating_point()
     sample_mask = mask
     sample_grid = grid
@@ -85,12 +97,21 @@ def transform_mask(mask: Tensor, grid: Tensor) -> Tensor:
         # memory and bandwidth overhead of ``float64``.
         sample_mask = mask.to(dtype=torch.float32)
         sample_grid = grid.to(dtype=torch.float32)
-    # No gradient is tracked through this operation, matching the module docstring.
-    with torch.no_grad():
+    if mode == "nearest":
+        # Keep the default path exactly as before: nearest sampling is detached.
+        with torch.no_grad():
+            sampled = F.grid_sample(
+                sample_mask,
+                sample_grid,
+                mode=mode,
+                padding_mode="zeros",
+                align_corners=True,
+            )
+    else:
         sampled = F.grid_sample(
             sample_mask,
             sample_grid,
-            mode="nearest",
+            mode=mode,
             padding_mode="zeros",
             align_corners=True,
         )

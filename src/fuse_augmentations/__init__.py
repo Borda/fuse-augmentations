@@ -38,6 +38,7 @@ from fuse_augmentations.targets import (
 )
 from fuse_augmentations.types import (
     BackendConverter,
+    ClipPolicyStr,
     InterpolationMode,
     PaddingMode,
     RandomnessPolicy,
@@ -51,6 +52,7 @@ from fuse_augmentations.types import (
 __all__ = [
     "AugmentationSequential",
     "BackendConverter",
+    "ClipPolicyStr",
     "Compose",
     "CropResizeSegment",
     "ExactAffineSegment",

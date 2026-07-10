@@ -2,7 +2,7 @@
 
 **Fuse consecutive geometric augmentation transforms into a single interpolation pass -- fewer warps, better image quality.**
 
-> **Summary**: `fuse-augmentations` is a framework-agnostic library that automatically **groups** consecutive fusible geometric transforms in your augmentation pipeline, then **fuses** their matrices into a single composed transform applied via one interpolation pass. Linear color transforms (brightness, contrast) are additionally fused into a single matrix multiply. Non-fusible operations (blur, normalization) pass through unchanged. Drop-in replacement for Kornia's `AugmentationSequential`, TorchVision, and Albumentations compose classes.
+> **Summary**: `fuse-augmentations` is a framework-agnostic library that automatically **groups** consecutive fusible geometric transforms in your augmentation pipeline, then **fuses** their matrices into a single composed transform applied via one interpolation pass. Linear color transforms (brightness, contrast, and standard Normalize) are additionally fused into a single matrix multiply. Non-fusible operations such as blur and nonlinear color adjustments pass through unchanged. Drop-in replacement for Kornia's `AugmentationSequential`, TorchVision, and Albumentations compose classes.
 
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/fuse-augmentations)](https://pypi.org/project/fuse-augmentations/)
 [![PyPI version](https://img.shields.io/pypi/v/fuse-augmentations)](https://pypi.org/project/fuse-augmentations/)
@@ -51,7 +51,7 @@ The problem is that chaining these individual transforms applies a separate inte
 
 Given a pipeline of transforms, `fuse-augmentations` performs two steps:
 
-1. **Grouping**: consecutive fusible transforms are identified and collected into segments -- geometric transforms (rotation, flip, scale, perspective) into one type of segment, and linear color transforms (brightness, contrast) into another. Non-fusible operations (Gaussian blur, normalization, saturation) act as natural segment boundaries and pass through via their native backend unchanged.
+1. **Grouping**: consecutive fusible transforms are identified and collected into segments -- geometric transforms (rotation, flip, scale, perspective) into one type of segment, and linear color transforms (brightness, contrast, Normalize) into another. Non-fusible operations (Gaussian blur, statistical normalization modes, saturation) act as natural segment boundaries and pass through via their native backend unchanged.
 2. **Fusing**: within each segment, the individual affine (or projective) matrices are composed mathematically -- `M_composed = M_n @ ... @ M_2 @ M_1` -- and a single interpolation pass applies the entire group.
 
 A pipeline of three affine transforms saves two interpolation passes. At training time, with thousands of images and many augmentation steps, this translates to measurably better effective resolution in your augmented dataset.
@@ -188,25 +188,47 @@ pipe = Compose(albu_transforms, execution="torch")  # batched grid_sample path
 
 On CUDA/MPS devices the torch strategy is the natural choice — the cv2 path would require a CPU round-trip.
 
+### Compiled warp core (`compile=True`)
+
+`Compose(..., compile=True)` opts the geometric warp core (matrix inversion → grid build → `grid_sample`) into `torch.compile`. It is **off by default**, and:
+
+- On CPU, or on torch older than 2.2, it is a **no-op** — the eager path runs and the output is unchanged, so the flag is always safe to set.
+- On GPU/MPS the warp core runs as one compiled graph. Probability masking and per-sample selection stay outside the compiled region, so there are no graph breaks. `dynamic=True` keeps a single graph across varying batch/height/width instead of recompiling per shape.
+- The **first** GPU/MPS call after construction pays a one-time compilation cost; steady-state calls are faster. On darwin/arm64 (Apple MPS) the inductor backend is still maturing — a small local speedup is typical; the larger win is on CUDA hosts.
+
+```python
+pipe = Compose(transforms, compile=True)  # compiled warp on GPU/MPS, eager elsewhere
+```
+
+### Antialiased downscale (`antialias=True`)
+
+`Compose(..., antialias=True)` reduces aliasing when a crop-resize step shrinks the image aggressively. It is **off by default**, and only acts when the worst-axis scale drops below `0.5` (a downscale of more than 2×). In that case the input is Gaussian pre-filtered (mipmap-rule sigma) before the single warp, so high-frequency detail is band-limited instead of aliased. When the scale is gentler than `0.5`, or the flag is off, the output is **bit-identical** to the default single-warp path. The pre-filter uses the installed Kornia Gaussian blur; if Kornia is not available it falls back to the un-filtered warp.
+
+```python
+pipe = Compose(
+    transforms, antialias=True
+)  # prefilter only when a downscale would alias
+```
+
 ## 📖 API Reference
 
 ### Core
 
-| Class / Function                      | Description                                                                                                                                                                                                                        |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Compose`                             | Main entry point. Wraps a list of transforms, groups them into fusible runs, and fuses each group on `forward()`. Accepts `output_backend="numpy"` to return NumPy arrays and \`execution="cv2"                                    |
-| `Compose.from_params(...)`            | Classmethod. Build a backend-free pipeline from numeric parameter ranges, or from a `specs` list of `TransformSpec` objects. Defaults to `ReorderPolicy.POINTWISE`.                                                                |
-| `Compose.from_config(specs, backend)` | Classmethod. Resolve a list of `TransformSpec` objects to a specific backend and build the pipeline -- no backend imports needed at spec time. Defaults to `ReorderPolicy.POINTWISE`.                                              |
-| `TransformSpec`                       | Frozen dataclass for declarative, backend-agnostic pipeline configuration: `operation`, `params`, `prob`. JSON-serialisable via `to_dict()` / `from_dict()`.                                                                       |
-| `NumpyToTorchConverter`               | Converts NumPy `(H, W, C)` / `(B, H, W, C)` arrays (uint8 or float32) to `(B, C, H, W)` torch tensors. uint8 is normalised to float32 `[0, 1]`.                                                                                    |
-| `TorchToNumpyConverter`               | Converts `(B, C, H, W)` torch tensors to NumPy arrays. Single-image batches are squeezed to `(H, W, C)`; multi-image batches produce `(B, H, W, C)`.                                                                               |
-| `FusedAffineSegment`                  | Handles one fusible run: samples random params, composes matrices, applies a single interpolation pass.                                                                                                                            |
-| `ExactAffineSegment`                  | Lossless segment for flip-only chains. Uses `tensor.flip` -- no interpolation.                                                                                                                                                     |
-| `ProjectiveSegment`                   | Fuses projective transforms using 3x3 homography matrices.                                                                                                                                                                         |
-| `FusedColorSegment`                   | Fuses consecutive `POINTWISE_LINEAR` transforms (brightness/contrast) into one `(B, 4, 4)` matrix multiply. Constructor accepts `clip_output: bool = True` to control clamping to `[0, 1]` after the multiply.                     |
-| `CropResizeSegment`                   | Handles a single crop+resize operation (`RandomResizedCrop`). Samples crop coordinates, builds the crop-to-output affine matrix, applies one interpolation pass at the target output size. Output spatial size differs from input. |
-| `build_segments()`                    | Internal. Partitions a transform list into fusible segments and passthrough barriers.                                                                                                                                              |
-| `SegmentDescriptor`                   | Frozen dataclass describing one pipeline segment: `kind`, `transforms`, `n_warps_saved`, `backend`. Returned by `FusedCompose.fusion_plan_descriptors`.                                                                            |
+| Class / Function                      | Description                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Compose`                             | Main entry point. Wraps a list of transforms, groups them into fusible runs, and fuses each group on `forward()`. Accepts `output_backend="numpy"` to return NumPy arrays, `execution="cv2"`, and `mask_interpolation="nearest"` (default) or `"bilinear"`; bilinear gives differentiable soft masks, mixes labels at boundaries, and requires float mask input. |
+| `Compose.from_params(...)`            | Classmethod. Build a backend-free pipeline from numeric parameter ranges, or from a `specs` list of `TransformSpec` objects. Defaults to `ReorderPolicy.POINTWISE`.                                                                                                                                                                                              |
+| `Compose.from_config(specs, backend)` | Classmethod. Resolve a list of `TransformSpec` objects to a specific backend and build the pipeline -- no backend imports needed at spec time. Defaults to `ReorderPolicy.POINTWISE`.                                                                                                                                                                            |
+| `TransformSpec`                       | Frozen dataclass for declarative, backend-agnostic pipeline configuration: `operation`, `params`, `prob`. JSON-serialisable via `to_dict()` / `from_dict()`.                                                                                                                                                                                                     |
+| `NumpyToTorchConverter`               | Converts NumPy `(H, W, C)` / `(B, H, W, C)` arrays (uint8 or float32) to `(B, C, H, W)` torch tensors. uint8 is normalised to float32 `[0, 1]`.                                                                                                                                                                                                                  |
+| `TorchToNumpyConverter`               | Converts `(B, C, H, W)` torch tensors to NumPy arrays. Single-image batches are squeezed to `(H, W, C)`; multi-image batches produce `(B, H, W, C)`.                                                                                                                                                                                                             |
+| `FusedAffineSegment`                  | Handles one fusible run: samples random params, composes matrices, applies a single interpolation pass.                                                                                                                                                                                                                                                          |
+| `ExactAffineSegment`                  | Lossless segment for flip-only chains. Uses `tensor.flip` -- no interpolation.                                                                                                                                                                                                                                                                                   |
+| `ProjectiveSegment`                   | Fuses projective transforms using 3x3 homography matrices.                                                                                                                                                                                                                                                                                                       |
+| `FusedColorSegment`                   | Fuses consecutive `POINTWISE_LINEAR` transforms (brightness, contrast, and standard Normalize) into one `(B, 4, 4)` matrix multiply. Constructor accepts `clip_output: bool = True` and `clip_policy` to control gamut clipping.                                                                                                                                 |
+| `CropResizeSegment`                   | Handles a single crop+resize operation (`RandomResizedCrop`). Samples crop coordinates, builds the crop-to-output affine matrix, applies one interpolation pass at the target output size. Output spatial size differs from input.                                                                                                                               |
+| `build_segments()`                    | Internal. Partitions a transform list into fusible segments and passthrough barriers.                                                                                                                                                                                                                                                                            |
+| `SegmentDescriptor`                   | Frozen dataclass describing one pipeline segment: `kind`, `transforms`, `n_warps_saved`, `backend`, plus machine-readable `barrier`, `split_reason`, `refused`. Returned by `FusedCompose.fusion_plan_descriptors`.                                                                                                                                              |
 
 ### Enums
 
@@ -256,12 +278,12 @@ Ordered by quality:
 
 ### Auxiliary Target Functions
 
-| Function                                      | Shape                                   | Description                                                                         |
-| --------------------------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------- |
-| `transform_keypoints(keypoints, mtx_forward)` | `(batch_size, num_points, 2)`           | Apply forward affine matrix to keypoint coordinates. Differentiable.                |
-| `transform_bbox_xyxy(boxes, mtx_forward)`     | `(batch_size, num_boxes, 4)`            | Transform `[x1, y1, x2, y2]` boxes by forward homography; AABB-wrap after rotation. |
-| `transform_bbox_xywh(boxes, mtx_forward)`     | `(batch_size, num_boxes, 4)`            | Transform `[x, y, w, h]` boxes; converts to/from xyxy internally.                   |
-| `transform_mask(mask, grid)`                  | `(batch_size, channels, height, width)` | Apply sampling grid with `mode='nearest'` to preserve integer class labels.         |
+| Function                                      | Shape                                   | Description                                                                                                 |
+| --------------------------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `transform_keypoints(keypoints, mtx_forward)` | `(batch_size, num_points, 2)`           | Apply forward affine matrix to keypoint coordinates. Differentiable.                                        |
+| `transform_bbox_xyxy(boxes, mtx_forward)`     | `(batch_size, num_boxes, 4)`            | Transform `[x1, y1, x2, y2]` boxes by forward homography; AABB-wrap after rotation.                         |
+| `transform_bbox_xywh(boxes, mtx_forward)`     | `(batch_size, num_boxes, 4)`            | Transform `[x, y, w, h]` boxes; converts to/from xyxy internally.                                           |
+| `transform_mask(mask, grid, mode="nearest")`  | `(batch_size, channels, height, width)` | Apply a sampling grid with nearest labels or differentiable bilinear mixing; bilinear requires float input. |
 
 ## 🎯 Auxiliary Targets
 
@@ -289,13 +311,13 @@ img_out, mask_out, bboxes_out, kpts_out = pipe(image, mask, bboxes, keypoints)
 
 Supported `data_keys` values:
 
-| Key           | Tensor shape   | Notes                                                        |
-| ------------- | -------------- | ------------------------------------------------------------ |
-| `"input"`     | `(B, C, H, W)` | Image; always the first argument                             |
-| `"mask"`      | `(B, C, H, W)` | Nearest-neighbour sampling; integer labels preserved         |
-| `"bbox_xyxy"` | `(B, N, 4)`    | Pixel-space `[x1, y1, x2, y2]`; AABB wrapping after rotation |
-| `"bbox_xywh"` | `(B, N, 4)`    | Pixel-space `[x, y, w, h]`; converted internally to xyxy     |
-| `"keypoints"` | `(B, N, 2)`    | Pixel-space `[x, y]`; exact homogeneous transform            |
+| Key           | Tensor shape   | Notes                                                                                                                                |
+| ------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `"input"`     | `(B, C, H, W)` | Image; always the first argument                                                                                                     |
+| `"mask"`      | `(B, C, H, W)` | Nearest-neighbour by default; pass `mask_interpolation="bilinear"` for differentiable float soft masks that mix labels at boundaries |
+| `"bbox_xyxy"` | `(B, N, 4)`    | Pixel-space `[x1, y1, x2, y2]`; AABB wrapping after rotation                                                                         |
+| `"bbox_xywh"` | `(B, N, 4)`    | Pixel-space `[x, y, w, h]`; converted internally to xyxy                                                                             |
+| `"keypoints"` | `(B, N, 2)`    | Pixel-space `[x, y]`; exact homogeneous transform                                                                                    |
 
 Exact discrete chains route all auxiliary targets. Masks are transformed by the same
 lossless flip/rotation applied to the image, for every exact op including non-flip ops
@@ -325,7 +347,7 @@ pipe = Compose.from_params(
 out = pipe(image)
 ```
 
-`from_params` accepts: `rotation`, `scale`, `scale_x`, `scale_y`, `shear_x`, `shear_y`, `translate_x`, `translate_y`, `hflip_p`, `vflip_p`, `interpolation` (`"bilinear"`, `"nearest"`, `"bicubic"`), `padding_mode` (`"zeros"`, `"border"`, `"reflection"`), `reorder`, `data_keys`, `output_backend`, `randomness`, `specs`. (`brightness` and `contrast` are reserved for a future version.)
+`from_params` accepts: `rotation`, `scale`, `scale_x`, `scale_y`, `shear_x`, `shear_y`, `translate_x`, `translate_y`, `hflip_p`, `vflip_p`, `interpolation` (`"bilinear"`, `"nearest"`, `"bicubic"`), `padding_mode` (`"zeros"`, `"border"`, `"reflection"`), `mask_interpolation` (`"nearest"` or `"bilinear"`), `reorder`, `data_keys`, `output_backend`, `randomness`, `clip_policy`, `specs`. (`brightness` and `contrast` are reserved for a future version.)
 
 > **Note**: `from_params` and `from_config` default to `ReorderPolicy.POINTWISE`, while `Compose()` defaults to `ReorderPolicy.NONE`. Pass `reorder=ReorderPolicy.NONE` explicitly if you need to preserve the declared order in a `from_params` pipeline.
 
@@ -407,15 +429,17 @@ The `"color"` kind appears in `fusion_plan_descriptors` for `FusedColorSegment` 
 
 Supported color operations per backend:
 
-| Backend        | Supported                                                                                                               |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| Kornia         | `RandomBrightness`, `RandomContrast`, `ColorJitter` (brightness+contrast only; saturation/hue fall back to passthrough) |
-| TorchVision    | `ColorJitter` (brightness+contrast only; saturation/hue fall back to passthrough)                                       |
-| Albumentations | `RandomBrightnessContrast`                                                                                              |
+| Backend        | Supported                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------- |
+| Kornia         | `RandomBrightness`, `RandomContrast`, `ColorJitter` (brightness+contrast only), `Normalize` |
+| TorchVision    | `ColorJitter` (brightness+contrast only), v1/v2 `Normalize`                                 |
+| Albumentations | `RandomBrightnessContrast`, standard `Normalize` (including `max_pixel_value`)              |
 
-By default, `FusedColorSegment` clamps the fused output to `[0, 1]` after the matrix multiply (`clip_output=True`). Pass `clip_output=False` when constructing a `FusedColorSegment` directly if your pipeline intentionally produces values outside this range.
+By default, `FusedColorSegment` clamps the fused output to `[0, 1]` after the matrix multiply (`clip_output=True`). `FusedCompose(..., clip_policy="final")` keeps that one-pass behavior. Use `clip_policy="per_op_parity"` when native per-operation clamping is required; it inserts a clamp only when the composed affine range can escape `[0, 1]`. A fused run containing Normalize disables the final gamut clamp because normalized values are intentionally outside image gamut. Pass `clip_output=False` when constructing a `FusedColorSegment` directly if your pipeline intentionally produces values outside this range.
 
-> **Accuracy note**: fusion clamps only the final fused result, while native backends clamp after each op — chains with out-of-gamut intermediates can diverge slightly from native output. Fused contrast also uses a fixed 0.5 midpoint (`c' = cf * c + (1 - cf) * 0.5`), whereas TorchVision/Kornia native contrast is relative to the per-image mean luminance; images whose mean is far from 0.5 will differ from native output.
+> **Contrast midpoint**: ColorJitter contrast now uses the per-image mean luminance, matching the native backend. TorchVision uses RGB weights `(0.2989, 0.587, 0.114)` and Kornia uses `(0.299, 0.587, 0.114)`. If brightness precedes contrast in the same fused run, the mean is propagated through the preceding affine operations. This is a deliberate behavior change from the old fixed `0.5` midpoint.
+
+Normalize fusion folds `alpha = 1 / std` and `beta = -mean / std` into the color matrix for Kornia and TorchVision. Albumentations standard Normalize also folds its `max_pixel_value` scaling; image-statistics modes are left as native passthrough operations because their coefficients depend on the image.
 
 Color fusion relies on each supported op being a per-channel affine map `c' = alpha * c + beta`, expressible as a 4×4 homogeneous matrix -- composing N such ops reduces to a single matrix product, so one fused multiply replaces N sequential applies.
 
@@ -447,6 +471,8 @@ The output tensor has the target spatial size specified in the `RandomResizedCro
 ## 🔧 Backend-Agnostic Meta-Config
 
 `TransformSpec` is a frozen, JSON-serialisable dataclass that describes one augmentation operation without importing any backend. Use it to define pipelines in configuration files or experiment configs, then materialise them at runtime with either `from_config` (backend-specific) or `from_params(specs=...)` (backend-free):
+
+For the fastest zero-dependency, fully batched path, opt in to `backend="native"`. It uses the same direct Torch matrix engine as `from_params` and supports rotation, scale, shear, translation, flips, brightness, and contrast. Optional-backend-only operations remain visible in the capability matrix and are rejected by the native builder rather than silently approximated.
 
 ```python
 from fuse_aug import Compose, TransformSpec
@@ -488,21 +514,23 @@ restored = TransformSpec.from_dict(json.loads(payload))
 assert restored == spec
 ```
 
-Supported ops for `from_config`: all ops in `SUPPORTED_OPS` (`"rotation"`, `"affine"`, `"shear"`, `"translate"`, `"hflip"`, `"vflip"`, `"scale"`, `"perspective"`, `"rotation90"`), subject to each backend's coverage:
+Supported ops for `from_config`: all ops in `SUPPORTED_OPS` (`"rotation"`, `"affine"`, `"shear"`, `"translate"`, `"hflip"`, `"vflip"`, `"scale"`, `"perspective"`, `"rotation90"`, `"brightness"`, `"contrast"`), subject to each backend's coverage:
 
-| Op            | Kornia | TorchVision | Albumentations |
-| ------------- | :----: | :---------: | :------------: |
-| `rotation`    |   ✓    |      ✓      |       ✓        |
-| `affine`      |   ✓    |      ✓      |       ✓        |
-| `shear`       |   ✓    |      –      |       –        |
-| `translate`   |   ✓    |      –      |       –        |
-| `hflip`       |   ✓    |      ✓      |       ✓        |
-| `vflip`       |   ✓    |      ✓      |       ✓        |
-| `scale`       |   ✓    |      ✓      |       ✓        |
-| `perspective` |   ✓    |      ✓      |       ✓        |
-| `rotation90`  |   ✓    |      –      |       ✓        |
+| Op            | Kornia | TorchVision | Albumentations | Native |
+| ------------- | :----: | :---------: | :------------: | :----: |
+| `rotation`    |   ✓    |      ✓      |       ✓        |   ✓    |
+| `affine`      |   ✓    |      ✓      |       ✓        |   –    |
+| `shear`       |   ✓    |      –      |       –        |   ✓    |
+| `translate`   |   ✓    |      –      |       –        |   ✓    |
+| `hflip`       |   ✓    |      ✓      |       ✓        |   ✓    |
+| `vflip`       |   ✓    |      ✓      |       ✓        |   ✓    |
+| `scale`       |   ✓    |      ✓      |       ✓        |   ✓    |
+| `perspective` |   ✓    |      ✓      |       ✓        |   –    |
+| `rotation90`  |   ✓    |      –      |       ✓        |   –    |
+| `brightness`  |   ✓    |      –      |       –        |   ✓    |
+| `contrast`    |   ✓    |      –      |       –        |   ✓    |
 
-Supported ops for `from_params(specs=...)`: `"rotation"`, `"scale"`, `"scale_x"`, `"scale_y"`, `"shear_x"`, `"shear_y"`, `"translate_x"`, `"translate_y"`, `"hflip"`, `"vflip"`.
+Supported ops for `from_params(specs=...)`: `"rotation"`, `"scale"`, `"scale_x"`, `"scale_y"`, `"shear_x"`, `"shear_y"`, `"translate_x"`, `"translate_y"`, `"hflip"`, `"vflip"`, `"brightness"`, `"contrast"`.
 
 > **Note**: `from_config` defaults to `ReorderPolicy.POINTWISE`. Pass `reorder=ReorderPolicy.NONE` to preserve the declared order.
 
@@ -654,12 +682,15 @@ print(json.dumps(plan_json, indent=2))
 
 `SegmentDescriptor` fields:
 
-| Field           | Type              | Description                                                                                                                                                                               |
-| --------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kind`          | `str`             | Segment type: `"fused"`, `"exact"`, `"projective"`, `"color"`, `"crop_resize"`, or `"passthrough"`                                                                                        |
-| `transforms`    | `tuple[str, ...]` | Class names of transforms in this segment (`list` in `to_dict()` output)                                                                                                                  |
-| `n_warps_saved` | `int`             | Interpolation passes eliminated by this segment                                                                                                                                           |
-| `backend`       | `str \| None`     | Adapter class name (`"KorniaAdapter"`, `"AlbumentationsAdapter"`, `"TorchVisionAdapter"`) for fused/exact/projective segments; `None` for passthrough segments and backend-free pipelines |
+| Field           | Type              | Description                                                                                                                                                                                  |
+| --------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kind`          | `str`             | Segment type: `"fused"`, `"exact"`, `"projective"`, `"color"`, `"crop_resize"`, or `"passthrough"`                                                                                           |
+| `transforms`    | `tuple[str, ...]` | Class names of transforms in this segment (`list` in `to_dict()` output)                                                                                                                     |
+| `n_warps_saved` | `int`             | Interpolation passes eliminated by this segment                                                                                                                                              |
+| `backend`       | `str \| None`     | Adapter class name (`"KorniaAdapter"`, `"AlbumentationsAdapter"`, `"TorchVisionAdapter"`) for fused/exact/projective segments; `None` for passthrough segments and backend-free pipelines    |
+| `barrier`       | `str \| None`     | Machine-readable reason this segment ends a fusion run: `"spatial_kernel"` (blur/noise), `"coordinate_change"` (elastic/grid/optical distortion), `"crop_resize"`; `None` for fused segments |
+| `split_reason`  | `str \| None`     | Why an otherwise-fusible run was split here: `"backend_boundary"` in a mixed-backend pipeline, else `None`                                                                                   |
+| `refused`       | `str \| None`     | Why an op stayed on the passthrough path: `"not_fusible"` for passthrough segments, `None` for fused segments                                                                                |
 
 ## 🏋️ Training Loop
 
@@ -730,14 +761,17 @@ for imgs, masks, boxes, labels in loader:
 
 Pipelines survive `pickle` round-trips, so they work transparently with `torch.nn.DataParallel` and multiprocess `DataLoader` workers (the index-keyed adapter map is preserved across deserialisation).
 
+Note for multi-worker loaders: PyTorch reseeds only the *torch* RNG per worker. Albumentations transforms sample activation (`p<1`) and parameters from numpy's global RNG, which is **not** reseeded per worker — pass a `worker_init_fn` that seeds `numpy.random` (e.g. from `torch.initial_seed()`) if you need independent augmentation streams across workers.
+
 ## ⚠️ Limitations
 
-- **Pixel-wise ops** (Normalize, gamma, equalize, saturation, hue) are not yet fusible -- they are single-pixel non-linear operations and currently act as passthrough. Linear color ops (brightness, contrast) are fusible via `FusedColorSegment`; see the Color Fusion section.
-- **Spatial-kernel ops** (GaussianBlur, Sharpen) act as fusion barriers; transforms on either side of a barrier form separate segments. These are not yet fusible.
+- **Pixel-wise ops** (gamma, equalize, saturation, hue) are not yet fusible -- they are nonlinear operations and currently act as passthrough. Standard Normalize and linear color ops (brightness, contrast) are fusible via `FusedColorSegment`; image-statistics Normalize modes remain passthrough.
+- **Spatial-kernel ops** (GaussianBlur, Sharpen) act as fusion barriers; transforms on either side of a barrier form separate segments. These are not yet fusible. On a GPU/MPS pipeline a passthrough op forces a device-to-host round-trip; `fusion_plan` marks these entries with `[CPU passthrough]` so the cost is visible. Set `substitute_passthrough=True` to opt in to replacing a passthrough op with an already-installed backend's torch-native equivalent (currently Albumentations `GaussianBlur` -> Kornia `RandomGaussianBlur`) so the pipeline stays on-device. This is off by default and **behaviour-changing**: the substitute uses a different kernel, border handling, and random stream, so outputs and RNG differ -- each substitution emits a `UserWarning`. Substitution happens only when the target backend is importable; otherwise the original op is kept.
 - **Padding mode** is segment-level: all transforms in a fused run share the padding mode passed to `Compose` (or the adapter default). Individual transforms cannot override it per-segment.
 - **Crop+resize ops** (`RandomResizedCrop`): `CropResizeSegment` applies one interpolation pass at the target output size, but the output spatial dimensions differ from the input. `data_keys` auxiliary targets (masks, bounding boxes, keypoints) are warped through the crop affine matrix at the target size.
-- **Geometric passthrough ops** (`ElasticTransform`, `GridDistortion`, `OpticalDistortion`) act as spatial-kernel fusion barriers and apply to the **image only** in multi-target `data_keys` pipelines -- masks, bounding boxes, and keypoints are NOT routed through them and will silently misalign with the image. This applies to all backends (Kornia, TorchVision, Albumentations); the pipeline emits a `UserWarning` at runtime when such a passthrough executes with auxiliary targets present. Place geometric ops before the barrier, or transform the auxiliary targets manually.
-- **Gradients**: image transforms are differentiable; mask sampling (`mode='nearest'`) is not.
+- **Geometric passthrough ops** (`ElasticTransform`, `GridDistortion`, `OpticalDistortion`, thin-plate-spline, piecewise-affine) act as fusion barriers and apply to the **image only**. Because they move image content, masks, bounding boxes, and keypoints that skip them would silently misalign with the image. In a multi-target `data_keys` pipeline this is a correctness bug, so the pipeline **raises `ValueError`** at runtime when such a coordinate-changing passthrough executes with auxiliary targets present (all backends: Kornia, TorchVision, Albumentations). Place geometric ops before the barrier, or transform the auxiliary targets manually. Kernel/pointwise passthrough ops (blur, noise, gamma) leave geometry unchanged, so auxiliary targets legitimately pass through them untouched -- no error and no warning.
+- **Gradients**: image transforms are differentiable; mask sampling defaults to `mode='nearest'`, which is not. Opt in to differentiable soft masks with `mask_interpolation="bilinear"` (requires a floating-point mask; labels mix at boundaries).
+- **Hooks**: the pipeline directly dispatches segment `forward` methods for speed, so `nn.Module` forward hooks registered on individual segment modules are bypassed. Register hooks on the pipeline or use the backend transform path when segment-level hook observation is required.
 
 ## 🤝 Contributing
 

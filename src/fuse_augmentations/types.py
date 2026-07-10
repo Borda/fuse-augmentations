@@ -42,6 +42,61 @@ class TransformCategory(Enum):
     CROP_RESIZE_FIXED = "crop_resize_fixed"
 
 
+#: Class names of passthrough transforms that apply a per-pixel *coordinate*
+#: displacement (a spatially-varying warp), as opposed to a kernel/pointwise op
+#: that leaves geometry unchanged. These ops move image content to new positions,
+#: so auxiliary targets (masks, boxes, keypoints) that skip them silently desync
+#: from the image. Compared by class name (not ``isinstance``) to stay backend- and
+#: import-agnostic: the same conceptual op appears under different classes across
+#: Albumentations, Kornia, and TorchVision, and the sets overlap by name.
+_COORDINATE_CHANGING_PASSTHROUGH_NAMES: frozenset[str] = frozenset({
+    "ElasticTransform",
+    "GridDistortion",
+    "OpticalDistortion",
+    "PiecewiseAffine",
+    "ThinPlateSpline",
+    "GridDropout",  # zeroes a coordinate-dependent grid of cells (mask must follow)
+    "CoarseDropout",  # zeroes coordinate-dependent boxes; native albu zeroes the mask too
+    "XYMasking",  # zeroes coordinate-dependent stripes; native albu masks them as well
+    "MaskDropout",  # drops regions derived from the mask itself — mask must follow
+    "RandomElasticTransform",  # kornia
+    "RandomThinPlateSpline",  # kornia
+    "RandomErasing",  # kornia/torchvision: zeroes a coordinate-dependent box
+})
+
+
+def is_coordinate_changing_passthrough(transform: object) -> bool:
+    """Return whether a passthrough transform changes pixel coordinates.
+
+    Distinguishes geometric *distortion* passthrough ops (elastic, grid, optical
+    distortion, thin-plate-spline, piecewise-affine) — which move image content and
+    therefore desync auxiliary targets that skip them — from kernel/pointwise
+    passthrough ops (blur, noise, gamma) which leave geometry intact and let
+    auxiliary targets legitimately pass unchanged. Classification is by transform
+    class name (see :data:`_COORDINATE_CHANGING_PASSTHROUGH_NAMES`) so it works for
+    every backend without importing optional dependencies.
+
+    Args:
+        transform: The passthrough transform object being classified.
+
+    Returns:
+        ``True`` for a coordinate-changing (geometric distortion) passthrough op,
+        ``False`` for a kernel/pointwise passthrough op.
+
+    Examples:
+        >>> class ElasticTransform:
+        ...     pass
+        >>> class GaussianBlur:
+        ...     pass
+        >>> is_coordinate_changing_passthrough(ElasticTransform())
+        True
+        >>> is_coordinate_changing_passthrough(GaussianBlur())
+        False
+
+    """
+    return type(transform).__name__ in _COORDINATE_CHANGING_PASSTHROUGH_NAMES
+
+
 class ReorderPolicy(Enum):
     """Controls whether transforms are reordered before segmentation.
 
@@ -104,6 +159,10 @@ class PaddingMode(IntEnum):
 #: ``mode`` values; ordered by quality (bicubic > bilinear > nearest).
 InterpolationStr = Literal["bilinear", "nearest", "bicubic"]
 
+#: String literal type for auxiliary mask sampling. ``"nearest"`` preserves
+#: hard labels; ``"bilinear"`` keeps float masks differentiable.
+MaskInterpolationStr = Literal["nearest", "bilinear"]
+
 #: String literal type for the ``padding_mode`` parameter accepted by pipeline
 #: constructors and segment classes. Maps to ``torch.nn.functional.grid_sample``
 #: ``padding_mode`` values; ordered by quality (reflection > border > zeros).
@@ -119,6 +178,15 @@ SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color", "c
 #: ``grid_sample`` for the whole batch, giving batch-size-independent throughput and
 #: a native GPU/MPS warp; its border/bilinear numerics differ slightly from cv2.
 ExecutionStr = Literal["cv2", "torch"]
+
+#: String literal type for the ``clip_policy`` of the fused color segment.
+#: ``"final"`` (default) applies the whole color chain as one 4x4 matmul and clamps
+#: the result once -- the more precise option, but out-of-gamut intermediates are not
+#: clamped between ops, so it can diverge from a native per-op chain. ``"per_op_parity"``
+#: splits the color chain so each op that could push a pixel outside ``[0, 1]`` is clamped
+#: on its own, matching a native sequential (clamp-after-each-op) chain at the cost of
+#: extra passes only where clipping is actually possible.
+ClipPolicyStr = Literal["final", "per_op_parity"]
 
 
 @runtime_checkable
@@ -286,6 +354,7 @@ class TransformAdapter(Protocol):
         self,
         transform: object,
         params: dict[str, Tensor],
+        mean: Tensor | None = None,
     ) -> Tensor:
         """Build a (batch_size, 4, 4) homogeneous color-space affine matrix from sampled params.
 
@@ -299,14 +368,20 @@ class TransformAdapter(Protocol):
         - No intermediate clamping: native backends clamp to ``[0, 1]`` after EACH op; a fused matrix
           cannot represent clamping between ops, so out-of-gamut intermediates diverge from native.
           :class:`~fuse_augmentations.affine.segment.FusedColorSegment` clamps only the FINAL result
-          (``clip_output=True`` default).
-        - Contrast uses a fixed midpoint 0.5 (``c' = cf*c + (1-cf)*0.5``); TorchVision/Kornia native
-          contrast is relative to the per-image mean luminance, so images whose mean is far from 0.5
-          diverge from native output.
+          (``clip_output=True`` default). See ``clip_policy`` on
+          :class:`~fuse_augmentations.compose.FusedCompose` for a per-op-parity split option.
+        - Contrast midpoint: TorchVision/Kornia ``ColorJitter`` contrast is relative to the per-image
+          mean luminance (``c' = cf*c + (1-cf)*luma_mean``). When ``mean`` is provided (the fused segment
+          supplies the per-image luminance of the transform's input), that mean is used, matching native.
+          When ``mean`` is ``None`` (a bare, out-of-context call), a fixed midpoint of ``0.5`` is used so
+          the returned matrix is well-defined without an image.
 
         Args:
             transform: The backend transform object (``POINTWISE_LINEAR`` category).
             params: Canonical parameter dict from :meth:`sample_params`.
+            mean: Optional per-image luminance of the image reaching this transform, shape
+                ``(batch_size,)``. Used only by contrast-like ops with a mean-relative midpoint
+                (``ColorJitter`` contrast). ``None`` falls back to the fixed ``0.5`` midpoint.
 
         Returns:
             Tensor of shape ``(batch_size, 4, 4)``.
@@ -505,6 +580,21 @@ class SegmentDescriptor:
             ``"TorchVisionAdapter"``), or ``None`` for backend-free pipelines
             created via
             :meth:`FusedCompose.from_params <fuse_augmentations.compose.FusedCompose.from_params>`.
+        barrier: Machine-readable reason this segment ends a fusion run and forces
+            a boundary, or ``None`` when the segment is fused/does not act as a
+            barrier. ``"spatial_kernel"`` for blur/noise passthrough, ``"pointwise"``
+            for non-linear pixel passthrough, ``"coordinate_change"`` for geometric
+            distortion passthrough (elastic/grid/optical), ``"crop_resize"`` for a
+            :class:`CropResizeSegment`. This is the structured counterpart to the
+            human-readable :attr:`fusion_plan` string.
+        split_reason: Machine-readable reason a run that could otherwise fuse was
+            split at this segment, or ``None``. Currently ``"backend_boundary"`` when
+            a mixed-backend group break created the split, else ``None``.
+        refused: Machine-readable reason an op stayed on the passthrough path instead
+            of being fused, or ``None`` for fused segments. ``"not_fusible"`` for ops
+            with no fusion representation (default for passthrough), or
+            ``"substitution_unavailable"`` when substitution was requested but the
+            target backend was not importable.
 
     Example:
         >>> d = SegmentDescriptor(
@@ -517,6 +607,8 @@ class SegmentDescriptor:
         'fused'
         >>> d.n_warps_saved
         1
+        >>> d.barrier is None
+        True
         >>> d.to_dict()  # doctest: +SKIP
         {'kind': 'fused', 'transforms': ['RandomRotation', ...], ...}
 
@@ -526,13 +618,18 @@ class SegmentDescriptor:
     transforms: tuple[str, ...]
     n_warps_saved: int
     backend: str | None = None
+    barrier: str | None = None
+    split_reason: str | None = None
+    refused: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serialisable dict representation of this descriptor.
 
         Returns:
-            Dict with keys ``"kind"``, ``"transforms"``, ``"n_warps_saved"``, and ``"backend"``. The ``"transforms"``
-            value is a ``list`` of strings (not a ``tuple``) for JSON compatibility.
+            Dict with keys ``"kind"``, ``"transforms"``, ``"n_warps_saved"``,
+            ``"backend"``, ``"barrier"``, ``"split_reason"``, and ``"refused"``.
+            The ``"transforms"`` value is a ``list`` of strings (not a ``tuple``)
+            for JSON compatibility.
 
         Example:
             >>> d = SegmentDescriptor(
@@ -540,9 +637,13 @@ class SegmentDescriptor:
             ...     transforms=("RandomGaussianBlur",),
             ...     n_warps_saved=0,
             ...     backend="kornia",
+            ...     barrier="spatial_kernel",
+            ...     refused="not_fusible",
             ... )
-            >>> d.to_dict()
-            {'kind': 'passthrough', 'transforms': ['RandomGaussianBlur'], 'n_warps_saved': 0, 'backend': 'kornia'}
+            >>> d.to_dict()["barrier"]
+            'spatial_kernel'
+            >>> d.to_dict()["refused"]
+            'not_fusible'
 
         """
         return {
@@ -550,4 +651,7 @@ class SegmentDescriptor:
             "transforms": list(self.transforms),
             "n_warps_saved": self.n_warps_saved,
             "backend": self.backend,
+            "barrier": self.barrier,
+            "split_reason": self.split_reason,
+            "refused": self.refused,
         }

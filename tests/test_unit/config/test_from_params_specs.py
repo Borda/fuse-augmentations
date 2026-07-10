@@ -285,7 +285,7 @@ class TestFromParamsSpecsUnsupportedOp:
 
 
 class TestFromParamsSpecsOrderingWithReservedParams:
-    """Brightness/contrast reserved-param checks fire before the specs= mutual-exclusivity check."""
+    """Brightness/contrast keyword args remain mutually exclusive with specs."""
 
     @pytest.mark.parametrize(
         "reserved_param, value",
@@ -295,7 +295,7 @@ class TestFromParamsSpecsOrderingWithReservedParams:
         ],
     )
     def test_reserved_param_with_specs_raises(self, reserved_param, value) -> None:
-        """Reserved param (brightness/contrast) check fires before specs mutual-exclusivity."""
+        """A color keyword and declarative specs cannot be combined."""
         specs = [TransformSpec(operation="rotation", params={"degrees": (-10.0, 10.0)})]
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError, match="mutually exclusive"):
             Compose.from_params(specs=specs, **{reserved_param: value})

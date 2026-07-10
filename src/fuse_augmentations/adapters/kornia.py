@@ -14,6 +14,7 @@ Example:
 from __future__ import annotations
 
 import warnings
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -39,6 +40,7 @@ from fuse_augmentations.types import SamplingSemantics, TransformCategory
 
 try:
     from kornia.augmentation import ColorJitter as _ColorJitter
+    from kornia.augmentation import Normalize as _KorniaNormalize
     from kornia.augmentation import RandomAffine as _RandomAffine
     from kornia.augmentation import RandomBrightness as _RandomBrightness
     from kornia.augmentation import RandomContrast as _RandomContrast
@@ -64,6 +66,7 @@ try:
         _RandomBrightness: TransformCategory.POINTWISE_LINEAR,
         _RandomContrast: TransformCategory.POINTWISE_LINEAR,
         _ColorJitter: TransformCategory.POINTWISE_LINEAR,
+        _KorniaNormalize: TransformCategory.POINTWISE_LINEAR,
         # Saturation/hue ops are pixel-wise (non-linear in RGB) — reorderable
         # but not linearly composable into a FusedColorSegment matrix.
         _RandomSaturation: TransformCategory.POINTWISE,
@@ -71,9 +74,12 @@ try:
     }
 
     _COLOR_TYPES: frozenset[type] = frozenset({_RandomBrightness, _RandomContrast, _ColorJitter})
+    _NORMALIZE_TYPES: frozenset[type] = frozenset({_KorniaNormalize})
 except ImportError:
     TRANSFORM_REGISTRY = {}
+    _KorniaNormalize: type = object  # type: ignore[no-redef]
     _COLOR_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _NORMALIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
 
 
 class KorniaAdapter:
@@ -102,6 +108,8 @@ class KorniaAdapter:
         "scale",
         "perspective",
         "rotation90",
+        "brightness",
+        "contrast",
     })
 
     #: Kornia draws one parameter set per batch.
@@ -281,6 +289,9 @@ class KorniaAdapter:
             if "hue_factor" in params:
                 out["hue_factor"] = params["hue_factor"].to(device=device)
             return out
+
+        if TRANSFORM_REGISTRY and ttype is _KorniaNormalize:
+            return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
 
         # Unknown - return empty
         return {}
@@ -521,9 +532,35 @@ class KorniaAdapter:
         raise TypeError(msg)
 
     @staticmethod
+    def color_luma_weights(transform: object) -> tuple[float, float, float] | None:
+        """Return Kornia's RGB luminance weights for mean-relative contrast (``ColorJitter`` only).
+
+        Kornia ``ColorJitter`` contrast uses ``adjust_contrast_with_mean_subtraction``, whose
+        midpoint is ``rgb_to_grayscale(image).mean()`` with float weights ``(0.299, 0.587, 0.114)``.
+        ``RandomContrast`` is pure multiplicative (no mean) and ``RandomBrightness`` additive, so
+        they report ``None``.
+
+        Args:
+            transform: A Kornia color augmentation transform.
+
+        Returns:
+            ``(0.299, 0.587, 0.114)`` for ``ColorJitter``; ``None`` otherwise.
+
+        """
+        if TRANSFORM_REGISTRY and type(transform) is _ColorJitter:
+            return (0.299, 0.587, 0.114)
+        return None
+
+    @staticmethod
+    def is_normalize(transform: object) -> bool:
+        """Return whether *transform* is Kornia's pointwise Normalize transform."""
+        return bool(TRANSFORM_REGISTRY) and type(transform) is _KorniaNormalize
+
+    @staticmethod
     def build_color_matrix(
         transform: object,
         params: dict[str, torch.Tensor],
+        mean: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Build a ``(B, 4, 4)`` homogeneous color-space affine matrix.
 
@@ -539,13 +576,17 @@ class KorniaAdapter:
           where ``alpha = contrast_factor``.
           Matrix: ``M = alpha * I₃``, ``b = 0``.
         - ``ColorJitter``: composes brightness (multiplicative) and contrast
-          (approximated with midpoint 0.5) in the sampled ``order``.
+          in the sampled ``order``. Contrast is mean-relative:
+          ``c' = cf*c + (1-cf)*mid``, where ``mid`` is the per-image luminance
+          from ``mean`` (matching native) or ``0.5`` when ``mean`` is ``None``.
           Brightness: ``M = brightness_factors * I₃``, ``b = 0``.
-          Contrast: ``M = contrast_factors * I₃``, ``b = (1-contrast_factors) * 0.5``.
+          Contrast: ``M = contrast_factors * I₃``, ``b = (1-contrast_factors) * mid``.
 
         Args:
             transform: A Kornia color augmentation transform.
             params: Parameter dict from ``sample_params()``.
+            mean: Optional per-image luminance of the transform's input, shape ``(B,)``. Used only for
+                ``ColorJitter`` contrast; ``None`` falls back to the fixed ``0.5`` midpoint.
 
         Returns:
             ``(B, 4, 4)`` homogeneous color-space affine matrix.
@@ -590,7 +631,10 @@ class KorniaAdapter:
                 raise NotImplementedError(
                     "Fused ColorJitter does not support non-identity hue; fall back to non-fused execution."
                 )
-            return _color_jitter_matrix(params)
+            return _color_jitter_matrix(params, mean)
+
+        if TRANSFORM_REGISTRY and ttype is _KorniaNormalize:
+            return _build_normalize_matrix(transform, params)
 
         msg = f"build_color_matrix not supported for {ttype.__name__!r}"
         raise NotImplementedError(msg)
@@ -1013,17 +1057,45 @@ def _contrast_multiplicative_matrix(contrast_factor: torch.Tensor) -> torch.Tens
     return mat
 
 
-def _color_jitter_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:
+def _build_normalize_matrix(transform: object, params: dict[str, torch.Tensor]) -> torch.Tensor:
+    """Build Kornia Normalize's channel-wise affine color matrix."""
+    batch_size = int(params["_batch_size"].item())
+    flags = cast(Any, transform).flags
+    mean = torch.as_tensor(flags["mean"], dtype=torch.float32).flatten()
+    std = torch.as_tensor(flags["std"], dtype=torch.float32).flatten()
+    if mean.numel() == 1:
+        mean = mean.expand(3)
+    if std.numel() == 1:
+        std = std.expand(3)
+    if mean.numel() != 3 or std.numel() != 3:
+        raise NotImplementedError("Kornia Normalize fusion requires three RGB mean/std values")
+    device = params["_batch_size"].device
+    dtype = mean.dtype
+    mat = _make_eye4(batch_size, device, dtype)
+    alpha = std.to(device=device).reciprocal()
+    beta = -mean.to(device=device) * alpha
+    mat[:, :3, :3] = torch.diag(alpha).expand(batch_size, -1, -1)
+    mat[:, :3, 3] = beta
+    return mat
+
+
+def _color_jitter_matrix(params: dict[str, torch.Tensor], mean: torch.Tensor | None = None) -> torch.Tensor:
     """Build (batch_size, 4, 4) for Kornia ColorJitter (brightness + contrast).
 
-    ColorJitter applies sub-transforms in a random ``order``. This function
-    composes brightness (multiplicative: ``brightness_factors * c``) and contrast (linear
-    approximation around midpoint 0.5: ``contrast_factors * c + (1-contrast_factors) * 0.5``) in the
-    sampled order. Saturation and hue steps are treated as identity.
+    ColorJitter applies sub-transforms in a random ``order``. This function composes brightness
+    (multiplicative: ``brightness_factors * c``) and contrast (mean-relative:
+    ``contrast_factors * c + (1-contrast_factors) * mid``) in the sampled order. Saturation and hue
+    steps are treated as identity.
+
+    Contrast's ``mid`` is the per-image luminance of the image the contrast step actually sees. When
+    ``mean`` is provided it is the luminance of this ColorJitter's input; brightness applied earlier in
+    the same ``order`` scales that luminance, so the running luminance is advanced through each intra-op
+    step (matching a native per-op chain). When ``mean`` is ``None``, a fixed ``0.5`` midpoint is used.
 
     Args:
         params: Parameter dict containing ``brightness_factor``, ``contrast_factor``,
             and ``order`` tensors.
+        mean: Optional per-image input luminance, shape ``(batch_size,)``. ``None`` uses ``0.5``.
 
     Returns:
         ``(batch_size, 4, 4)`` homogeneous color-space affine matrix.
@@ -1038,6 +1110,13 @@ def _color_jitter_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:
 
     # Start with identity
     mtx_acc = _make_eye4(batch_size, device, dtype)
+    # Running per-image luminance seen by the NEXT sub-op. Uniform-diagonal color ops act on the
+    # luminance the same scalar way, so a scalar carry reproduces the native intra-op mean exactly.
+    luma = mean if mean is not None else None
+    if luma is not None and batch_size == 1 and luma.shape[0] > 1:
+        brightness_factors = brightness_factors.expand(luma.shape[0])
+        contrast_factors = contrast_factors.expand(luma.shape[0])
+        batch_size = luma.shape[0]
 
     # Apply in sampled order; index 0=brightness, 1=contrast, 2=saturation, 3=hue
     for idx_t in order.tolist():
@@ -1048,16 +1127,21 @@ def _color_jitter_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:
             mtx_step[:, 0, 0] = brightness_factors
             mtx_step[:, 1, 1] = brightness_factors
             mtx_step[:, 2, 2] = brightness_factors
+            if luma is not None:
+                luma = luma * brightness_factors
         elif idx == 1:
-            # Contrast (midpoint approximation): c' = contrast_factors * c + (1-contrast_factors)*midpoint
+            # Contrast (mean-relative): c' = contrast_factors * c + (1-contrast_factors)*mid
             mtx_step = _make_eye4(batch_size, device, dtype)
             mtx_step[:, 0, 0] = contrast_factors
             mtx_step[:, 1, 1] = contrast_factors
             mtx_step[:, 2, 2] = contrast_factors
-            bias = (1.0 - contrast_factors) * _MIDPOINT
+            mid = luma if luma is not None else _MIDPOINT
+            bias = (1.0 - contrast_factors) * mid
             mtx_step[:, 0, 3] = bias
             mtx_step[:, 1, 3] = bias
             mtx_step[:, 2, 3] = bias
+            if luma is not None:
+                luma = contrast_factors * luma + bias
         else:
             # Saturation (idx=2) and hue (idx=3) treated as identity
             continue

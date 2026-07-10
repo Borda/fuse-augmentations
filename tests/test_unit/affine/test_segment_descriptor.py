@@ -43,6 +43,27 @@ class TestSegmentDescriptorConstruction:
         )
         assert descriptor.backend == "KorniaAdapter"
 
+    def test_machine_readable_reasons_default_none(self):
+        """The additive barrier/split_reason/refused fields default to None when omitted."""
+        descriptor = SegmentDescriptor(kind="fused", transforms=("Rotate",), n_warps_saved=0)
+        assert descriptor.barrier is None
+        assert descriptor.split_reason is None
+        assert descriptor.refused is None
+
+    def test_machine_readable_reasons_stored(self):
+        """SegmentDescriptor stores the optional machine-readable reason fields when provided."""
+        descriptor = SegmentDescriptor(
+            kind="passthrough",
+            transforms=("GaussianBlur",),
+            n_warps_saved=0,
+            barrier="spatial_kernel",
+            split_reason="backend_boundary",
+            refused="not_fusible",
+        )
+        assert descriptor.barrier == "spatial_kernel"
+        assert descriptor.split_reason == "backend_boundary"
+        assert descriptor.refused == "not_fusible"
+
     def test_frozen_immutable(self):
         """SegmentDescriptor is frozen so attribute mutation raises AttributeError or TypeError.
 
@@ -69,7 +90,15 @@ class TestSegmentDescriptorToDict:
             backend="KorniaAdapter",
         )
         result = descriptor.to_dict()
-        assert set(result.keys()) == {"kind", "transforms", "n_warps_saved", "backend"}
+        assert set(result.keys()) == {
+            "kind",
+            "transforms",
+            "n_warps_saved",
+            "backend",
+            "barrier",
+            "split_reason",
+            "refused",
+        }
 
     def test_to_dict_json_serializable(self):
         """to_dict() output round-trips through json.dumps and json.loads with all values preserved.

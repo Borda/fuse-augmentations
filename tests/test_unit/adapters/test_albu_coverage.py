@@ -39,6 +39,7 @@ _CONSTRUCTOR_KWARGS: dict[str, dict] = {
     "D4": {"prob": 1.0},
     "Transpose": {"prob": 1.0},
     "RandomResizedCrop": {"size": (32, 32), "prob": 1.0},
+    "Normalize": {"mean": (0.5, 0.4, 0.3), "std": (0.2, 0.3, 0.4), "max_pixel_value": 1.0, "p": 1.0},
 }
 
 BATCH_SIZE, CHANNELS, HEIGHT, WIDTH = 2, 3, 32, 32

@@ -19,12 +19,12 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import cache
+from importlib.util import find_spec
 from typing import Literal
 
-from fuse_augmentations._compat import _TORCHVISION_AVAILABLE
-
-if not _TORCHVISION_AVAILABLE:
+if find_spec("torchvision") is None:
     __doctest_skip__ = ["resolve_op"]
 
 SUPPORTED_OPS: frozenset[str] = frozenset({
@@ -37,6 +37,9 @@ SUPPORTED_OPS: frozenset[str] = frozenset({
     "scale",
     "perspective",
     "rotation90",
+    "normalize",
+    "brightness",
+    "contrast",
 })
 
 # Per-backend op coverage matrix.
@@ -51,12 +54,35 @@ SUPPORTED_OPS: frozenset[str] = frozenset({
 # scale       |   v    |      v      |       v
 # perspective |   v    |      v      |       v
 # rotation90  |   v    |      x      |       v
+# normalize   |   v    |      v      |       v
+# brightness  |   v    |      x      |       x
+# contrast    |   v    |      x      |       x
 
 SUPPORTED_BACKENDS: frozenset[str] = frozenset({
     "kornia",
     "torchvision",
     "albumentations",
+    "native",
 })
+
+_NATIVE_OPS: frozenset[str] = frozenset({
+    "rotation",
+    "scale",
+    "shear",
+    "translate",
+    "hflip",
+    "vflip",
+    "brightness",
+    "contrast",
+})
+
+
+@dataclass(frozen=True, slots=True)
+class _NativeOpSpec:
+    """Describe a zero-dependency operation for the native builder."""
+
+    operation: str
+
 
 #: String literal type for canonical operation names accepted by :func:`translate_params`
 #: and :func:`resolve_op`.
@@ -70,17 +96,23 @@ OpStr = Literal[
     "scale",
     "perspective",
     "rotation90",
+    "normalize",
+    "brightness",
+    "contrast",
 ]
 
 #: String literal type for backend names accepted by :func:`translate_params`
 #: and :func:`resolve_op`.
-BackendStr = Literal["kornia", "torchvision", "albumentations"]
+BackendStr = Literal["kornia", "torchvision", "albumentations", "native"]
 
 
 @cache
 def _kornia_registry() -> dict[str, type]:
     """Build op -> class map for the Kornia backend (lazy import)."""
+    from kornia.augmentation import Normalize as _Normalize
     from kornia.augmentation import RandomAffine as _RandomAffine
+    from kornia.augmentation import RandomBrightness as _RandomBrightness
+    from kornia.augmentation import RandomContrast as _RandomContrast
     from kornia.augmentation import RandomHorizontalFlip as _RandomHorizontalFlip
     from kornia.augmentation import RandomPerspective as _RandomPerspective
     from kornia.augmentation import RandomRotation as _RandomRotation
@@ -99,6 +131,9 @@ def _kornia_registry() -> dict[str, type]:
         "scale": _RandomAffine,  # scale is a subset of affine
         "perspective": _RandomPerspective,
         "rotation90": _RandomRotation90,
+        "normalize": _Normalize,
+        "brightness": _RandomBrightness,
+        "contrast": _RandomContrast,
     }
 
 
@@ -108,6 +143,7 @@ def _torchvision_registry() -> dict[str, type]:
     # Prefer v2 when available, fall back to v1
     try:
         from torchvision.transforms.v2 import (
+            Normalize,
             RandomAffine,
             RandomHorizontalFlip,
             RandomPerspective,
@@ -116,6 +152,7 @@ def _torchvision_registry() -> dict[str, type]:
         )
     except ImportError:
         from torchvision.transforms import (
+            Normalize,
             RandomAffine,
             RandomHorizontalFlip,
             RandomPerspective,
@@ -130,6 +167,7 @@ def _torchvision_registry() -> dict[str, type]:
         "vflip": RandomVerticalFlip,
         "scale": RandomAffine,  # scale is a subset of affine
         "perspective": RandomPerspective,
+        "normalize": Normalize,
     }
 
 
@@ -138,6 +176,7 @@ def _albumentations_registry() -> dict[str, type]:
     """Build op -> class map for the Albumentations backend (lazy import)."""
     from albumentations import Affine as _Affine
     from albumentations import HorizontalFlip as _HorizontalFlip
+    from albumentations import Normalize as _Normalize
     from albumentations import Perspective as _Perspective
     from albumentations import RandomRotate90 as _RandomRotate90
     from albumentations import Rotate as _Rotate
@@ -151,6 +190,7 @@ def _albumentations_registry() -> dict[str, type]:
         "scale": _Affine,  # scale is a subset of affine
         "perspective": _Perspective,
         "rotation90": _RandomRotate90,
+        "normalize": _Normalize,
     }
 
 
@@ -202,7 +242,10 @@ def capability_matrix() -> dict[str, frozenset[str]]:
         False
 
     """
-    return {backend: frozenset(_registry_for(backend)) for backend in SUPPORTED_BACKENDS}
+    return {
+        backend: (_NATIVE_OPS if backend == "native" else frozenset(_registry_for(backend)))
+        for backend in SUPPORTED_BACKENDS
+    }
 
 
 def translate_params(op_name: OpStr, backend: BackendStr, params: dict[str, object]) -> dict[str, object]:
@@ -283,10 +326,13 @@ def translate_params(op_name: OpStr, backend: BackendStr, params: dict[str, obje
         # Kornia requires explicit bounds; this default matches full quarter-turn sampling.
         kwargs.setdefault("times", (0, 3))
 
+    if op_name in {"brightness", "contrast"} and backend == "kornia":
+        _move_param("factor", op_name)
+
     return kwargs
 
 
-def resolve_op(operation: OpStr, backend: BackendStr) -> type:
+def resolve_op(operation: OpStr, backend: BackendStr) -> type | _NativeOpSpec:
     """Resolve a canonical operation name to its backend transform class.
 
     Args:
@@ -314,6 +360,15 @@ def resolve_op(operation: OpStr, backend: BackendStr) -> type:
     if operation not in SUPPORTED_OPS:
         msg = f"unknown op {operation!r}; supported: {sorted(SUPPORTED_OPS)}"
         raise ValueError(msg)
+
+    if backend == "native":
+        if operation not in _NATIVE_OPS:
+            msg = (
+                f"backend {backend!r} does not support op {operation!r}; "
+                f"supported ops for {backend}: {sorted(_NATIVE_OPS)}"
+            )
+            raise ValueError(msg)
+        return _NativeOpSpec(operation)
 
     builder = _BACKEND_REGISTRY_BUILDERS[backend]
     try:

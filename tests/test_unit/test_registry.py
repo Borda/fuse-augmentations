@@ -71,7 +71,19 @@ class TestBuiltinRegistration:
         [
             pytest.param(
                 KorniaAdapter,
-                {"rotation", "affine", "shear", "translate", "hflip", "vflip", "scale", "perspective", "rotation90"},
+                {
+                    "rotation",
+                    "affine",
+                    "shear",
+                    "translate",
+                    "hflip",
+                    "vflip",
+                    "scale",
+                    "perspective",
+                    "rotation90",
+                    "brightness",
+                    "contrast",
+                },
                 "per_batch",
                 id="kornia",
             ),

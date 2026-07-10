@@ -20,6 +20,8 @@ Example:
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any, cast
 
 import numpy as np
@@ -30,8 +32,10 @@ from torch import Tensor, nn
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
 from fuse_augmentations.affine.matrix import (
+    _singularity_threshold,
     apply_d4_image,
     classify_d4_batch,
+    estimate_scale,
     inv3x3,
     matmul3x3,
     normalize_matrix,
@@ -39,8 +43,10 @@ from fuse_augmentations.affine.matrix import (
     perspective_grid,
 )
 from fuse_augmentations.types import (
+    ClipPolicyStr,
     ExecutionStr,
     InterpolationStr,
+    MaskInterpolationStr,
     PaddingModeStr,
     RandomnessPolicy,
     TransformAdapter,
@@ -83,6 +89,23 @@ if not _ALBUMENTATIONS_AVAILABLE:
 # result is cast back to the image dtype at the grid_sample boundary. The cv2 and
 # NumPy paths already accumulate in float64.
 _COMPOSE_DTYPE: torch.dtype = torch.float64
+
+_CURRENT_CALL_MATRIX: ContextVar[Tensor | None] = ContextVar("fuse_current_call_matrix", default=None)
+
+
+def _clear_current_call_matrix() -> None:
+    """Clear the per-context matrix produced by the next segment call."""
+    _CURRENT_CALL_MATRIX.set(None)
+
+
+def _current_call_matrix() -> Tensor | None:
+    """Return the matrix produced by the most recent segment in this context."""
+    return _CURRENT_CALL_MATRIX.get()
+
+
+def _set_current_call_matrix(matrix: Tensor) -> None:
+    """Publish a segment's local matrix without using shared pipeline state."""
+    _CURRENT_CALL_MATRIX.set(matrix)
 
 
 def _matrix_compose_dtype(image_dtype: torch.dtype, device: torch.device, num_transforms: int) -> torch.dtype:
@@ -222,6 +245,8 @@ def _grid_sample_affine_batched(
     acc: Tensor,
     interpolation: InterpolationStr,
     padding_mode: PaddingModeStr,
+    *,
+    compiling: bool | None = None,
 ) -> tuple[Tensor, Tensor]:
     """Warp ``image`` by an affine matrix batch with one ``affine_grid`` + ``grid_sample`` pass.
 
@@ -237,6 +262,9 @@ def _grid_sample_affine_batched(
             and float32 on MPS (which has no float64).
         interpolation: ``grid_sample`` interpolation mode.
         padding_mode: ``grid_sample`` padding mode.
+        compiling: Forwarded to :func:`~fuse_augmentations.affine.matrix.inv3x3`
+            to select the compile-safe branch explicitly; ``None`` falls back to
+            ambient ``torch.compile`` detection for ordinary eager calls.
 
     Returns:
         A ``(warped_image, grid)`` tuple; the grid is reused to warp mask aux targets.
@@ -244,7 +272,7 @@ def _grid_sample_affine_batched(
     """
     batch_size, num_channels, height, width = image.shape
     dtype = image.dtype
-    mtx_inv = inv3x3(acc)
+    mtx_inv = inv3x3(acc, compiling=compiling)
     mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
 
     grid = F.affine_grid(mtx_norm[:, :2, :], [batch_size, num_channels, height, width], align_corners=True)
@@ -257,6 +285,8 @@ def _grid_sample_perspective_batched(
     acc: Tensor,
     interpolation: InterpolationStr,
     padding_mode: PaddingModeStr,
+    *,
+    compiling: bool | None = None,
 ) -> tuple[Tensor, Tensor]:
     """Warp ``image`` by a homography batch with one ``perspective_grid`` + ``grid_sample`` pass.
 
@@ -271,6 +301,8 @@ def _grid_sample_perspective_batched(
             CPU/CUDA, float32 on MPS).
         interpolation: ``grid_sample`` interpolation mode.
         padding_mode: ``grid_sample`` padding mode.
+        compiling: Forwarded to :func:`~fuse_augmentations.affine.matrix.inv3x3`;
+            see :func:`_grid_sample_affine_batched`.
 
     Returns:
         A ``(warped_image, grid)`` tuple.
@@ -278,12 +310,208 @@ def _grid_sample_perspective_batched(
     """
     _, _, height, width = image.shape
     dtype = image.dtype
-    mtx_inv = inv3x3(acc)
+    mtx_inv = inv3x3(acc, compiling=compiling)
     mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
 
     grid = perspective_grid(mtx_norm, height, width)
     warped = F.grid_sample(image, grid, mode=interpolation, padding_mode=padding_mode, align_corners=True)
     return warped, grid
+
+
+def _compiling_grid_sample_affine_batched(
+    image: Tensor,
+    acc: Tensor,
+    interpolation: InterpolationStr,
+    padding_mode: PaddingModeStr,
+) -> tuple[Tensor, Tensor]:
+    """``_grid_sample_affine_batched`` with the compile-safe inversion branch pinned on.
+
+    The only entry point ``torch.compile`` wraps. Binding ``compiling=True`` here is
+    a plain Python constant fixed at trace time, not an ambient runtime probe, so
+    branch selection cannot depend on how a given torch/dynamo version reports its
+    own tracing state from a resumed frame (observed as a spurious graph break with
+    ambient detection on torch 2.2).
+
+    """
+    return _grid_sample_affine_batched(image, acc, interpolation, padding_mode, compiling=True)
+
+
+def _compiling_grid_sample_perspective_batched(
+    image: Tensor,
+    acc: Tensor,
+    interpolation: InterpolationStr,
+    padding_mode: PaddingModeStr,
+) -> tuple[Tensor, Tensor]:
+    """``_grid_sample_perspective_batched`` with the compile-safe inversion branch pinned on.
+
+    See :func:`_compiling_grid_sample_affine_batched`.
+
+    """
+    return _grid_sample_perspective_batched(image, acc, interpolation, padding_mode, compiling=True)
+
+
+def _torch_supports_compile() -> bool:
+    """Return whether the installed torch is new enough for a reliable ``torch.compile``.
+
+    The compiled warp region is gated on torch >= 2.2 at runtime rather than
+    raising the package floor: older torch keeps the eager path unchanged and the
+    ``compile=True`` flag becomes a documented no-op. The version is parsed from
+    ``torch.__version__`` (major/minor only; release-candidate and ``+cpu`` build
+    suffixes are ignored).
+
+    Returns:
+        ``True`` when ``torch.__version__`` is ``2.2`` or newer, ``False`` otherwise.
+
+    Example:
+        >>> from fuse_augmentations.affine.segment import _torch_supports_compile
+        >>> isinstance(_torch_supports_compile(), bool)
+        True
+
+    """
+    parts = torch.__version__.split("+", 1)[0].split(".")
+    try:
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        return False
+    return (major, minor) >= (2, 2)
+
+
+# Signature shared by both warp cores: (image, matrix, interpolation, padding) ->
+# (warped_image, sampling_grid). Used to type the compiled-warp cache/selectors.
+WarpFn = Callable[[Tensor, Tensor, InterpolationStr, PaddingModeStr], tuple[Tensor, Tensor]]
+
+# Module-level compiled warp cores, built lazily on first use so importing the
+# module never triggers a compile. ``dynamic=True`` keeps a single guarded graph
+# across varying (batch, height, width) instead of recompiling per shape. Keyed
+# once at module scope so every segment shares the same compiled function object
+# (and therefore the same inductor cache), rather than compiling per instance.
+_COMPILED_WARP_CACHE: dict[str, WarpFn] = {}
+
+
+def _compiled_warp_fn(kind: str) -> WarpFn:
+    """Return the ``torch.compile``-wrapped warp core for ``kind`` (``"affine"`` or ``"perspective"``).
+
+    The compiled function wraps the same ``inv3x3 -> normalize -> grid -> grid_sample``
+    core used on the eager path; only the matrix-inversion / grid-generation math is
+    inside the graph. Probability masking and active-subset selection stay in the
+    callers, so the compiled region has no data-dependent control flow and no graph
+    breaks. Compilation happens once per kind and is memoized.
+
+    Args:
+        kind: ``"affine"`` for :func:`_grid_sample_affine_batched` or
+            ``"perspective"`` for :func:`_grid_sample_perspective_batched`.
+
+    Returns:
+        The compiled callable for the requested warp core.
+
+    """
+    cached = _COMPILED_WARP_CACHE.get(kind)
+    if cached is not None:
+        return cached
+    base = _compiling_grid_sample_affine_batched if kind == "affine" else _compiling_grid_sample_perspective_batched
+    compiled = torch.compile(base, dynamic=True)
+    _COMPILED_WARP_CACHE[kind] = compiled
+    return compiled
+
+
+# Below this per-axis scale (output/input), a plain grid_sample downscale drops
+# high-frequency detail between samples and aliases; the antialias path kicks in
+# only when a downscale is this aggressive. At/above it the warp is bit-identical
+# to the un-antialiased path (Nyquist headroom), so the opt-in flag is a no-op.
+_ANTIALIAS_SCALE_THRESHOLD: float = 0.5
+# Off-diagonal magnitude under which the composed 2x2 counts as axis-aligned
+# (pure scale + translation, no rotation/shear) — the case an ``F.interpolate``
+# antialias tail handles exactly, matching ``torchvision.Resize(antialias=True)``.
+_AXIS_ALIGNED_EPS: float = 1e-6
+
+
+def _mipmap_sigma(scale: float) -> float:
+    """Return the Gaussian pre-blur sigma for a downscale factor ``scale`` (< 1).
+
+    Uses the standard mipmap pre-filter rule ``sigma = 0.5 * sqrt((1/s)^2 - 1)``:
+    the blur that band-limits the input to the output Nyquist frequency before a
+    ``1/s``-fold decimation, so the single downscaling warp no longer aliases.
+
+    Args:
+        scale: The per-axis output/input scale factor, expected ``0 < scale < 1``.
+
+    Returns:
+        The Gaussian standard deviation in input pixels (``0.0`` when ``scale >= 1``).
+
+    Example:
+        >>> from fuse_augmentations.affine.segment import _mipmap_sigma
+        >>> round(_mipmap_sigma(0.25), 4)
+        1.9365
+
+    """
+    if scale >= 1.0:
+        return 0.0
+    return 0.5 * math.sqrt((1.0 / scale) ** 2 - 1.0)
+
+
+def _maybe_antialias_prefilter(image: Tensor, mtx: Tensor, enabled: bool) -> Tensor:
+    """Gaussian-prefilter ``image`` before a downscaling warp when antialiasing is on.
+
+    Estimates the per-axis scale of the forward matrix ``mtx``; when antialiasing
+    is enabled and the worst axis downscales below
+    :data:`_ANTIALIAS_SCALE_THRESHOLD`, band-limits the input with a per-axis
+    Gaussian (mipmap sigma rule) so the single ``grid_sample`` no longer aliases.
+    The blur runs in the image dtype via the installed kornia backend; if kornia
+    is unavailable the input is returned unchanged (documented fallback, no custom
+    kernel). Returns ``image`` untouched when disabled or the scale is safe, so the
+    default path stays bit-identical.
+
+    Args:
+        image: ``(batch_size, channels, height, width)`` float input tensor.
+        mtx: ``(batch_size, 3, 3)`` forward pixel matrix of the downscaling warp.
+        enabled: Whether the ``antialias`` flag is set for this segment.
+
+    Returns:
+        The prefiltered image, or the original image when no filtering applies.
+
+    """
+    if not enabled:
+        return image
+    scale_x, scale_y = estimate_scale(mtx)  # (width-axis, height-axis) singular values, ascending
+    if min(scale_x, scale_y) >= _ANTIALIAS_SCALE_THRESHOLD:
+        return image
+    sigma_x = _mipmap_sigma(scale_x)
+    sigma_y = _mipmap_sigma(scale_y)
+    blurred = _kornia_gaussian_blur(image, sigma_x, sigma_y)
+    return image if blurred is None else blurred
+
+
+def _kornia_gaussian_blur(image: Tensor, sigma_x: float, sigma_y: float) -> Tensor | None:
+    """Anisotropic Gaussian pre-blur via kornia, or ``None`` when kornia is absent.
+
+    Blurs ``image`` with per-axis sigmas using the installed kornia
+    ``gaussian_blur2d`` (no custom kernel). The kernel size follows the ``3-sigma``
+    rule, rounded up to the next odd integer per axis. Returns ``None`` when kornia
+    is not importable so the caller can fall back to the un-filtered warp.
+
+    Args:
+        image: ``(batch_size, channels, height, width)`` float input tensor.
+        sigma_x: Gaussian standard deviation along the width axis, in pixels.
+        sigma_y: Gaussian standard deviation along the height axis, in pixels.
+
+    Returns:
+        The blurred tensor, or ``None`` when kornia is unavailable or both sigmas are ~0.
+
+    """
+    if sigma_x <= 0.0 and sigma_y <= 0.0:
+        return image
+    try:
+        from kornia.filters import gaussian_blur2d
+    except ImportError:
+        return None
+    ksize_x = 2 * math.ceil(3.0 * sigma_x) + 1
+    ksize_y = 2 * math.ceil(3.0 * sigma_y) + 1
+    # kornia expects positive sigmas on both axes; clamp the near-zero axis to a
+    # tiny value so a single-axis downscale still runs through one call.
+    sig_x = max(sigma_x, 1e-6)
+    sig_y = max(sigma_y, 1e-6)
+    return gaussian_blur2d(image, kernel_size=(ksize_y, ksize_x), sigma=(sig_y, sig_x), border_type="reflect")
 
 
 class ExactAffineSegment(nn.Module):
@@ -529,8 +757,12 @@ class _BaseAffineSegment(nn.Module):
         padding_mode: Optional padding mode override (``"zeros"``, ``"border"``,
             ``"reflection"``). Defaults to ``"zeros"`` when ``None``.
         randomness: Batch randomness policy for the fused run.
+        mask_interpolation: Sampling mode for auxiliary masks. ``"nearest"``
+            preserves hard labels; ``"bilinear"`` supports float soft masks.
 
     """
+
+    _eye3: Tensor
 
     def __init__(
         self,
@@ -539,6 +771,9 @@ class _BaseAffineSegment(nn.Module):
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+        *,
+        compile_warp: bool = False,
+        mask_interpolation: MaskInterpolationStr = "nearest",
     ) -> None:
         """Initialize the shared matrix-composition state."""
         super().__init__()
@@ -547,7 +782,14 @@ class _BaseAffineSegment(nn.Module):
         self.interpolation = interpolation
         self.padding_mode = padding_mode
         self.randomness = randomness
+        self.mask_interpolation = mask_interpolation
         self._last_matrix: Tensor | None = None
+        # Opt-in torch.compile of the warp core. Enabled only when the flag is set
+        # AND the installed torch is new enough; otherwise the eager path runs
+        # unchanged. The compiled function is selected per forward call by device
+        # (CPU stays eager — documented no-op), so store just the intent here.
+        self._compile_warp: bool = compile_warp and _torch_supports_compile()
+        self.register_buffer("_eye3", torch.eye(3, dtype=torch.float32))
 
     @property
     def last_matrix(self) -> Tensor | None:
@@ -593,7 +835,8 @@ class _BaseAffineSegment(nn.Module):
         # common single-op case bit-for-bit compatible with the native warp. MPS
         # has no float64, so chains there fall back to the image dtype too.
         compose_dtype = _matrix_compose_dtype(dtype, device, len(self.transforms))
-        eye_batch = torch.eye(3, device=device, dtype=compose_dtype).unsqueeze(0).expand(batch_size, -1, -1)
+        eye = self._eye3.to(device=device, dtype=compose_dtype)
+        eye_batch = eye[None].expand(batch_size, -1, -1)
         acc = eye_batch.clone()
 
         for tfm in self.transforms:
@@ -638,8 +881,36 @@ class _BaseAffineSegment(nn.Module):
         """
         raise NotImplementedError
 
+    def _select_warp_fn(self, kind: str, device: torch.device) -> WarpFn:
+        """Pick the eager or compiled warp core for this call.
+
+        The compiled core is used only when ``compile=True`` was requested (and
+        torch is new enough) AND the tensor is not on CPU. CPU stays eager: the
+        inductor CPU backend gives no speedup for this grid_sample workload, so
+        compiling it there would only add warm-up cost — a documented no-op. The
+        masking / active-subset selection lives entirely in the callers, so the
+        selected core sees only dense tensors and never breaks its graph.
+
+        Args:
+            kind: ``"affine"`` or ``"perspective"``.
+            device: Device of the image being warped.
+
+        Returns:
+            The compiled warp core when eligible, else the eager one.
+
+        """
+        eager: WarpFn = _grid_sample_affine_batched if kind == "affine" else _grid_sample_perspective_batched
+        if self._compile_warp and device.type != "cpu":
+            return _compiled_warp_fn(kind)
+        return eager
+
     @staticmethod
-    def _route_grid_aux(aux_targets: dict[str, Tensor], grid: Tensor, acc_img: Tensor) -> None:
+    def _route_grid_aux(
+        aux_targets: dict[str, Tensor],
+        grid: Tensor,
+        acc_img: Tensor,
+        mask_interpolation: MaskInterpolationStr = "nearest",
+    ) -> None:
         """Route auxiliary targets through the warp grid and composed pixel matrix.
 
         The mask is resampled with the same ``grid`` used for the image; boxes and
@@ -651,6 +922,7 @@ class _BaseAffineSegment(nn.Module):
                 ``"bbox_xywh"``, ``"keypoints"``).
             grid: The sampling grid produced by :meth:`_apply_grid`.
             acc_img: ``(batch_size, 3, 3)`` composed forward pixel matrix in the image dtype.
+            mask_interpolation: Mask sampling mode for the ``"mask"`` target.
 
         """
         from fuse_augmentations.targets import (
@@ -663,7 +935,7 @@ class _BaseAffineSegment(nn.Module):
         for key in list(aux_targets.keys()):
             val = aux_targets[key]
             if key == "mask":
-                aux_targets[key] = transform_mask(val, grid)
+                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation)
                 continue
             if key == "bbox_xyxy":
                 aux_targets[key] = transform_bbox_xyxy(val, acc_img)
@@ -689,6 +961,8 @@ class FusedAffineSegment(_BaseAffineSegment):
             to ``"bilinear"`` when ``None``.
         padding_mode: Optional padding mode override (``"zeros"``, ``"border"``, ``"reflection"``). Defaults to
             ``"zeros"`` when ``None``.
+        mask_interpolation: Sampling mode for auxiliary masks. ``"nearest"``
+            preserves hard labels; ``"bilinear"`` supports float soft masks.
 
     """
 
@@ -699,9 +973,20 @@ class FusedAffineSegment(_BaseAffineSegment):
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+        *,
+        compile_warp: bool = False,
+        mask_interpolation: MaskInterpolationStr = "nearest",
     ) -> None:
         """Initialize ``FusedAffineSegment``."""
-        super().__init__(transforms, adapter, interpolation, padding_mode, randomness)
+        super().__init__(
+            transforms,
+            adapter,
+            interpolation,
+            padding_mode,
+            randomness,
+            mask_interpolation=mask_interpolation,
+            compile_warp=compile_warp,
+        )
         # Pre-compute fast-path selector once at construction to avoid repeated
         # isinstance checks on every forward call.
         self._fast_path: str | None = None
@@ -824,11 +1109,13 @@ class FusedAffineSegment(_BaseAffineSegment):
                 _all_skipped = _bp_raw is not None and not _bp_raw.to(device=device).bool().any()
                 if _all_skipped or self._skip_matrix_recon:
                     _mtx_eye = self._eye_1x3x3_f32
-                    self._last_matrix = (
+                    _last_matrix = (
                         _mtx_eye
                         if (batch_size == 1 and dtype == _mtx_eye.dtype and device == _mtx_eye.device)
                         else _mtx_eye.expand(batch_size, -1, -1).detach().clone().to(device=device, dtype=dtype)
                     )
+                    self._last_matrix = _last_matrix
+                    _set_current_call_matrix(_last_matrix.detach().clone())
                     return image
 
                 _native_p = KorniaAdapter.convert_native_params(_tfm, device)
@@ -851,7 +1138,9 @@ class FusedAffineSegment(_BaseAffineSegment):
                         _mtx = _scatter_active_matrices(_mtx, _active, batch_size, device, dtype)
                 else:
                     _mtx = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1)
-                self._last_matrix = _mtx.detach().clone()
+                _last_matrix = _mtx.detach().clone()
+                self._last_matrix = _last_matrix
+                _set_current_call_matrix(_last_matrix)
                 return image
 
             if self._fast_path == "torchvision":
@@ -865,11 +1154,13 @@ class FusedAffineSegment(_BaseAffineSegment):
                         image = TorchVisionAdapter.call_nonfused(_tfm, image)
                         _mtx_eye = self._eye_1x3x3_f32
                         if batch_size == 1 and dtype == _mtx_eye.dtype and device == _mtx_eye.device:
-                            self._last_matrix = _mtx_eye
+                            _last_matrix = _mtx_eye
                         else:
-                            self._last_matrix = (
+                            _last_matrix = (
                                 _mtx_eye.expand(batch_size, -1, -1).detach().clone().to(device=device, dtype=dtype)
                             )
+                        self._last_matrix = _last_matrix
+                        _set_current_call_matrix(_last_matrix.detach().clone())
                         return image
                     # TV v2 GEOMETRIC_INTERP transforms (RandomRotation, RandomAffine)
                     # always apply and make exactly one RNG call (get_params) - same as
@@ -887,7 +1178,9 @@ class FusedAffineSegment(_BaseAffineSegment):
                             _mtx = _mtx.expand(batch_size, -1, -1)
                     else:
                         _mtx = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1)
-                    self._last_matrix = _mtx.to(device=device, dtype=dtype).detach().clone()
+                    _last_matrix = _mtx.to(device=device, dtype=dtype).detach().clone()
+                    self._last_matrix = _last_matrix
+                    _set_current_call_matrix(_last_matrix)
                     return image
 
         # ------------------------------------------------------------------ #
@@ -938,6 +1231,7 @@ class FusedAffineSegment(_BaseAffineSegment):
 
             np.copyto(self._cv2_last_mat_buf[0].numpy(), acc_np, casting="unsafe")
             self._last_matrix = self._cv2_last_mat_buf
+            _set_current_call_matrix(torch.as_tensor(acc_np, dtype=dtype).unsqueeze(0).detach().clone())
 
             # Symbolic-exactness fast path on the cv2 B=1 branch: a chain that composes
             # to a D4 element is applied losslessly via flip/rot90, skipping the cv2 warp
@@ -959,6 +1253,7 @@ class FusedAffineSegment(_BaseAffineSegment):
         # Compose the multi-transform affine chain into one matrix (shared engine).
         acc, acc_img = self._compose(image)
         self._last_matrix = acc_img.detach().clone()
+        _set_current_call_matrix(acc_img.detach().clone())
 
         # Symbolic-exactness fast path: when the whole batch composes to one D4-group
         # element (flip / 90-degree rotation, zero net translation beyond the
@@ -977,7 +1272,7 @@ class FusedAffineSegment(_BaseAffineSegment):
 
         # Transform auxiliary targets using the composed forward matrix
         if aux_targets:
-            self._route_grid_aux(aux_targets, grid, acc_img)
+            self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation)
 
         if not _has_aux:
             return image
@@ -998,7 +1293,8 @@ class FusedAffineSegment(_BaseAffineSegment):
             A ``(warped_image, grid)`` tuple.
 
         """
-        return _grid_sample_affine_batched(
+        warp_fn = self._select_warp_fn("affine", image.device)
+        return warp_fn(
             image,
             acc,
             self.interpolation or "bilinear",
@@ -1094,12 +1390,17 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+        *,
+        compile_warp: bool = False,
+        antialias: bool = False,
+        mask_interpolation: MaskInterpolationStr = "nearest",
     ) -> None:
         """Initialize ``_FusedGeoCropSegment``."""
         # nn.Module state only; skip FusedAffineSegment.__init__'s cv2/numpy
         # fast-path wiring (it keys on len(transforms) and would try to resolve a
         # numpy builder for the crop transform — this segment overrides forward).
         nn.Module.__init__(self)
+        self.register_buffer("_eye3", torch.eye(3, dtype=torch.float32))
         self.geo_transforms = geo_transforms
         self.crop_transform = crop_transform
         # transforms holds the full fused run so inherited fusion-plan machinery
@@ -1109,7 +1410,10 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         self.interpolation = interpolation
         self.padding_mode = padding_mode
         self.randomness = randomness
+        self.mask_interpolation = mask_interpolation
         self._last_matrix: Tensor | None = None
+        self._compile_warp: bool = compile_warp and _torch_supports_compile()
+        self._antialias: bool = antialias
 
     def forward(
         self,
@@ -1140,7 +1444,8 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         # chain always has >1 fused op (geo + crop), so compose in float64 where
         # available. The crop matrix has no per-sample prob gate.
         compose_dtype = _matrix_compose_dtype(dtype, device, len(self.transforms))
-        eye_batch = torch.eye(3, device=device, dtype=compose_dtype).unsqueeze(0).expand(batch_size, -1, -1)
+        eye = self._eye3.to(device=device, dtype=compose_dtype)
+        eye_batch = eye[None].expand(batch_size, -1, -1)
         acc = eye_batch.clone()
 
         for tfm in self.geo_transforms:
@@ -1161,6 +1466,13 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         acc_full = matmul3x3(mtx_crop, acc)  # crop reads geo's output
 
         self._last_matrix = acc_full.to(dtype=dtype).detach().clone()
+        _set_current_call_matrix(self._last_matrix)
+
+        # Opt-in antialiasing on the fused geo∘crop downscale. The composed 2x2 may
+        # be rotated/sheared, so a per-axis Gaussian prefilter (mipmap sigma) is
+        # applied to the input before the single warp. No-op unless enabled and the
+        # worst axis downscales past the threshold — default output unchanged.
+        image = _maybe_antialias_prefilter(image, acc_full.to(dtype=dtype), self._antialias)
 
         mtx_inv = inv3x3(acc_full)
         mtx_norm = normalize_matrix_io(mtx_inv, height, width, target_h, target_w).to(dtype=dtype)
@@ -1178,7 +1490,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         )
 
         if aux_targets:
-            self._warp_aux(aux_targets, grid, acc_full.to(dtype=dtype))
+            self._warp_aux(aux_targets, grid, acc_full.to(dtype=dtype), self.mask_interpolation)
 
         if not _has_aux:
             return out
@@ -1211,7 +1523,12 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         return target_h, target_w, mtx_crop.to(device=device, dtype=compose_dtype)
 
     @staticmethod
-    def _warp_aux(aux_targets: dict[str, Tensor], grid: Tensor, mtx: Tensor) -> None:
+    def _warp_aux(
+        aux_targets: dict[str, Tensor],
+        grid: Tensor,
+        mtx: Tensor,
+        mask_interpolation: MaskInterpolationStr = "nearest",
+    ) -> None:
         """Warp auxiliary targets in place: mask via the output grid, coords via ``mtx``."""
         from fuse_augmentations.targets import (
             transform_bbox_xywh,
@@ -1223,7 +1540,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         for key in list(aux_targets.keys()):
             val = aux_targets[key]
             if key == "mask":
-                aux_targets[key] = transform_mask(val, grid)
+                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation)
             elif key == "bbox_xyxy":
                 aux_targets[key] = transform_bbox_xyxy(val, mtx)
             elif key == "bbox_xywh":
@@ -1270,13 +1587,17 @@ def _warp(
     import cv2
 
     m_2x3 = matrix_dst2src_3x3[:2, :].astype(np.float64)
-    return cv2.warpAffine(
-        img,
-        m_2x3,
-        (width, height),
-        flags=interp_flag | _CV2_WARP_INVERSE_MAP,
-        borderMode=border_flag,
-        borderValue=0,
+    warp_affine = cast(Any, cv2.warpAffine)
+    return cast(
+        MatrixArray,
+        warp_affine(
+            img,
+            m_2x3,
+            (width, height),
+            flags=interp_flag | _CV2_WARP_INVERSE_MAP,
+            borderMode=border_flag,
+            borderValue=0,
+        ),
     )
 
 
@@ -1308,8 +1629,9 @@ def _inv3x3_affine_np(mtx: MatrixArray) -> MatrixArray:
     # Match the torch path (matrix.inv3x3), which raises for near-singular
     # matrices at float32 eps — without this guard the division silently
     # produces inf/NaN that propagates into cv2.warpAffine.
-    if abs(det) < 1.1920928955078125e-07:  # torch.finfo(torch.float32).eps
-        msg = f"Singular affine matrix cannot be inverted (|det|={abs(det):.3e} < float32 eps)."
+    threshold = _singularity_threshold(torch.float32)
+    if abs(det) < threshold:
+        msg = f"Singular affine matrix cannot be inverted (|det|={abs(det):.3e} < {threshold:.3e})."
         raise ValueError(msg)
     inv_det = 1.0 / det
     return np.array(
@@ -1341,6 +1663,8 @@ class AlbuFusedAffineSegment(nn.Module):
             ``build_matrix``, and category lookup.
         interpolation: Interpolation mode (``"bilinear"``, ``"nearest"``, ``"bicubic"``). Defaults to ``"bilinear"``.
         padding_mode: Padding mode (``"zeros"``, ``"border"``, ``"reflection"``). Defaults to ``"zeros"``.
+        mask_interpolation: Sampling mode for auxiliary masks. ``"nearest"``
+            preserves hard labels; ``"bilinear"`` supports float soft masks.
 
     Example:
         >>> import numpy as np
@@ -1368,6 +1692,7 @@ class AlbuFusedAffineSegment(nn.Module):
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
         execution: ExecutionStr = "cv2",
+        mask_interpolation: MaskInterpolationStr = "nearest",
     ) -> None:
         """Initialize ``AlbuFusedAffineSegment``."""
         super().__init__()
@@ -1376,6 +1701,7 @@ class AlbuFusedAffineSegment(nn.Module):
         self.interpolation = interpolation or "bilinear"
         self.padding_mode = padding_mode or "zeros"
         self.execution: ExecutionStr = _validate_execution(execution)
+        self.mask_interpolation = mask_interpolation
         self._last_matrix: Tensor | None = None
         # Pre-compute cv2 flags once instead of dict-lookups per call.
         self._interp_flag: int = _CV2_INTERP.get(self.interpolation, _CV2_INTERP.get("bilinear", 1))
@@ -1474,6 +1800,7 @@ class AlbuFusedAffineSegment(nn.Module):
         accs, any_active = self._compose_matrices(image)
         composed_batch = self._stack_matrices(accs)
         self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
+        _set_current_call_matrix(composed_batch.to(device=image.device, dtype=image.dtype).detach().clone())
 
         if batch_size == 0 or len(self.transforms) == 0:
             return (image, aux_targets) if _has_aux else image
@@ -1515,10 +1842,15 @@ class AlbuFusedAffineSegment(nn.Module):
                 [mask.shape[0], mask.shape[1], mask.shape[-2], mask.shape[-1]],
                 align_corners=True,
             )
-        self._route_grid_aux(aux_targets, grid, acc_img)
+        self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation)
 
     @staticmethod
-    def _route_grid_aux(aux_targets: dict[str, Tensor], grid: Tensor | None, acc_img: Tensor) -> None:
+    def _route_grid_aux(
+        aux_targets: dict[str, Tensor],
+        grid: Tensor | None,
+        acc_img: Tensor,
+        mask_interpolation: MaskInterpolationStr = "nearest",
+    ) -> None:
         """Route auxiliary targets through the warp grid and composed pixel matrix.
 
         Mask entries use ``grid`` (nearest-neighbour resample); boxes and keypoints
@@ -1529,6 +1861,7 @@ class AlbuFusedAffineSegment(nn.Module):
             aux_targets: Auxiliary targets to transform.
             grid: Sampling grid for the mask, or ``None`` when no mask is present.
             acc_img: ``(B, 3, 3)`` composed forward pixel matrix in the image dtype.
+            mask_interpolation: Mask sampling mode for the ``"mask"`` target.
 
         """
         from fuse_augmentations.targets import (
@@ -1541,7 +1874,7 @@ class AlbuFusedAffineSegment(nn.Module):
         for key in list(aux_targets.keys()):
             val = aux_targets[key]
             if key == "mask" and grid is not None:
-                aux_targets[key] = transform_mask(val, grid)
+                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation)
             elif key == "bbox_xyxy":
                 aux_targets[key] = transform_bbox_xyxy(val, acc_img)
             elif key == "bbox_xywh":
@@ -1733,6 +2066,7 @@ class AlbuFusedAffineSegment(nn.Module):
 
         if len(self.transforms) == 0:
             self._last_matrix = self._identity_1x3x3
+            _set_current_call_matrix(self._identity_1x3x3.detach().clone())
             return img_hwc
 
         # Draw per-transform active masks for bsz=1 (mirrors forward() logic).
@@ -1817,6 +2151,7 @@ class AlbuFusedAffineSegment(nn.Module):
         np.copyto(self._last_matrix_np_buffer, acc, casting="unsafe")
         self._last_matrix_buffer[0].copy_(self._last_matrix_np_tensor)
         self._last_matrix = self._last_matrix_buffer
+        _set_current_call_matrix(torch.from_numpy(np.asarray(acc, dtype=np.float32)).unsqueeze(0).clone())
 
         if not any_active:
             return img_hwc
@@ -1914,12 +2249,13 @@ class ProjectiveSegment(_BaseAffineSegment):
 
         acc, acc_img = self._compose(image)
         self._last_matrix = acc_img.detach().clone()
+        _set_current_call_matrix(acc_img.detach().clone())
 
         image, grid = self._apply_grid(image, acc)
 
         # Transform auxiliary targets using the composed forward matrix
         if aux_targets:
-            self._route_grid_aux(aux_targets, grid, acc_img)
+            self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation)
 
         if not _has_aux:
             return image
@@ -1941,7 +2277,8 @@ class ProjectiveSegment(_BaseAffineSegment):
             A ``(warped_image, grid)`` tuple.
 
         """
-        return _grid_sample_perspective_batched(
+        warp_fn = self._select_warp_fn("perspective", image.device)
+        return warp_fn(
             image,
             acc,
             self.interpolation or "bilinear",
@@ -1969,6 +2306,8 @@ class AlbuProjectiveSegment(nn.Module):
             ``build_matrix``, and category lookup.
         interpolation: Interpolation mode (``"bilinear"``, ``"nearest"``, ``"bicubic"``). Defaults to ``"bilinear"``.
         padding_mode: Padding mode (``"zeros"``, ``"border"``, ``"reflection"``). Defaults to ``"zeros"``.
+        mask_interpolation: Sampling mode for auxiliary masks. ``"nearest"``
+            preserves hard labels; ``"bilinear"`` supports float soft masks.
 
     """
 
@@ -1979,6 +2318,7 @@ class AlbuProjectiveSegment(nn.Module):
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
         execution: ExecutionStr = "cv2",
+        mask_interpolation: MaskInterpolationStr = "nearest",
     ) -> None:
         """Initialize ``AlbuProjectiveSegment``."""
         super().__init__()
@@ -1993,7 +2333,10 @@ class AlbuProjectiveSegment(nn.Module):
         self.adapter = adapter
         self.interpolation = interpolation or "bilinear"
         self.padding_mode = padding_mode or "zeros"
+        self.mask_interpolation = mask_interpolation
         self._last_matrix: Tensor | None = None
+        self._interp_flag: int = _CV2_INTERP.get(self.interpolation, 1)
+        self._border_flag: int = _CV2_BORDER.get(self.padding_mode, 0)
 
     @property
     def last_matrix(self) -> Tensor | None:
@@ -2038,6 +2381,7 @@ class AlbuProjectiveSegment(nn.Module):
         accs, any_active = self._compose_matrices(image)
         composed_batch = self._stack_matrices(accs)
         self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
+        _set_current_call_matrix(composed_batch.to(device=image.device, dtype=image.dtype).detach().clone())
 
         if batch_size == 0 or len(self.transforms) == 0:
             return (image, aux_targets) if _has_aux else image
@@ -2074,7 +2418,7 @@ class AlbuProjectiveSegment(nn.Module):
             mtx_inv = inv3x3(acc_mask)
             mtx_norm = normalize_matrix(mtx_inv, mask.shape[-2], mask.shape[-1]).to(dtype=torch.float32)
             grid = perspective_grid(mtx_norm, mask.shape[-2], mask.shape[-1])
-        AlbuFusedAffineSegment._route_grid_aux(aux_targets, grid, acc_img)
+        AlbuFusedAffineSegment._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation)
 
     def _compose_matrices(self, image: Tensor) -> tuple[list[MatrixArray], list[bool]]:
         """Compose per-sample forward homographies via Albumentations sampling.
@@ -2169,8 +2513,8 @@ class AlbuProjectiveSegment(nn.Module):
         batch_size, _, height, width = image.shape
         device = image.device
         dtype = image.dtype
-        cv2_interp = _CV2_INTERP.get(self.interpolation, _CV2_INTERP.get("bilinear", 1))
-        cv2_border = _CV2_BORDER.get(self.padding_mode, _CV2_BORDER.get("zeros", 0))
+        cv2_interp = self._interp_flag
+        cv2_border = self._border_flag
 
         output_np: list[ImageArray] = []
         for b_idx in range(batch_size):
@@ -2246,13 +2590,29 @@ class FusedColorSegment(nn.Module):
         adapter: TransformAdapter,
         clip_output: bool = True,
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+        clip_policy: ClipPolicyStr = "final",
     ) -> None:
-        """Initialize ``FusedColorSegment``."""
+        """Initialize ``FusedColorSegment``.
+
+        Args:
+            transforms: ``POINTWISE_LINEAR`` transforms to fuse.
+            adapter: Adapter providing ``sample_params`` and ``build_color_matrix``.
+            clip_output: Whether to clamp the final output to ``[0, 1]``.
+            randomness: Batch randomness policy.
+            clip_policy: ``"final"`` (default) fuses the whole chain into one matmul and clamps once;
+                ``"per_op_parity"`` clamps at each op whose intermediate could leave ``[0, 1]``,
+                matching a native per-op clamped chain.
+
+        """
         super().__init__()
         self._transforms = transforms
         self._adapter = adapter
         self.clip_output = clip_output
         self.randomness = randomness
+        if clip_policy not in ("final", "per_op_parity"):
+            msg = "unknown clip policy {!r}; expected 'final' or 'per_op_parity'"
+            raise ValueError(msg.format(clip_policy))
+        self.clip_policy: ClipPolicyStr = clip_policy
         # Register identity matrix as a buffer so device moves (.to(), .cuda())
         # propagate automatically — avoids re-allocating every forward pass.
         self.register_buffer("_eye4", torch.eye(4, dtype=torch.float32))
@@ -2267,6 +2627,9 @@ class FusedColorSegment(nn.Module):
             self.clip_output = True
         if not hasattr(self, "randomness"):
             self.randomness = RandomnessPolicy.BACKEND
+        # clip_policy added later; default "final" preserves the single-matmul behaviour.
+        if not hasattr(self, "clip_policy"):
+            self.clip_policy = "final"
 
     @property
     def transforms(self) -> list[object]:
@@ -2307,10 +2670,16 @@ class FusedColorSegment(nn.Module):
 
         # Cast the registered buffer to the current device/dtype (no-op for float32 CPU)
         eye = self._eye4.to(device=device, dtype=dtype)
-        acc = eye.unsqueeze(0).expand(batch_size, -1, -1).clone()  # (batch_size, 4, 4)
 
         input_shape = (batch_size, channels, height, width)
 
+        # Per-channel mean of the image reaching the current transform, (batch_size, channels).
+        # Mid-chain contrast ops need the luminance of THEIR input, not the raw segment input;
+        # because every fused op is linear (c' = M c + b), the mean transforms exactly as
+        # mean(M c + b) = M mean(c) + b, so we carry mean_ch forward through the same matrices.
+        mean_ch = image.reshape(batch_size, channels, height * width).mean(dim=2)  # (batch_size, channels)
+
+        matrices: list[Tensor] = []
         for tfm in self._transforms:
             prob = _transform_prob(tfm)
             same_on_batch = _shares_randomness_across_batch(self._adapter, tfm, self.randomness)
@@ -2321,8 +2690,16 @@ class FusedColorSegment(nn.Module):
                 active = torch.rand(batch_size, device=device) < prob
 
             params = _sample_transform_params(self._adapter, tfm, input_shape, device, self.randomness)
+            # Contrast-like ops take their midpoint from the per-image luminance of their input;
+            # pass it so the fused matrix reproduces the native mean-relative contrast exactly.
+            # Only thread `mean` when a mean-relative op actually needs it, so adapters whose
+            # build_color_matrix predates the parameter (or custom ones) keep the two-arg call.
+            luma_mean = self._prefix_luma_mean(tfm, mean_ch)
             try:
-                mat = self._adapter.build_color_matrix(tfm, params)  # (batch_size, 4, 4)
+                if luma_mean is None:
+                    mat = self._adapter.build_color_matrix(tfm, params)  # (batch_size, 4, 4)
+                else:
+                    mat = self._adapter.build_color_matrix(tfm, params, mean=luma_mean)  # (batch_size, 4, 4)
             except NotImplementedError:
                 # If a transform that passed the build-time probe raises NotImplementedError
                 # at forward time (e.g. probe used empty params), abort fusion entirely and
@@ -2339,29 +2716,153 @@ class FusedColorSegment(nn.Module):
                 mat = mat.expand(batch_size, -1, -1)
 
             mat = mat.to(device=device, dtype=dtype)
+            mat = torch.where(active[:, None, None], mat, eye.unsqueeze(0).expand(batch_size, -1, -1))
+            matrices.append(mat)
+            mean_ch = self._advance_channel_mean(mean_ch, mat)
 
-            mat = torch.where(
-                active[:, None, None],
-                mat,
-                eye.unsqueeze(0).expand(batch_size, -1, -1),
-            )
-            acc = torch.bmm(mat, acc)
-
-        # Apply fused matrix to image pixels:
-        # image (batch_size, channels, height*width) -> extend with ones
-        #  -> (batch_size, 4, height*width) -> matmul -> take first 3 rows
-        pixels = image.reshape(batch_size, channels, height * width)  # (batch_size, channels, height*width)
-        ones = torch.ones(batch_size, 1, height * width, device=device, dtype=dtype)
-        pixels_hom = torch.cat([pixels, ones], dim=1)  # (batch_size, 4, height*width)
-
-        transformed = torch.bmm(acc, pixels_hom)  # (batch_size, 4, height*width)
-        image_out = transformed[:, :channels, :].reshape(batch_size, channels, height, width)
+        image_out = self._apply_color_matrices(image, matrices, eye)
 
         if self.clip_output:
             image_out = image_out.clamp(0.0, 1.0)
         if aux_targets is None:
             return image_out
         return image_out, aux_targets
+
+    def _apply_color_matrices(self, image: Tensor, matrices: list[Tensor], eye: Tensor) -> Tensor:
+        """Apply the per-op color matrices, splitting for clamp parity when requested.
+
+        Under ``clip_policy="final"`` the matrices compose into ONE ``(B, 4, 4)`` matmul and the whole
+        chain is applied in a single pass (the more precise, bit-compatible default). Under
+        ``"per_op_parity"`` the chain is split at every op whose intermediate provably escapes
+        ``[0, 1]``: the fused sub-chain before it is applied and clamped, matching a native per-op
+        clamped chain, while safe adjacent ops stay fused.
+
+        Args:
+            image: ``(B, 3, H, W)`` input image.
+            matrices: Per-op probability-masked ``(B, 4, 4)`` color matrices, in application order.
+            eye: A ``(4, 4)`` identity in the image device/dtype.
+
+        Returns:
+            The transformed ``(B, 3, H, W)`` image (final clamp applied by the caller).
+
+        """
+        batch_size = image.shape[0]
+        if not matrices:
+            return image
+        has_normalize = any(self._is_normalize(transform) for transform in self._transforms)
+        if self.clip_policy == "final" and not has_normalize:
+            acc = eye.unsqueeze(0).expand(batch_size, -1, -1).clone()
+            for mat in matrices:
+                acc = torch.bmm(mat, acc)
+            return self._matmul_image(image, acc)
+
+        # Apply one fused sub-chain at a time. A Normalize boundary first clamps an escaping
+        # prefix because native color ops clamp before Normalize, while Normalize itself does not.
+        out = image
+        sub = eye.unsqueeze(0).expand(batch_size, -1, -1).clone()
+        sub_started = False
+        for transform, mat in zip(self._transforms, matrices, strict=True):
+            if self._is_normalize(transform) and sub_started and self._range_escapes_gamut(sub):
+                out = self._matmul_image(out, sub).clamp(0.0, 1.0)
+                sub = eye.unsqueeze(0).expand(batch_size, -1, -1).clone()
+                sub_started = False
+
+            candidate = torch.bmm(mat, sub) if sub_started else mat
+            if (
+                self.clip_policy == "per_op_parity"
+                and not self._is_normalize(transform)
+                and self._range_escapes_gamut(candidate)
+            ):
+                out = self._matmul_image(out, candidate).clamp(0.0, 1.0)
+                sub = eye.unsqueeze(0).expand(batch_size, -1, -1).clone()
+                sub_started = False
+                continue
+            sub = candidate
+            sub_started = True
+        return self._matmul_image(out, sub)
+
+    def _is_normalize(self, transform: object) -> bool:
+        """Return whether the adapter identifies *transform* as Normalize."""
+        checker = getattr(self._adapter, "is_normalize", None)
+        return bool(checker(transform)) if callable(checker) else type(transform).__name__ == "Normalize"
+
+    @staticmethod
+    def _matmul_image(image: Tensor, acc: Tensor) -> Tensor:
+        """Apply a ``(B, 4, 4)`` homogeneous color matrix to a ``(B, 3, H, W)`` image."""
+        batch_size, channels, height, width = image.shape
+        pixels = image.reshape(batch_size, channels, height * width)
+        ones = torch.ones(batch_size, 1, height * width, device=image.device, dtype=image.dtype)
+        pixels_hom = torch.cat([pixels, ones], dim=1)  # (B, 4, H*W)
+        transformed = torch.bmm(acc, pixels_hom)  # (B, 4, H*W)
+        return transformed[:, :channels, :].reshape(batch_size, channels, height, width)
+
+    @staticmethod
+    def _range_escapes_gamut(acc: Tensor) -> bool:
+        """Return whether a composed color matrix can map a ``[0, 1]`` pixel outside ``[0, 1]``.
+
+        For a per-channel affine ``c' = A c + b`` the reachable output range over inputs in
+        ``[0, 1]^3`` is bounded by summing the positive parts (max) and negative parts (min) of each
+        row plus the bias. If any channel's bound crosses the gamut for any sample, the fused chain
+        must be clamped here to match a native per-op chain.
+
+        Args:
+            acc: ``(B, 4, 4)`` composed homogeneous color matrix.
+
+        Returns:
+            ``True`` if any sample/channel can leave ``[0, 1]``.
+
+        """
+        lin = acc[:, :3, :3]  # (B, 3, 3)
+        bias = acc[:, :3, 3]  # (B, 3)
+        hi = lin.clamp(min=0.0).sum(dim=2) + bias  # inputs at 1 for positive weights, 0 for negative
+        lo = lin.clamp(max=0.0).sum(dim=2) + bias  # inputs at 1 for negative weights, 0 for positive
+        eps = 1e-6
+        return bool((hi > 1.0 + eps).any().item() or (lo < -eps).any().item())
+
+    def _prefix_luma_mean(self, transform: object, mean_ch: Tensor) -> Tensor | None:
+        """Weighted luminance of the transform's input, or ``None`` when it needs no mean.
+
+        Only contrast-like ops with a mean-relative midpoint (``ColorJitter`` contrast) report
+        luminance weights via :meth:`TransformAdapter.color_luma_weights`. For those, the per-image
+        luminance is the same weighted sum of channel means the native op computes.
+
+        Args:
+            transform: The color transform about to be applied.
+            mean_ch: Per-channel mean of the image reaching this transform, ``(batch_size, channels)``.
+
+        Returns:
+            A ``(batch_size,)`` luminance tensor for mean-relative ops, or ``None`` otherwise.
+
+        """
+        # color_luma_weights is an optional adapter capability (Protocol default returns None).
+        # Adapters predating it — or lightweight custom ones — simply have no mean-relative op.
+        get_weights = getattr(self._adapter, "color_luma_weights", None)
+        weights = get_weights(transform) if callable(get_weights) else None
+        if weights is None:
+            return None
+        w = torch.tensor(weights, device=mean_ch.device, dtype=mean_ch.dtype)  # (3,)
+        return (mean_ch * w).sum(dim=1)  # (batch_size,)
+
+    @staticmethod
+    def _advance_channel_mean(mean_ch: Tensor, mat: Tensor) -> Tensor:
+        """Apply a color matrix to the running per-channel mean.
+
+        Because every fused color op is affine (``c' = M c + b``), the mean of the output channels is
+        ``M mean(c) + b``. Carrying the mean this way lets a later contrast op read the luminance of the
+        image it would actually see, matching a native per-op chain.
+
+        Args:
+            mean_ch: Per-channel mean before the op, ``(batch_size, channels)``.
+            mat: The op's ``(batch_size, 4, 4)`` homogeneous color matrix (already probability-masked).
+
+        Returns:
+            Per-channel mean after the op, ``(batch_size, channels)``.
+
+        """
+        channels = mean_ch.shape[1]
+        mean_hom = torch.cat([mean_ch, torch.ones_like(mean_ch[:, :1])], dim=1)  # (batch_size, 4)
+        advanced = torch.bmm(mat, mean_hom.unsqueeze(2)).squeeze(2)  # (batch_size, 4)
+        return advanced[:, :channels]
 
 
 def _try_build_color_matrix(adapter: TransformAdapter, transform: object) -> bool:
@@ -2395,12 +2896,20 @@ def _flush_color(
     adapter: TransformAdapter,
     segments: list[object],
     randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+    clip_policy: ClipPolicyStr = "final",
 ) -> None:
     """Flush a run of ``POINTWISE_LINEAR`` transforms into segments.
 
     If the adapter supports ``build_color_matrix`` for **every** transform in the run, they are folded into a single
     :class:`FusedColorSegment`. Otherwise the transforms fall back to passthrough (appended as-is). This helper
     intentionally mutates ``transforms`` in-place (clears it).
+
+    Args:
+        transforms: The pending run of ``POINTWISE_LINEAR`` transforms (cleared in place).
+        adapter: Adapter used to probe and build color matrices.
+        segments: Output segment list, appended in place.
+        randomness: Batch randomness policy passed to the color segment.
+        clip_policy: Clamp policy forwarded to :class:`FusedColorSegment`.
 
     """
     if not transforms:
@@ -2412,9 +2921,25 @@ def _flush_color(
             # Intentionally clears the caller-owned run buffer.
             transforms.clear()
             return
-    segments.append(FusedColorSegment(list(transforms), adapter, randomness=randomness))
+    color_transforms = list(transforms)
+    clip_output = not any(_is_normalize_transform(adapter, tfm) for tfm in color_transforms)
+    segments.append(
+        FusedColorSegment(
+            color_transforms,
+            adapter,
+            clip_output=clip_output,
+            randomness=randomness,
+            clip_policy=clip_policy,
+        )
+    )
     # Intentionally clears the caller-owned run buffer.
     transforms.clear()
+
+
+def _is_normalize_transform(adapter: TransformAdapter, transform: object) -> bool:
+    """Return whether an adapter marks a transform as pointwise Normalize."""
+    checker = getattr(adapter, "is_normalize", None)
+    return bool(checker(transform)) if callable(checker) else type(transform).__name__ == "Normalize"
 
 
 class CropResizeSegment(nn.Module):
@@ -2446,6 +2971,8 @@ class CropResizeSegment(nn.Module):
             Defaults to ``"bilinear"`` when ``None``.
         padding_mode: Padding mode (``"zeros"``, ``"border"``, ``"reflection"``).
             Defaults to ``"zeros"`` when ``None``.
+        mask_interpolation: Sampling mode for auxiliary masks. ``"nearest"``
+            preserves hard labels; ``"bilinear"`` supports float soft masks.
 
     """
 
@@ -2456,6 +2983,9 @@ class CropResizeSegment(nn.Module):
         interpolation: InterpolationStr | None = None,
         padding_mode: PaddingModeStr | None = None,
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+        *,
+        antialias: bool = False,
+        mask_interpolation: MaskInterpolationStr = "nearest",
     ) -> None:
         """Initialize ``CropResizeSegment``."""
         super().__init__()
@@ -2465,6 +2995,11 @@ class CropResizeSegment(nn.Module):
         self.interpolation = interpolation
         self.padding_mode = padding_mode
         self.randomness = randomness
+        # Opt-in antialiasing: prefilter/interpolate only when a downscale is
+        # aggressive enough to alias (see _ANTIALIAS_SCALE_THRESHOLD). Off by
+        # default → output bit-identical to the plain single grid_sample warp.
+        self._antialias: bool = antialias
+        self.mask_interpolation = mask_interpolation
 
     def forward(
         self,
@@ -2513,6 +3048,11 @@ class CropResizeSegment(nn.Module):
             mtx = mtx.expand(batch_size, -1, -1)
         mtx = mtx.to(device=device, dtype=dtype)
 
+        # Opt-in antialiasing: band-limit the input before the downscaling warp so
+        # one grid_sample no longer aliases. No-op unless enabled AND the crop
+        # downscales past the threshold, so the default output is unchanged.
+        image = _maybe_antialias_prefilter(image, mtx, self._antialias)
+
         mtx_inv = inv3x3(mtx)
         mtx_norm = normalize_matrix_io(mtx_inv, height, width, target_h, target_w)
 
@@ -2540,7 +3080,7 @@ class CropResizeSegment(nn.Module):
             for key in list(aux_targets.keys()):
                 val = aux_targets[key]
                 if key == "mask":
-                    aux_targets[key] = transform_mask(val, grid)
+                    aux_targets[key] = transform_mask(val, grid, mode=self.mask_interpolation)
                     continue
                 if key == "bbox_xyxy":
                     aux_targets[key] = transform_bbox_xyxy(val, mtx)
@@ -2687,6 +3227,10 @@ def build_segments(
     use_numpy: bool = False,
     route_coords_via_grid: bool = False,
     execution: ExecutionStr = "cv2",
+    compile_warp: bool = False,
+    antialias: bool = False,
+    clip_policy: ClipPolicyStr = "final",
+    mask_interpolation: MaskInterpolationStr = "nearest",
 ) -> list[object]:
     """Split a transform list into fused segments and passthrough transforms.
 
@@ -2731,6 +3275,18 @@ def build_segments(
             (``use_numpy=True`` path). ``"cv2"`` (default) warps each sample with
             OpenCV; ``"torch"`` opts into one batched ``grid_sample`` for the whole
             batch. Ignored for the PyTorch backends.
+        compile_warp: When ``True`` (and torch is new enough), the torch warp core
+            (matrix normalize -> ``affine_grid`` -> ``grid_sample``) of each fused
+            geometric/projective/crop segment runs under ``torch.compile``. Off by
+            default and a no-op on CPU or older torch — the eager output is unchanged.
+        antialias: When ``True``, crop-resize segments prefilter the input before an
+            aggressive downscale so the single warp does not alias. Off by default and
+            a no-op unless the scale drops past the threshold — the output is unchanged.
+        clip_policy: Clamp policy forwarded to each :class:`FusedColorSegment`.
+            ``"final"`` (default) fuses the color chain into one matmul and clamps once;
+            ``"per_op_parity"`` clamps at each op that could leave ``[0, 1]``.
+        mask_interpolation: Sampling mode for routed masks. ``"nearest"`` preserves
+            the historical hard-label behavior; ``"bilinear"`` supports float soft masks.
 
     Returns:
         Flat list where each element is a :class:`FusedAffineSegment`
@@ -2772,6 +3328,7 @@ def build_segments(
                         interpolation=interpolation,
                         padding_mode=padding_mode,
                         execution=execution,
+                        mask_interpolation=mask_interpolation,
                     )
                 )
             else:
@@ -2793,6 +3350,8 @@ def build_segments(
                     interpolation=interpolation,
                     padding_mode=padding_mode,
                     randomness=randomness,
+                    compile_warp=compile_warp,
+                    mask_interpolation=mask_interpolation,
                 )
             )
             current_geo.clear()
@@ -2812,6 +3371,7 @@ def build_segments(
                     interpolation=interpolation,
                     padding_mode=padding_mode,
                     execution=execution,
+                    mask_interpolation=mask_interpolation,
                 )
             )
         else:
@@ -2822,6 +3382,8 @@ def build_segments(
                     interpolation=interpolation,
                     padding_mode=padding_mode,
                     randomness=randomness,
+                    compile_warp=compile_warp,
+                    mask_interpolation=mask_interpolation,
                 )
             )
         current_proj.clear()
@@ -2830,12 +3392,12 @@ def build_segments(
         category = adapter.category(transform)
         if category in fusible:
             _flush_proj()  # flush any pending projective
-            _flush_color(current_color, adapter, segments, randomness)  # mutates current_color in-place
+            _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
             current_geo.append(transform)
             continue
         if category == projective_cat:
             _flush_geo()  # flush any pending affine
-            _flush_color(current_color, adapter, segments, randomness)  # mutates current_color in-place
+            _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
             current_proj.append(transform)
             continue
         if category == pointwise_linear_cat:
@@ -2851,7 +3413,7 @@ def build_segments(
             # and color runs still flush (crop only fuses with affine geo runs).
             # The numpy/albumentations path emits the transform as a passthrough.
             _flush_proj()
-            _flush_color(current_color, adapter, segments, randomness)  # mutates current_color in-place
+            _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
             if use_numpy:
                 _flush_geo()
                 segments.append(transform)
@@ -2865,6 +3427,9 @@ def build_segments(
                         interpolation=interpolation,
                         padding_mode=padding_mode,
                         randomness=randomness,
+                        compile_warp=compile_warp,
+                        antialias=antialias,
+                        mask_interpolation=mask_interpolation,
                     )
                 )
                 current_geo.clear()
@@ -2876,18 +3441,20 @@ def build_segments(
                         interpolation=interpolation,
                         padding_mode=padding_mode,
                         randomness=randomness,
+                        antialias=antialias,
+                        mask_interpolation=mask_interpolation,
                     )
                 )
             continue
         # SPATIAL_KERNEL / POINTWISE barrier: flush all
         _flush_geo()
         _flush_proj()
-        _flush_color(current_color, adapter, segments, randomness)  # mutates current_color in-place
+        _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
         segments.append(transform)
 
     _flush_geo()
     _flush_proj()
-    _flush_color(current_color, adapter, segments, randomness)  # mutates current_color in-place
+    _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
     return segments
 
 

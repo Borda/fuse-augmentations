@@ -15,7 +15,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Multi-target `data_keys` with Albumentations fused segments: masks, bounding boxes, and keypoints are routed through the composed pixel matrix (previously a construction-time `ValueError`).
 - Albumentations-style keyword calls on multi-target pipelines (`pipe(image=..., mask=..., bboxes=...)`) return a dict keyed by the caller's keyword names; the positional tuple API is unchanged. Colliding keyword aliases raise `ValueError`.
 - `output_backend="numpy"` now converts each convertible target of a multi-target output (image, mask); coordinate targets remain tensors.
-- A `UserWarning` is emitted when a passthrough (non-fusible) transform runs in a multi-target forward, since auxiliary targets skip passthrough segments and geometric passthrough ops (e.g. elastic/grid distortion) would silently misalign them.
+- `Normalize` (Kornia, TorchVision v2, standard Albumentations) now fuses into the color matrix as a per-channel affine, deleting one full-tensor pass from pipelines that end in normalization; the final gamut clamp is suppressed for the normalized output (image-statistics Normalize modes remain passthrough).
+- `clip_policy="final" | "per_op_parity"` on `Compose`: `"final"` (default, unchanged) clamps once after the fused color matmul; `"per_op_parity"` splits the fused color run wherever an intermediate would leave `[0, 1]`, matching a native per-op clamped chain.
+- Opt-in `compile=True` on `Compose`: wraps the warp core (matrix normalize → `affine_grid` → `grid_sample`) in `torch.compile` on torch ≥ 2.2 (no-op otherwise and on CPU; default off, outputs unchanged).
+- Opt-in `antialias=True` on `Compose`: crop-resize segments prefilter aggressive downscales (worst-axis scale < 0.5) before the single warp, removing aliasing; default off, outputs bit-identical.
+- Opt-in `substitute_passthrough=True` on `Compose`: replaces registered non-fusible ops with an installed backend's torch-native equivalent (initially Albumentations `GaussianBlur` → Kornia `RandomGaussianBlur`) so GPU pipelines stay on-device; behaviour-changing and warns per substitution.
+- Passthrough segments now cross the CPU boundary once per batch (one device-to-host and one host-to-device transfer per segment instead of per sample), with identical numerics.
+- `fusion_plan` marks passthrough entries with `[CPU passthrough]` on non-CPU pipelines, and `fusion_plan_descriptors` carries machine-readable `split_reason` / `barrier` / `refused` fields.
+- Opt-in `mask_interpolation="bilinear"` on `Compose` and `from_params`: differentiable soft-mask sampling for auxiliary masks (float masks required; labels mix at boundaries). Default `"nearest"` is unchanged and bit-identical.
+- Memory benchmark (`experiments/bench_memory.py`): peak memory + allocation counts, fused vs native, per pipeline and batch size.
+- `backend="native"` is now a first-class option for `from_config` (and `from_params` gains a `native` flag): the zero-dependency, fully batched pure-torch engine, including native `brightness`/`contrast` builders. Opt-in — backend auto-detection remains the default.
+- `return_matrix=True` per-call flag: returns `(output, matrix)` without reading shared instance state, making matrix retrieval thread-safe; the `transform_matrix` property remains for compatibility.
+- One `finfo(dtype).eps`-scaled near-singular threshold shared by all three matrix-inversion paths (torch, compile-friendly, numpy); `fusion_plan` / `fusion_plan_descriptors` results are cached (device-aware, pickle-safe).
 
 ### Fixed
 
@@ -32,6 +43,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **Fused contrast midpoint is now the per-image mean luminance** (matching native TorchVision/Kornia `ColorJitter` semantics) instead of a fixed `0.5`. Fused pipelines containing contrast produce different (more native-faithful) values than previous releases; pin the previous behavior only by comparing against your own stored baselines. Parity holds under `reorder=NONE`; with pointwise reordering the mean is taken over the warped image and diverges from native by construction.
+- Coordinate-changing passthrough ops (elastic/grid/optical distortion and similar) now **raise `ValueError`** when they execute in a multi-target pipeline (previously a `UserWarning`): auxiliary targets skip passthrough segments, so continuing would silently misalign masks/boxes/keypoints. Kernel/pointwise passthrough (blur, noise) with auxiliary targets no longer warns — skipping them is the correct semantics.
 - `same_on_batch=True` on Albumentations-backed fused segments now shares the sampled parameters across the batch, not just the activation decision.
 - Documented color-fusion accuracy caveats (final-only clamping; fixed 0.5 contrast midpoint) and the seeding contract limits between warp backends.
 

@@ -43,6 +43,7 @@ _CONSTRUCTOR_KWARGS: dict[str, dict] = {
     "RandomTranslate": {"translate": (0.3, 0.3), "p": 1.0},
     "RandomRotation90": {"times": (0, 3), "p": 1.0},
     "RandomResizedCrop": {"size": (32, 32), "p": 1.0},
+    "Normalize": {"mean": (0.5, 0.4, 0.3), "std": (0.2, 0.3, 0.4), "p": 1.0},
 }
 
 BATCH_SIZE, CHANNELS, HEIGHT, WIDTH = 2, 3, 32, 32

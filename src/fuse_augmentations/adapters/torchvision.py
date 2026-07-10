@@ -52,11 +52,13 @@ _ROTATION_TYPES: set[type] = set()
 _AFFINE_TYPES: set[type] = set()
 _PERSPECTIVE_TYPES: set[type] = set()
 _COLOR_JITTER_TYPES: set[type] = set()
+_NORMALIZE_TYPES: set[type] = set()
 _CROP_RESIZE_TYPES: set[type] = set()
 
 # v1: torchvision.transforms
 try:
     from torchvision.transforms import ColorJitter as _V1ColorJitter
+    from torchvision.transforms import Normalize as _V1Normalize
     from torchvision.transforms import RandomAffine as _V1RandomAffine
     from torchvision.transforms import RandomHorizontalFlip as _V1RandomHorizontalFlip
     from torchvision.transforms import RandomPerspective as _V1RandomPerspective
@@ -70,6 +72,7 @@ try:
     _TRANSFORM_REGISTRY[_V1RandomVerticalFlip] = TransformCategory.GEOMETRIC_EXACT
     _TRANSFORM_REGISTRY[_V1RandomPerspective] = TransformCategory.PROJECTIVE
     _TRANSFORM_REGISTRY[_V1ColorJitter] = TransformCategory.POINTWISE_LINEAR
+    _TRANSFORM_REGISTRY[_V1Normalize] = TransformCategory.POINTWISE_LINEAR
     _TRANSFORM_REGISTRY[_V1RandomResizedCrop] = TransformCategory.CROP_RESIZE_FIXED
 
     _HFLIP_TYPES.add(_V1RandomHorizontalFlip)
@@ -78,6 +81,7 @@ try:
     _AFFINE_TYPES.add(_V1RandomAffine)
     _PERSPECTIVE_TYPES.add(_V1RandomPerspective)
     _COLOR_JITTER_TYPES.add(_V1ColorJitter)
+    _NORMALIZE_TYPES.add(_V1Normalize)
     _CROP_RESIZE_TYPES.add(_V1RandomResizedCrop)
 except ImportError:
     pass
@@ -85,6 +89,7 @@ except ImportError:
 # v2: torchvision.transforms.v2
 try:
     from torchvision.transforms.v2 import ColorJitter as _V2ColorJitter
+    from torchvision.transforms.v2 import Normalize as _V2Normalize
     from torchvision.transforms.v2 import RandomAffine as _V2RandomAffine
     from torchvision.transforms.v2 import RandomHorizontalFlip as _V2RandomHorizontalFlip
     from torchvision.transforms.v2 import RandomPerspective as _V2RandomPerspective
@@ -98,6 +103,7 @@ try:
     _TRANSFORM_REGISTRY[_V2RandomVerticalFlip] = TransformCategory.GEOMETRIC_EXACT
     _TRANSFORM_REGISTRY[_V2RandomPerspective] = TransformCategory.PROJECTIVE
     _TRANSFORM_REGISTRY[_V2ColorJitter] = TransformCategory.POINTWISE_LINEAR
+    _TRANSFORM_REGISTRY[_V2Normalize] = TransformCategory.POINTWISE_LINEAR
     _TRANSFORM_REGISTRY[_V2RandomResizedCrop] = TransformCategory.CROP_RESIZE_FIXED
 
     _HFLIP_TYPES.add(_V2RandomHorizontalFlip)
@@ -106,6 +112,7 @@ try:
     _AFFINE_TYPES.add(_V2RandomAffine)
     _PERSPECTIVE_TYPES.add(_V2RandomPerspective)
     _COLOR_JITTER_TYPES.add(_V2ColorJitter)
+    _NORMALIZE_TYPES.add(_V2Normalize)
     _CROP_RESIZE_TYPES.add(_V2RandomResizedCrop)
 except ImportError:
     pass
@@ -117,6 +124,7 @@ _ROTATION_TYPES_FS: frozenset[type] = frozenset(_ROTATION_TYPES)
 _AFFINE_TYPES_FS: frozenset[type] = frozenset(_AFFINE_TYPES)
 _PERSPECTIVE_TYPES_FS: frozenset[type] = frozenset(_PERSPECTIVE_TYPES)
 _COLOR_JITTER_TYPES_FS: frozenset[type] = frozenset(_COLOR_JITTER_TYPES)
+_NORMALIZE_TYPES_FS: frozenset[type] = frozenset(_NORMALIZE_TYPES)
 _CROP_RESIZE_TYPES_FS: frozenset[type] = frozenset(_CROP_RESIZE_TYPES)
 
 
@@ -302,6 +310,9 @@ class TorchVisionAdapter:
                 shared_across_batch=is_torchvision_v2_transform(transform) and not force_per_sample,
             )
 
+        if isinstance(transform, tuple(_NORMALIZE_TYPES_FS)):
+            return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
+
         # RandomResizedCrop
         if isinstance(transform, tuple(_CROP_RESIZE_TYPES_FS)):
             return _sample_crop_resize_params(
@@ -424,9 +435,33 @@ class TorchVisionAdapter:
         return is_torchvision_v2_transform(transform) or bool(getattr(transform, "same_on_batch", False))
 
     @staticmethod
+    def color_luma_weights(transform: object) -> tuple[float, float, float] | None:
+        """Return TorchVision's RGB luminance weights for mean-relative contrast (``ColorJitter``).
+
+        TorchVision ``adjust_contrast`` computes its midpoint as ``rgb_to_grayscale(image).mean()``
+        with weights ``(0.2989, 0.587, 0.114)``. Only ``ColorJitter`` (contrast branch) uses it.
+
+        Args:
+            transform: A TorchVision color transform instance.
+
+        Returns:
+            ``(0.2989, 0.587, 0.114)`` for ``ColorJitter``; ``None`` otherwise.
+
+        """
+        if isinstance(transform, tuple(_COLOR_JITTER_TYPES_FS)):
+            return (0.2989, 0.587, 0.114)
+        return None
+
+    @staticmethod
+    def is_normalize(transform: object) -> bool:
+        """Return whether *transform* is a TorchVision Normalize transform."""
+        return isinstance(transform, tuple(_NORMALIZE_TYPES_FS))
+
+    @staticmethod
     def build_color_matrix(
         transform: object,
         params: dict[str, torch.Tensor],
+        mean: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Build a ``(B, 4, 4)`` homogeneous color-space affine matrix.
 
@@ -436,12 +471,16 @@ class TorchVisionAdapter:
         Supported transforms:
 
         - ``ColorJitter``: composes brightness (multiplicative ``bf * c``)
-          and contrast (midpoint-0.5 approximation ``cf * c + (1-cf)*0.5``)
-          in the sampled ``order``. Saturation and hue are treated as identity.
+          and contrast (mean-relative ``cf * c + (1-cf)*mid``) in the sampled
+          ``order``, where ``mid`` is the per-image luminance from ``mean``
+          (matching native) or ``0.5`` when ``mean`` is ``None``. Saturation
+          and hue are treated as identity.
 
         Args:
             transform: A TorchVision color transform instance.
             params: Parameter dict from ``sample_params()``.
+            mean: Optional per-image luminance of the transform's input, shape ``(B,)``. ``None`` uses
+                the fixed ``0.5`` midpoint.
 
         Returns:
             ``(B, 4, 4)`` homogeneous color-space affine matrix.
@@ -464,7 +503,10 @@ class TorchVisionAdapter:
                     "use brightness/contrast only for FusedColorSegment support."
                 )
                 raise NotImplementedError(msg)
-            return _build_color_jitter_matrix(params)
+            return _build_color_jitter_matrix(params, mean)
+
+        if isinstance(transform, tuple(_NORMALIZE_TYPES_FS)):
+            return _build_normalize_matrix(transform, params)
 
         msg = f"build_color_matrix not supported for {type(transform).__name__!r}"
         raise NotImplementedError(msg)
@@ -524,6 +566,30 @@ class TorchVisionAdapter:
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def _build_normalize_matrix(transform: object, params: dict[str, torch.Tensor]) -> torch.Tensor:
+    """Build TorchVision Normalize's channel-wise affine color matrix."""
+    batch_size = int(params["_batch_size"].item())
+    normalize = cast(Any, transform)
+    mean = torch.as_tensor(normalize.mean, dtype=torch.float32).flatten()
+    std = torch.as_tensor(normalize.std, dtype=torch.float32).flatten()
+    if mean.numel() == 1:
+        mean = mean.expand(3)
+    if std.numel() == 1:
+        std = std.expand(3)
+    if mean.numel() != 3 or std.numel() != 3:
+        raise NotImplementedError("TorchVision Normalize fusion requires three RGB mean/std values")
+    device = params["_batch_size"].device
+    dtype = mean.dtype
+    mat = torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1).clone()
+    alpha = std.to(device=device).reciprocal()
+    beta = -mean.to(device=device) * alpha
+    mat[:, 0, 0] = alpha[0]
+    mat[:, 1, 1] = alpha[1]
+    mat[:, 2, 2] = alpha[2]
+    mat[:, :3, 3] = beta
+    return mat
 
 
 def _sample_affine_params(
@@ -786,80 +852,105 @@ def _make_eye4(batch_size: int, device: torch.device, dtype: torch.dtype) -> tor
     return torch.eye(4, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1).clone()
 
 
-def _build_color_jitter_matrix(params: dict[str, torch.Tensor]) -> torch.Tensor:
+def _color_jitter_matrix_for_order(
+    order_ids: list[int],
+    brightness: torch.Tensor,
+    contrast: torch.Tensor,
+    luma: torch.Tensor | None,
+) -> torch.Tensor:
+    """Compose one ColorJitter matrix batch for a single op ``order``.
+
+    Brightness is multiplicative (``bf * c``); contrast is mean-relative
+    (``cf * c + (1-cf)*mid``). ``mid`` is the running per-image luminance the contrast step sees:
+    brightness applied earlier in ``order`` scales it, mirroring a native per-op chain. ``luma`` of
+    ``None`` uses the fixed ``0.5`` midpoint.
+
+    Args:
+        order_ids: Sub-op indices to apply in order (0=brightness, 1=contrast, 2/3=identity).
+        brightness: ``(n,)`` brightness factors.
+        contrast: ``(n,)`` contrast factors.
+        luma: ``(n,)`` running input luminance, or ``None`` for the fixed midpoint.
+
+    Returns:
+        ``(n, 4, 4)`` homogeneous color matrix.
+
+    """
+    n = brightness.shape[0]
+    device, dtype = brightness.device, brightness.dtype
+    mtx_acc = _make_eye4(n, device, dtype)
+    for op_index in order_ids:
+        if op_index == 0:
+            mtx_step = _make_eye4(n, device, dtype)
+            mtx_step[:, 0, 0] = brightness
+            mtx_step[:, 1, 1] = brightness
+            mtx_step[:, 2, 2] = brightness
+            if luma is not None:
+                luma = luma * brightness
+        elif op_index == 1:
+            mtx_step = _make_eye4(n, device, dtype)
+            mtx_step[:, 0, 0] = contrast
+            mtx_step[:, 1, 1] = contrast
+            mtx_step[:, 2, 2] = contrast
+            mid = luma if luma is not None else _MIDPOINT
+            bias = (1.0 - contrast) * mid
+            mtx_step[:, 0, 3] = bias
+            mtx_step[:, 1, 3] = bias
+            mtx_step[:, 2, 3] = bias
+            if luma is not None:
+                luma = contrast * luma + bias
+        else:
+            # Saturation (2) and hue (3) treated as identity
+            continue
+        mtx_acc = torch.bmm(mtx_step, mtx_acc)
+    return mtx_acc
+
+
+def _build_color_jitter_matrix(params: dict[str, torch.Tensor], mean: torch.Tensor | None = None) -> torch.Tensor:
     """Build ``(batch_size, 4, 4)`` homogeneous matrix for TorchVision ColorJitter.
 
-    Composes brightness (multiplicative: ``brightness_factors * c``) and contrast (midpoint-0.5
-    approximation: ``contrast_factors * c + (1-contrast_factors)*0.5``) in the sampled ``order``.
+    Composes brightness (multiplicative: ``brightness_factors * c``) and contrast (mean-relative:
+    ``contrast_factors * c + (1-contrast_factors)*mid``) in the sampled ``order``. ``mid`` is the
+    per-image luminance from ``mean`` (matching native) or ``0.5`` when ``mean`` is ``None``.
     Saturation and hue steps are treated as identity.
 
     Args:
         params: Parameter dict containing ``brightness_factor``, ``contrast_factor``,
             and ``order`` tensors.
+        mean: Optional per-image input luminance, shape ``(batch_size,)``. ``None`` uses ``0.5``.
 
     Returns:
         ``(batch_size, 4, 4)`` homogeneous color-space affine matrix.
 
     """
-    brightness_factors = params["brightness_factor"]  # (batch_size,)
-    contrast_factors = params["contrast_factor"]  # (batch_size,)
+    brightness_factors = params["brightness_factor"]  # (batch_size,) or (1,) when shared
+    contrast_factors = params["contrast_factor"]  # (batch_size,) or (1,) when shared
     order = params["order"]  # (num_ops,) shared or (batch_size, num_ops) per-sample
     batch_size = brightness_factors.shape[0]
     device = brightness_factors.device
     dtype = brightness_factors.dtype
 
-    mtx_acc = _make_eye4(batch_size, device, dtype)
-
     if order.dim() == 1:
-        # Shared order across the batch — original fast path.
-        for op_index in order.tolist():
-            operation_id = int(op_index)
-            if operation_id == 0:
-                # Brightness: multiplicative c' = brightness_factors * c
-                mtx_step = _make_eye4(batch_size, device, dtype)
-                mtx_step[:, 0, 0] = brightness_factors
-                mtx_step[:, 1, 1] = brightness_factors
-                mtx_step[:, 2, 2] = brightness_factors
-            elif operation_id == 1:
-                # Contrast: midpoint approximation c' = contrast_factors * c + (1-contrast_factors)*0.5
-                mtx_step = _make_eye4(batch_size, device, dtype)
-                mtx_step[:, 0, 0] = contrast_factors
-                mtx_step[:, 1, 1] = contrast_factors
-                mtx_step[:, 2, 2] = contrast_factors
-                bias = (1.0 - contrast_factors) * _MIDPOINT
-                mtx_step[:, 0, 3] = bias
-                mtx_step[:, 1, 3] = bias
-                mtx_step[:, 2, 3] = bias
-            else:
-                # Saturation (operation_id=2) and hue (operation_id=3) treated as identity
-                continue
-            # Compose: mtx_acc = mtx_step @ mtx_acc
-            mtx_acc = torch.bmm(mtx_step, mtx_acc)
-    else:
-        # Per-sample order (batch_size, num_ops) — v1 ColorJitter samples order per image.
-        for b_idx in range(batch_size):
-            mtx_b = _make_eye4(1, device, dtype)
-            for op_index in order[b_idx].tolist():
-                operation_id = int(op_index)
-                if operation_id == 0:
-                    mtx_step_b = _make_eye4(1, device, dtype)
-                    mtx_step_b[:, 0, 0] = brightness_factors[b_idx]
-                    mtx_step_b[:, 1, 1] = brightness_factors[b_idx]
-                    mtx_step_b[:, 2, 2] = brightness_factors[b_idx]
-                elif operation_id == 1:
-                    mtx_step_b = _make_eye4(1, device, dtype)
-                    mtx_step_b[:, 0, 0] = contrast_factors[b_idx]
-                    mtx_step_b[:, 1, 1] = contrast_factors[b_idx]
-                    mtx_step_b[:, 2, 2] = contrast_factors[b_idx]
-                    bias_b = (1.0 - contrast_factors[b_idx]) * _MIDPOINT
-                    mtx_step_b[:, 0, 3] = bias_b
-                    mtx_step_b[:, 1, 3] = bias_b
-                    mtx_step_b[:, 2, 3] = bias_b
-                else:
-                    continue
-                mtx_b = torch.bmm(mtx_step_b, mtx_b)
-            mtx_acc[b_idx] = mtx_b[0]
+        # Shared order across the batch — original fast path. TorchVision v2 samples ONE factor
+        # for the whole batch, so factors can be (1,) while the mean is per-image (batch,); expand
+        # the factors to the mean's batch so each image gets its own mean-relative contrast bias.
+        if mean is not None and brightness_factors.shape[0] == 1 and mean.shape[0] > 1:
+            brightness_factors = brightness_factors.expand(mean.shape[0])
+            contrast_factors = contrast_factors.expand(mean.shape[0])
+        return _color_jitter_matrix_for_order(
+            [int(v) for v in order.tolist()], brightness_factors, contrast_factors, mean
+        )
 
+    # Per-sample order (batch_size, num_ops) — v1 ColorJitter samples order per image.
+    mtx_acc = _make_eye4(batch_size, device, dtype)
+    for b_idx in range(batch_size):
+        luma_b = mean[b_idx : b_idx + 1] if mean is not None else None
+        mtx_b = _color_jitter_matrix_for_order(
+            [int(v) for v in order[b_idx].tolist()],
+            brightness_factors[b_idx : b_idx + 1],
+            contrast_factors[b_idx : b_idx + 1],
+            luma_b,
+        )
+        mtx_acc[b_idx] = mtx_b[0]
     return mtx_acc
 
 

@@ -113,7 +113,7 @@ class TestFromParamsHFlip:
 
 
 class TestFromParamsBrightnessContrast:
-    """Brightness and contrast raise NotImplementedError."""
+    """Brightness and contrast use the native fused color path."""
 
     @pytest.mark.parametrize(
         "kwargs,match",
@@ -122,10 +122,12 @@ class TestFromParamsBrightnessContrast:
             pytest.param({"contrast": 0.3}, "contrast", id="contrast"),
         ],
     )
-    def test_raises_not_implemented(self, kwargs, match):
-        """Brightness/contrast params raise NotImplementedError with descriptive message."""
-        with pytest.raises(NotImplementedError, match=match):
-            Compose.from_params(**kwargs)
+    def test_builds_native_color_segment(self, kwargs, match):
+        """Brightness/contrast params produce a color segment and a valid output."""
+        pipe = Compose.from_params(**kwargs)
+        out = pipe(torch.rand(1, 3, 8, 8))
+        assert out.shape == (1, 3, 8, 8)
+        assert pipe.fusion_plan.startswith("color(")
 
 
 class TestFromParamsWithDataKeys:
