@@ -4,12 +4,9 @@
 
 > **Summary**: `fuse-augmentations` is a framework-agnostic library that automatically **groups** consecutive fusible geometric transforms in your augmentation pipeline, then **fuses** their matrices into a single composed transform applied via one interpolation pass. Linear color transforms (brightness, contrast, and standard Normalize) are additionally fused into a single matrix multiply. Non-fusible operations such as blur and nonlinear color adjustments pass through unchanged. Drop-in replacement for Kornia's `AugmentationSequential`, TorchVision, and Albumentations compose classes.
 
-[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/fuse-augmentations)](https://pypi.org/project/fuse-augmentations/)
-[![PyPI version](https://img.shields.io/pypi/v/fuse-augmentations)](https://pypi.org/project/fuse-augmentations/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/fuse-augmentations)](https://pypi.org/project/fuse-augmentations/) [![PyPI version](https://img.shields.io/pypi/v/fuse-augmentations)](https://pypi.org/project/fuse-augmentations/) [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-[![CI complete testing](https://github.com/Borda/fuse-augmentations/actions/workflows/ci_testing.yml/badge.svg?event=push)](https://github.com/Borda/fuse-augmentations/actions/workflows/ci_testing.yml)
-[![codecov](https://codecov.io/github/Borda/fuse-augmentations/graph/badge.svg?token=hw3VOHuzKk)](https://codecov.io/github/Borda/fuse-augmentations)
+[![CI complete testing](https://github.com/Borda/fuse-augmentations/actions/workflows/ci_testing.yml/badge.svg?event=push)](https://github.com/Borda/fuse-augmentations/actions/workflows/ci_testing.yml) [![codecov](https://codecov.io/github/Borda/fuse-augmentations/graph/badge.svg?token=hw3VOHuzKk)](https://codecov.io/github/Borda/fuse-augmentations)
 
 <details>
 <summary><b>Contents</b></summary>
@@ -319,12 +316,7 @@ Supported `data_keys` values:
 | `"bbox_xywh"` | `(B, N, 4)`    | Pixel-space `[x, y, w, h]`; converted internally to xyxy                                                                             |
 | `"keypoints"` | `(B, N, 2)`    | Pixel-space `[x, y]`; exact homogeneous transform                                                                                    |
 
-Exact discrete chains route all auxiliary targets. Masks are transformed by the same
-lossless flip/rotation applied to the image, for every exact op including non-flip ops
-(`RandomRotate90`, `D4`, `Transpose`). Boxes and keypoints are routed through the
-composed pixel matrix: flip-only exact chains stay lossless, and a chain containing a
-non-flip exact op is executed on the interpolating grid path when box/keypoint targets
-are present, so they are always routed and never raise.
+Exact discrete chains route all auxiliary targets. Masks are transformed by the same lossless flip/rotation applied to the image, for every exact op including non-flip ops (`RandomRotate90`, `D4`, `Transpose`). Boxes and keypoints are routed through the composed pixel matrix: flip-only exact chains stay lossless, and a chain containing a non-flip exact op is executed on the interpolating grid path when box/keypoint targets are present, so they are always routed and never raise.
 
 ## 🔌 Backend-Free Pipelines
 

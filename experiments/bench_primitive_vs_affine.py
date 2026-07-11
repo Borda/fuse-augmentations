@@ -116,7 +116,7 @@ def _alb(transform: A.BasicTransform) -> Callable[[], object]:
     """Wrap an alb transform into a zero-arg callable on ``image_np``."""
 
     def _run(_transform: A.BasicTransform = transform) -> np.ndarray:
-        return _transform(image_np)["image"]  # type: ignore[return-value]
+        return _transform(image=image_np)["image"]  # type: ignore[return-value]
 
     return _run
 
