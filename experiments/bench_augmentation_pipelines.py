@@ -92,7 +92,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torchvision.transforms.v2 as tv
+from rich import box
+from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.table import Table
 
 from fuse_aug import Compose as FuseCompose
 from fuse_aug import ReorderPolicy
@@ -828,76 +831,63 @@ _TABLE_SEQS_ORDER = sorted({r["sequence_name"] for r in results})
 
 _COL_BACKENDS = ["albumentations", "kornia", "torchvision"]
 _COL_ABBREV = {"albumentations": "alb", "kornia": "kornia", "torchvision": "tv"}
-_W_SEQ = 20  # sequence name column width
-_W_VAL = 7  # ms value column width
-_W_BOOST = 6  # ratio only: "x1.23"
-_W_SYM = 1  # emoji symbol column (✔ / ≈ / ⚠)
 
 
 def _boost_symbol(ratio: float) -> str:
-    """Return a single-width Unicode symbol indicating whether fusion is beneficial.
-
-    Symbols are from the same Unicode "signs" family as ⚠ (U+26A0):
-    ✔ U+2714, ≈ U+2248, ⚠ U+26A0 — all render as single terminal cells.
+    """Return a colorized rich-markup symbol indicating whether fusion is beneficial.
 
     Args:
         ratio: native_ms / fused_ms.  Values >1 mean fused is faster.
 
     Returns:
-        "✔" when fused is faster (ratio > 1.0),
-        "≈" when roughly equal (0.9 <= ratio <= 1.0),
-        "⚠" when fused is noticeably slower (ratio < 0.9).
+        "[green]v[/green]" when fused is faster (ratio > 1.0),
+        "[blue]~[/blue]" when roughly equal (0.9 <= ratio <= 1.0),
+        "[red]x[/red]" when fused is noticeably slower (ratio < 0.9).
 
     """
     if ratio > 1.0:
-        return "✔"
+        return "[green]v[/green]"
     if ratio >= 0.9:
-        return "≈"
-    return "⚠"
+        return "[blue]~[/blue]"
+    return "[red]x[/red]"
 
 
-# Per-group width (no leading sep): VAL + " : " + VAL + " : " + BOOST + " " + SYM + " " (trail)
-_GROUP_W = _W_VAL * 2 + _W_BOOST + _W_SYM + 8
-
-# ── header ───────────────────────────────────────────────────────────────────
-# Each group prefixed by " " (first) or "|" (subsequent) — 1 char per group.
-_sep = "─" * (_W_SEQ + len(_COL_BACKENDS) * (1 + _GROUP_W))
-print("\n" + _sep)
-
-# row 1: backend group labels, centred over their group width; "|" between groups
-header1 = f"{'Sequence':<{_W_SEQ}}"
-for i, b in enumerate(_COL_BACKENDS):
-    header1 += ("|" if i > 0 else " ") + f"{_COL_ABBREV[b]:^{_GROUP_W}}"
-print(header1)
-
-# row 2: sub-column labels
-_H2_GROUP = f"{'native':>{_W_VAL}} ; {'fused':>{_W_VAL}} ; {'boost':>{_W_BOOST}} {'':>{_W_SYM}} "
-header2 = f"{'':^{_W_SEQ}}"
-for i, _ in enumerate(_COL_BACKENDS):
-    header2 += ("|" if i > 0 else " ") + _H2_GROUP
-print(header2)
-print(_sep)
+# ── build rich table ──────────────────────────────────────────────────────────
+# Leftmost "Sequence" column, then one grouped column per backend with three
+# sub-columns each: native (ms), fused (ms), boost (ratio + colorized symbol).
+_table = Table(
+    title="Augmentation pipeline benchmark",
+    box=box.SIMPLE_HEAVY,
+    show_header=True,
+    header_style="bold",
+)
+_table.add_column("Sequence", style="bold", no_wrap=True, min_width=20)
+for b in _COL_BACKENDS:
+    _table.add_column("", style="dim", no_wrap=True, width=1)  # vertical divider before each group
+    _table.add_column(f"[bold cyan]{_COL_ABBREV[b]}[/bold cyan]\n[dim]native[/dim]", justify="right", min_width=7)
+    _table.add_column("\n[dim]fused[/dim]", justify="right", min_width=7)
+    _table.add_column("\n[dim]boost[/dim]", justify="right", min_width=8)
 
 # ── data rows ─────────────────────────────────────────────────────────────────
 for seq in _TABLE_SEQS_ORDER:
-    row = f"{seq:<{_W_SEQ}}"
-    for i, b in enumerate(_COL_BACKENDS):
+    cells = [seq]
+    for b in _COL_BACKENDS:
+        cells.append("│")
         nat = _by_key.get((seq, b, "native"))
         fus = _by_key.get((seq, b, "fused"))
         if nat and fus:
             n_ms = nat["timing_ms"]["mean"]
             f_ms = fus["timing_ms"]["mean"]
             ratio = n_ms / f_ms if f_ms > 0 else None
-            ratio_str = f"x{ratio:.2f}" if ratio is not None else " N/A"
-            sym = _boost_symbol(ratio) if ratio is not None else ""
-            sep = "|" if i > 0 else " "
-            row += sep + f"{n_ms:>{_W_VAL}.3f} ; {f_ms:>{_W_VAL}.3f} ; {ratio_str:>{_W_BOOST}} {sym:<{_W_SYM}} "
+            boost = f"{ratio:.2f} {_boost_symbol(ratio)}" if ratio is not None else "N/A"
+            cells.extend([f"{n_ms:.3f}", f"{f_ms:.3f}", boost])
         else:
-            sep = "|" if i > 0 else " "
-            row += sep + f"{'N/A':>{_W_VAL}} ; {'N/A':>{_W_VAL}} ; {'---':>{_W_BOOST}} {' ':<{_W_SYM}} "
-    print(row)
+            cells.extend(["N/A", "N/A", "---"])
+    _table.add_row(*cells)
 
-print(_sep)
+# width=200 renders the full table regardless of actual terminal width — no truncation.
+Console(width=200).print(_table)
+
 print(f"Values in ms (mean over {NUM_REPEATS} repeats, batch_size=1).  boost = native/fused (>1 = fused faster).")
 print("Note: alb native runs on HWC uint8 NumPy; all fused/kornia/tv run on BCHW float32 tensor.")
 

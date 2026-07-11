@@ -501,12 +501,13 @@ def _term_combined(title: str) -> None:
                 print(df_s.to_string(float_format=lambda x: f"{x:.3f}", na_rep="—"))
         return
 
-    n_data = len(_BACKENDS) * 3  # prim + affine + ratio per backend
+    n_data = len(_BACKENDS) * 4  # divider + prim + affine + ratio per backend
     table = Table(title=title, box=box.SIMPLE_HEAVY, show_header=True, header_style="bold")
     table.add_column("", style="bold", no_wrap=True, min_width=18)
 
     prev_backend: str | None = None
     for backend in _BACKENDS:
+        table.add_column("", style="dim", no_wrap=True, width=1)  # vertical divider before each group
         for kind in ("prims", "affine", "ratio"):
             if backend != prev_backend:
                 header = f"[bold cyan]{backend}[/bold cyan]\n[dim]{kind}[/dim]"
@@ -527,6 +528,7 @@ def _term_combined(title: str) -> None:
         for op in df_s.index:
             cells = [f"  {op}"]
             for backend in _BACKENDS:
+                cells.append("│")
                 p_col, a_col = (backend, "prims"), (backend, "affine")
                 p_raw = df_s.loc[op, p_col] if p_col in df_s.columns else None
                 a_raw = df_s.loc[op, a_col] if a_col in df_s.columns else None

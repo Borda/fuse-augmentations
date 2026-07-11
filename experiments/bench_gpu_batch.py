@@ -52,6 +52,9 @@ import kornia.augmentation as K
 import numpy as np
 import torch
 import torchvision.transforms.v2 as tv
+from rich import box
+from rich.console import Console
+from rich.table import Table
 
 from fuse_aug import Compose as FuseCompose
 from fuse_aug import ReorderPolicy
@@ -502,31 +505,92 @@ def _fused_ratio(results: list[dict[str, Any]], key: tuple) -> float | None:
     return native["median_ms"] / fused["median_ms"]
 
 
-def _markdown_table(results: list[dict[str, Any]]) -> str:
-    """Render the results as a Markdown summary table sorted by run order."""
-    header = (
-        "| sequence | backend | mode | device | batch | median ms | p10 | p90 | img/s | peak MB | boost | notes |\n"
-        "|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---|"
+def _boost_symbol(ratio: float) -> str:
+    """Return a colorized rich-markup symbol indicating whether fusion is beneficial.
+
+    Args:
+        ratio: native_ms / fused_ms.  Values >1 mean fused is faster.
+
+    Returns:
+        "[green]v[/green]" when fused is faster (ratio > 1.0),
+        "[blue]~[/blue]" when roughly equal (0.9 <= ratio <= 1.0),
+        "[red]x[/red]" when fused is noticeably slower (ratio < 0.9).
+
+    Examples:
+        >>> _boost_symbol(1.5)
+        '[green]v[/green]'
+        >>> _boost_symbol(0.95)
+        '[blue]~[/blue]'
+        >>> _boost_symbol(0.5)
+        '[red]x[/red]'
+
+    """
+    if ratio > 1.0:
+        return "[green]v[/green]"
+    if ratio >= 0.9:
+        return "[blue]~[/blue]"
+    return "[red]x[/red]"
+
+
+def _print_results_table(results: list[dict[str, Any]]) -> None:
+    """Render the benchmark results as a flat rich Table, one row per record.
+
+    Numeric columns are right-justified; skipped rows show "—" for every metric
+    and a ``skip: <reason>`` note.  The boost cell (fused rows only) combines the
+    native/fused median ratio with a colorized symbol from :func:`_boost_symbol`.
+
+    Args:
+        results: Benchmark records in run order, each a dict with at least a
+            ``status`` key ("ok" or otherwise).
+
+    Examples:
+        >>> _print_results_table([])  # empty input renders just the header
+
+    """
+    table = Table(
+        title="GPU / batch benchmark",
+        box=box.SIMPLE_HEAVY,
+        show_header=True,
+        header_style="bold",
     )
-    lines = [header]
+    table.add_column("Sequence", style="bold", no_wrap=True, min_width=18)
+    table.add_column("", style="dim", no_wrap=True, width=1)  # vertical divider after Sequence
+    table.add_column("Backend")
+    table.add_column("Mode")
+    table.add_column("Device")
+    table.add_column("Batch")
+    table.add_column("Median ms", justify="right")
+    table.add_column("p10", justify="right")
+    table.add_column("p90", justify="right")
+    table.add_column("img/s", justify="right")
+    table.add_column("Peak MB", justify="right")
+    table.add_column("Boost", justify="right")
+    table.add_column("Notes")
+
     for r in results:
+        common = [r["sequence"], "│", r["backend"], r["mode"], r["device"], str(r["batch"])]
         if r.get("status") != "ok":
-            lines.append(
-                f"| {r['sequence']} | {r['backend']} | {r['mode']} | {r['device']} | {r['batch']} "
-                f"| — | — | — | — | — | — | skip: {r.get('skip_reason', '')} |"
-            )
+            table.add_row(*common, "—", "—", "—", "—", "—", "", f"skip: {r.get('skip_reason', '')}")
             continue
         boost = ""
         if r["mode"] == "fused":
             ratio = _fused_ratio(results, (r["sequence"], r["backend"], r["device"], r["batch"]))
-            boost = f"{ratio:.2f}x" if ratio is not None else ""
+            if ratio is not None:
+                boost = f"{ratio:.2f} {_boost_symbol(ratio)}"
         peak = f"{r['peak_mb']:.1f}" if "peak_mb" in r else "—"
-        lines.append(
-            f"| {r['sequence']} | {r['backend']} | {r['mode']} | {r['device']} | {r['batch']} "
-            f"| {r['median_ms']:.3f} | {r['p10_ms']:.3f} | {r['p90_ms']:.3f} "
-            f"| {r['throughput_img_s']:.0f} | {peak} | {boost} | |"
+        table.add_row(
+            *common,
+            f"{r['median_ms']:.3f}",
+            f"{r['p10_ms']:.3f}",
+            f"{r['p90_ms']:.3f}",
+            f"{r['throughput_img_s']:.0f}",
+            peak,
+            boost,
+            "",
         )
-    return "\n".join(lines)
+
+    # width=200 renders the full table regardless of actual terminal width — no truncation.
+    Console(width=200).print(table)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -541,7 +605,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Run the GPU/batch benchmark and write JSON + Markdown outputs."""
+    """Run the GPU/batch benchmark, write the JSON output, and print the results table."""
     import json
 
     args = _parse_args(argv)
@@ -575,8 +639,7 @@ def main(argv: list[str] | None = None) -> None:
     out_path = RESULTS_DIR / f"bench_gpu_batch_{_platform_slug()}.json"
     out_path.write_text(json.dumps({"metadata": _build_metadata(cfg, source), "results": results}, indent=2))
 
-    table = _markdown_table(results)
-    print("\n" + table)
+    _print_results_table(results)
     n_ok = sum(1 for r in results if r.get("status") == "ok")
     n_skip = len(results) - n_ok
     print(f"\nResults: {n_ok} ok, {n_skip} skipped → {out_path}")

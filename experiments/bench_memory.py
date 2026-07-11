@@ -66,6 +66,9 @@ import kornia.augmentation as K
 import numpy as np
 import torch
 import torchvision.transforms.v2 as tv
+from rich import box
+from rich.console import Console
+from rich.table import Table
 from torch.profiler import ProfilerActivity, profile
 
 from fuse_aug import Compose as FuseCompose
@@ -564,25 +567,6 @@ def _pair_ratio(results: list[dict[str, Any]], key: tuple, metric: str) -> float
     return fused[metric] / native[metric]
 
 
-_COLS: tuple[tuple[str, int], ...] = (
-    ("sequence", 20),
-    ("backend", 14),
-    ("mode", 7),
-    ("device", 7),
-    ("batch", 5),
-    ("peak MB", 9),
-    ("allocs", 8),
-    ("peak x", 7),
-    ("alloc x", 8),
-    ("notes", 34),
-)
-
-
-def _fmt_row(cells: list[str]) -> str:
-    """Format one aligned table row from string cells."""
-    return " ".join(cell.ljust(width) for cell, (_h, width) in zip(cells, _COLS, strict=False))
-
-
 def _row_notes(record: dict[str, Any]) -> str:
     """Assemble the notes cell for one ok record (cross-checks + caveats)."""
     parts: list[str] = []
@@ -595,53 +579,95 @@ def _row_notes(record: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-def _ok_row(record: dict[str, Any], results: list[dict[str, Any]]) -> str:
-    """Render one ``ok`` result as an aligned row, including fused/native ratios."""
-    peak_x = alloc_x = ""
-    if record["mode"] == "fused":
-        key = (record["sequence"], record["backend"], record["device"], record["batch"])
-        pr = _pair_ratio(results, key, "peak_mb")
-        ar = _pair_ratio(results, key, "alloc_count")
-        peak_x = f"{pr:.2f}x" if pr is not None else ""
-        alloc_x = f"{ar:.2f}x" if ar is not None else ""
-    return _fmt_row([
-        record["sequence"],
-        record["backend"],
-        record["mode"],
-        record["device"],
-        str(record["batch"]),
-        f"{record['peak_mb']:.1f}",
-        str(record["alloc_count"]),
-        peak_x,
-        alloc_x,
-        _row_notes(record),
-    ])
+def _ratio_symbol(ratio: float) -> str:
+    """Return a colorized rich-markup symbol for a fused/native memory ratio.
+
+    Note the thresholds are *flipped* relative to the timing benchmarks: here the
+    ratio is ``fused / native``, so a value below 1.0 means fusion uses *less*
+    memory (good), while a value above 1.0 means it uses *more* (bad).
+
+    Args:
+        ratio: fused / native.  Values <1 mean fused uses less memory.
+
+    Returns:
+        "[green]v[/green]" when fused clearly uses less (ratio < 0.9),
+        "[blue]~[/blue]" when roughly equal (0.9 <= ratio <= 1.1),
+        "[red]x[/red]" when fused clearly uses more (ratio > 1.1).
+
+    """
+    if ratio < 0.9:
+        return "[green]v[/green]"
+    if ratio <= 1.1:
+        return "[blue]~[/blue]"
+    return "[red]x[/red]"
 
 
-def _text_table(results: list[dict[str, Any]]) -> str:
-    """Render the results as an aligned fixed-width text table."""
-    header = _fmt_row([h for h, _w in _COLS])
-    rule = " ".join("-" * width for _h, width in _COLS)
-    lines = [header, rule]
+def _ratio_cell(ratio: float | None) -> str:
+    """Render a fused/native ratio cell as ``"{ratio:.2f} {symbol}"`` (blank if None)."""
+    if ratio is None:
+        return ""
+    return f"{ratio:.2f} {_ratio_symbol(ratio)}"
+
+
+def _print_results_table(results: list[dict[str, Any]]) -> None:
+    """Render the memory benchmark results as a rich table and print it.
+
+    Columns mirror the former fixed-width layout: sequence, backend, mode,
+    device, batch, peak MB, allocs, peak x, alloc x, notes.  Numeric metric
+    columns are right-justified; the ratio columns ("peak x" / "alloc x") carry a
+    colorized fused/native symbol via :func:`_ratio_symbol`.
+
+    """
+    table = Table(title="Memory benchmark", box=box.SIMPLE_HEAVY, show_header=True, header_style="bold")
+    table.add_column("sequence", style="bold", no_wrap=True, min_width=20)
+    table.add_column("", style="dim", no_wrap=True, width=1)  # vertical divider after sequence
+    table.add_column("backend", no_wrap=True)
+    table.add_column("mode", no_wrap=True)
+    table.add_column("device", no_wrap=True)
+    table.add_column("batch", justify="right")
+    table.add_column("peak MB", justify="right")
+    table.add_column("allocs", justify="right")
+    table.add_column("peak x", justify="right")
+    table.add_column("alloc x", justify="right")
+    table.add_column("notes", max_width=40)
+
     for r in results:
         if r.get("status") != "ok":
-            lines.append(
-                _fmt_row([
-                    r["sequence"],
-                    r["backend"],
-                    r["mode"],
-                    r["device"],
-                    str(r["batch"]),
-                    "—",
-                    "—",
-                    "",
-                    "",
-                    f"skip: {r.get('skip_reason', '')}"[:34],
-                ])
+            table.add_row(
+                r["sequence"],
+                "│",
+                r["backend"],
+                r["mode"],
+                r["device"],
+                str(r["batch"]),
+                "—",
+                "—",
+                "",
+                "",
+                f"skip: {r.get('skip_reason', '')}",
             )
             continue
-        lines.append(_ok_row(r, results))
-    return "\n".join(lines)
+        peak_x = alloc_x = ""
+        if r["mode"] == "fused":
+            key = (r["sequence"], r["backend"], r["device"], r["batch"])
+            peak_x = _ratio_cell(_pair_ratio(results, key, "peak_mb"))
+            alloc_x = _ratio_cell(_pair_ratio(results, key, "alloc_count"))
+        table.add_row(
+            r["sequence"],
+            "│",
+            r["backend"],
+            r["mode"],
+            r["device"],
+            str(r["batch"]),
+            f"{r['peak_mb']:.1f}",
+            str(r["alloc_count"]),
+            peak_x,
+            alloc_x,
+            _row_notes(r),
+        )
+
+    # width=200 renders the full table regardless of actual terminal width — no truncation.
+    Console(width=200).print(table)
 
 
 def _build_metadata(cfg: BenchConfig, source: str) -> dict[str, Any]:
@@ -715,7 +741,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     results = run_benchmark(cfg)
 
-    print("\n" + _text_table(results))
+    print()
+    _print_results_table(results)
     n_ok = sum(1 for r in results if r.get("status") == "ok")
     n_skip = len(results) - n_ok
     print(f"\nResults: {n_ok} ok, {n_skip} skipped")
