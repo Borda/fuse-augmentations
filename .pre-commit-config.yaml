@@ -1,5 +1,5 @@
 default_language_version:
-  python: python3
+  python: python3.12
 
 ci:
   autofix_prs: true
@@ -40,6 +40,7 @@ repos:
           - mdformat-gfm
           - mdformat-black
           - mdformat_frontmatter
+          - mdformat-mkdocs==5.2.0
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.6

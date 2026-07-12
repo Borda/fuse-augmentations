@@ -36,15 +36,15 @@ For d-group sequences, `AGGRESSIVE` reordering moves all geo ops into one contig
 
 Every kept commit must not break:
 
-01. `pipe.fusion_plan`, `pipe.n_warps_saved`, `pipe.transform_matrix` remain accessible and correct after every forward pass.
-02. Per-sample randomness — each image in a batch draws independent probabilities (no `same_on_batch` regression).
-03. Auxiliary targets — masks, `bbox_xyxy`, `bbox_xywh`, keypoints routed through the composed matrix.
-04. `ReorderPolicy.NONE`, `POINTWISE`, and `AGGRESSIVE` all produce valid output.
-05. Multi-backend pipelines (Kornia + TorchVision + Albumentations in the same pipe) work correctly.
-06. `FusedCompose.from_params()` and `.from_config()` still construct valid runnable pipelines.
-07. `output_backend="numpy"` returns HWC NumPy; `NumpyToTorchConverter` and `TorchToNumpyConverter` work.
-08. `pickle.dumps(pipe)` / `pickle.loads(...)` round-trips without error (DataLoader workers).
-09. `FusedCompose(transforms)(image)` call signature unchanged — no new required arguments.
+1. `pipe.fusion_plan`, `pipe.n_warps_saved`, `pipe.transform_matrix` remain accessible and correct after every forward pass.
+2. Per-sample randomness — each image in a batch draws independent probabilities (no `same_on_batch` regression).
+3. Auxiliary targets — masks, `bbox_xyxy`, `bbox_xywh`, keypoints routed through the composed matrix.
+4. `ReorderPolicy.NONE`, `POINTWISE`, and `AGGRESSIVE` all produce valid output.
+5. Multi-backend pipelines (Kornia + TorchVision + Albumentations in the same pipe) work correctly.
+6. `FusedCompose.from_params()` and `.from_config()` still construct valid runnable pipelines.
+7. `output_backend="numpy"` returns HWC NumPy; `NumpyToTorchConverter` and `TorchToNumpyConverter` work.
+8. `pickle.dumps(pipe)` / `pickle.loads(...)` round-trips without error (DataLoader workers).
+9. `FusedCompose(transforms)(image)` call signature unchanged — no new required arguments.
 10. `FusedCompose(albu_transforms)(image=ndarray)` returns `{"image": ndarray}` matching `A.Compose` convention.
 11. Any change to `types.py` is **additive only** — new enum members are allowed; no renames, value changes, or removal of `GEOMETRIC`, `POINTWISE`, `COLOR`, `SPATIAL_KERNEL`, or `CROP_RESIZE`.
 

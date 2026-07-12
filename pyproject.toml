@@ -78,6 +78,10 @@ dev = [
   # "tomlkit>=0.13",
   "twine>=6.1,<6.3",
 ]
+docs = [
+  "mkdocs-material>=9.6,<10",
+  "mkdocstrings[python]>=0.29",
+]
 benchmark = [
   "ipython>=8.0",
   "jupyterlab>=4.0",

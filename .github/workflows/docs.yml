@@ -1,0 +1,73 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: "3.12"
+      UV_TORCH_BACKEND: cpu
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+
+      - name: 🐍 Install uv
+        uses: astral-sh/setup-uv@v7.2.0
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+          activate-environment: true
+
+      - name: 📦 Install documentation dependencies
+        run: uv sync --group docs
+
+      - name: 📚 Build strict documentation
+        run: uv run --no-sync mkdocs build --strict
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    # Never publish two generated sites to gh-pages at the same time.
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
+    env:
+      PYTHON_VERSION: "3.12"
+      UV_TORCH_BACKEND: cpu
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+
+      - name: 🐍 Install uv
+        uses: astral-sh/setup-uv@v7.2.0
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+          activate-environment: true
+
+      - name: 📦 Install documentation dependencies
+        run: uv sync --group docs
+
+      - name: 🚀 Publish strict documentation to gh-pages
+        run: uv run --no-sync mkdocs gh-deploy --strict --remote-branch gh-pages --force
