@@ -48,6 +48,56 @@ Fewer interpolating passes can reduce repeated blur and repeated boundary sampli
 
 The public `n_warps_saved` value should be interpreted as a planner estimate, not a literal count of native interpolation calls. Exact operations are currently included in that metric even when the native operation was already lossless. Use the fusion plan to understand the actual segment types.
 
+### Deterministic backend coverage
+
+The figures below avoid selecting one favourable backend or one random draw. They apply the same three fixed geometry recipes—rotation → scale → x-shear—to Kornia, TorchVision v2, and Albumentations. All angle, scale, and shear ranges collapse to one value, so the native and fused paths for a given backend use identical transform parameters. The only intended execution difference is three sequential bilinear resamples versus one composed resample.
+
+The top-right overlay puts native-backend-only detail in red, Fuse Compose-only detail in green, and a perfect overlap in yellow. Compare each backend only with its own native output: backend centre conventions, border handling, and interpolation differ by design.
+
+#### Framing
+
+=== "Kornia"
+
+    ![Kornia framing: sequential and fused resampling](../assets/images/sequential-vs-fused-kornia-framing.webp)
+
+=== "TorchVision v2"
+
+    ![TorchVision framing: sequential and fused resampling](../assets/images/sequential-vs-fused-torchvision-framing.webp)
+
+=== "Albumentations"
+
+    ![Albumentations framing: sequential and fused resampling](../assets/images/sequential-vs-fused-albumentations-framing.webp)
+
+#### Camera jitter
+
+=== "Kornia"
+
+    ![Kornia camera jitter: sequential and fused resampling](../assets/images/sequential-vs-fused-kornia-camera-jitter.webp)
+
+=== "TorchVision v2"
+
+    ![TorchVision camera jitter: sequential and fused resampling](../assets/images/sequential-vs-fused-torchvision-camera-jitter.webp)
+
+=== "Albumentations"
+
+    ![Albumentations camera jitter: sequential and fused resampling](../assets/images/sequential-vs-fused-albumentations-camera-jitter.webp)
+
+#### Off-axis jitter
+
+=== "Kornia"
+
+    ![Kornia off-axis jitter: sequential and fused resampling](../assets/images/sequential-vs-fused-kornia-off-axis-jitter.webp)
+
+=== "TorchVision v2"
+
+    ![TorchVision off-axis jitter: sequential and fused resampling](../assets/images/sequential-vs-fused-torchvision-off-axis-jitter.webp)
+
+=== "Albumentations"
+
+    ![Albumentations off-axis jitter: sequential and fused resampling](../assets/images/sequential-vs-fused-albumentations-off-axis-jitter.webp)
+
+This is a backend-specific resampling illustration, not a native-pixel-parity, cross-backend-equivalence, or task-quality claim. Recreate the default Kornia framing figure with `uv run --all-extras --group benchmark python examples/visualize_resampling_loss.py`. Select another recipe with `--case camera-jitter`, another backend with `--backend torchvision`, or another bundled image with `--image astronaut`.
+
 ## Native-backend parity
 
 The package recognizes transform objects from several backends, but recognition does not guarantee identical native execution semantics.

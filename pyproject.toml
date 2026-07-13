@@ -88,6 +88,7 @@ benchmark = [
   "matplotlib>=3.7",
   "pandas>=2.0",
   "rich>=13.0",
+  "scikit-image>=0.22",
   "tqdm>=4.60",
 ]
 

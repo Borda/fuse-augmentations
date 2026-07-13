@@ -31,6 +31,14 @@ Repeated interpolation adds work, creates intermediate tensors, and can progress
 
 This does **not** mean the fused output is pixel-identical to the native chain. It is a different resampling strategy, and backend centers, fill rules, clipping, and interpolation conventions still matter.
 
+### Matched-parameter visual example
+
+The same fixed Kornia rotation → scale → shear recipe is evaluated below. The native route resamples three times; Fuse Compose composes the geometry and samples once. The red/green/yellow overlay makes local disagreement visible without claiming native-pixel parity.
+
+![Fixed Kornia parameters: native sequential versus Fuse Compose resampling](docs/assets/images/sequential-vs-fused-kornia-framing.webp)
+
+See [three fixed recipes for each of Kornia, TorchVision, and Albumentations](https://borda.github.io/fuse-augmentations/research/quality-and-fidelity/), including their exact limits.
+
 ## ✨ What the package can do
 
 | Capability             | What is implemented                                                                                                                                                               |

@@ -132,7 +132,7 @@ Report:
 
 For paired trials, compute the ratio within each matched trial before summarizing. Bootstrap the paired trial ratios or report a distribution across process medians. Predefine an equivalence band, such as `0.95x-1.05x`, when the goal is to identify parity rather than declare tiny wins.
 
-Avoid using a ratio of two noisy single-run means. A ten-sample smoke median can change sign between invocations, as observed in the current CPU benchmark.
+Avoid using a ratio of two noisy single-run means. A ten-sample smoke median is useful for a failure probe, not a stable performance conclusion; use independent process-level trials when the effect is small.
 
 ## Interpret the fixed-bank score
 
@@ -154,7 +154,7 @@ When publishing the score:
 - call `2.3752` an operation-count reference, not a ceiling;
 - do not compare scores across changed banks as though they were the same metric.
 
-The July 12, 2026 environment produced `1.7707x`. That result is scoped to CPU, batch 1, 256 x 256, the fixed synthetic bank, and the recorded dependency versions.
+The July 12, 2026 environment produced `1.7861x`. That result is scoped to CPU, batch 1, 256 x 256, the fixed synthetic bank, and the recorded dependency versions.
 
 ## Measure memory responsibly
 

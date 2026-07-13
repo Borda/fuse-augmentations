@@ -24,11 +24,11 @@ The strongest use case is a BCHW tensor pipeline with several consecutive, regis
 
 ## What is conditional
 
-- **Speed:** long CPU geometric chains are the clearest win; single operations, mixed pipelines, and sampled MPS paths can be slower.
+- **Speed:** long CPU geometric chains are the clearest win; single operations, mixed pipelines, and sampled TorchVision batch-8/32 workloads can be slower.
 - **Native parity:** fewer resampling passes deliberately change numerics, and TorchVision center/fill/interpolation behavior is not generally pixel-equivalent.
 - **Targets:** only registered and explicitly handled spatial operations are safe for multi-target routing.
 - **Reordering:** `POINTWISE` and `AGGRESSIVE` can change pixels because border handling and clipping make operation order observable.
-- **Accelerators:** device execution is supported on torch paths, but this audit did not validate CUDA performance and found backend-dependent MPS regressions.
+- **Accelerators:** device execution is supported on torch paths, but the current full latency run provides CPU evidence only; CUDA and stable MPS latency still need measurement on the deployment host.
 
 ## Choose your route
 

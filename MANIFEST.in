@@ -17,4 +17,5 @@ prune .github
 prune temp*
 prune test*
 prune docs*
+prune examples*
 prune experiments*

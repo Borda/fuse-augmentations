@@ -1,167 +1,145 @@
 ---
 title: Benchmarks
-description: Measured fuse-augmentations latency, throughput, and memory results with backend, device, workload, and methodology limits.
+description: "Full benchmark results for fuse-augmentations: CPU latency, batch scaling, primitive routing cost, and reported tensor memory."
 ---
 
 # Benchmarks
 
-The short answer is: fusion can be much faster for longer geometric chains on CPU, but it is not always faster. Results depend on the backend, device, batch size, image shape, transform mix, and whether behavior-changing reordering is enabled.
+Fusion is most useful when a pipeline contains several compatible geometric transforms. It is not a universal speedup: a single transform, color-heavy workload, or particular backend and batch size can be neutral or slower. This page reports the complete benchmark suite collected on **July 12, 2026**.
 
-This page reports the bounded measurements collected on **July 12, 2026**. They are evidence for the stated environment, not universal performance promises.
+The figures are measurements for the environment below, not performance promises for every workload.
 
-## Test environment
+??? abstract "Test environment"
 
-| Component            | Value                                                  |
-| -------------------- | ------------------------------------------------------ |
-| Operating system     | macOS 26.5.2, arm64                                    |
-| Logical CPUs         | 16                                                     |
-| Python               | 3.12.13                                                |
-| `fuse-augmentations` | 0.9.0.dev0                                             |
-| PyTorch              | 2.10.0                                                 |
-| TorchVision          | 0.25.0                                                 |
-| Kornia               | 0.8.2                                                  |
-| Albumentations       | 2.0.8                                                  |
-| Torch threads        | 12 intra-op, 16 inter-op                               |
-| Accelerators         | Apple MPS available; CUDA unavailable                  |
-| Image size           | 256 x 256                                              |
-| Tensor input         | BCHW float32                                           |
-| Albumentations input | HWC uint8; CPU batches executed sequentially per image |
+    | Component            | Value                                                            |
+    | -------------------- | ---------------------------------------------------------------- |
+    | Operating system     | macOS 26.5.2, arm64                                              |
+    | Python               | 3.12.13                                                          |
+    | `fuse-augmentations` | 0.9.0.dev0                                                       |
+    | PyTorch              | 2.10.0                                                           |
+    | TorchVision          | 0.25.0                                                           |
+    | Kornia               | 0.8.2                                                            |
+    | Albumentations       | 2.0.8                                                            |
+    | Input                | 256 x 256 images; tensor inputs are BCHW `float32`               |
+    | CPU batch semantics  | Albumentations applies CPU images sequentially within each batch |
+    | CUDA                 | Unavailable                                                      |
 
-The CPU model string was unavailable inside the execution sandbox. Optional backend packages were installed through the project's benchmark extras; they are not part of the minimal base environment.
+    The CPU model string was not available inside the execution environment. The full latency-and-batch run detected CPU only, so this page makes no current MPS or CUDA latency claim. The separate memory script did execute MPS paths, but its MPS counter is not a reliable transient-peak measurement; see [Memory-counter boundaries](#memory-counter-boundaries).
 
-## Fixed-bank score: 1.7707x
+## Fixed-bank score: 1.7861x
 
-The current `experiments/optimize_score.py` run reported:
+`experiments/optimize_score.py` measures 45 native/fused pairs on CPU, batch one, with 256 x 256 inputs. It includes single-operation baselines, pure geometric chains, and mixed geometric/color chains across all three backends.
 
 ```text
-real_score=1.7707
+real_score=1.7861
 theoretical_target=2.3752
 ```
 
-`real_score` is the geometric mean of 45 native/fused latency ratios. The bank contains single-operation baselines, pure geometric chains, and mixed geometric/color chains across Kornia, TorchVision, and Albumentations. It uses CPU, batch 1, 256 x 256 inputs, fixed equal log-space weighting, and opt-in `AGGRESSIVE` reordering for the mixed cases.
+`real_score` is the geometric mean of `native latency / fused latency` for this fixed synthetic bank. In plain language: on that bank, the fused path had a 1.7861x geometric-mean latency advantage. It is not an estimate of a typical user workload.
 
-Interpret it as:
+`theoretical_target` is the geometric mean number of geometric operations in the bank. It is a warp-count reference, not a speed ceiling: backend overhead, exact-operation fast paths, color work, caching, and wrapper costs all matter.
 
-> On this fixed synthetic CPU benchmark bank, the geometric mean of native latency divided by fused latency was 1.7707.
+## Exhaustive CPU pipeline latency
 
-Do not interpret it as an average speedup for user workloads. The case bank is not sampled from production usage, and its weighting does not represent a user population.
+`experiments/bench_augmentation_pipelines.py` ran every one of its 28 sequences for native and fused implementations across Albumentations, Kornia, and TorchVision: **168 timed variants**. Each variant had 20 warmups and 100 timed repetitions. The table groups the per-sequence native/fused ratios with a geometric mean; `>1x` means the fused path was faster.
 
-The `2.3752` value is the geometric mean of the number of geometric operations in each case. It is a **warp-count reference**, not a theoretical performance ceiling. Backend overhead, exact-operation fast paths, color cost, caching, and wrapper cost make operation count an imperfect latency model. Individual measured speedups can exceed that reference.
+| Backend        | All 28 sequences | Single geometric (`a`) | Geometric chains (`b`) | Color-only (`c`) | Mixed (`d`) |    Wins |
+| -------------- | ---------------: | ---------------------: | ---------------------: | ---------------: | ----------: | ------: |
+| Albumentations |            1.26x |                  1.03x |                  1.70x |            1.02x |       1.27x | 27 / 28 |
+| Kornia         |            1.56x |                  1.12x |                  6.60x |            1.01x |       1.17x | 19 / 28 |
+| TorchVision    |            1.69x |                  0.94x |                  8.03x |            1.06x |       1.35x | 16 / 28 |
 
-## CPU latency and throughput
+The category averages are descriptive only: they give equal log-space weight to every sequence and are not weighted by user traffic or production mix.
 
-The representative CPU quick sweep covered seven sequences, three backends, batch sizes 1 and 8, five warmups, and ten timed samples. A second independent invocation was used to expose quick-run variability.
+| Representative sequence                         | Backend     | Native / fused mean latency |  Ratio | Reading                       |
+| ----------------------------------------------- | ----------- | --------------------------: | -----: | ----------------------------- |
+| Single rotate                                   | Kornia      |            0.502 / 0.512 ms |  0.98x | Slight fused loss.            |
+| Single rotate                                   | TorchVision |            0.785 / 0.816 ms |  0.96x | Slight fused loss.            |
+| Three geometric transforms                      | Kornia      |            1.214 / 0.209 ms |  5.80x | Clear chain benefit.          |
+| Three geometric transforms                      | TorchVision |            1.593 / 0.216 ms |  7.36x | Clear chain benefit.          |
+| Five geometric transforms with warps            | Kornia      |            4.750 / 0.339 ms | 14.03x | Large backend-specific gain.  |
+| Five geometric transforms with warps            | TorchVision |            3.829 / 0.237 ms | 16.16x | Large backend-specific gain.  |
+| Mixed 4 geometric + 3 color, aggressive reorder | Kornia      |            4.431 / 3.574 ms |  1.24x | Moderate gain.                |
+| Mixed 4 geometric + 3 color, aggressive reorder | TorchVision |            2.351 / 0.972 ms |  2.42x | Gain depends on the sequence. |
 
-In the second invocation, 35 of 42 comparable pairs were faster and 7 were slower. The geometric mean by backend and batch was:
+The benchmark also regenerated native/fused visual comparisons for every sequence. Those images are a sanity aid, not a proof of equivalence; see [Quality and fidelity](quality-and-fidelity.md) for the distinction.
 
-| Backend        | Batch 1 | Batch 8 |
-| -------------- | ------: | ------: |
-| Kornia         |   2.52x |   1.73x |
-| TorchVision    |   3.20x |   1.26x |
-| Albumentations |   1.53x |   1.53x |
+## CPU batch scaling
 
-These aggregate values include wins and losses. Representative second-run cases show the actual range:
+`experiments/bench_gpu_batch.py` completed its normal CPU sweep: seven representative sequences, three backends, batch sizes 1, 8, and 32, ten warmups, and 30 timed samples per variant. The figures below are geometric means of the seven **median** native/fused latency ratios.
 
-| Sequence                                        | Backend     | Batch | Native/fused ratio | Interpretation                  |
-| ----------------------------------------------- | ----------- | ----: | -----------------: | ------------------------------- |
-| Single rotate                                   | Kornia      |     8 |              0.88x | Fused was slower.               |
-| Single rotate                                   | TorchVision |     8 |              0.81x | Fused was slower.               |
-| Three geometric ops                             | Kornia      |     1 |              4.31x | Clear geometric-chain win.      |
-| Three geometric ops                             | TorchVision |     1 |              5.23x | Clear geometric-chain win.      |
-| Five geometric ops                              | Kornia      |     1 |              6.52x | Benefit grew with chain length. |
-| Five geometric ops with warp                    | TorchVision |     1 |             14.48x | Large backend-specific win.     |
-| Mixed 3 geometric + 3 color, aggressive reorder | Kornia      |     8 |              0.49x | Fused was about 2x slower.      |
-| Mixed 3 geometric + 3 color, aggressive reorder | TorchVision |     8 |              0.77x | Fused was slower.               |
-| Mixed 4 geometric + 3 color, aggressive reorder | TorchVision |     8 |              0.86x | Fused was slower.               |
-| Geometric + crop/resize                         | Kornia      |     8 |              2.18x | Fused was faster.               |
+| Backend        | Batch 1 | Batch 8 | Batch 32 | Fused wins at batch 32 |
+| -------------- | ------: | ------: | -------: | ---------------------: |
+| Kornia         |   2.99x |   1.73x |    1.62x |                  5 / 7 |
+| TorchVision    |   3.06x |   0.85x |    0.63x |                  1 / 7 |
+| Albumentations |   1.52x |   1.51x |    1.51x |                  7 / 7 |
 
-A ratio above 1 means fused was faster; below 1 means fused was slower.
+This sweep exposes an important limitation: TorchVision was favorable for the sampled batch-one workloads, but was slower in most sampled batch-8 and batch-32 workloads. Do not assume an improvement merely because a pipeline is fused.
 
-### Quick-run variability
-
-Ten measurements are sufficient for a smoke benchmark, not for a stable effect estimate. Between two CPU invocations:
-
-- TorchVision batch-8 geometric-plus-crop moved from `0.75x` to `1.27x`, changing from a loss to a win.
-- TorchVision batch-8 three-op geometry moved from `0.72x` to `0.92x`.
-- TorchVision batch-8 mixed pipelines remained slower, although the magnitude changed.
-
-This variation is why the tables expose individual losses and why release-neutral documentation should not promise a specific speedup.
-
-## Apple MPS results
-
-The MPS quick sweep used the same seven sequences and batch sizes. Native Albumentations has no MPS implementation, so 14 native rows were skipped with an explicit reason. The fused Albumentations tensor path ran, but without a native MPS comparator it cannot produce a meaningful speedup ratio.
-
-Only 9 of 28 comparable Kornia/TorchVision pairs were above 1.0 in this run.
-
-| Sequence                     | Kornia b1 | Kornia b8 | TorchVision b1 | TorchVision b8 |
-| ---------------------------- | --------: | --------: | -------------: | -------------: |
-| Single rotate                |     0.66x |     1.40x |          1.15x |          1.45x |
-| Three geometric ops          |     0.59x |     0.95x |          0.69x |          0.29x |
-| Five geometric ops           |     0.65x |     2.05x |          0.45x |          0.35x |
-| Five geometric ops with warp |     1.11x |     2.14x |          0.60x |          0.62x |
-| Mixed 3 geometric + 3 color  |     0.58x |     0.78x |          0.47x |          0.28x |
-| Mixed 4 geometric + 3 color  |     0.83x |     2.05x |          0.54x |          0.36x |
-| Geometric + crop/resize      |     1.34x |     1.10x |          0.28x |          0.21x |
-
-The MPS result distribution also had wide tails. For example, fused Kornia batch-8 mixed 3+3 had a 25 ms median and 133 ms p90. These measurements prove that the paths execute and reveal backend-specific limitations; they do not establish a stable MPS speedup.
-
-CUDA was unavailable. CUDA latency, memory, compilation, and graph-reuse claims remain unverified by this benchmark session.
+| Representative sequence                         | Backend / batch | Native / fused median latency |  Ratio |
+| ----------------------------------------------- | --------------- | ----------------------------: | -----: |
+| Three geometric transforms                      | Kornia / 1      |              1.163 / 0.319 ms |  3.65x |
+| Five geometric transforms with warps            | TorchVision / 1 |              3.506 / 0.308 ms | 11.38x |
+| Mixed 3 geometric + 3 color, aggressive reorder | Kornia / 8      |              8.494 / 8.118 ms |  1.05x |
+| Geometric plus crop/resize                      | TorchVision / 8 |              1.310 / 1.805 ms |  0.73x |
+| Single rotate                                   | Kornia / 32     |              5.284 / 5.347 ms |  0.99x |
 
 ## Primitive versus generic Affine
 
-The primitive benchmark explains why chain length matters and why exact-operation shortcuts are important.
+`experiments/bench_primitive_vs_affine.py` used 20 warmups and 100 timed repetitions. It explains why exact-operation shortcuts matter: a generic Affine call can be near parity for one operation, but it can also cost far more than a dedicated flip or rotation. Conversely, one combined Affine can replace multiple expensive resampling passes in a chain.
 
-| Case                                          | Measured result | Meaning                                                           |
-| --------------------------------------------- | --------------: | ----------------------------------------------------------------- |
-| Albumentations Rotate: Affine/primitive       |           1.01x | Generic Affine was near parity.                                   |
-| Albumentations HFlip: Affine/primitive        |           9.40x | Generic Affine was much more expensive than the exact primitive.  |
-| Albumentations VFlip: Affine/primitive        |          21.41x | Generic Affine was much more expensive than the exact primitive.  |
-| TorchVision Rotate90: Affine/primitive        |          15.45x | Routing an exact rotation through generic Affine would be costly. |
-| Albumentations two-op chain: combined/native  |           0.71x | One combined Affine was faster.                                   |
-| Albumentations five-op chain: combined/native |           0.38x | The chain benefit increased.                                      |
-| Albumentations six-op chain: combined/native  |           0.32x | The combined cost stayed near constant.                           |
+| Case                                                   | Measured ratio | Meaning                                   |
+| ------------------------------------------------------ | -------------: | ----------------------------------------- |
+| Albumentations Rotate 30 degrees: Affine / primitive   |          1.02x | Near parity.                              |
+| Albumentations HFlip: Affine / primitive               |         17.69x | The generic route is much more expensive. |
+| Albumentations VFlip: Affine / primitive               |         17.84x | The generic route is much more expensive. |
+| Kornia Rotate 30 degrees: Affine / primitive           |          1.23x | Small generic-route cost.                 |
+| TorchVision Rotate 30 degrees: Affine / primitive      |          3.87x | Meaningful generic-route cost.            |
+| Albumentations two-operation chain: combined / native  |          0.70x | One combined call was faster.             |
+| Albumentations five-operation chain: combined / native |          0.37x | Benefit grew with chain length.           |
+| Albumentations six-operation chain: combined / native  |          0.33x | Combined cost remained relatively flat.   |
 
-For the last three rows, a lower ratio is better because the benchmark reports combined-Affine cost divided by primitive-chain cost. Many combined Kornia/TorchVision chain entries are absent from this script, so package-level pipeline benchmarks remain the evidence for those backends.
+For the first five rows, a ratio near 1 is parity and a ratio above 1 means the generic Affine route costs more. For the chain rows, a lower combined/native ratio is better.
 
-## Memory results
+## Reported CPU tensor memory
 
-The CPU memory quick sweep measured three sequences, Kornia and TorchVision tensor paths, and batches 1 and 8. The Torch profiler reported lower peak tensor memory for all 12 comparable pairs. Allocation count was lower in 8 pairs and higher in 4.
+`experiments/bench_memory.py --json` used its normal six-sequence CPU and MPS sweep, batches 1 and 8, and three warmups. CPU results below compare Kornia and TorchVision tensor paths. The figures are geometric means of six `fused / native` ratios; a smaller peak ratio means less reported peak tensor memory.
 
-| Sequence                    | Backend / batch | Fused/native peak | Fused/native allocations |
-| --------------------------- | --------------- | ----------------: | -----------------------: |
-| Three geometric ops         | Kornia / 1      |             0.75x |                    0.19x |
-| Three geometric ops         | TorchVision / 1 |             0.12x |                    0.54x |
-| Three geometric ops         | Kornia / 8      |             0.34x |                    0.56x |
-| Three geometric ops         | TorchVision / 8 |             0.32x |                    5.49x |
-| Mixed 3 geometric + 3 color | Kornia / 8      |             0.86x |                    0.72x |
-| Mixed 3 geometric + 3 color | TorchVision / 8 |             0.84x |                    2.09x |
-| Geometric + crop/resize     | Kornia / 8      |             0.32x |                    0.62x |
-| Geometric + crop/resize     | TorchVision / 8 |             0.32x |                    4.73x |
+| Backend / batch | Fused / native peak | Fused / native allocations | Lower peak samples | Lower allocation samples |
+| --------------- | ------------------: | -------------------------: | -----------------: | -----------------------: |
+| Kornia / 1      |               0.44x |                      0.24x |              6 / 6 |                    6 / 6 |
+| Kornia / 8      |               0.38x |                      0.57x |              6 / 6 |                    6 / 6 |
+| TorchVision / 1 |               0.18x |                      0.86x |              6 / 6 |                    5 / 6 |
+| TorchVision / 8 |               0.33x |                      3.50x |              6 / 6 |                    0 / 6 |
 
-The three-op TorchVision batch-8 case used 117.5 MB native versus 38.0 MB fused, about **3.1x less peak tensor memory**. An older README statement described this as about 8x at batch 8; the displayed 8x figures were actually from batch 1.
+Fusion reduced the profiler-reported peak tensor memory in every sampled CPU Kornia and TorchVision comparison. It did **not** consistently reduce the allocation count: TorchVision batch-eight fused cases allocated more, even while their reported peak was lower.
+
+| Sequence                             | Backend / batch | Native / fused reported peak | Fused / native peak | Fused / native allocations |
+| ------------------------------------ | --------------- | ---------------------------: | ------------------: | -------------------------: |
+| Three geometric transforms           | Kornia / 1      |                 5.5 / 2.3 MB |               0.41x |                      0.11x |
+| Three geometric transforms           | TorchVision / 8 |              117.5 / 38.0 MB |               0.32x |                      5.49x |
+| Five geometric transforms with warps | TorchVision / 8 |              284.8 / 38.0 MB |               0.13x |                      4.15x |
+| Mixed 4 geometric + 3 color          | Kornia / 8      |             582.5 / 433.1 MB |               0.74x |                      0.60x |
+| Geometric plus crop/resize           | TorchVision / 8 |               75.9 / 24.5 MB |               0.32x |                      4.09x |
 
 ### Memory-counter boundaries
 
-- CPU peak and allocation events come from a private Torch profiler memory timeline and one measured invocation per mode.
-- Native NumPy/OpenCV allocations are not visible to the Torch allocator. Albumentations rows reporting 0.0 MB do not mean zero memory.
-- Python `tracemalloc` does not cover every C-extension allocation.
-- MPS exposes current resident allocation, not a reliable transient peak.
-- CUDA uses a different allocator counter and was not exercised.
-- Allocation count depends on profiler and dependency versions and can rise even when peak memory falls.
+- CPU peak and allocation events come from a Torch profiler memory timeline; they do not capture every allocation made by native code.
+- Native Albumentations uses NumPy/OpenCV, so its `0.0 MB` Torch-profiler rows are not evidence of zero memory use and are excluded from the comparison.
+- MPS reports an allocation delta, not a reliable transient peak. Its full-run records are preserved as diagnostics, not summarized as a memory claim.
+- CUDA was unavailable and has a different allocator counter.
+- Allocation counts depend on the profiler and dependency versions. They can increase even when peak tensor memory falls.
 
-The defensible claim is therefore: fusion reduced reported peak tensor memory in the sampled CPU Kornia/TorchVision cases. It did not consistently reduce allocation count, and no native Albumentations memory conclusion is available.
+## Reproduce this run
 
-## Run the benchmarks
-
-Install or synchronize the optional benchmark environment, then select the script matching the question:
+Synchronize the optional benchmark dependencies, then run every experiment:
 
 ```bash
 uv run --all-extras --group benchmark python experiments/optimize_score.py
-uv run --all-extras --group benchmark python experiments/bench_gpu_batch.py --quick
-uv run --all-extras --group benchmark python experiments/bench_memory.py --quick --json
+uv run --all-extras --group benchmark python experiments/bench_augmentation_pipelines.py
 uv run --all-extras --group benchmark python experiments/bench_primitive_vs_affine.py
+uv run --all-extras --group benchmark python experiments/bench_gpu_batch.py
+uv run --all-extras --group benchmark python experiments/bench_memory.py --json
 ```
 
-The scripts write scratch results under `experiments/results/`; that directory is gitignored. Preserve the command, commit, metadata, raw samples, and environment separately if a result will support a paper, release, or public claim.
-
-For a stronger protocol than the quick scripts provide, follow [Methodology](methodology.md). For the distinction between speed and output equivalence, see [Quality and fidelity](quality-and-fidelity.md).
+The scripts write JSON and visual sanity outputs under `experiments/results/`. That directory is gitignored because results are host-specific scratch output. For a paper, release, or public performance claim, retain the raw JSON, command, commit SHA, dependency versions, and hardware metadata alongside the claim. For a stronger protocol, follow [Methodology](methodology.md).
