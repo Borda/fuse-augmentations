@@ -40,25 +40,20 @@ silently:
 
     backend         chain             PSNR(fused)  PSNR(native)  delta
     kornia          rot+scale           134.4 dB     60.1 dB     +74 dB
-    torchvision     rot+scale           134.4 dB     12.3 dB    +122 dB
+    torchvision     rot+scale           134.4 dB     46.9 dB     +87 dB
     albumentations  rot+scale            72.1 dB     59.1 dB     +13 dB
     kornia          rot+scale+shear     137.1 dB     30.7 dB    +106 dB
-    torchvision     rot+scale+shear     134.5 dB     12.1 dB    +122 dB
+    torchvision     rot+scale+shear     137.1 dB     29.6 dB    +107 dB
     albumentations  rot+scale+shear      66.6 dB     30.5 dB     +36 dB
 
     Backend-free rot+scale: PSNR(fused)=122.6 dB vs PSNR(2-pass render)=60.1 dB.
 
-FINDING -- torchvision native margin is inflated by a convention difference.
-    torchvision's native sequential geometric ops diverge ~2x more from the ideal
-    single-pass render than kornia / albumentations (native ~12 dB vs ~21 dB on a
-    random image; reproduced with *true* torchvision, not a package artifact).
-    torchvision's affine/rotate engine uses a slightly different center /
-    ``align_corners`` convention than the package reference, so the torchvision
-    fused-vs-native margin overstates the pure interpolation-pass benefit.  The
-    convention-controlled benefit (kornia / albumentations, and the backend-free
-    ``test_backend_free_fusion_beats_multipass`` below) is ~25-26 dB from
-    eliminating one interpolation pass -- that is the honest number.  The fused
-    precision claim holds for every backend regardless.
+FINDING -- TorchVision's ``RandomRotation`` needs an inverse-sign conversion
+    when its sampled angle is turned into the package's forward matrix. The
+    adapter and the NumPy/cv2 fast path apply that conversion, and a separate
+    multi-operation direction regression test guards it. Fused-vs-native PSNR
+    still combines the effect of fewer resampling passes with backend rasterizer
+    and coordinate differences; it is not a task-quality result.
 """
 
 from __future__ import annotations

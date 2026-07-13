@@ -157,6 +157,23 @@ class TestTorchVisionProjectiveParity:
 class TestAlbumentationsProjectiveParity:
     """Fused AlbuProjectiveSegment vs native A.Perspective."""
 
+    def test_keep_size_perspective_matches_native_with_replayed_seed(self):
+        """A fixed-seed keep-size Perspective matches native Albumentations on a non-square batch."""
+        image = torch.rand(2, 3, 48, 64)
+        native_transform = albu.Perspective(scale=(0.1, 0.1), keep_size=True, p=1.0)
+        fused_transform = albu.Perspective(scale=(0.1, 0.1), keep_size=True, p=1.0)
+        native_transform.set_random_seed(27)
+        fused_transform.set_random_seed(27)
+
+        native = torch.stack([
+            torch.as_tensor(native_transform(image=sample.permute(1, 2, 0).numpy())["image"]).permute(2, 0, 1)
+            for sample in image
+        ])
+        fused = Compose([fused_transform])(image)
+
+        assert fused.shape == image.shape
+        torch.testing.assert_close(fused, native, rtol=1e-4, atol=1e-6)
+
     def test_single_perspective_shape(self):
         """Single A.Perspective produces output with same shape."""
         transform = albu.Perspective(p=1.0)

@@ -102,25 +102,33 @@ This is a backend-specific resampling illustration, not a native-pixel-parity, c
 
 The package recognizes transform objects from several backends, but recognition does not guarantee identical native execution semantics.
 
-| Surface                 | Verified behavior                                                                                                         | Important boundary                                                                                                                |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Fused affine core       | Compatible matrices are composed and executed through a single fused warp.                                                | Output follows the package's grid, interpolation, and padding conventions.                                                        |
-| TorchVision geometry    | Transform classes can be recognized and fused.                                                                            | Native pixel parity is weak for some transforms because center and sampling conventions differ.                                   |
-| Kornia geometry         | Compatible tensor transforms can be grouped into fused segments.                                                          | Validate sampled parameters, padding, interpolation, and device behavior for the exact pipeline.                                  |
-| Albumentations geometry | The default CPU path can use composed OpenCV transforms; a torch execution path is available for tensor/device execution. | OpenCV and `grid_sample` differ in border handling and sub-pixel weights. Native Albumentations is not an accelerator comparator. |
-| Exact D4 operations     | Supported exact chains can avoid interpolation.                                                                           | The reported warp-saving count is not a literal native-resampling count.                                                          |
-| Projective transforms   | Supported homographies can be composed.                                                                                   | Full native projective parity across backends remains unverified.                                                                 |
-| Linear color operations | Compatible brightness, contrast, and normalization operations can be represented by color matrices.                       | Clipping order, contrast midpoint, input range, channel count, and backend semantics can produce differences.                     |
+| Surface                 | Verified behavior                                                                                                                                              | Important boundary                                                                                                                       |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Fused affine core       | Compatible matrices are composed and executed through a single fused warp.                                                                                     | Output follows the package's grid, interpolation, and padding conventions.                                                               |
+| TorchVision geometry    | Fixed native v1 replays cover rotation and every `RandomAffine` term on non-square inputs; the v2 rotation direction is regression-tested in a composed chain. | Perspective uses a bounded MSE replay check, and crop-resize checks shared parameters, matrix, and shape rather than false pixel parity. |
+| Kornia geometry         | Fixed native replays cover combined affine, quarter rotation, perspective, and crop-resize on non-square batches.                                              | Results rely on Kornia's current affine/grid conventions and must be revalidated when upgrading Kornia.                                  |
+| Albumentations geometry | Fixed native replays cover combined affine, `ShiftScaleRotate`, crop-resize, `Perspective(keep_size=True)`, D4, quarter turns, and transpose.                  | `Perspective(keep_size=False)` has sampled output dimensions, so it cannot form one batched fused tensor segment.                        |
+| Exact D4 operations     | All supported Albumentations D4 elements and axis-swapping shapes are tested against native execution.                                                         | The reported warp-saving count is not a literal native-resampling count.                                                                 |
+| Projective transforms   | Fixed native projective parameters are replayed for all three backends.                                                                                        | Cross-backend raster output is not an equivalence target; each backend retains its own renderer conventions.                             |
+| Linear color operations | Compatible brightness, contrast, and normalization operations can be represented by color matrices.                                                            | Clipping order, contrast midpoint, input range, channel count, and backend semantics can produce differences.                            |
+
+### What the parity tests prove
+
+The test suite deliberately uses fixed parameters, asymmetric landmarks, non-square batches, and probability boundaries. It tests the failure modes that a random natural-image comparison can hide: angle direction, percentage-to-pixel conversion, shear order, crop coordinates, D4 element mapping, sampled homography scale, and `p=0` identity behavior.
+
+These are **single-operation replay contracts**. A sequential native pipeline and a multi-operation fused pipeline usually cannot be pixel-identical: the native path interpolates after each step, while the fused path interpolates once. Use the figures above and the fidelity protocol below to evaluate the complete pipeline, not a primitive-level parity test alone.
 
 ### TorchVision geometric differences
 
-The TorchVision adapter intentionally uses a different center convention from native TorchVision for fused grid execution. In an adversarial fixed 30-degree rotation probe, the observed differences were:
+TorchVision `RandomRotation` exposes an inverse-sampling angle, while Fuse Compose stores forward pixel-space matrices. The adapter converts that sign before fusing a chain. This matters only when multiple operations are composed; a one-operation native fast path can otherwise hide the issue.
 
-- maximum absolute difference: `0.9876`;
-- mean absolute difference: `0.2702`;
-- fraction of values with absolute difference greater than `1e-2`: `0.8833`.
+Native pixel parity remains limited by center, interpolation, fill, and repeated-resampling conventions. In a fixed 30-degree v2 rotation probe on a seed-0 random `1×3×64×64` tensor, the current environment observed:
 
-Those values demonstrate transform support, not behavioral equivalence. They are not a universal error model; other images and transforms can differ by more or less. If native TorchVision pixels are the reference, establish transform-specific tolerances before adopting the fused path. `expand=True` is refused rather than approximated.
+- maximum absolute difference: `0.2385`;
+- mean absolute difference: `0.00221`;
+- fraction of values with absolute difference greater than `1e-2`: `0.0243`.
+
+These values demonstrate the remaining convention difference, not behavioral equivalence or a universal error model. Other images and transforms can differ by more or less. If native TorchVision pixels are the reference, establish transform-specific tolerances before adopting the fused path. `expand=True` is refused rather than approximated.
 
 ### Albumentations execution paths
 
@@ -150,14 +158,14 @@ Use `ReorderPolicy.NONE` when operation order is part of the scientific or appli
 
 Fused linear color operations have their own parity boundary.
 
-| Condition                                                          | Expected fidelity                                                                                                  |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| Linear operations, controlled range, compatible clipping semantics | Often close; validate per backend.                                                                                 |
-| Default final-only clipping                                        | Can differ from a native pipeline that clips after each operation.                                                 |
-| `clip_policy="per_op_parity"`                                      | Closer to native clipping order, but a contrast-midpoint difference of roughly `1e-2` is documented in some cases. |
-| Normalize in a fused run                                           | Values outside image gamut are intentional; final image-range clipping is disabled.                                |
-| Non-RGB input                                                      | Color fusion can fall back to sequential native execution.                                                         |
-| Saturation, hue, gamma, equalization                               | Not generally representable by one linear color matrix; expect passthrough or barriers.                            |
+| Condition                                                          | Expected fidelity                                                                                                                                            |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Linear operations, controlled range, compatible clipping semantics | Often close; validate per backend.                                                                                                                           |
+| Default final-only clipping                                        | Can differ from a native pipeline that clips after each operation.                                                                                           |
+| `clip_policy="per_op_parity"`                                      | Matches the tested native TorchVision brightness-clamp chain; a gamut-escaping predecessor before mean-relative contrast can still differ by roughly `1e-2`. |
+| Normalize in a fused run                                           | Values outside image gamut are intentional; final image-range clipping is disabled.                                                                          |
+| Non-RGB input                                                      | Color fusion can fall back to sequential native execution.                                                                                                   |
+| Saturation, hue, gamma, equalization                               | Not generally representable by one linear color matrix; expect passthrough or barriers.                                                                      |
 
 Do not use a single global tolerance for all color operations. Define tolerances by backend, operation order, input range, clip policy, dtype, and channel count.
 

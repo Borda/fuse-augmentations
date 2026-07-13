@@ -27,7 +27,8 @@ if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as albu
 
 ATOL_PIXEL = 1e-3  # flip parity: tensor.flip vs albumentations cv2
-ATOL_CV2 = 1e-5  # INTERP parity: fused cv2 vs sequential cv2 reference
+# INTERP parity: cv2 resampling may differ slightly across supported OpenCV releases.
+ATOL_CV2 = 1e-5
 HEIGHT, WIDTH, NUM_CHANNELS = 64, 64, 3
 
 
@@ -82,6 +83,40 @@ def _sequential_cv2(transforms: list, img_tensor: torch.Tensor) -> torch.Tensor:
 @pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestSingleTransformParity:
     """Fused output with p=1 must match sequential albumentations output."""
+
+    def test_affine_combined_parameter_parity_on_non_square_batch(self):
+        """Affine replays native fixed scale, translation, rotation, and shear for every batch sample."""
+        image = torch.rand(3, NUM_CHANNELS, 48, 64, generator=torch.Generator().manual_seed(17))
+        kwargs = {
+            "scale": {"x": (0.85, 0.85), "y": (1.1, 1.1)},
+            "translate_percent": {"x": (0.1, 0.1), "y": (-0.08, -0.08)},
+            "rotate": (13.0, 13.0),
+            "shear": {"x": (9.0, 9.0), "y": (-4.0, -4.0)},
+            "p": 1.0,
+        }
+        native = _sequential_albu([albu.Affine(**kwargs)], image)
+        fused = Compose([albu.Affine(**kwargs)])(image)
+
+        assert fused.shape == image.shape
+        torch.testing.assert_close(fused, native, rtol=1e-4, atol=ATOL_CV2)
+
+    def test_shift_scale_rotate_combined_parameter_parity_on_non_square_batch(self):
+        """ShiftScaleRotate replays native fixed scale, translation, and rotation for every batch sample."""
+        image = torch.rand(3, NUM_CHANNELS, 48, 64, generator=torch.Generator().manual_seed(23))
+        kwargs = {
+            "shift_limit_x": (0.1, 0.1),
+            "shift_limit_y": (-0.08, -0.08),
+            "scale_limit": (0.12, 0.12),
+            "rotate_limit": (13.0, 13.0),
+            "p": 1.0,
+        }
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            native = _sequential_albu([albu.ShiftScaleRotate(**kwargs)], image)
+            fused = Compose([albu.ShiftScaleRotate(**kwargs)])(image)
+
+        assert fused.shape == image.shape
+        torch.testing.assert_close(fused, native, rtol=1e-4, atol=ATOL_CV2)
 
     def test_rotation_parity(self, img):
         """Fused albu.Rotate matches sequential cv2.warpAffine within float32 cv2 tolerance."""
@@ -151,6 +186,20 @@ class TestSingleTransformParity:
 
         assert torch.allclose(fused_out, seq_out, atol=ATOL_CV2)
 
+    def test_random_resized_crop_parity_on_non_square_batch(self):
+        """RandomResizedCrop replays the native crop and resize for every seeded batch sample."""
+        image = torch.rand(3, NUM_CHANNELS, 48, 64)
+        native_transform = albu.RandomResizedCrop(size=(24, 32), scale=(0.5, 0.5), ratio=(1.0, 1.0), p=1.0)
+        fused_transform = albu.RandomResizedCrop(size=(24, 32), scale=(0.5, 0.5), ratio=(1.0, 1.0), p=1.0)
+        native_transform.set_random_seed(27)
+        fused_transform.set_random_seed(27)
+
+        native = _sequential_albu([native_transform], image)
+        fused = Compose([fused_transform])(image)
+
+        assert fused.shape == (3, NUM_CHANNELS, 24, 32)
+        torch.testing.assert_close(fused, native, rtol=1e-4, atol=1e-6)
+
 
 @pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestProbabilityEdgeCases:
@@ -169,6 +218,89 @@ class TestProbabilityEdgeCases:
         """Compose([]) over an albumentations pipeline returns input unchanged."""
         out = Compose([])(img)
         assert torch.allclose(out, img)
+
+    @pytest.mark.parametrize(
+        "transform_factory",
+        [
+            pytest.param(lambda: albu.Affine(rotate=(20.0, 20.0), p=0.0), id="affine"),
+            pytest.param(lambda: albu.ShiftScaleRotate(rotate_limit=(20.0, 20.0), p=0.0), id="shift-scale-rotate"),
+            pytest.param(lambda: albu.Perspective(scale=(0.1, 0.1), p=0.0), id="perspective"),
+        ],
+    )
+    def test_p0_matches_native_identity(self, transform_factory, img):
+        """P=0 leaves images unchanged for every shape-preserving interpolated primitive."""
+        transform = transform_factory()
+        native = _sequential_albu([transform], img)
+        fused = Compose([transform])(img)
+
+        torch.testing.assert_close(fused, native, rtol=1e-4, atol=1e-6)
+
+
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
+class TestExactDiscreteNativeParity:
+    """Replay every lossless Albumentations discrete geometry primitive."""
+
+    @pytest.mark.parametrize("factor", range(4))
+    def test_random_rotate90_replays_every_factor(self, factor: int):
+        """RandomRotate90 reproduces each native quarter-turn on square images."""
+        image = torch.rand(2, NUM_CHANNELS, 48, 48)
+        native_transform = albu.RandomRotate90(p=1.0)
+        fused_transform = albu.RandomRotate90(p=1.0)
+        native_transform.get_params = lambda: {"factor": factor}
+        fused_transform.get_params = lambda: {"factor": factor}
+
+        native = _sequential_albu([native_transform], image)
+        fused = Compose([fused_transform])(image)
+
+        torch.testing.assert_close(fused, native, rtol=1e-4, atol=1e-6)
+
+    @pytest.mark.parametrize("element", ["e", "r90", "r180", "r270", "h", "v", "t", "hvt"])
+    def test_d4_replays_every_group_element(self, element: str):
+        """D4 reproduces each native group element on square images."""
+        image = torch.rand(2, NUM_CHANNELS, 48, 48)
+        native_transform = albu.D4(p=1.0)
+        fused_transform = albu.D4(p=1.0)
+        native_transform.get_params = lambda: {"group_element": element}
+        fused_transform.get_params = lambda: {"group_element": element}
+
+        native = _sequential_albu([native_transform], image)
+        fused = Compose([fused_transform])(image)
+
+        torch.testing.assert_close(fused, native, rtol=1e-4, atol=1e-6)
+
+    def test_transpose_replays_native_on_square_images(self):
+        """Transpose reproduces native Albumentations exactly on square batches."""
+        image = torch.rand(2, NUM_CHANNELS, 48, 48)
+        native = _sequential_albu([albu.Transpose(p=1.0)], image)
+        fused = Compose([albu.Transpose(p=1.0)])(image)
+
+        torch.testing.assert_close(fused, native, rtol=1e-4, atol=1e-6)
+
+    @pytest.mark.parametrize(
+        ("factory", "label"),
+        [
+            pytest.param(lambda: albu.RandomRotate90(p=1.0), "RandomRotate90", id="rotate90"),
+            pytest.param(lambda: albu.D4(p=1.0), "D4", id="d4-rotate90"),
+            pytest.param(lambda: albu.Transpose(p=1.0), "Transpose", id="transpose"),
+        ],
+    )
+    def test_axis_swapping_exact_ops_replay_native_on_non_square_images(self, factory, label: str):
+        """Single exact shape-changing operations preserve native non-square output dimensions."""
+        image = torch.rand(2, NUM_CHANNELS, 48, 64)
+        native_transform = factory()
+        fused_transform = factory()
+        if isinstance(native_transform, albu.RandomRotate90):
+            native_transform.get_params = lambda: {"factor": 1}
+            fused_transform.get_params = lambda: {"factor": 1}
+        if isinstance(native_transform, albu.D4):
+            native_transform.get_params = lambda: {"group_element": "r90"}
+            fused_transform.get_params = lambda: {"group_element": "r90"}
+
+        native = _sequential_albu([native_transform], image)
+        fused = Compose([fused_transform])(image)
+
+        assert fused.shape == (2, NUM_CHANNELS, 64, 48), label
+        torch.testing.assert_close(fused, native, rtol=1e-4, atol=1e-6)
 
 
 @pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")

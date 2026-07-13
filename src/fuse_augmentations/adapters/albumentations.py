@@ -934,7 +934,20 @@ def _sample_matrices(transform: object, batch_size: int, height: int, width: int
             base = transform.update_params(base, **data)  # type: ignore[attr-defined]
         full = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]
         if "matrix" in full:
-            matrices[idx] = full["matrix"]
+            matrix = np.asarray(full["matrix"], dtype=np.float64)
+            if _is_albu_instance(transform, frozenset({_Perspective})) and bool(getattr(transform, "keep_size", False)):
+                # Albumentations applies Perspective into its sampled bounding box,
+                # then maps that intermediate image back to the original dimensions.
+                # Folding the same output scale into the forward homography lets the
+                # fused cv2 path perform the identical geometry in one warp.
+                max_width = int(full["max_width"])
+                max_height = int(full["max_height"])
+                resize = np.array(
+                    [[width / max_width, 0.0, 0.0], [0.0, height / max_height, 0.0], [0.0, 0.0, 1.0]],
+                    dtype=np.float64,
+                )
+                matrix = resize @ matrix
+            matrices[idx] = matrix
         else:
             msg = f"{type(transform).__name__} did not return 'matrix' from get_params_dependent_on_data()"
             raise KeyError(msg)

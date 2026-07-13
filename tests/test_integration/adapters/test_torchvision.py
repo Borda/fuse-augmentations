@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from fuse_augmentations import Compose
 from fuse_augmentations._compat import _TORCHVISION_AVAILABLE, _TORCHVISION_V2_AVAILABLE
 from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
-from fuse_augmentations.affine.matrix import inv3x3, normalize_matrix
+from fuse_augmentations.affine.matrix import crop_resize_matrix, inv3x3, normalize_matrix
 
 if _TORCHVISION_AVAILABLE:
     import torchvision.transforms as tv_trans
@@ -296,6 +296,23 @@ class TestV2Parity:
             torch.testing.assert_close(matrix[idx], matrix[0], atol=1e-6, rtol=0.0)
 
     @pytest.mark.skipif(not _TORCHVISION_V2_AVAILABLE, reason="torchvision v2 required")
+    def test_v2_rotation_then_scale_preserves_rotation_direction(self):
+        """A fused rotation followed by scale keeps TorchVision's rotation direction."""
+        image = torch.zeros(1, 1, 65, 65)
+        image[:, :, 8:18, 41:51] = 1.0
+        interpolation = T2.InterpolationMode.NEAREST
+        transforms = [
+            T2.RandomRotation(degrees=(20.0, 20.0), interpolation=interpolation),
+            T2.RandomAffine(degrees=(0.0, 0.0), scale=(0.89, 0.89), interpolation=interpolation),
+        ]
+
+        native = T2.Compose(transforms)(image)
+        fused = Compose(transforms, interpolation="nearest")(image)
+        mse = torch.mean((native - fused) ** 2).item()
+
+        assert mse < 0.01, f"Rotation direction mismatch: MSE={mse:.6f}"
+
+    @pytest.mark.skipif(not _TORCHVISION_V2_AVAILABLE, reason="torchvision v2 required")
     def test_v2_rotation_per_sample_randomness_uses_independent_matrices(self):
         """randomness='per_sample' overrides v2 batch-shared canonical sampling."""
         img = _rand_image(batch_size=4)
@@ -335,6 +352,166 @@ class TestV2Parity:
         fused_out = Compose([T2.ColorJitter(brightness=0.2, contrast=0.3, saturation=0.1, hue=0.05)])(img)
 
         torch.testing.assert_close(fused_out, native_out, atol=1e-6, rtol=0.0)
+
+
+_REPLAY_HEIGHT, _REPLAY_WIDTH = 53, 79
+
+
+def _non_square_landmark_image(batch_size: int = 2) -> torch.Tensor:
+    """Return a non-square image whose landmarks expose geometric direction errors."""
+    image = torch.zeros(batch_size, 1, _REPLAY_HEIGHT, _REPLAY_WIDTH)
+    image[0, :, 6:17, 55:68] = 1.0
+    if batch_size > 1:
+        image[1, :, 31:44, 9:22] = 0.7
+    return image
+
+
+def _fixed_affine_params(
+    angle: float,
+    translation: tuple[int, int],
+    scale: float,
+    shear: tuple[float, float],
+) -> object:
+    """Return a TorchVision-compatible ``RandomAffine.get_params`` replay function."""
+
+    def get_params(*_args: object, **_kwargs: object) -> tuple[float, tuple[int, int], float, tuple[float, float]]:
+        """Replay one known affine sample for native and fused execution."""
+        return angle, translation, scale, shear
+
+    return staticmethod(get_params)
+
+
+@pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
+class TestNativeParameterReplayParity:
+    """Replay identical native parameters to catch TorchVision convention drift."""
+
+    @pytest.mark.parametrize(
+        ("label", "transform_kwargs", "sample"),
+        [
+            ("rotation", {"degrees": (13.0, 13.0)}, (13.0, (0, 0), 1.0, (0.0, 0.0))),
+            (
+                "translation",
+                {"degrees": (0.0, 0.0), "translate": (0.2, 0.2)},
+                (0.0, (7, -5), 1.0, (0.0, 0.0)),
+            ),
+            ("scale", {"degrees": (0.0, 0.0), "scale": (0.84, 0.84)}, (0.0, (0, 0), 0.84, (0.0, 0.0))),
+            (
+                "shear_x",
+                {"degrees": (0.0, 0.0), "shear": (7.0, 7.0, 0.0, 0.0)},
+                (0.0, (0, 0), 1.0, (7.0, 0.0)),
+            ),
+            (
+                "shear_y",
+                {"degrees": (0.0, 0.0), "shear": (0.0, 0.0, -4.0, -4.0)},
+                (0.0, (0, 0), 1.0, (0.0, -4.0)),
+            ),
+            (
+                "combined",
+                {
+                    "degrees": (13.0, 13.0),
+                    "translate": (0.2, 0.2),
+                    "scale": (0.84, 0.84),
+                    "shear": (7.0, 7.0, -4.0, -4.0),
+                },
+                (13.0, (7, -5), 0.84, (7.0, -4.0)),
+            ),
+        ],
+    )
+    def test_random_affine_replays_native_parameters(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        label: str,
+        transform_kwargs: dict[str, object],
+        sample: tuple[float, tuple[int, int], float, tuple[float, float]],
+    ) -> None:
+        """Every affine component keeps TorchVision's signs, units, and composition order."""
+        monkeypatch.setattr(tv_trans.RandomAffine, "get_params", _fixed_affine_params(*sample))
+        interpolation = tv_trans.InterpolationMode.NEAREST
+        transform = tv_trans.RandomAffine(interpolation=interpolation, **transform_kwargs)
+        image = _non_square_landmark_image()
+
+        native_out = _native_apply(transform, image)
+        fused_out = Compose([transform], interpolation="nearest")(image)
+
+        torch.testing.assert_close(fused_out, native_out, rtol=0.0, atol=0.0, msg=label)
+
+    def test_random_rotation_replays_native_angle(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A fixed non-square rotation uses the same clockwise convention as native TorchVision."""
+        monkeypatch.setattr(tv_trans.RandomRotation, "get_params", staticmethod(lambda _degrees: 13.0))
+        transform = tv_trans.RandomRotation(
+            degrees=(13.0, 13.0),
+            interpolation=tv_trans.InterpolationMode.NEAREST,
+        )
+        image = _non_square_landmark_image()
+
+        native_out = _native_apply(transform, image)
+        fused_out = Compose([transform], interpolation="nearest")(image)
+
+        torch.testing.assert_close(fused_out, native_out, rtol=0.0, atol=0.0)
+
+    def test_random_perspective_replays_native_endpoints(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A fixed perspective replay retains endpoint orientation on a non-square image."""
+
+        def get_params(width: int, height: int, _distortion: float) -> tuple[list[list[int]], list[list[int]]]:
+            """Return one asymmetric four-corner perspective sample."""
+            return (
+                [[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]],
+                [[5, 4], [width - 7, 2], [width - 4, height - 6], [3, height - 3]],
+            )
+
+        monkeypatch.setattr(tv_trans.RandomPerspective, "get_params", staticmethod(get_params))
+        transform = tv_trans.RandomPerspective(
+            distortion_scale=0.5,
+            p=1.0,
+            interpolation=tv_trans.InterpolationMode.NEAREST,
+        )
+        image = _non_square_landmark_image(batch_size=1)
+
+        native_out = _native_apply(transform, image)
+        fused_out = Compose([transform], interpolation="nearest")(image)
+
+        assert torch.mean((fused_out - native_out) ** 2).item() < 0.003
+
+    def test_random_resized_crop_replays_native_crop_contract(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A fixed crop sample reaches native's target shape and the same pixel-space crop matrix."""
+        crop = (7, 11, 29, 41)
+        monkeypatch.setattr(tv_trans.RandomResizedCrop, "get_params", staticmethod(lambda *_args, **_kwargs: crop))
+        transform = tv_trans.RandomResizedCrop(
+            size=(31, 47),
+            scale=(0.62, 0.62),
+            ratio=(1.25, 1.25),
+            interpolation=tv_trans.InterpolationMode.NEAREST,
+        )
+        image = _non_square_landmark_image(batch_size=1)
+
+        native_out = _native_apply(transform, image)
+        fused_out = Compose([transform], interpolation="nearest")(image)
+        params = TorchVisionAdapter.sample_params(transform, image.shape, image.device)
+        matrix = TorchVisionAdapter.build_matrix(transform, params, _REPLAY_HEIGHT, _REPLAY_WIDTH)
+        expected_matrix = crop_resize_matrix(
+            top=torch.tensor([float(crop[0])]),
+            left=torch.tensor([float(crop[1])]),
+            crop_h=torch.tensor([float(crop[2])]),
+            crop_w=torch.tensor([float(crop[3])]),
+            target_h=torch.tensor([31.0]),
+            target_w=torch.tensor([47.0]),
+        )
+
+        assert native_out.shape == torch.Size([1, 1, 31, 47])
+        assert fused_out.shape == native_out.shape
+        torch.testing.assert_close(matrix, expected_matrix, rtol=0.0, atol=0.0)
+
+    def test_random_perspective_probability_boundaries(self) -> None:
+        """Perspective ``p=0`` is identity while ``p=1`` records an applied projective matrix."""
+        image = _non_square_landmark_image(batch_size=1)
+        disabled = Compose([tv_trans.RandomPerspective(distortion_scale=0.5, p=0.0)])
+        enabled = Compose([tv_trans.RandomPerspective(distortion_scale=0.5, p=1.0)])
+
+        disabled_out = disabled(image)
+        enabled_out = enabled(image)
+
+        torch.testing.assert_close(disabled_out, image, rtol=0.0, atol=1e-6)
+        assert not torch.allclose(enabled_out, image, rtol=0.0, atol=1e-4)
 
 
 def _tv_forward_matrix(

@@ -263,15 +263,17 @@ class TorchVisionAdapter:
         # RandomRotation
         if isinstance(transform, tuple(_ROTATION_TYPES_FS)):
             shared_across_batch = is_torchvision_v2_transform(transform) and not force_per_sample
+            # ``RandomRotation`` supplies the inverse-sampling angle; negate it
+            # to obtain this package's forward pixel-space matrix convention.
             if shared_across_batch:
                 angle_deg = _sample_rotation_angle(transform)
                 return {
-                    "angle_rad": torch.tensor([math.radians(angle_deg)], dtype=torch.float32, device=device),
+                    "angle_rad": torch.tensor([-math.radians(angle_deg)], dtype=torch.float32, device=device),
                 }
             angles = []
             for _ in range(batch_size):
                 angle_deg = _sample_rotation_angle(transform)
-                angles.append(math.radians(angle_deg))
+                angles.append(-math.radians(angle_deg))
             return {
                 "angle_rad": torch.tensor(angles, dtype=torch.float32, device=device),
             }
@@ -1109,7 +1111,8 @@ def sample_and_build_matrix_numpy_b1_tv(
 
     if ttype in _ROTATION_TYPES_FS:
         angle_deg = float(ttype.get_params(transform.degrees))  # type: ignore[attr-defined]
-        angle_rad = math.radians(angle_deg)
+        # Keep the NumPy/cv2 fast path consistent with sample_params above.
+        angle_rad = -math.radians(angle_deg)
         cos_a = math.cos(angle_rad)
         sin_a = math.sin(angle_rad)
         return np.array(

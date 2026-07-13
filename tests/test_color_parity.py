@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from fuse_augmentations import Compose
 from fuse_augmentations._compat import _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
 
 if _KORNIA_AVAILABLE:
@@ -155,3 +156,26 @@ class TestMidChainMeanPropagation:
         ).clamp(0.0, 1.0)
 
         torch.testing.assert_close(fused, native, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
+def test_per_operation_clip_policy_matches_native_colorjitter_chain() -> None:
+    """Per-operation clipping reproduces TorchVision's gamut-clamped brightness chain.
+
+    A brightening operation takes 0.8 outside the valid range before the subsequent darkening operation. Native
+    TorchVision clamps between the operations, whereas the default one-matmul mode intentionally does not. Fixed factor
+    intervals keep this test independent of the backend RNG stream.
+
+    """
+    image = torch.full((1, 3, 4, 4), 0.8)
+    transforms = [
+        tv_v2.ColorJitter(brightness=(1.5, 1.5)),
+        tv_v2.ColorJitter(brightness=(0.5, 0.5)),
+    ]
+
+    native = tv_v2.Compose(transforms)(image)
+    per_op = Compose(transforms, clip_policy="per_op_parity")(image)
+    final = Compose(transforms, clip_policy="final")(image)
+
+    torch.testing.assert_close(per_op, native, atol=1e-6, rtol=1e-6)
+    assert not torch.allclose(final, native, atol=1e-6, rtol=1e-6)

@@ -23,13 +23,8 @@ from numpy.typing import NDArray
 from fuse_augmentations.affine.matrix import (
     crop_resize_matrix,
     hflip_matrix,
-    matmul3x3,
     perspective_from_points,
     rotation_matrix,
-    scale_matrix,
-    shear_x_matrix,
-    shear_y_matrix,
-    translate_matrix,
     vflip_matrix,
 )
 from fuse_augmentations.types import SamplingSemantics, TransformCategory
@@ -53,6 +48,7 @@ try:
     from kornia.augmentation import RandomShear as _RandomShear
     from kornia.augmentation import RandomTranslate as _RandomTranslate
     from kornia.augmentation import RandomVerticalFlip as _RandomVerticalFlip
+    from kornia.geometry.transform import get_affine_matrix2d as _get_affine_matrix2d
 
     TRANSFORM_REGISTRY: dict[type, TransformCategory] = {
         _RandomRotation: TransformCategory.GEOMETRIC_INTERP,
@@ -344,8 +340,9 @@ class KorniaAdapter:
                 # Fallback: sample k uniformly if not provided in params.
                 k_rotations = torch.randint(0, 4, (batch_size,), device=device)
 
-            # Convert discrete k to angle in radians: 0, π/2, π, 3π/2
-            angles_rad = k_rotations.to(dtype=torch.float32) * (torch.pi / 2.0)
+            # Kornia's quarter-turn matrix uses the same CW-positive convention
+            # as RandomRotation, while rotation_matrix is CCW-positive.
+            angles_rad = -k_rotations.to(dtype=torch.float32) * (torch.pi / 2.0)
             return rotation_matrix(angles_rad, height=height, width=width)
         if TRANSFORM_REGISTRY and ttype is _RandomRotation:
             angle_rad = params["angle_rad"]
@@ -382,11 +379,14 @@ class KorniaAdapter:
         height: int,
         width: int,
     ) -> torch.Tensor:
-        """Compose the full RandomAffine matrix: T @ Sh_y @ Sh_x @ S @ R.
+        """Build Kornia's native affine matrix from canonical adapter parameters.
 
-        Composition order: rotation first, then scale, then x-shear,
-        then y-shear, then translation. This matches Kornia's internal
-        convention for RandomAffine.
+        Canonical rotation and shear angles are negated when sampled so they
+        match this package's CCW-positive convention. Kornia's native
+        ``get_affine_matrix2d`` uses the opposite convention and composes the
+        centered rotation-scale matrix before its coupled x/y shear matrix.
+        Reconstructing that call avoids changing the order or units of combined
+        ``RandomAffine`` parameters.
 
         Args:
             params: Canonical-unit parameter dict.
@@ -410,47 +410,19 @@ class KorniaAdapter:
         if batch_size is None:
             return torch.eye(3, dtype=dtype, device=device).unsqueeze(0)
 
-        # Start with identity
-        acc = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1).clone()
+        zero = torch.zeros(batch_size, device=device, dtype=dtype)
+        one = torch.ones(batch_size, device=device, dtype=dtype)
+        translations = torch.stack((params.get("translate_x", zero), params.get("translate_y", zero)), dim=1)
+        center = torch.tensor([(width - 1) * 0.5, (height - 1) * 0.5], device=device, dtype=dtype).expand(
+            batch_size, -1
+        )
+        scale = torch.stack((params.get("scale_x", one), params.get("scale_y", one)), dim=1)
 
-        # Rotation — skip when all angles are zero (e.g. RandomAffine(degrees=0))
-        if "angle_rad" in params and not torch.all(params["angle_rad"] == 0):
-            matrix_r = rotation_matrix(params["angle_rad"], height=height, width=width)
-            acc = matmul3x3(matrix_r, acc)
-
-        # Scale — skip when both factors are 1.0 (e.g. RandomAffine with no scale)
-        if (
-            "scale_x" in params
-            and "scale_y" in params
-            and not (torch.all(params["scale_x"] == 1) and torch.all(params["scale_y"] == 1))
-        ):
-            matrix_s = scale_matrix(params["scale_x"], params["scale_y"], height=height, width=width)
-            acc = matmul3x3(matrix_s, acc)
-
-        # X-Shear — skip when all values are zero (e.g. RandomAffine with no shear)
-        if "shear_x_rad" in params and not torch.all(params["shear_x_rad"] == 0):
-            # shear_x_rad already carries the Kornia→CCW negation from sample_params.
-            # Parity verified by test_kornia_adapter.py::test_shear_sign_parity.
-            shear_x_tan = torch.tan(params["shear_x_rad"])
-            matrix_sh_x = shear_x_matrix(shear_x_tan, height=height, width=width)
-            acc = matmul3x3(matrix_sh_x, acc)
-
-        # Y-Shear — skip when all values are zero
-        if "shear_y_rad" in params and not torch.all(params["shear_y_rad"] == 0):
-            shear_y_tan = torch.tan(params["shear_y_rad"])
-            matrix_sh_y = shear_y_matrix(shear_y_tan, height=height, width=width)
-            acc = matmul3x3(matrix_sh_y, acc)
-
-        # Translation — skip when all offsets are zero
-        if (
-            "translate_x" in params
-            and "translate_y" in params
-            and not (torch.all(params["translate_x"] == 0) and torch.all(params["translate_y"] == 0))
-        ):
-            matrix_t = translate_matrix(params["translate_x"], params["translate_y"])
-            acc = matmul3x3(matrix_t, acc)
-
-        return acc
+        # Undo canonical sign conversion before calling Kornia's native builder.
+        angle_deg = -torch.rad2deg(params.get("angle_rad", zero))
+        shear_x = -params.get("shear_x_rad", zero)
+        shear_y = -params.get("shear_y_rad", zero)
+        return _get_affine_matrix2d(translations, center, scale, angle_deg, shear_x, shear_y)
 
     @staticmethod
     def exact_flip_dims(transform: object) -> list[int]:
@@ -768,60 +740,35 @@ def _affine_matrix_np_b1(
     center_x: float,
     center_y: float,
 ) -> NDArray[np.float64]:
-    """Compose rotation/scale/shear/translate from canonical params (batch_size=1, NumPy only)."""
-    mtx_acc = np.eye(3, dtype=np.float64)
+    """Reconstruct Kornia's native affine order from canonical B=1 parameters."""
+    # RandomAffine's native builder receives the original CW-positive angle;
+    # canonical params store its CCW-positive inverse.
+    angle = -float(params.get("angle_rad", torch.zeros(1)).item())
+    scale_x = float(params.get("scale_x", torch.ones(1)).item())
+    scale_y = float(params.get("scale_y", torch.ones(1)).item())
+    translate_x = float(params.get("translate_x", torch.zeros(1)).item())
+    translate_y = float(params.get("translate_y", torch.zeros(1)).item())
+    shear_x = -float(params.get("shear_x_rad", torch.zeros(1)).item())
+    shear_y = -float(params.get("shear_y_rad", torch.zeros(1)).item())
 
-    if "angle_rad" in params:
-        angle = float(params["angle_rad"].item())
-        if angle != 0.0:
-            mtx_acc = _rotation_np_b1(angle, center_x, center_y) @ mtx_acc
+    cosine, sine = np.cos(angle), np.sin(angle)
+    rotation_scale = np.array(
+        [[cosine * scale_x, -sine * scale_y, 0.0], [sine * scale_x, cosine * scale_y, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    rotation_scale[0, 2] = center_x - rotation_scale[0, :2] @ np.array([center_x, center_y]) + translate_x
+    rotation_scale[1, 2] = center_y - rotation_scale[1, :2] @ np.array([center_x, center_y]) + translate_y
 
-    if "scale_x" in params and "scale_y" in params:
-        scale_x = float(params["scale_x"].item())
-        scale_y = float(params["scale_y"].item())
-        if scale_x != 1.0 or scale_y != 1.0:
-            mtx_scale = np.array(
-                [
-                    [scale_x, 0.0, center_x * (1.0 - scale_x)],
-                    [0.0, scale_y, center_y * (1.0 - scale_y)],
-                    [0.0, 0.0, 1.0],
-                ],
-                dtype=np.float64,
-            )
-            mtx_acc = mtx_scale @ mtx_acc
-
-    if "shear_x_rad" in params:
-        shear_x_rad = float(params["shear_x_rad"].item())
-        if shear_x_rad != 0.0:
-            shear_x_tan = np.tan(shear_x_rad)
-            mtx_acc = (
-                np.array(
-                    [[1.0, shear_x_tan, -center_y * shear_x_tan], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64
-                )
-                @ mtx_acc
-            )
-
-    if "shear_y_rad" in params:
-        shear_y_rad = float(params["shear_y_rad"].item())
-        if shear_y_rad != 0.0:
-            shear_y_tan = np.tan(shear_y_rad)
-            mtx_acc = (
-                np.array(
-                    [[1.0, 0.0, 0.0], [shear_y_tan, 1.0, -center_x * shear_y_tan], [0.0, 0.0, 1.0]], dtype=np.float64
-                )
-                @ mtx_acc
-            )
-
-    if "translate_x" in params and "translate_y" in params:
-        translation_x = float(params["translate_x"].item())
-        translation_y = float(params["translate_y"].item())
-        if translation_x != 0.0 or translation_y != 0.0:
-            mtx_acc = (
-                np.array([[1.0, 0.0, translation_x], [0.0, 1.0, translation_y], [0.0, 0.0, 1.0]], dtype=np.float64)
-                @ mtx_acc
-            )
-
-    return mtx_acc
+    shear_x_tan, shear_y_tan = np.tan(shear_x), np.tan(shear_y)
+    shear = np.array(
+        [
+            [1.0, -shear_x_tan, shear_x_tan * center_y],
+            [-shear_y_tan, 1.0 + shear_x_tan * shear_y_tan, shear_y_tan * (center_x - shear_x_tan * center_y)],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    return rotation_scale @ shear
 
 
 def build_matrix_numpy_b1_kornia(
@@ -924,77 +871,24 @@ def sample_and_build_matrix_numpy_b1_kornia(
 
     if ttype in (_RandomAffine, _RandomShear, _RandomTranslate):
         raw = transform.generate_parameters(torch.Size(input_shape))  # type: ignore[attr-defined]
-        mtx_acc = np.eye(3, dtype=np.float64)
-
-        # Rotation
+        params: dict[str, torch.Tensor] = {}
         if "angle" in raw:
-            angle = -float(raw["angle"].item()) * (np.pi / 180.0)
-            if angle != 0.0:
-                mtx_acc = _rotation_np_b1(angle, center_x, center_y) @ mtx_acc
-
-        # Scale
+            params["angle_rad"] = -torch.deg2rad(raw["angle"])
         if "scale" in raw:
-            scale_raw = raw["scale"]
-            scale_x = float(scale_raw[0, 0].item())
-            scale_y = float(scale_raw[0, 1].item())
-            if scale_x != 1.0 or scale_y != 1.0:
-                mtx_acc = (
-                    np.array(
-                        [
-                            [scale_x, 0.0, center_x * (1.0 - scale_x)],
-                            [0.0, scale_y, center_y * (1.0 - scale_y)],
-                            [0.0, 0.0, 1.0],
-                        ],
-                        dtype=np.float64,
-                    )
-                    @ mtx_acc
-                )
-
-        # X-Shear
+            params["scale_x"] = raw["scale"][:, 0]
+            params["scale_y"] = raw["scale"][:, 1]
         if "shear_x" in raw:
-            shear_x_deg = float(raw["shear_x"].item())
-            if shear_x_deg != 0.0:
-                shear_x_tan = np.tan(-shear_x_deg * (np.pi / 180.0))
-                mtx_acc = (
-                    np.array(
-                        [[1.0, shear_x_tan, -center_y * shear_x_tan], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-                        dtype=np.float64,
-                    )
-                    @ mtx_acc
-                )
-
-        # Y-Shear
+            params["shear_x_rad"] = -torch.deg2rad(raw["shear_x"])
         if "shear_y" in raw:
-            shear_y_deg = float(raw["shear_y"].item())
-            if shear_y_deg != 0.0:
-                shear_y_tan = np.tan(-shear_y_deg * (np.pi / 180.0))
-                mtx_acc = (
-                    np.array(
-                        [[1.0, 0.0, 0.0], [shear_y_tan, 1.0, -center_x * shear_y_tan], [0.0, 0.0, 1.0]],
-                        dtype=np.float64,
-                    )
-                    @ mtx_acc
-                )
-
-        # Translation
+            params["shear_y_rad"] = -torch.deg2rad(raw["shear_y"])
         if "translations" in raw:
-            translation_x = float(raw["translations"][0, 0].item())
-            translation_y = float(raw["translations"][0, 1].item())
-            if translation_x != 0.0 or translation_y != 0.0:
-                mtx_acc = (
-                    np.array([[1.0, 0.0, translation_x], [0.0, 1.0, translation_y], [0.0, 0.0, 1.0]], dtype=np.float64)
-                    @ mtx_acc
-                )
+            params["translate_x"] = raw["translations"][:, 0]
+            params["translate_y"] = raw["translations"][:, 1]
         elif "translate_x" in raw and "translate_y" in raw:
-            translation_x = float(raw["translate_x"].item())
-            translation_y = float(raw["translate_y"].item())
-            if translation_x != 0.0 or translation_y != 0.0:
-                mtx_acc = (
-                    np.array([[1.0, 0.0, translation_x], [0.0, 1.0, translation_y], [0.0, 0.0, 1.0]], dtype=np.float64)
-                    @ mtx_acc
-                )
+            params["translate_x"] = raw["translate_x"]
+            params["translate_y"] = raw["translate_y"]
 
-        return mtx_acc
+        return _affine_matrix_np_b1(params, center_x, center_y)
 
     # Unsupported type: signal caller to fall back to the two-step path.
     return None  # type: ignore[return-value]

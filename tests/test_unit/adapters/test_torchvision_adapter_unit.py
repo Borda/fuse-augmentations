@@ -169,9 +169,9 @@ class TestSampleParamsRotation:
 
     @pytest.mark.usefixtures("_register_stubs")
     def test_angle_rad_value(self, adapter):
-        """Stub returns 15 degrees -> radians."""
+        """Stub rotation is negated into the package's forward-matrix convention."""
         params = adapter.sample_params(_StubRotation(), (1, 3, 64, 64), torch.device("cpu"))
-        expected = math.radians(15.0)
+        expected = -math.radians(15.0)
         assert params["angle_rad"].item() == pytest.approx(expected, abs=1e-6)
 
 
@@ -447,7 +447,7 @@ class TestNumpyB1FastPathRotation:
     def test_fixed_angle_produces_true_rotation_entries(self):
         """At a fixed 30-degree angle the matrix must carry cos in [0,0] and sin (not cos) in [1,0]."""
         mtx = _mod.sample_and_build_matrix_numpy_b1_tv(self._fixed_rotation(30.0), (1, 3, 16, 16), 16, 16)
-        angle_rad = math.radians(30.0)
+        angle_rad = -math.radians(30.0)
         assert mtx is not None
         assert mtx[0, 0] == pytest.approx(math.cos(angle_rad))
         assert mtx[1, 0] == pytest.approx(math.sin(angle_rad))
@@ -464,6 +464,6 @@ class TestNumpyB1FastPathRotation:
         """Fused sampler agrees with the two-step build_matrix_numpy_b1_tv for the same fixed angle."""
         transform = self._fixed_rotation(30.0)
         mtx_fused = _mod.sample_and_build_matrix_numpy_b1_tv(transform, (1, 3, 16, 16), 16, 16)
-        params = {"angle_rad": torch.tensor([math.radians(30.0)])}
+        params = {"angle_rad": torch.tensor([-math.radians(30.0)])}
         mtx_two_step = _mod.build_matrix_numpy_b1_tv(transform, params, 16, 16)
         torch.testing.assert_close(torch.from_numpy(mtx_fused), torch.from_numpy(mtx_two_step))
