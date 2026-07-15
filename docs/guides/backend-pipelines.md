@@ -71,6 +71,8 @@ The fused path requires BCHW input. A native TorchVision `Compose` may accept CH
 
 The cross-backend tensor path accepts BCHW float tensors:
 
+<!--phmdoctest-share-names-->
+
 ```python
 import albumentations as A
 import torch

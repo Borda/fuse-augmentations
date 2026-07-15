@@ -9,9 +9,28 @@ Introspection is how you verify that a pipeline formed the segments you intended
 
 ## Human-readable plan
 
+<!--phmdoctest-share-names-->
+
 ```python
+import torch
+
+from fuse_augmentations import Compose
+
+torch.manual_seed(7)
+augment = Compose.from_params(rotation=(-15.0, 15.0), hflip_p=0.5)
+images = torch.rand(2, 3, 32, 32)
+
 print(augment.fusion_plan)
 ```
+
+<details>
+<summary>Human-readable plan for the configured pipeline</summary>
+
+```
+fused(_DirectParamTransform, _DirectFlipTransform)
+```
+
+</details>
 
 The plan distinguishes fused, exact, projective, color, crop-resize, and passthrough segments. A backend change, projective/affine transition, unsupported transform, or spatial-kernel operation can split the chain.
 
@@ -28,6 +47,15 @@ for segment in augment.fusion_plan_descriptors:
         segment.refused,
     )
 ```
+
+<details>
+<summary>Structured descriptor fields for the configured segment</summary>
+
+```
+fused ('_DirectParamTransform', '_DirectFlipTransform') None None None None
+```
+
+</details>
 
 Descriptors are frozen and dictionary-serializable, which makes them suitable for experiment metadata. Store the dependency versions and pipeline configuration beside them.
 

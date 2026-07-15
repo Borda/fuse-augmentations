@@ -41,6 +41,8 @@ The batch dimension is mandatory. Box and keypoint counts are dense and fixed wi
 
 This example uses the augmentation-backend-free builder and only registered operations. It avoids unknown passthrough transforms.
 
+<!--phmdoctest-share-names-->
+
 ```python
 import torch
 
@@ -147,7 +149,7 @@ def clip_and_filter_xyxy(
     return clipped, valid
 
 
-boxes_out, valid_boxes = clip_and_filter_xyxy(boxes_out, height, width)
+clipped_boxes, valid_boxes = clip_and_filter_xyxy(boxes_out, height, width)
 ```
 
 Apply `valid_boxes` to the corresponding class labels, scores, instance masks, and metadata in your own data model. For minimum visibility or area thresholds, compute those policies after clipping. Keypoints likewise need your own in-bounds and visibility rules.

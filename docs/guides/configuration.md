@@ -7,6 +7,8 @@ description: Define TransformSpec objects, query backend capabilities, choose st
 
 `TransformSpec` separates an augmentation idea from one concrete backend object. Resolve the specs at construction time and reject unsupported operations early.
 
+<!--phmdoctest-share-names-->
+
 ```python
 from fuse_augmentations import Compose, ReorderPolicy, TransformSpec
 
@@ -35,8 +37,23 @@ The global operation vocabulary is larger than any one backend's constructible s
 from fuse_augmentations import Compose
 
 print(sorted(Compose.supported_ops("native")))
-print(Compose.capability_matrix())
+print(
+    {
+        backend: len(operations)
+        for backend, operations in sorted(Compose.capability_matrix().items())
+    }
+)
 ```
+
+<details>
+<summary>Native operations and capability counts by backend</summary>
+
+```
+['brightness', 'contrast', 'hflip', 'rotation', 'scale', 'shear', 'translate', 'vflip']
+{'albumentations': 8, 'kornia': 12, 'native': 8, 'torchvision': 7}
+```
+
+</details>
 
 An optional backend that is not installed reports an empty capability set. The matrix describes what the declarative resolver can construct; the live-transform adapter tables include some additional concrete classes and parameter restrictions.
 

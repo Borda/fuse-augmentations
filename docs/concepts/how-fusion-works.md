@@ -116,16 +116,32 @@ Reordering is a semantic choice, not merely a performance switch. Use `ReorderPo
 
 The plan is available immediately after construction:
 
+<!--phmdoctest-share-names-->
+
 ```python
+import torch
+
 from fuse_augmentations import Compose
 
+image = torch.rand(2, 3, 32, 32)
 pipe = Compose.from_params(rotation=(-15.0, 15.0), hflip_p=0.5)
 
 print(pipe.fusion_plan)
 for segment in pipe.fusion_plan_descriptors:
-    print(segment.to_dict())
+    print(segment.kind, segment.transforms, segment.n_warps_saved)
 print(pipe.n_warps_saved)
 ```
+
+<details>
+<summary>Fusion plan, descriptor summary, and saved warp count</summary>
+
+```
+fused(_DirectParamTransform, _DirectFlipTransform)
+fused ('_DirectParamTransform', '_DirectFlipTransform') 1
+1
+```
+
+</details>
 
 The three introspection properties answer different questions:
 

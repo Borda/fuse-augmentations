@@ -7,6 +7,8 @@ description: Run a deterministic, backend-free BCHW tensor example that fuses ro
 
 Start with the native builder. It needs no Kornia, TorchVision, or Albumentations installation and makes the package's actual input contract explicit: a floating BCHW tensor.
 
+<!--phmdoctest-share-names-->
+
 ```python
 import torch
 
@@ -33,6 +35,16 @@ print(augment.fusion_plan)
 print(augment.n_warps_saved)
 ```
 
+<details>
+<summary>Quickstart fusion plan and saved warp count</summary>
+
+```
+fused(_DirectParamTransform, _DirectFlipTransform)
+1
+```
+
+</details>
+
 `return_matrix=True` is unambiguous here because this pipeline has one matrix-producing segment. In a pipeline with backend changes, projective boundaries, or passthrough operations, the returned matrix represents only the last matrix-producing segment.
 
 ## What this example guarantees
@@ -52,6 +64,15 @@ Use the plan to confirm that your intended operations formed a useful segment:
 for segment in augment.fusion_plan_descriptors:
     print(segment.kind, segment.transforms, segment.backend, segment.split_reason)
 ```
+
+<details>
+<summary>Quickstart segment kind, transforms, backend, and split reason</summary>
+
+```
+fused ('_DirectParamTransform', '_DirectFlipTransform') None None
+```
+
+</details>
 
 Fewer planned resampling passes are structural. Faster execution is not: benchmark the exact device, image shape, batch size, dtype, and transform mix. See [Benchmarks](../research/benchmarks.md).
 

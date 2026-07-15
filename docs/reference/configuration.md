@@ -11,6 +11,8 @@ PyTorch remains a required runtime dependency in both cases.
 
 ## Backend-free parameters
 
+<!--phmdoctest-share-names-->
+
 ```python
 from fuse_augmentations import Compose
 
@@ -30,6 +32,8 @@ The direct path supports rotation, uniform/per-axis scale, x/y shear, x/y pixel 
 `brightness=0.1` and `contrast=0.1` are active features: each describes a multiplicative factor range centered on `1.0`. They are not reserved parameters.
 
 ## Declarative specs
+
+<!--phmdoctest-share-names-->
 
 ```python
 from fuse_augmentations import Compose, TransformSpec

@@ -12,6 +12,12 @@ The package is best when the cost or fidelity problem is repeated geometric resa
 Classification is the lowest-risk application because the label does not carry spatial coordinates. A native builder pipeline is a clear starting point:
 
 ```python
+import torch
+
+from fuse_augmentations import Compose, ReorderPolicy
+
+torch.manual_seed(7)
+
 augment = Compose.from_params(
     rotation=(-12.0, 12.0),
     scale=(0.9, 1.1),
@@ -19,9 +25,14 @@ augment = Compose.from_params(
     reorder=ReorderPolicy.NONE,
 )
 
+loader = [(torch.rand(4, 3, 32, 32), torch.zeros(4, dtype=torch.long))]
+model = torch.nn.Sequential(torch.nn.Flatten(), torch.nn.Linear(3 * 32 * 32, 10))
+criterion = torch.nn.CrossEntropyLoss()
+
 for images, labels in loader:
     predictions = model(augment(images))
     loss = criterion(predictions, labels)
+    assert torch.isfinite(loss)
 ```
 
 Benchmark the whole training step, not augmentation latency in isolation. Host/device transfers and model compute can dominate.

@@ -92,6 +92,7 @@ Calling `np.random.seed` alone does not reset an existing Albumentations 2.x tra
 PyTorch assigns a distinct base seed to each worker, but custom NumPy and backend-owned generators must be seeded explicitly. The exact dataset structure is application-specific; this pattern assumes the dataset stores the pipeline as `dataset.augment`:
 
 ```python
+# phmdoctest:skip
 import random
 
 import numpy as np
@@ -141,6 +142,13 @@ Save enough information to explain a future mismatch:
 
 ```python
 import json
+import torch
+
+from fuse_augmentations import Compose
+
+torch.manual_seed(7)
+images = torch.rand(2, 3, 32, 32)
+pipe = Compose.from_params(rotation=(-15.0, 15.0))
 
 output, last_matrix = pipe(images, return_matrix=True)
 plan = [descriptor.to_dict() for descriptor in pipe.fusion_plan_descriptors]
@@ -150,8 +158,37 @@ run_metadata = {
     "last_matrix_shape": None if last_matrix is None else list(last_matrix.shape),
     "torch_version": torch.__version__,
 }
-print(json.dumps(run_metadata, indent=2))
+print(json.dumps({**run_metadata, "torch_version": "<runtime>"}, indent=2))
 ```
+
+<details>
+<summary>Recorded pipeline metadata with the runtime version normalized</summary>
+
+```
+{
+  "fusion_plan": [
+    {
+      "kind": "fused",
+      "transforms": [
+        "_DirectParamTransform"
+      ],
+      "n_warps_saved": 0,
+      "backend": null,
+      "barrier": null,
+      "split_reason": null,
+      "refused": null
+    }
+  ],
+  "last_matrix_shape": [
+    2,
+    3,
+    3
+  ],
+  "torch_version": "<runtime>"
+}
+```
+
+</details>
 
 The returned matrix is only the last matrix-producing segment, not a whole-pipeline matrix. Save it when it is useful for audit, but do not use it to reconstruct pipelines that cross barriers or backend boundaries.
 

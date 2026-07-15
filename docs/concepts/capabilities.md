@@ -45,9 +45,24 @@ An optional backend that is not installed reports an empty capability set for th
 ```python
 from fuse_augmentations import Compose
 
-print(Compose.supported_ops("torchvision"))
-print(Compose.capability_matrix())
+print(sorted(Compose.supported_ops("torchvision")))
+print(
+    {
+        backend: len(operations)
+        for backend, operations in sorted(Compose.capability_matrix().items())
+    }
+)
 ```
+
+<details>
+<summary>TorchVision operations and capability counts by backend</summary>
+
+```
+['affine', 'hflip', 'normalize', 'perspective', 'rotation', 'scale', 'vflip']
+{'albumentations': 8, 'kornia': 12, 'native': 8, 'torchvision': 7}
+```
+
+</details>
 
 `SUPPORTED_OPS` is the global canonical vocabulary. Membership in that global set does not mean every backend can build the operation.
 

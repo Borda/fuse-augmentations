@@ -228,6 +228,9 @@ _reviews/
 # Benchmark results (generated at runtime)
 experiments/results/
 
+# Generated tests from README and documentation examples.
+tests/integration/
+
 # Skill artifact directories (ephemeral, TTL-managed)
 .experiments/
 .reports/

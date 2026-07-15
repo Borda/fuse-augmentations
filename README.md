@@ -8,9 +8,13 @@
 
 You keep the readable pipeline: rotate, scale, shear, translate, flip. The engine finds compatible runs and can replace several geometric warps with one.
 
-> [!IMPORTANT] This package is Alpha and is **not** a general drop-in replacement for native Compose containers. It does not guarantee native pixels, input types, target processors, random streams, hooks, or universal speedups.
+> [!IMPORTANT]
+>
+> This package is Alpha and is **not** a general drop-in replacement for native Compose containers. It does not guarantee native pixels, input types, target processors, random streams, hooks, or universal speedups.
 
-> [!WARNING] Use auxiliary targets only with explicitly supported spatial transforms. An unknown crop, resize, or other spatial passthrough can modify the image while leaving a mask, box, or keypoint tensor stale. Treat every `Unknown ... SPATIAL_KERNEL barrier` warning as unsafe when `data_keys` is present.
+> [!WARNING]
+>
+> Use auxiliary targets only with explicitly supported spatial transforms. An unknown crop, resize, or other spatial passthrough can modify the image while leaving a mask, box, or keypoint tensor stale. Treat every `Unknown ... SPATIAL_KERNEL barrier` warning as unsafe when `data_keys` is present.
 
 ## 🔄 The problem: every warp resamples the image
 
@@ -109,11 +113,27 @@ augmented, matrix = augment(images, return_matrix=True)
 
 assert augmented.shape == images.shape
 assert augmented.dtype == images.dtype
-assert matrix is not None and matrix.shape == (4, 3, 3)
+assert matrix is not None
+assert matrix.shape == (4, 3, 3)
 
 print(augment.fusion_plan)
-print(augment.fusion_plan_descriptors)
+print(
+    [
+        (descriptor.kind, descriptor.n_warps_saved)
+        for descriptor in augment.fusion_plan_descriptors
+    ]
+)
 ```
+
+<details>
+<summary>Fusion plan and saved warp count for the quick-start pipeline</summary>
+
+```
+fused(_DirectParamTransform, _DirectFlipTransform)
+[('fused', 1)]
+```
+
+</details>
 
 The common fused input contract is a floating BCHW torch tensor. Both `fuse_augmentations` and the shorter `fuse_aug` import expose the same public objects.
 
@@ -250,6 +270,8 @@ Treat quick runs as smoke evidence. Release-grade comparisons need independent p
 ## 🤝 Contributing
 
 Bug reports and focused pull requests are welcome. Open an issue before a public API or architecture change.
+
+Documentation example authoring and generated-test instructions are in [`CONTRIBUTING.md`](.github/CONTRIBUTING.md). Generated documentation tests are recreated in CI and should not be committed.
 
 Build the docs locally with:
 

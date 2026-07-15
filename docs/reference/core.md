@@ -11,6 +11,8 @@ description: Construct, run, inspect, and convert fuse-augmentations pipelines.
 
 ## Choose a construction style
 
+<!--phmdoctest-share-names-->
+
 ```python
 import torch
 import torchvision.transforms.v2 as transforms
@@ -30,6 +32,15 @@ output = pipe(image)
 print(pipe.fusion_plan)
 ```
 
+<details>
+<summary>Fusion plan for the native TorchVision pipeline</summary>
+
+```
+fused(RandomRotation, RandomHorizontalFlip, RandomAffine)
+```
+
+</details>
+
 Use `Compose.from_params` for an augmentation-backend-free pipeline and `Compose.from_config` for declarative backend-specific construction. Both are documented in [Configuration API](configuration.md).
 
 ## Input and output forms
@@ -38,7 +49,7 @@ The standard call accepts a BCHW tensor. Set `data_keys` when positional auxilia
 
 !!! danger "Use only explicitly supported spatial transforms with auxiliary targets"
 
-```
+```text
 The runtime refusal policy is a finite class-name list. An unknown crop,
 resize, or custom spatial transform can modify the image while leaving
 masks, boxes, or keypoints stale. Treat every
@@ -88,6 +99,15 @@ for descriptor in pipe.fusion_plan_descriptors:
 
 output, last_matrix = pipe(image, return_matrix=True)
 ```
+
+<details>
+<summary>Segment descriptor and saved warp count for the pipeline</summary>
+
+```
+fused ('RandomRotation', 'RandomHorizontalFlip', 'RandomAffine') 2
+```
+
+</details>
 
 `fusion_plan`, `fusion_plan_descriptors`, and `n_warps_saved` describe the constructed plan. `transform_matrix` and `return_matrix=True` report only the most recent call's **last matrix-producing segment**, not a whole-pipeline composition.
 

@@ -58,7 +58,17 @@ The extras enable adapter support; they do not make every upstream transform or 
 ## Verify the installation
 
 ```bash
-python -c "import torch, fuse_augmentations; print(fuse_augmentations.__version__, torch.__version__)"
+python -c "import torch, fuse_augmentations"
+```
+
+The same smoke check is executable in the generated documentation test suite:
+
+```python
+import torch
+import fuse_augmentations
+
+assert torch.__version__
+assert fuse_augmentations.__version__
 ```
 
 Both import namespaces expose the same objects:

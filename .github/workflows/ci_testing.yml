@@ -90,6 +90,9 @@ jobs:
         run: |
           uv pip install -e ".[${{ matrix.extras }}]" --group dev
           uv pip list
+      - name: 📝 Generate documentation example tests
+        if: matrix.extras == 'all'
+        run: python .github/scripts/generate_doc_tests.py
       - name: 🧪 Run tests
         run: pytest . -v --cov=fuse_augmentations
       - name: 📊 Coverage statistics
