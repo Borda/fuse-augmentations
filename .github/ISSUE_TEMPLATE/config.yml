@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Questions and ideas
+    url: https://github.com/Borda/fuse-augmentations/discussions
+    about: Ask usage questions or discuss ideas before opening a feature request.
+  - name: 📚 Documentation
+    url: https://borda.github.io/fuse-augmentations/
+    about: Guides, API reference, known limitations, and the FAQ.
+  - name: 🔒 Report a Code of Conduct concern
+    url: https://github.com/Borda
+    about: Contact @Borda privately. Do not open a public issue for sensitive reports.

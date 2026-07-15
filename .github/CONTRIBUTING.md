@@ -20,22 +20,11 @@ Bug fixes and small documentation changes can usually proceed directly when thei
 - Fix an approved bug or implement an approved feature.
 - Review pull requests and help answer questions in issues or discussions.
 
-## Reporting bugs
+## Reporting bugs and proposing features
 
-1. Search existing issues first.
-2. Provide a minimal reproduction, preferably as a failing test or executable example.
-3. Include Python, PyTorch, operating-system, backend, and package-version details.
-4. Describe the expected and actual behavior, including tensor shapes, dtypes, devices, and warnings when relevant.
-5. Include the smallest relevant traceback, logs, or generated documentation test output.
+Open an issue with the [bug report](ISSUE_TEMPLATE/bug_report.yml) or [feature request](ISSUE_TEMPLATE/feature_request.yml) form; each lists the required fields. In short: search existing issues first, give a minimal reproduction for bugs, and describe the user problem, proposed interface, and alternatives for features.
 
-## Proposing features
-
-Before implementing a new feature:
-
-1. Open an issue describing the user problem, proposed interface, and alternatives.
-2. Wait for maintainer feedback or an explicit go-ahead.
-3. Agree on compatibility, testing, documentation, and migration requirements.
-4. Keep the implementation, tests, and docs in one focused pull request.
+Wait for maintainer feedback before implementing a new public API, architecture change, or substantial feature, then keep the implementation, tests, and docs in one focused pull request.
 
 ## Development setup
 
@@ -112,16 +101,7 @@ The generator scans `README.md` and all Markdown files below `docs/`, removes st
 
 ## Pull requests
 
-Before opening a pull request:
-
-- [ ] Keep the change focused and link the related issue when one exists.
-- [ ] Add or update tests for behavior changes and regressions.
-- [ ] Update user-facing documentation and executable examples when needed.
-- [ ] Run the relevant lint, format, type, test, documentation, and pre-commit checks.
-- [ ] Self-review the diff and remove generated files, debug output, secrets, and unrelated changes.
-- [ ] Explain remaining limitations, skipped cases, and environment-specific behavior.
-
-Use a descriptive branch name such as `fix/123-short-description`, `feat/123-short-description`, `docs/update-examples`, or `test/add-regression-case`.
+The [pull request template](PULL_REQUEST_TEMPLATE.md) carries the full checklist; complete it when you open a PR. Use a descriptive branch name such as `fix/123-short-description`, `feat/123-short-description`, `docs/update-examples`, or `test/add-regression-case`.
 
 ## Review expectations
 

@@ -1,0 +1,72 @@
+name: 🐛 Bug report
+description: Report a reproducible defect in fuse-augmentations.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please search [existing issues](https://github.com/Borda/fuse-augmentations/issues?q=is%3Aissue) first, then give a minimal reproduction so the problem can be confirmed quickly.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preliminary checks
+      options:
+        - label: I searched existing open and closed issues and this is not a duplicate.
+          required: true
+        - label: I reduced the problem to a minimal reproduction.
+          required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: A minimal, self-contained snippet, preferably a failing test or executable example. Include imports, a deterministic seed, and the pipeline setup.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen, including tensor shapes, dtypes, devices, and any invariants.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead. Paste the smallest relevant traceback, warning, or generated documentation-test output.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: fuse-augmentations version
+      description: Output of `python -c "import fuse_augmentations, sys; print(fuse_augmentations.__version__)"` or the installed spec.
+      placeholder: "0.9.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend involved
+      multiple: true
+      options:
+        - kornia
+        - torchvision
+        - albumentations
+        - numeric ranges (no backend)
+        - not backend-specific
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Python, PyTorch, operating system, and device (CPU/GPU) versions.
+      placeholder: |
+        Python: 3.12.3
+        PyTorch: 2.4.0
+        OS: Ubuntu 24.04
+        Device: CPU
+    validations:
+      required: true
