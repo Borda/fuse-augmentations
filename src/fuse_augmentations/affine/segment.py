@@ -1307,7 +1307,11 @@ class FusedAffineSegment(_BaseAffineSegment):
         # element (flip / 90-degree rotation, zero net translation beyond the
         # border-preserving form), apply it losslessly via flip/rot90 instead of
         # grid_sample -- zero interpolation error. Non-D4 chains fall through unchanged.
-        d4_op = classify_d4_batch(acc, height, width)
+        # CPU-only: classify_d4_batch reads the matrix to host (``.item()``), which
+        # drains the accelerator stream every warp. Off-CPU the lossless shortcut is
+        # skipped -- a grid_sample of an exact D4 map at align_corners=True is
+        # near-bit-identical, so only a micro-optimisation (not correctness) is lost.
+        d4_op = classify_d4_batch(acc, height, width) if acc.device.type == "cpu" else None
         if d4_op is not None:
             image = apply_d4_image(image, d4_op)
             if aux_targets:
@@ -2836,13 +2840,22 @@ class FusedColorSegment(nn.Module):
 
     @staticmethod
     def _matmul_image(image: Tensor, acc: Tensor) -> Tensor:
-        """Apply a ``(B, 4, 4)`` homogeneous color matrix to a ``(B, 3, H, W)`` image."""
+        """Apply a ``(B, 4, 4)`` homogeneous color matrix to a ``(B, 3, H, W)`` image.
+
+        The homogeneous bottom row is inert for the pixel outputs, so the affine
+        part ``c' = A c + b`` is applied directly with a single ``baddbmm`` instead
+        of building the ``(B, 4, H*W)`` augmented pixel block and running a full
+        ``4x4`` matmul: no ``ones`` allocation, no ``cat``, ~25% fewer FLOPs. The
+        accumulation order differs from the old homogeneous form, so results may
+        drift by ~1e-7 (well within color-parity tolerances).
+
+        """
         batch_size, channels, height, width = image.shape
         pixels = image.reshape(batch_size, channels, height * width)
-        ones = torch.ones(batch_size, 1, height * width, device=image.device, dtype=image.dtype)
-        pixels_hom = torch.cat([pixels, ones], dim=1)  # (B, 4, H*W)
-        transformed = torch.bmm(acc, pixels_hom)  # (B, 4, H*W)
-        return transformed[:, :channels, :].reshape(batch_size, channels, height, width)
+        linear = acc[:, :channels, :channels]  # (B, 3, 3) per-channel mixing
+        bias = acc[:, :channels, channels : channels + 1]  # (B, 3, 1) homogeneous translation column
+        transformed = torch.baddbmm(bias, linear, pixels)  # bias + linear @ pixels, (B, 3, H*W)
+        return transformed.reshape(batch_size, channels, height, width)
 
     @staticmethod
     def _range_escapes_gamut(acc: Tensor) -> bool:

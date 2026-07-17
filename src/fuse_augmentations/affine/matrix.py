@@ -775,28 +775,49 @@ def normalize_matrix_io(
             msg = f"{name} must be >= 2 for normalization ({name}={val} causes division by zero)"
             raise ValueError(msg)
 
-    batch_size = matrix.shape[0]
-    device = matrix.device
-    dtype = matrix.dtype
+    scale_x_norm: float = 2.0 / (width_in - 1)  # N_in[0,0]
+    scale_y_norm: float = 2.0 / (height_in - 1)  # N_in[1,1]
+    half_width_out: float = (width_out - 1) / 2.0  # N_out_inv[0,0] = N_out_inv[0,2]
+    half_height_out: float = (height_out - 1) / 2.0  # N_out_inv[1,1] = N_out_inv[1,2]
 
-    # N_in: input pixel → input normalized [-1, 1]
-    matrix_n = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)
-    matrix_n[:, 0, 0] = 2.0 / (width_in - 1)
-    matrix_n[:, 0, 2] = -1.0
-    matrix_n[:, 1, 1] = 2.0 / (height_in - 1)
-    matrix_n[:, 1, 2] = -1.0
-    matrix_n[:, 2, 2] = 1.0
+    # Closed-form analytic expansion of N_in @ matrix @ N_out_inv (mirrors
+    # normalize_matrix, but with independent input/output sizes). Avoids allocating
+    # two (B,3,3) intermediates and two bmm calls per crop-resize warp.
+    #
+    # Step 1 — tmp = N_in @ matrix, with N_in=[[scale_x_norm,0,-1],[0,scale_y_norm,-1],[0,0,1]]:
+    #   tmp[b, 0, j] = scale_x_norm*matrix[b,0,j] - matrix[b,2,j]
+    #   tmp[b, 1, j] = scale_y_norm*matrix[b,1,j] - matrix[b,2,j]
+    #   tmp[b, 2, j] = matrix[b,2,j]
+    #
+    # Step 2 — result = tmp @ N_out_inv, with N_out_inv=[[half_width_out,0,half_width_out],
+    #   [0,half_height_out,half_height_out],[0,0,1]]:
+    #   result[b,i,0] = tmp[b,i,0]*half_width_out
+    #   result[b,i,1] = tmp[b,i,1]*half_height_out
+    #   result[b,i,2] = tmp[b,i,0]*half_width_out + tmp[b,i,1]*half_height_out + tmp[b,i,2]
+    result = torch.empty_like(matrix)
 
-    # N_out_inv: output normalized → output pixel
-    matrix_n_inv = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)
-    matrix_n_inv[:, 0, 0] = (width_out - 1) / 2.0
-    matrix_n_inv[:, 0, 2] = (width_out - 1) / 2.0
-    matrix_n_inv[:, 1, 1] = (height_out - 1) / 2.0
-    matrix_n_inv[:, 1, 2] = (height_out - 1) / 2.0
-    matrix_n_inv[:, 2, 2] = 1.0
+    # Row 0: tmp[0,j] = scale_x_norm*matrix[0,j] - matrix[2,j]
+    t00 = scale_x_norm * matrix[:, 0, 0] - matrix[:, 2, 0]
+    t01 = scale_x_norm * matrix[:, 0, 1] - matrix[:, 2, 1]
+    t02 = scale_x_norm * matrix[:, 0, 2] - matrix[:, 2, 2]
+    result[:, 0, 0] = t00 * half_width_out
+    result[:, 0, 1] = t01 * half_height_out
+    result[:, 0, 2] = t00 * half_width_out + t01 * half_height_out + t02
 
-    # Sandwich: N_in @ matrix @ N_out_inv
-    return matmul3x3(matmul3x3(matrix_n, matrix), matrix_n_inv)
+    # Row 1: tmp[1,j] = scale_y_norm*matrix[1,j] - matrix[2,j]
+    t10 = scale_y_norm * matrix[:, 1, 0] - matrix[:, 2, 0]
+    t11 = scale_y_norm * matrix[:, 1, 1] - matrix[:, 2, 1]
+    t12 = scale_y_norm * matrix[:, 1, 2] - matrix[:, 2, 2]
+    result[:, 1, 0] = t10 * half_width_out
+    result[:, 1, 1] = t11 * half_height_out
+    result[:, 1, 2] = t10 * half_width_out + t11 * half_height_out + t12
+
+    # Row 2: tmp[2,j] = matrix[2,j] (N_in[2,:] = [0,0,1])
+    result[:, 2, 0] = matrix[:, 2, 0] * half_width_out
+    result[:, 2, 1] = matrix[:, 2, 1] * half_height_out
+    result[:, 2, 2] = matrix[:, 2, 0] * half_width_out + matrix[:, 2, 1] * half_height_out + matrix[:, 2, 2]
+
+    return result
 
 
 def perspective_from_points(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
