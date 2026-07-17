@@ -748,9 +748,10 @@ class ExactAffineSegment(nn.Module):
         Flips route mask (via ``exact_flip_dims``), boxes and keypoints with per-sample
         ``active`` masking. Non-flip exact ops (rot90/transpose) have their mask handled
         by :meth:`_apply_exact_with_mask` and return here without touching coord targets:
-        a pipeline carrying box/keypoint aux is built with such runs routed through the
-        interpolating grid segment instead (see ``build_segments`` ``route_coords_via_grid``),
-        so a non-flip exact op never reaches this method with coord targets.
+        a Compose pipeline carrying box/keypoint aux routes such runs through the
+        interpolating grid segment instead (see ``build_segments`` ``route_coords_via_grid``).
+        A directly instantiated segment can still reach this method with coord targets;
+        it then raises ``RuntimeError`` rather than passing them through untransformed.
 
         Args:
             tfm: The exact transform.
@@ -760,10 +761,28 @@ class ExactAffineSegment(nn.Module):
             height: Image height in pixels.
             width: Image width in pixels.
 
+        Raises:
+            RuntimeError: If a non-flip exact op (rot90/transpose) is applied while
+                box/keypoint auxiliary targets are present — no per-sample matrix is
+                recoverable to route them, so they would otherwise pass through untransformed.
+
         """
         if flip_dims is None:
-            # Non-flip exact op: mask already routed in _apply_exact_with_mask; coord
-            # targets are handled by the grid segment upstream, so nothing to do here.
+            # Non-flip exact op (rot90/transpose): the mask is already routed in
+            # _apply_exact_with_mask, but boxes/keypoints have no per-sample matrix to
+            # route here. A Compose pipeline diverts coord-carrying exact runs to
+            # FusedAffineSegment (route_coords_via_grid), so this branch is reached only
+            # by DIRECT instantiation. Raise rather than silently pass coords through.
+            present_coords = {"bbox_xyxy", "bbox_xywh", "keypoints"} & aux_targets.keys()
+            if present_coords:
+                raise RuntimeError(
+                    "ExactAffineSegment cannot transform coordinate targets "
+                    f"({sorted(present_coords)}) through a non-flip exact op "
+                    "(rot90/transpose): no per-sample matrix is recoverable. Route "
+                    "coordinate-carrying exact runs through FusedAffineSegment "
+                    "(FusedCompose does this automatically), or pass only masks / use "
+                    "flip ops with this segment."
+                )
             return
         is_hflip = 3 in flip_dims
         is_vflip = 2 in flip_dims
@@ -1278,7 +1297,10 @@ class FusedAffineSegment(_BaseAffineSegment):
                     acc_np = mtx_i[0].double().cpu().numpy() @ acc_np
 
             np.copyto(self._cv2_last_mat_buf[0].numpy(), acc_np, casting="unsafe")
-            self._last_matrix = self._cv2_last_mat_buf
+            # Clone: _cv2_last_mat_buf is a reused buffer overwritten in place on the next
+            # call, so a bare reference would let call N+1 mutate call N's returned matrix.
+            # Honors the last_matrix "detached, cloned" contract.
+            self._last_matrix = self._cv2_last_mat_buf.clone()
             _set_current_call_matrix(torch.as_tensor(acc_np, dtype=dtype).unsqueeze(0).detach().clone())
 
             # Symbolic-exactness fast path on the cv2 B=1 branch: a chain that composes
@@ -1289,7 +1311,7 @@ class FusedAffineSegment(_BaseAffineSegment):
                 return apply_d4_image(image, d4_op).to(device=device, dtype=dtype)
 
             m_inv_np = _inv3x3_affine_np(acc_np)
-            img_np = image[0].permute(1, 2, 0).contiguous().numpy()
+            img_np = image[0].detach().permute(1, 2, 0).contiguous().numpy()  # detach: no grad through cv2 segments
             if num_channels == 1:
                 warped = _warp(img_np[:, :, 0], m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag)
                 warped = warped[:, :, np.newaxis]
@@ -1464,7 +1486,10 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         self.randomness = randomness
         self.mask_interpolation = mask_interpolation
         self._last_matrix: Tensor | None = None
-        self._compile_warp: bool = compile_warp and _torch_supports_compile()
+        # `compile_warp` is accepted for build_segments API symmetry but deliberately not
+        # stored: forward() builds its own affine_grid/grid_sample and never routes through
+        # _select_warp_fn (the sole consumer of _compile_warp), so a store would be dead.
+        # Crop-resize segments do not honor torch.compile of the warp core.
         self._antialias: bool = antialias
 
     def forward(
@@ -2038,7 +2063,7 @@ class AlbuFusedAffineSegment(nn.Module):
 
         output_np: list[ImageArray] = []
         for b_idx in range(batch_size):
-            img_np = image[b_idx].permute(1, 2, 0).cpu().numpy()
+            img_np = image[b_idx].detach().permute(1, 2, 0).cpu().numpy()  # detach: no grad through cv2 segments
             if not any_active[b_idx]:
                 output_np.append(img_np)
                 continue
@@ -2117,7 +2142,10 @@ class AlbuFusedAffineSegment(nn.Module):
         original_2d = img_hwc.ndim == 2
 
         if len(self.transforms) == 0:
-            self._last_matrix = self._identity_1x3x3
+            # Clone the shared identity buffer so callers get an independent matrix
+            # (honors the last_matrix "detached clone" contract; prevents a caller's
+            # in-place edit from corrupting the reused constant).
+            self._last_matrix = self._identity_1x3x3.detach().clone()
             _set_current_call_matrix(self._identity_1x3x3.detach().clone())
             return img_hwc
 
@@ -2202,7 +2230,9 @@ class AlbuFusedAffineSegment(nn.Module):
 
         np.copyto(self._last_matrix_np_buffer, acc, casting="unsafe")
         self._last_matrix_buffer[0].copy_(self._last_matrix_np_tensor)
-        self._last_matrix = self._last_matrix_buffer
+        # Clone: _last_matrix_buffer is reused and overwritten in place on the next call,
+        # so a bare reference would let call N+1 mutate call N's returned matrix.
+        self._last_matrix = self._last_matrix_buffer.clone()
         _set_current_call_matrix(torch.from_numpy(np.asarray(acc, dtype=np.float32)).unsqueeze(0).clone())
 
         if not any_active:
@@ -2570,7 +2600,7 @@ class AlbuProjectiveSegment(nn.Module):
 
         output_np: list[ImageArray] = []
         for b_idx in range(batch_size):
-            img_np = image[b_idx].permute(1, 2, 0).cpu().numpy()
+            img_np = image[b_idx].detach().permute(1, 2, 0).cpu().numpy()  # detach: no grad through cv2 segments
             if not any_active[b_idx]:
                 output_np.append(img_np)
                 continue
@@ -3345,8 +3375,10 @@ def build_segments(
             batch. Ignored for the PyTorch backends.
         compile_warp: When ``True`` (and torch is new enough), the torch warp core
             (matrix normalize -> ``affine_grid`` -> ``grid_sample``) of each fused
-            geometric/projective/crop segment runs under ``torch.compile``. Off by
+            geometric or projective segment runs under ``torch.compile``. Off by
             default and a no-op on CPU or older torch — the eager output is unchanged.
+            Crop-resize segments (:class:`CropResizeSegment`, :class:`_FusedGeoCropSegment`)
+            build their warp inline and do not honor this flag.
         antialias: When ``True``, crop-resize segments prefilter the input before an
             aggressive downscale so the single warp does not alias. Off by default and
             a no-op unless the scale drops past the threshold — the output is unchanged.

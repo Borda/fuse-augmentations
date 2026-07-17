@@ -115,6 +115,13 @@ class KorniaAdapter:
     def category(transform: object) -> TransformCategory:
         """Return the TransformCategory of the given Kornia transform.
 
+        Matched via ``isinstance`` against the registry (mirroring the TorchVision and
+        Albumentations adapters), so a user subclass of a registered Kornia transform
+        (e.g. ``class MyRotation(kornia.augmentation.RandomRotation)``) inherits its parent's
+        category instead of falling through to the ``SPATIAL_KERNEL`` barrier. None of the
+        registered leaf types subclass one another, so the first ``isinstance`` match is
+        unambiguous for genuine instances.
+
         Args:
             transform: A Kornia augmentation transform.
 
@@ -123,9 +130,9 @@ class KorniaAdapter:
             ``SPATIAL_KERNEL`` with a ``UserWarning``.
 
         """
-        cat = TRANSFORM_REGISTRY.get(type(transform))
-        if cat is not None:
-            return cat
+        for base_type, cat in TRANSFORM_REGISTRY.items():
+            if isinstance(transform, base_type):
+                return cat
         warnings.warn(
             f"Unknown Kornia transform {type(transform).__name__!r}; treating as SPATIAL_KERNEL barrier.",
             UserWarning,

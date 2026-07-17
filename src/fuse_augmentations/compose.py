@@ -285,9 +285,13 @@ class FusedCompose(nn.Module):
             ``ndarray`` with channel-last layout: batched inputs of shape
             ``(batch_size, channels, height, width)`` become ``(batch_size, height, width, channels)``,
             while unbatched inputs of shape ``(channels, height, width)`` become ``(height, width, channels)`` (i.e.
-            the batch dimension is implicit/squeezed). ``"torch"`` or ``None`` keeps the native ``torch.Tensor``
-            output. For multi-target ``data_keys`` the conversion is applied per target: image and mask outputs are
-            converted, while coordinate targets (boxes, keypoints) stay tensors.
+            the batch dimension is implicit/squeezed). **Variable-batch trap**: a batch of size one,
+            ``(1, channels, height, width)``, is *also* squeezed and returns ``(height, width, channels)`` --
+            the leading batch axis is dropped rather than kept as ``(1, height, width, channels)``. Callers
+            that loop over a variable batch size must special-case ``batch_size == 1`` (or re-insert the axis
+            with ``np.expand_dims(out, 0)``) to avoid a rank mismatch. ``"torch"`` or ``None`` keeps the native
+            ``torch.Tensor`` output. For multi-target ``data_keys`` the conversion is applied per target: image
+            and mask outputs are converted, while coordinate targets (boxes, keypoints) stay tensors.
         randomness: Batch randomness policy. ``"backend"`` preserves native
             backend semantics, including TorchVision v2 batch-shared sampling.
             ``"per_sample"`` asks adapters with canonical samplers to draw
@@ -896,6 +900,20 @@ class FusedCompose(nn.Module):
                 result = self._convert_primary_output(image)
                 return (result, _current_call_matrix()) if return_matrix else result
 
+        # Any keyword arguments still present were not consumed by the keyword-image dispatch above
+        # and would reach forward() -- whose signature is (*args, return_matrix) and accepts no data
+        # keywords -- yielding an opaque "unexpected keyword argument" TypeError whose exact wording
+        # depends on which adapter/backend the pipeline uses. Fail early with a clear, backend-
+        # independent message instead. (return_matrix is bound by __call__'s own signature, so it is
+        # never present in kwargs here.)
+        if kwargs:
+            misrouted = sorted(kwargs)
+            raise TypeError(
+                f"Unexpected keyword argument(s) {misrouted} for a tensor pipeline. Pass the image "
+                "positionally -- pipe(image_tensor), not pipe(image=image_tensor). The image=... keyword "
+                "call is only supported for Albumentations native (NumPy image) pipelines, or for "
+                "multi-target pipelines built with data_keys (image=..., mask=..., ...)."
+            )
         return super().__call__(*args, return_matrix=return_matrix, **kwargs)
 
     def _forward_albu_native(self, img_hwc: NDArray[Any]) -> dict[str, NDArray[Any]]:
@@ -2018,15 +2036,17 @@ class FusedCompose(nn.Module):
                 both axes equally, or ``None``. Overridden per-axis by
                 ``scale_x``/``scale_y`` when those are also set.
             scale_x: ``(min_factor, max_factor)`` x-axis-only scale range, or
-                ``None``.
+                ``None``. Per-axis only in backend-free mode -- see note below.
             scale_y: ``(min_factor, max_factor)`` y-axis-only scale range, or
-                ``None``.
+                ``None``. Per-axis only in backend-free mode -- see note below.
             shear_x: ``(min_deg, max_deg)`` x-shear range, or ``None``.
+                Per-axis only in backend-free mode -- see note below.
             shear_y: ``(min_deg, max_deg)`` y-shear range, or ``None``.
+                Per-axis only in backend-free mode -- see note below.
             translate_x: ``(min_px, max_px)`` x-translation range in pixels,
-                or ``None``.
+                or ``None``. Per-axis only in backend-free mode -- see note below.
             translate_y: ``(min_px, max_px)`` y-translation range in pixels,
-                or ``None``.
+                or ``None``. Per-axis only in backend-free mode -- see note below.
             hflip_p: Probability of horizontal flip per sample. Default 0.0.
             vflip_p: Probability of vertical flip per sample. Default 0.0.
             brightness: Maximum multiplicative brightness deviation. A value
@@ -2059,9 +2079,23 @@ class FusedCompose(nn.Module):
                 all other geometric keyword arguments must be at their
                 defaults (mutually exclusive). Keyword-only.
             backend: Backend name (``"kornia"``, ``"torchvision"``,
-                ``"albumentations"``), or ``None`` for backend-free mode.
-                When set, delegates to :meth:`from_config` semantics.
+                ``"albumentations"``, ``"native"``), or ``None`` for backend-free
+                mode. When set, delegates to :meth:`from_config` semantics.
                 Keyword-only.
+
+        Note:
+                    **Per-axis geometry requires backend-free mode.** The per-axis
+                    kwargs ``scale_x``/``scale_y``, ``shear_x``/``shear_y`` and
+                    ``translate_x``/``translate_y`` are only accepted when
+                    ``backend=None`` (the direct-parameter engine samples them per
+                    axis). They are rejected with a ``ValueError`` when *any*
+                    ``backend`` is set -- including ``backend="native"``, even though
+                    the native engine is the same direct-parameter engine as
+                    ``backend=None`` -- because the ``backend=`` path routes through
+                    :meth:`from_config`, whose canonical op vocabulary exposes only
+                    the symmetric ``"shear"``/``"translate"`` ops, not the per-axis
+                    variants. Use ``backend=None`` for per-axis geometry, or
+                    :meth:`from_config` with an explicit affine spec.
 
         Returns:
             A configured ``FusedCompose`` instance ready for inference or training.
@@ -2073,6 +2107,9 @@ class FusedCompose(nn.Module):
                 backend-free mode (i.e. not one of ``"rotation"``, ``"scale"``,
                 ``"scale_x"``, ``"scale_y"``, ``"shear_x"``, ``"shear_y"``,
                 ``"translate_x"``, ``"translate_y"``, ``"hflip"``, ``"vflip"``).
+            ValueError: If per-axis ``scale_x``/``scale_y``, ``shear_x``/``shear_y``
+                or ``translate_x``/``translate_y`` are passed together with any
+                ``backend`` (use ``backend=None`` for per-axis geometry).
             ValueError: If a backend-native kwarg in ``TransformSpec.params``
                 is not accepted by the backend constructor.
 
@@ -2443,15 +2480,18 @@ class FusedCompose(nn.Module):
         """
         if scale_x is not None or scale_y is not None:
             msg = (
-                "scale_x and scale_y are not supported when backend= is set. "
-                "Use from_config() with an explicit RandomAffine spec for anisotropic scale."
+                "scale_x and scale_y are not supported when backend= is set (including backend='native'). "
+                "Use backend=None for the backend-free direct-parameter engine, which samples per-axis "
+                "scale directly; or from_config() with an explicit RandomAffine spec for anisotropic scale."
             )
             raise ValueError(msg)
 
         if any(param is not None for param in (shear_x, shear_y, translate_x, translate_y)):
             msg = (
-                "shear_x/shear_y and translate_x/translate_y are not supported when backend= is set. "
-                "Use from_config() with an explicit affine spec for per-axis shear/translation."
+                "shear_x/shear_y and translate_x/translate_y are not supported when backend= is set "
+                "(including backend='native'). Use backend=None for the backend-free direct-parameter "
+                "engine, which samples per-axis shear/translation directly; or from_config() with an "
+                "explicit affine spec for per-axis shear/translation."
             )
             raise ValueError(msg)
 

@@ -284,6 +284,11 @@ class AlbumentationsAdapter:
             same_on_batch = bool(getattr(transform, "same_on_batch", False))
 
             if TRANSFORM_REGISTRY and isinstance(transform, _RandomRotate90):
+                # RNG INVARIANT: k90 is drawn here (matrix-param path) and again,
+                # independently, by exact_apply in _apply_discrete_exact — each via its
+                # own get_params(). A transform routes through EXACTLY ONE of the two
+                # paths, never both, so never let both fire for one transform (the two
+                # get_params() draws would desync into different rotations).
                 if same_on_batch:
                     factor = int(transform.get_params()["factor"]) % 4
                     result["k90"] = torch.full((batch_size,), factor, device=device, dtype=torch.int64)
@@ -296,6 +301,10 @@ class AlbumentationsAdapter:
                 return result
 
             if TRANSFORM_REGISTRY and isinstance(transform, _D4):
+                # RNG INVARIANT: d4_code is drawn here (matrix-param path) and again,
+                # independently, by exact_apply in _apply_discrete_exact — each via its
+                # own get_params(). A transform routes through EXACTLY ONE of the two
+                # paths, never both; never let both fire (the draws would desync).
                 if same_on_batch:
                     elem = str(transform.get_params()["group_element"])
                     result["d4_code"] = torch.full(
@@ -570,8 +579,10 @@ class AlbumentationsAdapter:
         # One device→host transfer for the whole batch: permute to channel-last,
         # move to host, materialise NumPy once. Albumentations must still be looped
         # per image (its dict API is single-image), but the loop now runs entirely
-        # on the host over views of the single transferred array.
-        batch_hwc = image.permute(0, 2, 3, 1).cpu().numpy()  # (B, H, W, C) host
+        # on the host over views of the single transferred array. Detach first: no
+        # grad flows through the cv2/Albumentations passthrough, and a raw .numpy() on
+        # a requires_grad tensor would raise.
+        batch_hwc = image.detach().permute(0, 2, 3, 1).cpu().numpy()  # (B, H, W, C) host
         ndarray_results = []
         for idx_sample in range(batch_size):
             output_np = transform(image=batch_hwc[idx_sample])["image"]  # type: ignore[operator]
@@ -668,6 +679,10 @@ def _apply_discrete_exact(
     same_on_batch = bool(getattr(transform, "same_on_batch", False))
 
     if TRANSFORM_REGISTRY and ttype is _RandomRotate90:
+        # RNG INVARIANT: exact_apply draws the rotation factor here via get_params(); the
+        # matrix-param path in AlbumentationsAdapter.sample_params draws k90 the same way,
+        # independently. A transform routes through EXACTLY ONE path, never both, so never
+        # let both fire for one transform (the two get_params() draws would desync).
         if same_on_batch:
             params = transform.get_params()  # type: ignore[attr-defined]
             num_rotations = int(params["factor"]) % 4
@@ -693,6 +708,10 @@ def _apply_discrete_exact(
         return image.permute(0, 1, 3, 2).contiguous()
 
     if TRANSFORM_REGISTRY and ttype is _D4:
+        # RNG INVARIANT: exact_apply draws the group element here via get_params(); the
+        # matrix-param path in AlbumentationsAdapter.sample_params draws d4_code the same
+        # way, independently. A transform routes through EXACTLY ONE path, never both;
+        # never let both fire for one transform (the two get_params() draws would desync).
         if same_on_batch:
             params = transform.get_params()  # type: ignore[attr-defined]
             elem = _convert_normalize_d4_elem(params["group_element"])

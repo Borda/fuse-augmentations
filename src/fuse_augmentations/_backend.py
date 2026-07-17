@@ -166,8 +166,45 @@ def _load_one_entrypoint(ep: object) -> None:
         warnings.warn(f"Failed to load adapter entry point {name!r}: {exc!r}; skipping.", UserWarning, stacklevel=2)
 
 
+def _classify_transform(transform: object) -> Backend | None:
+    """Resolve a single transform's backend from its module, falling back to its MRO.
+
+    Shared by :func:`detect_backend` and :func:`detect_backends_per_transform` so both agree on
+    subclassed transforms: a direct module-prefix match is tried first, then (on a miss) the
+    transform's method resolution order is walked for an ancestor whose module matches a known
+    backend prefix. This handles subclasses defined outside the backend package (e.g. a user-defined
+    ``class MyRot(torchvision.transforms.RandomRotation)`` in ``__main__``).
+
+    Args:
+        transform: A transform object.
+
+    Returns:
+        The matched ``Backend``, or ``None`` when neither the module nor any MRO ancestor matches.
+
+    """
+    module = type(transform).__module__ or ""
+    backend = _match_backend(module)
+    if backend is None:
+        backend = _match_backend_from_mro(type(transform))
+    return backend
+
+
+def _warn_unrecognized(transform: object) -> None:
+    """Emit the shared ``UserWarning`` for a transform that matched no known backend prefix."""
+    warnings.warn(
+        f"Unrecognized transform {type(transform).__name__!r}; treating as SPATIAL_KERNEL barrier.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 def detect_backend(transforms: list[object]) -> Backend:
     """Detect the backend from a list of transforms by inspecting module paths.
+
+    A direct module-prefix match is tried first; on a miss the transform's MRO is walked for a
+    matching ancestor (via :func:`_classify_transform`), so a subclass of a backend transform
+    resolves to that backend rather than being treated as unrecognized. This mirrors
+    :func:`detect_backends_per_transform`, keeping the two in agreement on subclassed transforms.
 
     Args:
         transforms: List of transform objects.
@@ -186,14 +223,9 @@ def detect_backend(transforms: list[object]) -> Backend:
     backends: set[Backend] = set()
 
     for transform in transforms:
-        module = type(transform).__module__ or ""
-        backend = _match_backend(module)
+        backend = _classify_transform(transform)
         if backend is None:
-            warnings.warn(
-                f"Unrecognized transform {type(transform).__name__!r}; treating as SPATIAL_KERNEL barrier.",
-                UserWarning,
-                stacklevel=2,
-            )
+            _warn_unrecognized(transform)
         else:
             backends.add(backend)
 
@@ -240,16 +272,9 @@ def detect_backends_per_transform(transforms: list[object]) -> list[Backend | No
     """
     result: list[Backend | None] = []
     for transform in transforms:
-        module = type(transform).__module__ or ""
-        backend = _match_backend(module)
+        backend = _classify_transform(transform)
         if backend is None:
-            backend = _match_backend_from_mro(type(transform))
-        if backend is None:
-            warnings.warn(
-                f"Unrecognized transform {type(transform).__name__!r}; treating as SPATIAL_KERNEL barrier.",
-                UserWarning,
-                stacklevel=2,
-            )
+            _warn_unrecognized(transform)
         result.append(backend)
     return result
 
