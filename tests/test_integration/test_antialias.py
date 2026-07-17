@@ -21,7 +21,7 @@ import torch
 
 from fuse_augmentations._compat import _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
 from fuse_augmentations.affine.matrix import estimate_scale
-from fuse_augmentations.affine.segment import _mipmap_sigma
+from fuse_augmentations.affine.segment import _antialias_axis_scales, _maybe_antialias_prefilter, _mipmap_sigma
 
 
 def _gaussian_window(window_size: int, sigma: float) -> torch.Tensor:
@@ -73,6 +73,81 @@ class TestEstimateScale:
         lo, hi = estimate_scale(mtx)
         assert lo == pytest.approx(0.25, abs=1e-4)
         assert hi == pytest.approx(0.5, abs=1e-4)
+
+
+class TestAntialiasAxisScales:
+    """Per-axis scale mapping that decides which axis the prefilter blurs (AFF-1)."""
+
+    def test_axis_aligned_reports_scales_per_axis_not_by_magnitude(self) -> None:
+        """A height-dominant axis-aligned shrink returns (width, height) scales, not magnitude-sorted."""
+        mtx = torch.eye(3).unsqueeze(0)
+        mtx[:, 0, 0] = 0.9  # width shrinks mildly
+        mtx[:, 1, 1] = 0.2  # height shrinks hard
+        scale_x, scale_y = _antialias_axis_scales(mtx)
+        assert scale_x == pytest.approx(0.9, abs=1e-4)  # width axis, NOT the smaller singular value
+        assert scale_y == pytest.approx(0.2, abs=1e-4)  # height axis carries the aggressive shrink
+
+    def test_width_dominant_shrink_maps_to_width_axis(self) -> None:
+        """A width-dominant axis-aligned shrink puts the small scale on the width axis."""
+        mtx = torch.eye(3).unsqueeze(0)
+        mtx[:, 0, 0] = 0.2  # width shrinks hard
+        mtx[:, 1, 1] = 0.9  # height shrinks mildly
+        scale_x, scale_y = _antialias_axis_scales(mtx)
+        assert scale_x == pytest.approx(0.2, abs=1e-4)
+        assert scale_y == pytest.approx(0.9, abs=1e-4)
+
+    def test_rotated_matrix_uses_isotropic_min_singular_value(self) -> None:
+        """A rotated (non-axis-aligned) shrink falls back to the worst-axis singular value on both axes."""
+        theta = torch.tensor(0.6)
+        rot = torch.tensor([[torch.cos(theta), -torch.sin(theta)], [torch.sin(theta), torch.cos(theta)]])
+        scale = torch.diag(torch.tensor([0.3, 0.8]))
+        mtx = torch.eye(3).unsqueeze(0)
+        mtx[0, :2, :2] = rot @ scale
+        scale_x, scale_y = _antialias_axis_scales(mtx)
+        assert scale_x == pytest.approx(0.3, abs=1e-4)  # smallest singular value
+        assert scale_x == scale_y  # applied isotropically for a rotated warp
+
+    def test_batched_reduces_to_smallest_scale_per_axis(self) -> None:
+        """A batch takes the smallest per-axis scale so any downscaling sample is antialiased."""
+        mtx = torch.eye(3).unsqueeze(0).repeat(2, 1, 1)
+        mtx[0, 0, 0], mtx[0, 1, 1] = 0.9, 0.7
+        mtx[1, 0, 0], mtx[1, 1, 1] = 0.4, 0.95
+        scale_x, scale_y = _antialias_axis_scales(mtx)
+        assert scale_x == pytest.approx(0.4, abs=1e-4)  # min width scale across the batch
+        assert scale_y == pytest.approx(0.7, abs=1e-4)  # min height scale across the batch
+
+
+def _axis_total_variation(image: torch.Tensor) -> tuple[float, float]:
+    """Return mean absolute neighbour differences along (height, width) axes."""
+    tv_h = float((image[..., 1:, :] - image[..., :-1, :]).abs().mean().item())
+    tv_w = float((image[..., :, 1:] - image[..., :, :-1]).abs().mean().item())
+    return tv_h, tv_w
+
+
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="antialias prefilter needs the kornia Gaussian backend")
+class TestAnisotropicPrefilterAxis:
+    """The prefilter blurs the axis that actually downscales (AFF-1 regression)."""
+
+    def test_height_dominant_shrink_blurs_height_axis(self) -> None:
+        """A hard height shrink + mild width shrink smooths the height axis far more than width.
+
+        With the pre-fix magnitude-sorted scales the strong blur landed on the wrong (width) axis, so this ratio
+        comparison flips and the test fails.
+
+        """
+        torch.manual_seed(0)
+        image = torch.rand(1, 3, 48, 48)  # broadband high frequency on both axes
+        mtx = torch.eye(3).unsqueeze(0)
+        mtx[:, 0, 0] = 0.9  # width barely shrinks -> negligible width blur
+        mtx[:, 1, 1] = 0.2  # height shrinks hard -> strong height blur
+
+        tv_h_before, tv_w_before = _axis_total_variation(image)
+        filtered = _maybe_antialias_prefilter(image, mtx, enabled=True)
+        tv_h_after, tv_w_after = _axis_total_variation(filtered)
+
+        ratio_h = tv_h_after / tv_h_before  # height smoothing (should be strong -> small ratio)
+        ratio_w = tv_w_after / tv_w_before  # width smoothing (should be weak -> ratio near 1)
+        assert ratio_h < 0.6 * ratio_w
 
 
 class TestMipmapSigma:

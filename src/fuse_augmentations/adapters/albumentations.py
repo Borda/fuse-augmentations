@@ -920,7 +920,23 @@ def _sample_matrices(transform: object, batch_size: int, height: int, width: int
     Returns:
         ``(B, 3, 3)`` float64 array of forward pixel-space matrices.
 
+    Raises:
+        NotImplementedError: If *transform* is an Albumentations ``Perspective`` with
+            ``keep_size=False``. Native ``keep_size=False`` returns a crop of different
+            spatial dimensions, which the batched shape-preserving fusion engine cannot
+            reproduce in a single warp.
+        KeyError: If the transform does not return a ``"matrix"`` from
+            ``get_params_dependent_on_data()``.
+
     """
+    if _is_albu_instance(transform, frozenset({_Perspective})) and not bool(getattr(transform, "keep_size", True)):
+        msg = (
+            "Albumentations Perspective(keep_size=False) returns a crop of different spatial "
+            "dimensions, which the batched shape-preserving fusion engine cannot reproduce in a "
+            "single warp. Use keep_size=True (the fused path folds its output resize into the "
+            "homography) or apply this Perspective outside the fused pipeline."
+        )
+        raise NotImplementedError(msg)
     _key = (height, width)
     dummy = _DUMMY_IMAGE_CACHE.get(_key)
     if dummy is None:

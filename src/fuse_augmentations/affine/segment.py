@@ -35,7 +35,6 @@ from fuse_augmentations.affine.matrix import (
     _singularity_threshold,
     apply_d4_image,
     classify_d4_batch,
-    estimate_scale,
     inv3x3,
     matmul3x3,
     normalize_matrix,
@@ -450,11 +449,60 @@ def _mipmap_sigma(scale: float) -> float:
     return 0.5 * math.sqrt((1.0 / scale) ** 2 - 1.0)
 
 
+def _antialias_axis_scales(mtx: Tensor) -> tuple[float, float]:
+    """Return the ``(width-axis, height-axis)`` output/input scales for the prefilter.
+
+    Unlike :func:`~fuse_augmentations.affine.matrix.estimate_scale` (whose two
+    singular values are sorted by *magnitude*, not by image axis), this maps each
+    scale to the axis the anisotropic Gaussian must blur:
+
+    - **Axis-aligned** linear part (off-diagonal magnitude below
+      :data:`_AXIS_ALIGNED_EPS`, i.e. pure scale + translation): the width- and
+      height-axis scales are read straight off the diagonal ``mtx[:, 0, 0]`` /
+      ``mtx[:, 1, 1]``, so a height-dominant shrink blurs the height axis and a
+      width-dominant shrink blurs the width axis.
+    - **Rotated / sheared** linear part: width and height no longer align with the
+      matrix axes, so the smallest singular value (worst-axis scale) is applied
+      isotropically — a conservative band-limit that never under-blurs.
+
+    Batched matrices reduce to the smallest scale per axis (``.min()`` over the
+    batch), matching :func:`estimate_scale`, so any downscaling sample is
+    antialiased. All device→host traffic is collapsed into a single ``.tolist()``
+    transfer to avoid repeated per-warp stream syncs.
+
+    Args:
+        mtx: ``(batch_size, 3, 3)`` forward pixel matrix of the downscaling warp.
+
+    Returns:
+        A ``(scale_x, scale_y)`` tuple: the width-axis and height-axis scales.
+
+    Example:
+        >>> import torch
+        >>> from fuse_augmentations.affine.segment import _antialias_axis_scales
+        >>> mtx = torch.eye(3).unsqueeze(0)
+        >>> mtx[:, 0, 0], mtx[:, 1, 1] = 0.9, 0.2  # shrink height much harder than width
+        >>> sx, sy = _antialias_axis_scales(mtx)
+        >>> round(sx, 3), round(sy, 3)
+        (0.9, 0.2)
+
+    """
+    linear = mtx[:, :2, :2].to(dtype=torch.float32)
+    off_diagonal = torch.maximum(linear[:, 0, 1].abs(), linear[:, 1, 0].abs()).max()
+    diag_x = linear[:, 0, 0].abs().min()
+    diag_y = linear[:, 1, 1].abs().min()
+    min_sv = torch.linalg.svdvals(linear)[:, 1].min()  # worst-axis scale (smallest singular value)
+    off_val, scale_x, scale_y, sv = torch.stack([off_diagonal, diag_x, diag_y, min_sv]).tolist()
+    if off_val <= _AXIS_ALIGNED_EPS:
+        return float(scale_x), float(scale_y)
+    return float(sv), float(sv)
+
+
 def _maybe_antialias_prefilter(image: Tensor, mtx: Tensor, enabled: bool) -> Tensor:
     """Gaussian-prefilter ``image`` before a downscaling warp when antialiasing is on.
 
-    Estimates the per-axis scale of the forward matrix ``mtx``; when antialiasing
-    is enabled and the worst axis downscales below
+    Estimates the per-axis scale of the forward matrix ``mtx`` (via
+    :func:`_antialias_axis_scales`, which maps each scale to its image axis); when
+    antialiasing is enabled and the worst axis downscales below
     :data:`_ANTIALIAS_SCALE_THRESHOLD`, band-limits the input with a per-axis
     Gaussian (mipmap sigma rule) so the single ``grid_sample`` no longer aliases.
     The blur runs in the image dtype via the installed kornia backend; if kornia
@@ -473,7 +521,7 @@ def _maybe_antialias_prefilter(image: Tensor, mtx: Tensor, enabled: bool) -> Ten
     """
     if not enabled:
         return image
-    scale_x, scale_y = estimate_scale(mtx)  # (width-axis, height-axis) singular values, ascending
+    scale_x, scale_y = _antialias_axis_scales(mtx)  # (width-axis, height-axis) scales
     if min(scale_x, scale_y) >= _ANTIALIAS_SCALE_THRESHOLD:
         return image
     sigma_x = _mipmap_sigma(scale_x)
