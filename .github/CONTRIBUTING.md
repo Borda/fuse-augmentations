@@ -53,7 +53,9 @@ python -m mypy
 pre-commit run --all-files
 ```
 
-The CI matrix tests Python 3.10 and 3.12, the supported optional backends, and the all-extras configuration. Keep tests deterministic and include specific assertions that would fail for plausible but incorrect behavior.
+The CI matrix tests Python 3.10, 3.11, 3.12, 3.13, and 3.14, the supported optional backends, and the all-extras configuration. Keep tests deterministic and include specific assertions that would fail for plausible but incorrect behavior.
+
+No CI runner has GPU access: tests marked `gpu` (`pytest -m gpu`) are skipped in every workflow and never exercise a real CUDA device, so CUDA numeric correctness has no automated verification. If you change GPU-specific code, run the `gpu`-marked tests locally on a CUDA-capable machine before opening a pull request.
 
 ## Executable documentation examples
 

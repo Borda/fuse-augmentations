@@ -15,7 +15,7 @@ The base package requires Python 3.10 or newer and PyTorch 2.2 or newer. Kornia,
 python -m pip install fuse-augmentations
 ```
 
-This installs NumPy, Pillow, SciPy, PyTorch, and the package itself. It is enough for [`Compose.from_params`](quickstart.md).
+This installs NumPy, PyTorch, and the package itself. It is enough for [`Compose.from_params`](quickstart.md).
 
 ## Optional backends
 
