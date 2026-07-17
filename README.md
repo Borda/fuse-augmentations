@@ -251,6 +251,7 @@ The repository includes a complete MkDocs Material site:
 - [Research methodology](https://borda.github.io/fuse-augmentations/research/methodology/)
 - [Known limitations](https://borda.github.io/fuse-augmentations/known-limitations/)
 - [FAQ](https://borda.github.io/fuse-augmentations/faq/)
+- [Application walkthroughs](https://borda.github.io/fuse-augmentations/applications/)
 - generated references for the notable public API
 
 The site configuration provides local search, per-page descriptions, canonical/Open Graph metadata, sitemap and crawler files, an `llms.txt` agent index, and GitHub Pages publication automation.

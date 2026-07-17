@@ -205,13 +205,14 @@ ini_options.addopts = [
   "--capture=sys",
 ]
 ini_options.markers = [
-  "slow: marks tests as slow (deselect with '-m not slow')",
   "integration: requires kornia or another external backend",
   "gpu: requires a CUDA-capable GPU",
   "compile: tests torch.compile behaviour",
 ]
 ini_options.filterwarnings = [
   "error::FutureWarning",
+  "error::DeprecationWarning",
+  "ignore:`torch.jit.script_method` is deprecated.*:DeprecationWarning:torch.jit._script",
 ]
 ini_options.xfail_strict = true
 ini_options.junit_duration_report = "call"
