@@ -1322,8 +1322,11 @@ class FusedAffineSegment(_BaseAffineSegment):
 
         # Compose the multi-transform affine chain into one matrix (shared engine).
         acc, acc_img = self._compose(image)
-        self._last_matrix = acc_img.detach().clone()
-        _set_current_call_matrix(acc_img.detach().clone())
+        # One shared detached clone for both the last_matrix property and the per-call
+        # context matrix (return_matrix path); compose.py only reads them, never mutates.
+        matrix_copy = acc_img.detach().clone()
+        self._last_matrix = matrix_copy
+        _set_current_call_matrix(matrix_copy)
 
         # Symbolic-exactness fast path: when the whole batch composes to one D4-group
         # element (flip / 90-degree rotation, zero net translation beyond the
@@ -2077,9 +2080,9 @@ class AlbuFusedAffineSegment(nn.Module):
                 warped = _warp(img_np, m_dst2src, width, height, interp_flag, border_flag)
             output_np.append(warped)
 
-        return torch.stack([
-            torch.as_tensor(np.ascontiguousarray(img).copy()).permute(2, 0, 1) for img in output_np
-        ]).to(device=device, dtype=dtype)
+        return torch.stack([torch.as_tensor(np.ascontiguousarray(img)).permute(2, 0, 1) for img in output_np]).to(
+            device=device, dtype=dtype
+        )
 
     def _warp_torch(self, image: Tensor, composed_batch: Tensor) -> Tensor:
         """Warp the whole batch with one ``grid_sample`` (opt-in torch strategy).
@@ -2330,8 +2333,11 @@ class ProjectiveSegment(_BaseAffineSegment):
             aux_targets = {}
 
         acc, acc_img = self._compose(image)
-        self._last_matrix = acc_img.detach().clone()
-        _set_current_call_matrix(acc_img.detach().clone())
+        # One shared detached clone for both the last_matrix property and the per-call
+        # context matrix (return_matrix path); compose.py only reads them, never mutates.
+        matrix_copy = acc_img.detach().clone()
+        self._last_matrix = matrix_copy
+        _set_current_call_matrix(matrix_copy)
 
         image, grid = self._apply_grid(image, acc)
 
@@ -2618,9 +2624,9 @@ class AlbuProjectiveSegment(nn.Module):
                 warped = warped[..., None]
             output_np.append(warped)
 
-        return torch.stack([
-            torch.as_tensor(np.ascontiguousarray(img).copy()).permute(2, 0, 1) for img in output_np
-        ]).to(device=device, dtype=dtype)
+        return torch.stack([torch.as_tensor(np.ascontiguousarray(img)).permute(2, 0, 1) for img in output_np]).to(
+            device=device, dtype=dtype
+        )
 
     def _warp_torch(self, image: Tensor, composed_batch: Tensor) -> Tensor:
         """Warp the whole batch with one perspective ``grid_sample`` (opt-in torch strategy).

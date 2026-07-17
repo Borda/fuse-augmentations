@@ -78,6 +78,32 @@ except ImportError:
     _NORMALIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
 
 
+def _batch_size_sentinel(batch_size: int, device: torch.device) -> torch.Tensor:
+    """Return a batch-size sentinel whose *leading dimension* encodes the batch size.
+
+    Flip / rot90 / saturation / normalize transforms carry no per-sample parameter tensor, so
+    ``build_matrix`` needs a small carrier for the batch size and target device. Encoding the count
+    in the tensor's *shape* (rather than its scalar value) lets readers recover it with ``.shape[0]``
+    -- a metadata read -- instead of ``.item()``, which forces a GPU->host synchronization inside
+    fused GPU chains. Only ``.shape[0]`` and ``.device`` of the returned tensor are ever consumed;
+    its element values are irrelevant.
+
+    Args:
+        batch_size: Number of samples in the batch.
+        device: Target device for the sentinel tensor.
+
+    Returns:
+        A ``(batch_size,)`` ``int64`` tensor.
+
+    Example:
+        >>> import torch
+        >>> _batch_size_sentinel(4, torch.device("cpu")).shape[0]
+        4
+
+    """
+    return torch.zeros(batch_size, device=device, dtype=torch.int64)
+
+
 class KorniaAdapter:
     """Adapter between Kornia augmentation transforms and the fused affine engine.
 
@@ -166,7 +192,7 @@ class KorniaAdapter:
 
         # POINTWISE (non-linear color ops): no spatial matrix — return sentinel.
         if TRANSFORM_REGISTRY and ttype is _RandomSaturation:
-            return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
+            return {"_batch_size": _batch_size_sentinel(batch_size, device)}
 
         # Flip transforms have no sampled params — prob-mask handles them.
         # Store batch metadata so build_matrix can construct the right shape.
@@ -175,7 +201,7 @@ class KorniaAdapter:
             _RandomVerticalFlip,
         ):
             return {
-                "_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64),
+                "_batch_size": _batch_size_sentinel(batch_size, device),
             }
 
         # Generate Kornia-native params
@@ -183,7 +209,7 @@ class KorniaAdapter:
 
         if TRANSFORM_REGISTRY and ttype is _RandomRotation90:
             return {
-                "_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64),
+                "_batch_size": _batch_size_sentinel(batch_size, device),
                 "k90": params["times"].to(device=device, dtype=torch.int64) % 4,
             }
 
@@ -294,7 +320,7 @@ class KorniaAdapter:
             return out
 
         if TRANSFORM_REGISTRY and ttype is _KorniaNormalize:
-            return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
+            return {"_batch_size": _batch_size_sentinel(batch_size, device)}
 
         # Unknown - return empty
         return {}
@@ -322,29 +348,30 @@ class KorniaAdapter:
 
         if TRANSFORM_REGISTRY and ttype is _RandomSaturation:
             # Non-linear color op: no spatial change → identity matrix.
-            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
+            batch_size = params["_batch_size"].shape[0]
             return torch.eye(3, dtype=torch.float32, device=device).unsqueeze(0).expand(batch_size, -1, -1).clone()
 
         if TRANSFORM_REGISTRY and ttype is _RandomHorizontalFlip:
-            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
+            batch_size = params["_batch_size"].shape[0]
             return hflip_matrix(width=width, batch_size=batch_size, device=device, dtype=torch.float32)
 
         if TRANSFORM_REGISTRY and ttype is _RandomVerticalFlip:
-            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
+            batch_size = params["_batch_size"].shape[0]
             return vflip_matrix(height=height, batch_size=batch_size, device=device, dtype=torch.float32)
 
         if TRANSFORM_REGISTRY and ttype is _RandomRotation90:
             # Build per-sample 90-degree multiple rotation matrices.
             # Expect an integer parameter "k90" in {0, 1, 2, 3} per batch element.
-            batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
 
             k_rotations = params.get("k90")
             if k_rotations is None:
-                # Fallback: sample k uniformly if not provided in params.
+                # Fallback: sample k uniformly if not provided in params. Batch size comes from the
+                # sentinel's leading dim (no host sync); the normal path uses k90 (already per-sample).
+                batch_size = params["_batch_size"].shape[0]
                 k_rotations = torch.randint(0, 4, (batch_size,), device=device)
 
             # Kornia's quarter-turn matrix uses the same CW-positive convention
@@ -701,13 +728,13 @@ class KorniaAdapter:
         if TRANSFORM_REGISTRY and ttype in (_RandomHorizontalFlip, _RandomVerticalFlip):
             batch_size = int(params["batch_prob"].shape[0])
             return {
-                "_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64),
+                "_batch_size": _batch_size_sentinel(batch_size, device),
             }
 
         if TRANSFORM_REGISTRY and ttype is _RandomRotation90:
             batch_size = int(params["batch_prob"].shape[0])
             return {
-                "_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64),
+                "_batch_size": _batch_size_sentinel(batch_size, device),
                 "k90": params["times"].to(device=device, dtype=torch.int64) % 4,
             }
 
@@ -960,7 +987,7 @@ def _contrast_multiplicative_matrix(contrast_factor: torch.Tensor) -> torch.Tens
 
 def _build_normalize_matrix(transform: object, params: dict[str, torch.Tensor]) -> torch.Tensor:
     """Build Kornia Normalize's channel-wise affine color matrix."""
-    batch_size = int(params["_batch_size"].item())
+    batch_size = params["_batch_size"].shape[0]
     flags = cast(Any, transform).flags
     mean = torch.as_tensor(flags["mean"], dtype=torch.float32).flatten()
     std = torch.as_tensor(flags["std"], dtype=torch.float32).flatten()
