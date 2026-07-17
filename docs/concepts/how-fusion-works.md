@@ -85,7 +85,7 @@ Crop behavior depends on the execution path:
 
 - On the torch paths used by Kornia and TorchVision, an immediately preceding affine run can be composed with `RandomResizedCrop` as (M\_{crop} M\_{affine}). The result is one resampling step at the crop's output size.
 - Without a preceding affine run, crop-resize is a standalone segment.
-- On the Albumentations NumPy/cv2 path, crop-resize remains native passthrough and is not merged with the preceding affine run.
+- On the Albumentations NumPy/cv2 path, crop-resize is never merged with the preceding affine run. It remains native passthrough for image-only pipelines; when the pipeline declares `data_keys` auxiliary targets it becomes a standalone crop-resize segment so masks, boxes, and keypoints are routed to the crop's output size alongside the image (both the `cv2` and `torch` execution strategies).
 - Projective → crop is not a combined segment.
 
 This asymmetry matters when comparing fusion plans or expected warp counts across backends.

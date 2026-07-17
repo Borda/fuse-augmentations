@@ -128,6 +128,31 @@ def _has_coord_aux(data_keys: list[str] | None) -> bool:
     return any(key in _COORD_DATA_KEYS for key in data_keys)
 
 
+def _has_aux_target(data_keys: list[str] | None) -> bool:
+    """Return whether ``data_keys`` carries any auxiliary target (mask/box/keypoint).
+
+    Unlike :func:`_has_coord_aux` (box/keypoint only), this also counts ``mask``: a
+    ``CROP_RESIZE_FIXED`` op resizes the image, so *every* auxiliary target — masks
+    included — must be routed to the new output size or it silently desyncs.
+
+    Args:
+        data_keys: The pipeline's positional data-key names, or ``None``.
+
+    Returns:
+        ``True`` if any auxiliary key (any entry beyond ``data_keys[0]``) is present.
+
+    Examples:
+        >>> _has_aux_target(["input", "mask"])
+        True
+        >>> _has_aux_target(["input"])
+        False
+        >>> _has_aux_target(None)
+        False
+
+    """
+    return data_keys is not None and len(data_keys) > 1
+
+
 # Plan-time segment dispatch tags. Computed once per pipeline at construction and
 # stored on the instance so ``forward`` loops over integer tags instead of running
 # an isinstance chain per segment per call. Kept as plain ints (not bound methods)
@@ -402,6 +427,7 @@ class FusedCompose(nn.Module):
                     randomness=randomness_policy,
                     use_numpy=(backend == Backend.ALBUMENTATIONS),
                     route_coords_via_grid=_has_coord_aux(data_keys),
+                    route_crop_aux=_has_aux_target(data_keys),
                     execution=execution,
                     compile_warp=compile,
                     antialias=antialias,
@@ -418,6 +444,7 @@ class FusedCompose(nn.Module):
                     padding_mode=padding_mode,
                     randomness=randomness_policy,
                     route_coords_via_grid=_has_coord_aux(data_keys),
+                    route_crop_aux=_has_aux_target(data_keys),
                     execution=execution,
                     compile_warp=compile,
                     antialias=antialias,
@@ -2379,6 +2406,7 @@ def _build_mixed_segments(
     randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     *,
     route_coords_via_grid: bool = False,
+    route_crop_aux: bool = False,
     execution: ExecutionStr = "cv2",
     compile_warp: bool = False,
     antialias: bool = False,
@@ -2403,6 +2431,9 @@ def _build_mixed_segments(
         randomness: Batch randomness policy forwarded to segments.
         route_coords_via_grid: Forwarded to ``build_segments`` — routes all-exact runs
             through the grid path when box/keypoint aux targets are present.
+        route_crop_aux: Forwarded to ``build_segments`` — routes ``CROP_RESIZE_FIXED``
+            ops through a ``CropResizeSegment`` (instead of an image-only passthrough) on
+            the Albumentations numpy path when any auxiliary target is present.
         execution: Forwarded to ``build_segments`` — Albumentations warp strategy
             (``"cv2"`` default, ``"torch"`` opt-in batched grid_sample).
         compile_warp: Forwarded to ``build_segments`` — opt-in ``torch.compile`` of
@@ -2472,6 +2503,7 @@ def _build_mixed_segments(
             randomness=randomness,
             use_numpy=(backend_name == Backend.ALBUMENTATIONS),
             route_coords_via_grid=route_coords_via_grid,
+            route_crop_aux=route_crop_aux,
             execution=execution,
             compile_warp=compile_warp,
             antialias=antialias,

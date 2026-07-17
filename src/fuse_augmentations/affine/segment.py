@@ -3226,6 +3226,7 @@ def build_segments(
     *,
     use_numpy: bool = False,
     route_coords_via_grid: bool = False,
+    route_crop_aux: bool = False,
     execution: ExecutionStr = "cv2",
     compile_warp: bool = False,
     antialias: bool = False,
@@ -3271,6 +3272,12 @@ def build_segments(
             exact-dispatch still applies it losslessly while routing boxes/keypoints
             through the composed pixel matrix — avoiding the ``ExactAffineSegment``
             box/keypoint limitation without an interpolation penalty. Torch path only.
+        route_crop_aux: When ``True`` (set by the caller when the pipeline carries any
+            auxiliary target), emit a :class:`CropResizeSegment` for a ``CROP_RESIZE_FIXED``
+            op on the ``use_numpy`` (Albumentations) path instead of an image-only
+            passthrough, so masks/boxes/keypoints route to the crop's output size. Without
+            it the numpy-path crop resizes the image only, silently desyncing aux targets.
+            No effect on the PyTorch backends (they always build ``CropResizeSegment``).
         execution: Execution strategy forwarded to the Albumentations fused segments
             (``use_numpy=True`` path). ``"cv2"`` (default) warps each sample with
             OpenCV; ``"torch"`` opts into one batched ``grid_sample`` for the whole
@@ -3411,12 +3418,29 @@ def build_segments(
             # apply ONE grid_sample at the crop's target size instead of two.
             # No pending geo run → emit a standalone CropResizeSegment. Projective
             # and color runs still flush (crop only fuses with affine geo runs).
-            # The numpy/albumentations path emits the transform as a passthrough.
+            # The numpy/albumentations path emits the transform as a passthrough,
+            # except when the pipeline carries auxiliary targets: a passthrough crop
+            # resizes the image only and silently desyncs masks/boxes/keypoints, so a
+            # CropResizeSegment (which the Albumentations adapter fully supports for
+            # CROP_RESIZE_FIXED) is emitted instead to route aux to the output size.
             _flush_proj()
             _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
             if use_numpy:
                 _flush_geo()
-                segments.append(transform)
+                if route_crop_aux:
+                    segments.append(
+                        CropResizeSegment(
+                            transform=transform,
+                            adapter=adapter,
+                            interpolation=interpolation,
+                            padding_mode=padding_mode,
+                            randomness=randomness,
+                            antialias=antialias,
+                            mask_interpolation=mask_interpolation,
+                        )
+                    )
+                else:
+                    segments.append(transform)
                 continue
             if current_geo:
                 segments.append(

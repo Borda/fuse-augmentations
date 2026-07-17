@@ -39,7 +39,7 @@ This does **not** mean the fused output is pixel-identical to the native chain. 
 
 The same fixed Kornia rotation → scale → shear recipe is evaluated below. The native route resamples three times; Fuse Compose composes the geometry and samples once. The red/green/yellow overlay makes local disagreement visible without claiming native-pixel parity.
 
-![Fixed Kornia parameters: native sequential versus Fuse Compose resampling](docs/assets/images/sequential-vs-fused-kornia-framing.webp)
+![Fixed Kornia parameters: native sequential versus Fuse Compose resampling](https://raw.githubusercontent.com/Borda/fuse-augmentations/main/docs/assets/images/sequential-vs-fused-kornia-framing.webp)
 
 See [three fixed recipes for each of Kornia, TorchVision, and Albumentations](https://borda.github.io/fuse-augmentations/research/quality-and-fidelity/), including their exact limits.
 
@@ -167,7 +167,7 @@ These numbers are from the 2026-07-12 local audit on macOS arm64, `fuse-augmenta
 
 | Measurement                          |                                             Observed result | Interpretation                                                                             |
 | ------------------------------------ | ----------------------------------------------------------: | ------------------------------------------------------------------------------------------ |
-| Fixed 45-case CPU, batch-1 score     |            **1.77×** geometric mean of native/fused latency | Real aggregate gain for the synthetic bank; mixed cases use opt-in reordering.             |
+| Fixed 45-case CPU, batch-1 score     |            **1.79×** geometric mean of native/fused latency | Real aggregate gain for the synthetic bank; mixed cases use opt-in reordering.             |
 | Five-op geometric chain, CPU batch 1 |   **6.52× Kornia**, **14.48× TorchVision** in one quick run | Long geometric chains are the strongest fit; quick-run effect sizes are noisy.             |
 | Sampled CPU tensor peak memory       |                           Lower in **12/12** compared pairs | Fewer intermediate warped tensors can reduce peak; allocation count improved in only 8/12. |
 | TorchVision 3-op, CPU batch 8 peak   |                        **117.5 MB → 38.0 MB** (~3.1× lower) | One profiler result, not a universal memory ratio.                                         |

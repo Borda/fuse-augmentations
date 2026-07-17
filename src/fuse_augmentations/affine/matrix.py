@@ -436,10 +436,14 @@ def matmul3x3(matrix_a: torch.Tensor, matrix_b: torch.Tensor) -> torch.Tensor:
 def inv3x3(matrix: torch.Tensor, *, compiling: bool | None = None) -> torch.Tensor:
     """Batch 3x3 matrix inverse.
 
-    Uses ``torch.linalg.inv`` on the eager path (single LAPACK call, ~6x faster
-    than Cramer's rule) and element-wise Cramer's rule under ``torch.compile``
-    for kernel fusion. Includes an eager-mode check that raises ``ValueError``
-    for near-singular matrices.
+    Uses ``torch.linalg.inv`` on the eager CPU path (single LAPACK call, ~6x
+    faster than Cramer's rule) and element-wise Cramer's rule both under
+    ``torch.compile`` (kernel fusion) and on non-CPU eager tensors — the CPU
+    raising guard reads ``(det.abs() < eps).any()``, which forces a
+    device-to-host sync per call and would drain the CUDA/MPS stream on every
+    warp; the Cramer branch clamps near-singular determinants instead, keeping
+    the whole call asynchronous. Includes an eager CPU check that raises
+    ``ValueError`` for near-singular matrices.
 
     Args:
         matrix: ``(batch_size, 3, 3)`` batch of matrices.
@@ -458,7 +462,8 @@ def inv3x3(matrix: torch.Tensor, *, compiling: bool | None = None) -> torch.Tens
 
     Raises:
         ValueError: If any matrix in the batch has a near-zero determinant
-            (eager mode only). Note this aborts the WHOLE batch when a single
+            (eager CPU mode only; non-CPU and compiled paths clamp instead).
+            Note this aborts the WHOLE batch when a single
             sample draws a degenerate transform — keep scale ranges bounded so
             per-axis scale stays well above ``sqrt(finfo.eps)`` (≈3.5e-4 for
             float32) to avoid rare training crashes.
@@ -470,15 +475,16 @@ def inv3x3(matrix: torch.Tensor, *, compiling: bool | None = None) -> torch.Tens
         True
 
     """
-    # Single singularity threshold shared by BOTH branches so eager and compiled
-    # execution agree on which matrices count as near-singular. The eager path
-    # raises; the compile path clamps at the SAME threshold (data-dependent raises
-    # are not compile-safe), so outputs only differ below eps, where the eager
-    # path would have raised anyway.
+    # Single singularity threshold shared by ALL branches so eager and compiled
+    # execution agree on which matrices count as near-singular. The eager CPU path
+    # raises; the compile and non-CPU eager paths clamp at the SAME threshold
+    # (data-dependent raises are not compile-safe, and on CUDA/MPS the raising
+    # guard's `.any()` would host-sync every warp), so outputs only differ below
+    # eps, where the CPU path would have raised anyway.
     eps = _singularity_threshold(matrix.dtype)
 
     is_compiling = _is_compiling() if compiling is None else compiling
-    if not is_compiling:
+    if not is_compiling and matrix.device.type == "cpu":
         # Fast path: single LAPACK call, ~6x faster than Cramer's rule
         det = torch.linalg.det(matrix)
         if (det.abs() < eps).any():
@@ -489,7 +495,8 @@ def inv3x3(matrix: torch.Tensor, *, compiling: bool | None = None) -> torch.Tens
             raise ValueError(msg)
         return torch.linalg.inv(matrix)  # type: ignore[no-any-return]
 
-    # Compile path: element-wise Cramer's rule for kernel fusion
+    # Compile path and non-CPU eager path: element-wise Cramer's rule — kernel
+    # fusion under compile, sync-free clamping on accelerators
     m00, m01, m02 = matrix[:, 0, 0], matrix[:, 0, 1], matrix[:, 0, 2]
     m10, m11, m12 = matrix[:, 1, 0], matrix[:, 1, 1], matrix[:, 1, 2]
     m20, m21, m22 = matrix[:, 2, 0], matrix[:, 2, 1], matrix[:, 2, 2]

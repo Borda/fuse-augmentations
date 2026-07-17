@@ -24,6 +24,10 @@ from fuse_augmentations.affine.matrix import (
 DEFAULT_DEVICE = torch.device("cpu")
 DEFAULT_DTYPE = torch.float64  # use float64 for tighter tolerances in unit tests
 
+_ACCELERATOR = (
+    "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else None
+)  # first available non-CPU device; None skips the accelerator-only inv3x3 tests
+
 
 def _eye(batch_size: int = 1) -> torch.Tensor:
     """Return a (batch_size, 3, 3) identity matrix batch."""
@@ -387,6 +391,30 @@ class TestInv3x3:
         mtx_inv = inv3x3(mtx)  # must not raise
         assert not torch.isnan(mtx_inv).any(), "inv3x3 produced NaN for near-singular matrix"
         assert not torch.isinf(mtx_inv).any(), "inv3x3 produced Inf for near-singular matrix"
+
+    def test_compiling_singular_clamps_finite(self) -> None:
+        """Cramer branch (compiling=True) clamps a singular matrix to a finite result instead of raising."""
+        mtx = torch.zeros(1, 3, 3, dtype=DEFAULT_DTYPE)
+        mtx_inv = inv3x3(mtx, compiling=True)
+        assert torch.isfinite(mtx_inv).all(), "clamped Cramer inverse must be finite for singular input"
+
+    @pytest.mark.gpu
+    @pytest.mark.skipif(_ACCELERATOR is None, reason="no CUDA/MPS accelerator available")
+    def test_non_cpu_eager_singular_clamps_finite(self) -> None:
+        """Non-CPU eager path clamps a singular matrix instead of raising (no host-syncing guard)."""
+        mtx = torch.zeros(1, 3, 3, dtype=torch.float32, device=_ACCELERATOR)
+        mtx_inv = inv3x3(mtx)  # must not raise — raising guard is CPU-only
+        assert torch.isfinite(mtx_inv.cpu()).all(), "clamped accelerator inverse must be finite"
+
+    @pytest.mark.gpu
+    @pytest.mark.skipif(_ACCELERATOR is None, reason="no CUDA/MPS accelerator available")
+    def test_non_cpu_eager_matches_cpu_inverse(self) -> None:
+        """Non-CPU eager Cramer inverse matches the CPU LAPACK inverse for well-conditioned matrices."""
+        mtx = torch.randn(4, 3, 3, dtype=torch.float32)
+        mtx = mtx + 5.0 * torch.eye(3, dtype=torch.float32).unsqueeze(0).expand(4, -1, -1)
+        expected = inv3x3(mtx)
+        result = inv3x3(mtx.to(_ACCELERATOR)).cpu()
+        torch.testing.assert_close(result, expected, atol=1e-5, rtol=1e-5)
 
 
 class TestPerspectiveFromPoints:
