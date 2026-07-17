@@ -64,6 +64,7 @@ from fuse_augmentations.affine.segment import (
     reorder_pointwise,
 )
 from fuse_augmentations.types import (
+    BackendConverter,
     ClipPolicyStr,
     ExecutionStr,
     InterpolationStr,
@@ -518,6 +519,54 @@ class FusedCompose(nn.Module):
         self._fusion_plan_cache: tuple[bool, str] | None = None
         self._fusion_plan_descriptors_cache: list[SegmentDescriptor] | None = None
         self._transform_adapters: dict[int, TransformAdapter] = transform_adapters or {}
+        self._output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = output_backend
+
+        # Derive every runtime dispatch attribute from the core state assigned above.
+        # __setstate__ calls the same builder so a pickle produced before any derived
+        # attribute existed gets a complete, self-consistent dispatch set instead of
+        # raising AttributeError on the first forward after unpickling.
+        self._build_derived_state()
+
+        if data_keys is not None:
+            # Enforce documented contract: first key must map to the image ("input").
+            if not data_keys:
+                raise ValueError(
+                    "data_keys cannot be an empty list. Omit data_keys entirely for single-tensor "
+                    "mode, or include 'input' as the first entry for multi-target mode."
+                )
+            if data_keys[0] != "input":
+                raise ValueError(
+                    "data_keys[0] must be 'input' (the image tensor), got "
+                    f"{data_keys[0]!r}. This prevents silent misrouting of positional arguments "
+                    "in multi-target mode."
+                )
+            for key in data_keys:
+                if key not in _KNOWN_DATA_KEYS:
+                    warnings.warn(
+                        f"Unknown data_key {key!r}; it will be passed through unchanged. "
+                        f"Known keys: {sorted(_KNOWN_DATA_KEYS)}",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+
+        # Albumentations fused segments route aux targets through the composed pixel
+        # matrix (same coordinate convention as the torch path), so multi-target
+        # data_keys are supported for both the cv2 and torch execution strategies.
+
+    def _build_derived_state(self) -> None:
+        """Derive every runtime dispatch attribute from the assigned/restored core state.
+
+        Called by both :meth:`_setup_instance` (construction) and :meth:`__setstate__`
+        (unpickling). The derived attributes are pure functions of the core state
+        (``_segments``, ``_adapter``, ``data_keys``, ``randomness``, ``_output_backend``),
+        so recomputing them on unpickle is always safe and repopulates any attribute
+        absent from an older pickle. This keeps :meth:`forward` free of per-call
+        fallbacks and prevents ``AttributeError`` on cross-version pickles.
+
+        """
+        adapter = self._adapter
+        randomness = self.randomness
+        data_keys = self.data_keys
 
         # Device tracker: a zero-element buffer whose only purpose is to follow the
         # module across ``.to(device)`` / ``.cuda()`` / ``.mps()`` so ``fusion_plan``
@@ -653,67 +702,67 @@ class FusedCompose(nn.Module):
                     tags.append(-1)
             self._albu_seg_tags = tags
 
-        # Resolve output_backend converter.
-        from fuse_augmentations.types import BackendConverter
-
-        self._output_converter: BackendConverter | None
-        if output_backend is None:
+        # Resolve the output-backend converter. On a legacy pickle that predates the
+        # stored backend flag, keep whatever converter was restored (it cannot be
+        # re-derived without the flag) rather than silently dropping it.
+        if hasattr(self, "_output_backend"):
+            self._output_converter = self._resolve_output_converter(self._output_backend)
+        elif not hasattr(self, "_output_converter"):
             self._output_converter = None
-        elif output_backend in ("numpy", "numpy_hwc"):
+
+    def _resolve_output_converter(
+        self,
+        output_backend: Literal["numpy", "numpy_hwc", "torch"] | None,
+    ) -> BackendConverter | None:
+        """Build the output-backend converter for the configured ``output_backend``.
+
+        Args:
+            output_backend: The requested output format, or ``None`` for the native
+                ``torch.Tensor`` output.
+
+        Returns:
+            A :class:`~fuse_augmentations.types.BackendConverter` for NumPy output, or
+            ``None`` when the output stays as a ``torch.Tensor``.
+
+        Raises:
+            ValueError: If *output_backend* is not a supported value.
+            RuntimeError: If the resolved converter's ``target_backend`` disagrees with
+                the requested *output_backend*.
+
+        """
+        if output_backend is None or output_backend == "torch":
+            return None
+        if output_backend in ("numpy", "numpy_hwc"):
             from fuse_augmentations.converters import TorchToNumpyConverter
 
-            self._output_converter = TorchToNumpyConverter()
-        elif output_backend == "torch":
-            self._output_converter = None  # identity — already torch
+            converter: BackendConverter = TorchToNumpyConverter()
         else:
             msg = f"Unknown output_backend {output_backend!r}; supported: 'numpy', 'numpy_hwc', 'torch', None"
             raise ValueError(msg)
-        if self._output_converter is not None and self._output_converter.target_backend not in (
+        if converter.target_backend not in (
             output_backend,
             "numpy",  # "numpy_hwc" alias maps to TorchToNumpyConverter whose target_backend is "numpy"
         ):
             msg = (
                 "Configured output converter target_backend does not match output_backend. "
-                f"Requested {output_backend!r}, converter advertises {self._output_converter.target_backend!r}."
+                f"Requested {output_backend!r}, converter advertises {converter.target_backend!r}."
             )
             raise RuntimeError(msg)
-
-        if data_keys is not None:
-            # Enforce documented contract: first key must map to the image ("input").
-            if not data_keys:
-                raise ValueError(
-                    "data_keys cannot be an empty list. Omit data_keys entirely for single-tensor "
-                    "mode, or include 'input' as the first entry for multi-target mode."
-                )
-            if data_keys[0] != "input":
-                raise ValueError(
-                    "data_keys[0] must be 'input' (the image tensor), got "
-                    f"{data_keys[0]!r}. This prevents silent misrouting of positional arguments "
-                    "in multi-target mode."
-                )
-            for key in data_keys:
-                if key not in _KNOWN_DATA_KEYS:
-                    warnings.warn(
-                        f"Unknown data_key {key!r}; it will be passed through unchanged. "
-                        f"Known keys: {sorted(_KNOWN_DATA_KEYS)}",
-                        UserWarning,
-                        stacklevel=3,
-                    )
-
-        # Albumentations fused segments route aux targets through the composed pixel
-        # matrix (same coordinate convention as the torch path), so multi-target
-        # data_keys are supported for both the cv2 and torch execution strategies.
+        return converter
 
     def __setstate__(self, state: dict[str, Any]) -> None:
-        """Restore instance state, rebuilding dispatch attributes absent from older pickles.
+        """Restore instance state, rebuilding every derived attribute absent from older pickles.
 
-        The three plan-time dispatch attributes (``_seg_dispatch_tags``,
-        ``_multi_target``, ``_aux_keys``) are computed in :meth:`_setup_instance`
-        and read directly by :meth:`forward` and :meth:`_build_aux_targets` with no
-        per-call fallback. Pickles produced before these attributes existed would
-        raise :class:`AttributeError` on the first call after unpickling, so this
-        hook reconstructs them from ``data_keys`` and the restored segments. Within
-        a single version every attribute is already present, so this is a no-op.
+        All runtime dispatch attributes (``_seg_dispatch_tags``, ``_multi_target``,
+        ``_aux_keys``, the single-segment fast paths, ``_is_albu_native``,
+        ``_albu_seg_tags``, ``_output_converter``) are derived in
+        :meth:`_build_derived_state` and read directly by :meth:`forward`,
+        :meth:`__call__`, and :meth:`_build_aux_targets` with no per-call fallback.
+        Pickles produced before any of these attributes existed would raise
+        :class:`AttributeError` on the first call after unpickling, so this hook
+        first restores the backward-compatible defaults of the config/core fields the
+        builder reads, then calls the same builder :meth:`_setup_instance` uses. Within
+        a single version the builder recomputes identical values, so this is a no-op.
 
         Args:
             state: The pickled instance ``__dict__`` restored by :mod:`pickle`.
@@ -726,11 +775,8 @@ class FusedCompose(nn.Module):
 
         """
         super().__setstate__(state)  # type: ignore[no-untyped-call]
-        if not hasattr(self, "_multi_target"):
-            self._multi_target = self.data_keys is not None
-            self._aux_keys = list(self.data_keys[1:]) if self.data_keys else []
-        if getattr(self, "_seg_dispatch_tags", None) is None:
-            self._seg_dispatch_tags = self._build_dispatch_tags()
+        # Config/core fields default to their backward-compatible values on pickles
+        # that predate them, so the shared builder below has everything it reads.
         if not hasattr(self, "execution"):
             # Pickles predating the execution flag default to the cv2 strategy.
             self.execution = "cv2"
@@ -739,10 +785,23 @@ class FusedCompose(nn.Module):
         if not hasattr(self, "mask_interpolation"):
             # Pickles predating configurable mask sampling retain nearest behavior.
             self.mask_interpolation = "nearest"
-        if not hasattr(self, "_fusion_plan_cache"):
-            self._fusion_plan_cache = None
-        if not hasattr(self, "_fusion_plan_descriptors_cache"):
-            self._fusion_plan_descriptors_cache = None
+        if not hasattr(self, "randomness"):
+            self.randomness = RandomnessPolicy.BACKEND
+        if not hasattr(self, "data_keys"):
+            self.data_keys = None
+        if not hasattr(self, "_transform_adapters"):
+            self._transform_adapters = {}
+        # Transient per-call state carries no meaning across a pickle round-trip.
+        self._last_transform_matrix = None
+        if not hasattr(self, "_last_matrix_segment"):
+            self._last_matrix_segment = None
+        # Invalidate cached plans: cheaply recomputed and may depend on device-tracking
+        # state that a legacy pickle lacks.
+        self._fusion_plan_cache = None
+        self._fusion_plan_descriptors_cache = None
+        # Rebuild every derived dispatch attribute so a pre-attr pickle cannot raise
+        # AttributeError on the first forward.
+        self._build_derived_state()
 
     def __call__(self, *args: object, return_matrix: bool = False, **kwargs: object) -> object:
         """Route to the Albumentations native dict path or the standard tensor path.
@@ -1358,12 +1417,20 @@ class FusedCompose(nn.Module):
         GPU/MPS pipeline (the "GPU poison pill"). On a CPU pipeline the marker is
         omitted and the string is unchanged.
 
+        Albumentations fused/projective segments running the ``"cv2"`` execution
+        strategy warp each sample with OpenCV, which copies to host and back
+        (``.cpu()`` -> ``.to(device)``) on every call. On a non-CPU pipeline they
+        therefore carry the same marker, since that hidden round-trip is the biggest
+        poison pill of all; switching such a pipeline to ``execution="torch"`` keeps
+        the warp on-device and drops the marker.
+
         Returns:
             Arrow-separated description of segments, e.g.
             ``"fused(RandomRotation, RandomHorizontalFlip) -> passthrough(GaussianBlur)"``.
             On a non-CPU pipeline the passthrough entry reads
-            ``"passthrough(GaussianBlur) [CPU passthrough]"``. Returns ``"empty"`` for
-            an empty pipeline.
+            ``"passthrough(GaussianBlur) [CPU passthrough]"``, and an Albumentations
+            cv2 fused entry reads ``"fused(Affine) [CPU passthrough]"``. Returns
+            ``"empty"`` for an empty pipeline.
 
         """
         non_cpu = self._plan_device().type != "cpu"
@@ -1371,16 +1438,21 @@ class FusedCompose(nn.Module):
         if cached is not None and cached[0] == non_cpu:
             return cached[1]
         marker = " [CPU passthrough]" if non_cpu else ""
+        # Albu cv2 warps host round-trip per call; on a non-CPU pipeline they carry the
+        # same poison-pill marker as a passthrough. torch execution stays on-device.
+        albu_cv2_marker = marker if getattr(self, "execution", "cv2") == "cv2" else ""
         parts: list[str] = []
         for seg in self._segments:
             if isinstance(seg, (ProjectiveSegment, AlbuProjectiveSegment)):
                 names = [type(transform).__name__ for transform in seg.transforms]
-                parts.append(f"projective({', '.join(names)})")
+                seg_marker = albu_cv2_marker if isinstance(seg, AlbuProjectiveSegment) else ""
+                parts.append(f"projective({', '.join(names)}){seg_marker}")
                 continue
 
             if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment)):
                 names = [type(transform).__name__ for transform in seg.transforms]
-                parts.append(f"fused({', '.join(names)})")
+                seg_marker = albu_cv2_marker if isinstance(seg, AlbuFusedAffineSegment) else ""
+                parts.append(f"fused({', '.join(names)}){seg_marker}")
                 continue
 
             if isinstance(seg, ExactAffineSegment):
@@ -1460,68 +1532,87 @@ class FusedCompose(nn.Module):
             return type(self._adapter).__name__ if self._adapter else None
 
         descriptors: list[SegmentDescriptor] = []
+        # Resolved backend of the previous fused-family/crop segment, so a fused run
+        # split by a backend change (e.g. kornia.RandomAffine -> A.Affine) is flagged
+        # even when no passthrough sits between the two segments. Reset to None across a
+        # passthrough, whose own descriptor already carries the boundary reason.
+        prev_backend: str | None = None
         for seg in self._segments:
             if isinstance(seg, (ProjectiveSegment, AlbuProjectiveSegment)):
                 names = tuple(type(transform).__name__ for transform in seg.transforms)
                 num_saved = len(names) - 1 if len(names) > 1 else 0
+                backend = _resolve_backend(seg)
                 descriptors.append(
                     SegmentDescriptor(
                         kind="projective",
                         transforms=names,
                         n_warps_saved=num_saved,
-                        backend=_resolve_backend(seg),
+                        backend=backend,
+                        split_reason=self._backend_boundary_reason(backend, prev_backend),
                     )
                 )
+                prev_backend = backend
                 continue
             if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment)):
                 names = tuple(type(transform).__name__ for transform in seg.transforms)
                 num_saved = len(names) - 1 if len(names) > 1 else 0
+                backend = _resolve_backend(seg)
                 descriptors.append(
                     SegmentDescriptor(
                         kind="fused",
                         transforms=names,
                         n_warps_saved=num_saved,
-                        backend=_resolve_backend(seg),
+                        backend=backend,
+                        split_reason=self._backend_boundary_reason(backend, prev_backend),
                     )
                 )
+                prev_backend = backend
                 continue
             if isinstance(seg, ExactAffineSegment):
                 names = tuple(type(transform).__name__ for transform in seg.transforms)
                 num_saved = len(names)  # Each flip saves 1 warp vs grid_sample
+                backend = _resolve_backend(seg)
                 descriptors.append(
                     SegmentDescriptor(
                         kind="exact",
                         transforms=names,
                         n_warps_saved=num_saved,
-                        backend=_resolve_backend(seg),
+                        backend=backend,
+                        split_reason=self._backend_boundary_reason(backend, prev_backend),
                     )
                 )
+                prev_backend = backend
                 continue
             if isinstance(seg, FusedColorSegment):
                 names = tuple(type(transform).__name__ for transform in seg.transforms)
                 num_saved = len(names) - 1 if len(names) > 1 else 0
+                backend = _resolve_backend(seg)
                 descriptors.append(
                     SegmentDescriptor(
                         kind="color",
                         transforms=names,
                         n_warps_saved=num_saved,
-                        backend=_resolve_backend(seg),
+                        backend=backend,
+                        split_reason=self._backend_boundary_reason(backend, prev_backend),
                     )
                 )
+                prev_backend = backend
                 continue
             if isinstance(seg, CropResizeSegment):
+                backend = _resolve_backend(seg)
                 descriptors.append(
                     SegmentDescriptor(
                         kind="crop_resize",
                         transforms=(type(seg.transform).__name__,),
                         n_warps_saved=0,
-                        backend=_resolve_backend(seg),
+                        backend=backend,
                         # A crop+resize acts as a segment boundary (it changes output
                         # dimensions), so it is a barrier for adjacent geometric runs.
                         barrier="crop_resize",
                         split_reason=self._passthrough_split_reason(seg),
                     )
                 )
+                prev_backend = backend
                 continue
             if isinstance(seg, _PassthroughSegment):
                 descriptors.append(
@@ -1534,6 +1625,7 @@ class FusedCompose(nn.Module):
                         refused="not_fusible",
                     )
                 )
+                prev_backend = None
                 continue
             # Legacy passthrough
             descriptors.append(
@@ -1546,8 +1638,34 @@ class FusedCompose(nn.Module):
                     refused="not_fusible",
                 )
             )
+            prev_backend = None
         self._fusion_plan_descriptors_cache = descriptors
         return descriptors
+
+    def _backend_boundary_reason(self, backend: str | None, prev_backend: str | None) -> str | None:
+        """Return ``"backend_boundary"`` when a fused run is split by a backend change.
+
+        In a mixed-backend pipeline, two adjacent fused geometric segments from
+        different backends (e.g. ``kornia.RandomAffine`` then ``A.Affine``) cannot be
+        composed into one warp; the break is a genuine split, not a passthrough
+        barrier. This reports it on the *second* segment of such a pair.
+
+        Args:
+            backend: The resolved adapter class name of the current segment.
+            prev_backend: The resolved adapter class name of the previous
+                fused-family/crop segment, or ``None`` after a passthrough or at the
+                start of the pipeline.
+
+        Returns:
+            ``"backend_boundary"`` when the pipeline is mixed-backend and both
+            backends are known and differ, else ``None``.
+
+        """
+        if not self._transform_adapters:
+            return None
+        if backend is None or prev_backend is None:
+            return None
+        return "backend_boundary" if backend != prev_backend else None
 
     def _passthrough_barrier_reason(self, transform: object) -> str:
         """Classify why a passthrough transform forms a fusion barrier.
