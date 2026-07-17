@@ -2,6 +2,11 @@
 
 Import these instead of repeating try/except blocks in every module.
 
+Each flag below only catches ``ImportError`` (the dependency is not installed) by design; a backend that IS
+installed but broken (e.g. an ABI mismatch raising ``RuntimeError`` on import) is intentionally left to crash
+loudly at import time rather than silently reporting itself as unavailable. Whether to widen the catch is a
+deferred decision -- see TST-4 in the codebase review.
+
 """
 
 from __future__ import annotations

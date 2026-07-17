@@ -350,33 +350,48 @@ class TestLastMatrixValue:
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_flip_segment_cuda_device(adapter):
-    """Flip segment runs on CUDA without device-mismatch errors."""
-    device = torch.device("cuda")
+    """Flip segment runs on CUDA without device-mismatch errors and matches the CPU result numerically.
+
+    This is the only place in the suite that exercises real CUDA numerics (the ``gpu`` marker is never selected in
+    CI, which has no CUDA runner -- see CONTRIBUTING). Same-seed CPU vs. GPU parity is asserted here in addition to
+    the original shape/not-NaN checks so a local GPU run gives an actual correctness signal, not just "didn't
+    crash".
+
+    """
     batch_size, num_channels, height, width = 2, 3, 32, 32
-    image = torch.rand(batch_size, num_channels, height, width, device=device)
+    torch.manual_seed(0)
+    image_cpu = torch.rand(batch_size, num_channels, height, width)
+    image_gpu = image_cpu.to("cuda")
 
-    transform = kornia_aug.RandomHorizontalFlip(p=1.0)
-    segment = FusedAffineSegment([transform], adapter)
-    out = segment(image)
+    transform_cpu = kornia_aug.RandomHorizontalFlip(p=1.0)
+    out_cpu = FusedAffineSegment([transform_cpu], adapter)(image_cpu)
 
-    assert out.device.type == "cuda"
-    assert out.shape == (batch_size, num_channels, height, width)
-    assert not torch.isnan(out).any()
+    transform_gpu = kornia_aug.RandomHorizontalFlip(p=1.0)
+    out_gpu = FusedAffineSegment([transform_gpu], adapter)(image_gpu)
+
+    assert out_gpu.device.type == "cuda"
+    assert out_gpu.shape == (batch_size, num_channels, height, width)
+    assert not torch.isnan(out_gpu).any()
+    torch.testing.assert_close(out_gpu.cpu(), out_cpu, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_vflip_segment_cuda_device(adapter):
-    """Vertical flip segment runs on CUDA without device-mismatch errors."""
-    device = torch.device("cuda")
+    """Vertical flip segment runs on CUDA without device-mismatch errors and matches the CPU result numerically."""
     batch_size, num_channels, height, width = 2, 3, 32, 32
-    image = torch.rand(batch_size, num_channels, height, width, device=device)
+    torch.manual_seed(0)
+    image_cpu = torch.rand(batch_size, num_channels, height, width)
+    image_gpu = image_cpu.to("cuda")
 
-    transform = kornia_aug.RandomVerticalFlip(p=1.0)
-    segment = FusedAffineSegment([transform], adapter)
-    out = segment(image)
+    transform_cpu = kornia_aug.RandomVerticalFlip(p=1.0)
+    out_cpu = FusedAffineSegment([transform_cpu], adapter)(image_cpu)
 
-    assert out.device.type == "cuda"
-    assert out.shape == (batch_size, num_channels, height, width)
-    assert not torch.isnan(out).any()
+    transform_gpu = kornia_aug.RandomVerticalFlip(p=1.0)
+    out_gpu = FusedAffineSegment([transform_gpu], adapter)(image_gpu)
+
+    assert out_gpu.device.type == "cuda"
+    assert out_gpu.shape == (batch_size, num_channels, height, width)
+    assert not torch.isnan(out_gpu).any()
+    torch.testing.assert_close(out_gpu.cpu(), out_cpu, rtol=1e-5, atol=1e-6)
