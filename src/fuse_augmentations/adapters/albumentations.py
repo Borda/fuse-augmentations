@@ -404,7 +404,9 @@ class AlbumentationsAdapter:
                         f"({height}x{width}). Mixed affine fusion requires shape-preserving ops."
                     )
                     raise RuntimeError(msg)
-                angles = k90.to(dtype=dtype) * (torch.pi / 2.0)
+                # rotation_matrix(+θ) warps like torch.rot90(k=-1); negate so the
+                # matrix path matches native np.rot90(+k) and exact_apply.
+                angles = -k90.to(dtype=dtype) * (torch.pi / 2.0)
                 return rotation_matrix(angles, height=height, width=width)
 
             if _is_albu_instance(transform, frozenset({_Transpose})):
@@ -761,8 +763,10 @@ def _d4_matrix(
             out[idx] = torch.eye(3, device=device, dtype=dtype)
             continue
         if elem == "r90":
+            # rotation_matrix(+θ) warps like torch.rot90(k=-1); negate so r90/r270
+            # match native np.rot90 direction and _apply_d4_element.
             out[idx] = rotation_matrix(
-                torch.tensor([torch.pi / 2.0], device=device, dtype=dtype), height=height, width=width
+                torch.tensor([-torch.pi / 2.0], device=device, dtype=dtype), height=height, width=width
             )[0]
             continue
         if elem == "r180":
@@ -772,7 +776,7 @@ def _d4_matrix(
             continue
         if elem == "r270":
             out[idx] = rotation_matrix(
-                torch.tensor([3.0 * torch.pi / 2.0], device=device, dtype=dtype), height=height, width=width
+                torch.tensor([-3.0 * torch.pi / 2.0], device=device, dtype=dtype), height=height, width=width
             )[0]
             continue
         if elem == "h":
