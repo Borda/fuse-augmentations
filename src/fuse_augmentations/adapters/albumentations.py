@@ -119,12 +119,15 @@ try:
     from albumentations import HueSaturationValue as _HueSaturationValue
     from albumentations import Normalize as _Normalize
     from albumentations import Perspective as _Perspective
+    from albumentations import Posterize as _Posterize
     from albumentations import RandomBrightnessContrast as _RandomBrightnessContrast
+    from albumentations import RandomGamma as _RandomGamma
     from albumentations import RandomResizedCrop as _RandomResizedCrop
     from albumentations import RandomRotate90 as _RandomRotate90
     from albumentations import Rotate as _Rotate
     from albumentations import SafeRotate as _SafeRotate
     from albumentations import ShiftScaleRotate as _ShiftScaleRotate
+    from albumentations import Solarize as _Solarize
     from albumentations import Transpose as _Transpose
     from albumentations import VerticalFlip as _VerticalFlip
 
@@ -141,8 +144,13 @@ try:
         _Perspective: TransformCategory.PROJECTIVE,
         _RandomBrightnessContrast: TransformCategory.POINTWISE_LINEAR,
         _Normalize: TransformCategory.POINTWISE_LINEAR,
+        # Gamma/solarize/posterize are per-channel *non-linear scalar* maps — reorderable and
+        # composable into a single lookup table (POINTWISE_LUT), but not into a colour matrix.
+        _RandomGamma: TransformCategory.POINTWISE_LUT,
+        _Solarize: TransformCategory.POINTWISE_LUT,
+        _Posterize: TransformCategory.POINTWISE_LUT,
         # HueSaturationValue is pixel-wise (non-linear in RGB) — reorderable
-        # but not linearly composable into a FusedColorSegment matrix.
+        # but neither linearly composable into a FusedColorSegment matrix nor a per-channel LUT.
         _HueSaturationValue: TransformCategory.POINTWISE,
         _RandomResizedCrop: TransformCategory.CROP_RESIZE_FIXED,
     }
@@ -157,6 +165,10 @@ try:
     _INTERP_TYPES: frozenset[type] = frozenset({_Affine, _Rotate, _SafeRotate, _ShiftScaleRotate})
     _COLOR_TYPES: frozenset[type] = frozenset({_RandomBrightnessContrast})
     _NORMALIZE_TYPES: frozenset[type] = frozenset({_Normalize})
+    _GAMMA_TYPES: frozenset[type] = frozenset({_RandomGamma})
+    _SOLARIZE_TYPES: frozenset[type] = frozenset({_Solarize})
+    _POSTERIZE_TYPES: frozenset[type] = frozenset({_Posterize})
+    _LUT_TYPES: frozenset[type] = _GAMMA_TYPES | _SOLARIZE_TYPES | _POSTERIZE_TYPES
     _CROP_RESIZE_TYPES: frozenset[type] = frozenset({_RandomResizedCrop})
     # POINTWISE (non-linear color): reorderable but no matrix — return identity.
     _POINTWISE_TYPES: frozenset[type] = frozenset({_HueSaturationValue})
@@ -170,6 +182,10 @@ except ImportError:
     _INTERP_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _COLOR_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _NORMALIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _GAMMA_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _SOLARIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _POSTERIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _LUT_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _CROP_RESIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _POINTWISE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _ALL_REGISTRY_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
@@ -326,6 +342,13 @@ class AlbumentationsAdapter:
 
         if _is_albu_instance(transform, _NORMALIZE_TYPES):
             return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
+
+        # POINTWISE_LUT (gamma/solarize/posterize): draw the op's scalar factor via the
+        # transform's own param generator (one draw shared across the batch), stored so
+        # build_lut can replay it deterministically through the transform's native apply().
+        if _is_albu_instance(transform, _LUT_TYPES):
+            factor_key, factor_value = _sample_albu_lut_factor(transform)
+            return {factor_key: torch.tensor([factor_value], device=device, dtype=torch.float32)}
 
         # CROP_RESIZE_FIXED: extract crop_coords from get_params_dependent_on_data
         if _is_albu_instance(transform, _CROP_RESIZE_TYPES):
@@ -534,6 +557,60 @@ class AlbumentationsAdapter:
 
         msg = f"build_color_matrix not supported for {type(transform).__name__!r}"
         raise NotImplementedError(msg)
+
+    @staticmethod
+    def build_lut(
+        transform: object,
+        params: dict[str, torch.Tensor],
+        values: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply an Albumentations ``POINTWISE_LUT`` transform's intensity map to ``values``.
+
+        Replays the factor drawn by :meth:`sample_params` through the transform's own native
+        ``apply`` (which calls ``albumentations.augmentations.pixel.functional``), so the mapped
+        grid matches Albumentations exactly — no re-derived formula. Values are round-tripped to a
+        ``float32`` HWC array in ``[0, 1]`` (the pipeline invariant Albumentations sees on the torch
+        path). The composed table for the uint8 native path is instead built bit-exactly by
+        :meth:`FusedLUTSegment.forward_numpy`.
+
+        Per-channel ``Posterize`` (list ``num_bits``) is rejected up front so the fusibility probe
+        keeps it on the passthrough path rather than fusing an unsupported map.
+
+        Args:
+            transform: An Albumentations gamma/solarize/posterize augmentation.
+            params: Parameter dict from :meth:`sample_params` (the sampled factor).
+            values: ``(batch_size, channels, num_points)`` intensities in ``[0, 1]``.
+
+        Returns:
+            ``(batch_size, channels, num_points)`` mapped intensities in ``[0, 1]``.
+
+        Raises:
+            NotImplementedError: For unsupported or per-channel transforms (keeps them passthrough).
+
+        """
+        # Albumentations stores a single-channel range as a 2-int tuple and per-channel ranges
+        # as a list of tuples; only the list form needs its own table per channel, so reject it
+        # up front (before reading params) to keep the fusibility probe on the passthrough path.
+        if _is_albu_instance(transform, _POSTERIZE_TYPES) and isinstance(getattr(transform, "num_bits", None), list):
+            msg = "per-channel Posterize (list num_bits) is excluded from lookup-table fusion"
+            raise NotImplementedError(msg)
+
+        if _is_albu_instance(transform, _GAMMA_TYPES):
+            apply_kwargs: dict[str, Any] = {"gamma": float(params["gamma"].item())}
+        elif _is_albu_instance(transform, _SOLARIZE_TYPES):
+            apply_kwargs = {"threshold": float(params["threshold"].item())}
+        elif _is_albu_instance(transform, _POSTERIZE_TYPES):
+            apply_kwargs = {"num_bits": round(params["num_bits"].item())}
+        else:
+            msg = f"build_lut not supported for {type(transform).__name__!r}"
+            raise NotImplementedError(msg)
+
+        batch_size, channels, num_points = values.shape
+        # Albumentations is pointwise here, so a single (1, B*N, C) image maps every value at once.
+        arr = values.detach().to("cpu", torch.float32).permute(0, 2, 1).reshape(1, batch_size * num_points, channels)
+        mapped = transform.apply(np.ascontiguousarray(arr.numpy()), **apply_kwargs)  # type: ignore[attr-defined]
+        out = torch.from_numpy(np.ascontiguousarray(mapped)).to(device=values.device, dtype=values.dtype)
+        return out.reshape(batch_size, num_points, channels).permute(0, 2, 1).clamp(0.0, 1.0)
 
     @staticmethod
     def is_normalize(transform: object) -> bool:
@@ -996,6 +1073,43 @@ def _sample_matrices(transform: object, batch_size: int, height: int, width: int
 # ---------------------------------------------------------------------------
 # Color matrix helpers
 # ---------------------------------------------------------------------------
+
+
+def _sample_albu_lut_factor(transform: object) -> tuple[str, float]:
+    """Draw a ``POINTWISE_LUT`` transform's scalar factor via its own param generator.
+
+    Uses the transform's public ``get_params`` / ``get_params_dependent_on_data`` (the same
+    draw Albumentations makes in ``__call__``), so replaying it through ``transform.apply`` in
+    :meth:`AlbumentationsAdapter.build_lut` reproduces the native op bit-for-bit.
+
+    Args:
+        transform: An Albumentations ``RandomGamma``, ``Solarize``, or ``Posterize`` instance.
+
+    Returns:
+        A ``(key, value)`` pair naming the ``apply`` keyword (``"gamma"``, ``"threshold"``, or
+        ``"num_bits"``) and its sampled scalar.
+
+    Raises:
+        NotImplementedError: For per-channel ``Posterize`` (``num_bits`` is a list) — excluded
+            from lookup fusion because each channel would need its own table.
+
+    """
+    data = {"image": np.zeros((4, 4, 3), dtype=np.uint8)}
+    base = transform.get_params()  # type: ignore[attr-defined]
+    dep = transform.get_params_dependent_on_data(base, data)  # type: ignore[attr-defined]
+    merged = {**base, **dep}
+    if "gamma" in merged:
+        return "gamma", float(merged["gamma"])
+    if "threshold" in merged:
+        return "threshold", float(merged["threshold"])
+    num_bits = merged.get("num_bits")
+    if isinstance(num_bits, (list, tuple, np.ndarray)):
+        msg = "per-channel Posterize (list num_bits) is excluded from lookup-table fusion"
+        raise NotImplementedError(msg)
+    if num_bits is not None:
+        return "num_bits", float(num_bits)
+    msg = f"no lookup-table factor for {type(transform).__name__!r}"
+    raise NotImplementedError(msg)
 
 
 def _sample_color_params(

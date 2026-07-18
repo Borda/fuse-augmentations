@@ -3039,6 +3039,293 @@ def _is_normalize_transform(adapter: TransformAdapter, transform: object) -> boo
     return bool(checker(transform)) if callable(checker) else type(transform).__name__ == "Normalize"
 
 
+#: Default number of grid points on the float interpolation-LUT path (uniform over ``[0, 1]``).
+_DEFAULT_LUT_LEVELS = 1024
+
+
+class FusedLUTSegment(nn.Module):
+    """Fused lookup-table segment that composes ``POINTWISE_LUT`` transforms into one lookup.
+
+    Gamma, solarize, and posterize are per-channel *non-linear scalar* maps. A contiguous run of
+    them is composed into a single per-channel lookup table by threading a domain grid through each
+    op in order (each op evaluated exactly on the running values via ``adapter.build_lut``), then
+    applied to the image in one pass. Per-op probability is honoured with a per-sample active mask,
+    exactly like :class:`FusedColorSegment`.
+
+    Lookup maps leave spatial layout untouched, so auxiliary targets (masks, boxes, keypoints) pass
+    through unchanged.
+
+    Two execution paths, chosen by the image's dtype:
+
+    - **Floating image — K-entry interpolation LUT (approximate).** The composed map is sampled on a
+      uniform ``num_levels``-point grid over ``[0, 1]`` (default 1024) and applied by ``gather`` +
+      linear interpolation. Exact-ish for smooth maps; a steep region (``gamma < 1`` near black) or a
+      discontinuity (solarize threshold, posterize step) is smeared across ~one grid cell, so a small
+      fraction (~1/``num_levels``) of pixels near a discontinuity diverge from native. This path never
+      claims to beat native precision — parity is bounded by a documented interpolation tolerance.
+    - **Integer image — 256-entry table (exact).** The map is enumerated over the 256 byte values,
+      snapping to bytes between ops, so the composed table matches applying each op's byte map in
+      sequence with no interpolation error.
+
+    The Albumentations native NumPy (uint8) path is served by :meth:`forward_numpy`, which builds the
+    256-entry table bit-exactly from each transform's own native application.
+
+    Args:
+        transforms: List of ``POINTWISE_LUT`` transform objects to fuse.
+        adapter: A ``TransformAdapter`` providing ``sample_params`` and ``build_lut`` for each transform.
+        num_levels: Grid resolution of the float interpolation-LUT path. Default 1024.
+        randomness: Batch randomness policy (mirrors :class:`FusedColorSegment`).
+
+    Example:
+        >>> import torch
+        >>> from fuse_augmentations.affine.segment import FusedLUTSegment  # doctest: +SKIP
+        >>> seg = FusedLUTSegment([gamma_tfm, solarize_tfm], adapter)  # doctest: +SKIP
+        >>> out = seg(torch.rand(2, 3, 8, 8))  # doctest: +SKIP
+
+    """
+
+    def __init__(
+        self,
+        transforms: list[object],
+        adapter: TransformAdapter,
+        num_levels: int = _DEFAULT_LUT_LEVELS,
+        randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+    ) -> None:
+        """Initialize ``FusedLUTSegment``.
+
+        Args:
+            transforms: ``POINTWISE_LUT`` transforms to fuse.
+            adapter: Adapter providing ``sample_params`` and ``build_lut``.
+            num_levels: Grid resolution of the float interpolation-LUT path (>= 2).
+            randomness: Batch randomness policy.
+
+        """
+        super().__init__()
+        if num_levels < 2:
+            msg = f"num_levels must be >= 2, got {num_levels}"
+            raise ValueError(msg)
+        self._transforms = transforms
+        self._adapter = adapter
+        self.num_levels = num_levels
+        self.randomness = randomness
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore state; back-compat defaults for fields absent from older pickles."""
+        super().__setstate__(state)  # type: ignore[no-untyped-call]
+        if not hasattr(self, "num_levels"):
+            self.num_levels = _DEFAULT_LUT_LEVELS
+        if not hasattr(self, "randomness"):
+            self.randomness = RandomnessPolicy.BACKEND
+
+    @property
+    def transforms(self) -> list[object]:
+        """Return the list of transforms in this segment."""
+        return list(self._transforms)
+
+    def forward(
+        self,
+        image: Tensor,
+        aux_targets: dict[str, Any] | None = None,
+    ) -> Tensor | tuple[Tensor, dict[str, Any]]:
+        """Apply the fused lookup table to the image batch.
+
+        Args:
+            image: ``(batch_size, channels, height, width)`` input tensor. Floating tensors take the
+                interpolation-LUT path (values assumed in ``[0, 1]``); integer tensors take the exact
+                256-entry path (values assumed in ``[0, 255]``).
+            aux_targets: Optional auxiliary targets, returned unchanged (lookup maps are spatial no-ops).
+
+        Returns:
+            Bare mapped ``image`` when ``aux_targets`` is ``None``; ``(image, aux_targets)`` otherwise.
+
+        """
+        out = self._forward_float(image) if image.is_floating_point() else self._forward_uint8(image)
+        if aux_targets is None:
+            return out
+        return out, aux_targets
+
+    def _compose_grid(self, image: Tensor, grid: Tensor, *, snap_levels: int | None) -> Tensor | None:
+        """Thread ``grid`` through every op to build the composed per-channel table.
+
+        Args:
+            image: The input image (for batch size, device, and param sampling shape).
+            grid: ``(batch_size, channels, num_points)`` starting intensities (a uniform domain grid).
+            snap_levels: When set, snap the running values to this many byte levels after each op
+                (the exact integer path); ``None`` keeps full-precision values (the float path).
+
+        Returns:
+            The composed ``(batch_size, channels, num_points)`` table, or ``None`` if any op is not
+            lookup-fusible at forward time (the caller then falls back to sequential application).
+
+        """
+        batch_size = image.shape[0]
+        device = image.device
+        input_shape = tuple(image.shape)
+        composed = grid
+        for tfm in self._transforms:
+            prob = _transform_prob(tfm)
+            if _shares_randomness_across_batch(self._adapter, tfm, self.randomness):
+                active = (torch.rand((), device=device) < prob).expand(batch_size)
+            else:
+                active = torch.rand(batch_size, device=device) < prob
+            params = _sample_transform_params(self._adapter, tfm, input_shape, device, self.randomness)  # type: ignore[arg-type]
+            try:
+                mapped = self._adapter.build_lut(tfm, params, composed)
+            except NotImplementedError:
+                return None
+            mapped = mapped.to(device=composed.device, dtype=composed.dtype)
+            composed = torch.where(active[:, None, None], mapped, composed)
+            if snap_levels is not None:
+                composed = (composed * (snap_levels - 1)).round().clamp(0.0, snap_levels - 1) / (snap_levels - 1)
+        return composed
+
+    def _forward_float(self, image: Tensor) -> Tensor:
+        """Apply the interpolation-LUT path to a floating image (values in ``[0, 1]``)."""
+        batch_size, channels, _height, _width = image.shape
+        num_levels = self.num_levels
+        grid = (
+            torch
+            .linspace(0.0, 1.0, num_levels, device=image.device, dtype=torch.float32)
+            .view(1, 1, num_levels)
+            .expand(batch_size, channels, num_levels)
+            .contiguous()
+        )
+        composed = self._compose_grid(image, grid, snap_levels=None)
+        if composed is None:
+            return self._fallback_nonfused(image)
+        return self._apply_interp(image, composed, num_levels)
+
+    def _forward_uint8(self, image: Tensor) -> Tensor:
+        """Apply the exact 256-entry path to an integer image (values in ``[0, 255]``)."""
+        batch_size, channels, height, width = image.shape
+        levels = 256
+        grid = (
+            (torch.arange(levels, device=image.device, dtype=torch.float32) / (levels - 1))
+            .view(1, 1, levels)
+            .expand(batch_size, channels, levels)
+            .contiguous()
+        )
+        composed = self._compose_grid(image, grid, snap_levels=levels)
+        if composed is None:
+            return self._fallback_nonfused(image)
+        table = (composed * (levels - 1)).round().clamp(0, levels - 1).to(torch.long)  # (B, C, 256)
+        idx = image.long().clamp(0, levels - 1).reshape(batch_size, channels, height * width)
+        out = torch.gather(table, 2, idx).reshape(batch_size, channels, height, width)
+        return out.to(image.dtype)
+
+    @staticmethod
+    def _apply_interp(image: Tensor, composed: Tensor, num_levels: int) -> Tensor:
+        """Map a floating image through the composed table by gather + linear interpolation."""
+        batch_size, channels, height, width = image.shape
+        clamped = image.to(torch.float32).clamp(0.0, 1.0).reshape(batch_size, channels, height * width)
+        pos = clamped * (num_levels - 1)
+        lo = pos.floor().clamp(0.0, num_levels - 2)
+        frac = pos - lo
+        lo_idx = lo.to(torch.long)
+        lo_val = torch.gather(composed, 2, lo_idx)
+        hi_val = torch.gather(composed, 2, lo_idx + 1)
+        out = lo_val + (hi_val - lo_val) * frac
+        return out.reshape(batch_size, channels, height, width).to(image.dtype)
+
+    def _fallback_nonfused(self, image: Tensor) -> Tensor:
+        """Apply every transform sequentially via the adapter (fusion aborted mid-run)."""
+        out = image
+        for tfm in self._transforms:
+            out = self._adapter.call_nonfused(tfm, out)
+        return out
+
+    def forward_numpy(self, img_hwc: NDArray[Any]) -> NDArray[Any]:
+        """Apply the fused lookup table to a uint8 HWC NumPy image (Albumentations native path).
+
+        Builds each op's 256-entry byte map by running the transform on the ``0..255`` byte ramp
+        (pointwise ops map the ramp exactly as they would any image), composes the maps by integer
+        indexing, and applies the single composed table. Bit-exact against applying the transforms
+        sequentially, and per-op probability is honoured natively by each transform call.
+
+        Args:
+            img_hwc: ``(H, W, C)`` or ``(H, W)`` uint8 image.
+
+        Returns:
+            The mapped image, same shape and dtype as ``img_hwc``.
+
+        """
+        arr = img_hwc
+        squeeze = arr.ndim == 2
+        if squeeze:
+            arr = arr[:, :, None]
+        num_channels = arr.shape[2]
+        ramp = np.arange(256, dtype=np.uint8)
+        probe = np.tile(ramp[None, :, None], (1, 1, num_channels))  # (1, 256, C)
+        composed = np.tile(ramp[:, None], (1, num_channels)).astype(np.intp)  # (256, C) identity
+        for tfm in self._transforms:
+            # Each op maps the byte ramp to its own (256, C) table; compose by integer indexing.
+            mapped_probe = tfm(image=probe)["image"]  # type: ignore[operator]
+            lut_i = np.asarray(mapped_probe)[0].astype(np.intp)
+            composed = np.take_along_axis(lut_i, composed, axis=0)  # composed[i,c] = lut_i[composed[i,c], c]
+        out = np.empty_like(arr)
+        for channel in range(num_channels):
+            out[..., channel] = composed[arr[..., channel].astype(np.intp), channel]
+        return out[:, :, 0] if squeeze else out
+
+
+def _try_build_lut(adapter: TransformAdapter, transform: object) -> bool:
+    """Probe whether *adapter* supports ``build_lut`` for *transform*.
+
+    Mirrors :func:`_try_build_color_matrix`: calls the method with an empty param dict and a tiny
+    value grid, classifying the outcome. A supported op reads a missing param key and raises
+    ``KeyError`` (treated as supported); an unsupported op raises ``NotImplementedError`` /
+    ``AttributeError`` (treated as unsupported). The probe never draws backend randomness because
+    the missing param short-circuits before any op is applied.
+
+    """
+    try:
+        adapter.build_lut(transform, {}, torch.zeros(1, 1, 2))
+        return True
+    except (NotImplementedError, AttributeError):
+        return False
+    except (KeyError, IndexError):
+        # Method exists but needs real params to succeed (missing param key).
+        return True
+    except Exception:
+        # Unexpected error: treat as unsupported to avoid silently mis-fusing a broken adapter.
+        return False
+
+
+def _flush_lut(
+    transforms: list[object],
+    adapter: TransformAdapter,
+    segments: list[object],
+    randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+    num_levels: int = _DEFAULT_LUT_LEVELS,
+) -> None:
+    """Flush a run of ``POINTWISE_LUT`` transforms into segments.
+
+    If the adapter supports ``build_lut`` for **every** transform in the run, they are folded into a
+    single :class:`FusedLUTSegment`. Otherwise the transforms fall back to passthrough (appended
+    as-is). Mirrors :func:`_flush_color`; mutates ``transforms`` in place (clears it).
+
+    Args:
+        transforms: The pending run of ``POINTWISE_LUT`` transforms (cleared in place).
+        adapter: Adapter used to probe and build lookup tables.
+        segments: Output segment list, appended in place.
+        randomness: Batch randomness policy passed to the lookup segment.
+        num_levels: Float interpolation-LUT grid resolution forwarded to :class:`FusedLUTSegment`.
+
+    """
+    if not transforms:
+        return
+    for tfm in transforms:
+        if not _try_build_lut(adapter, tfm):
+            segments.extend(transforms)
+            # Intentionally clears the caller-owned run buffer.
+            transforms.clear()
+            return
+    lut_transforms = list(transforms)
+    segments.append(FusedLUTSegment(lut_transforms, adapter, num_levels=num_levels, randomness=randomness))
+    # Intentionally clears the caller-owned run buffer.
+    transforms.clear()
+
+
 class CropResizeSegment(nn.Module):
     """Segment for a single ``CROP_RESIZE_FIXED`` transform.
 
@@ -3262,7 +3549,11 @@ def reorder_pointwise(
         geo_buf.clear()
         pw_buf.clear()
 
-    _reorderable = {TransformCategory.POINTWISE, TransformCategory.POINTWISE_LINEAR}
+    _reorderable = {
+        TransformCategory.POINTWISE,
+        TransformCategory.POINTWISE_LINEAR,
+        TransformCategory.POINTWISE_LUT,
+    }
 
     for tfm in transforms:
         cat = adapter.category(tfm)
@@ -3409,12 +3700,14 @@ def build_segments(
     fusible = {TransformCategory.GEOMETRIC_INTERP, TransformCategory.GEOMETRIC_EXACT}
     projective_cat = TransformCategory.PROJECTIVE
     pointwise_linear_cat = TransformCategory.POINTWISE_LINEAR
+    pointwise_lut_cat = TransformCategory.POINTWISE_LUT
     crop_resize_cat = TransformCategory.CROP_RESIZE_FIXED
 
     segments: list[object] = []
     current_geo: list[object] = []
     current_proj: list[object] = []
     current_color: list[object] = []
+    current_lut: list[object] = []
 
     def _flush_geo() -> None:
         if not current_geo:
@@ -3499,17 +3792,28 @@ def build_segments(
         if category in fusible:
             _flush_proj()  # flush any pending projective
             _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
+            _flush_lut(current_lut, adapter, segments, randomness)  # mutates current_lut in-place
             current_geo.append(transform)
             continue
         if category == projective_cat:
             _flush_geo()  # flush any pending affine
             _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
+            _flush_lut(current_lut, adapter, segments, randomness)  # mutates current_lut in-place
             current_proj.append(transform)
             continue
         if category == pointwise_linear_cat:
             _flush_geo()
             _flush_proj()
+            _flush_lut(current_lut, adapter, segments, randomness)  # colour and LUT runs never fuse together
             current_color.append(transform)
+            continue
+        if category == pointwise_lut_cat:
+            # Non-linear per-channel scalar map (gamma/solarize/posterize): starts/extends a lookup
+            # run. Colour (matrix) and lookup (table) runs are mutually exclusive, so flush colour.
+            _flush_geo()
+            _flush_proj()
+            _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
+            current_lut.append(transform)
             continue
         if category == crop_resize_cat:
             # CROP_RESIZE_FIXED. On the torch path, fuse into the immediately
@@ -3524,6 +3828,7 @@ def build_segments(
             # CROP_RESIZE_FIXED) is emitted instead to route aux to the output size.
             _flush_proj()
             _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
+            _flush_lut(current_lut, adapter, segments, randomness)  # mutates current_lut in-place
             if use_numpy:
                 _flush_geo()
                 if route_crop_aux:
@@ -3569,15 +3874,17 @@ def build_segments(
                     )
                 )
             continue
-        # SPATIAL_KERNEL / POINTWISE barrier: flush all
+        # SPATIAL_KERNEL / POINTWISE barrier (blur/noise, saturation/hue, equalize): flush all
         _flush_geo()
         _flush_proj()
         _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
+        _flush_lut(current_lut, adapter, segments, randomness)  # mutates current_lut in-place
         segments.append(transform)
 
     _flush_geo()
     _flush_proj()
     _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
+    _flush_lut(current_lut, adapter, segments, randomness)  # mutates current_lut in-place
     return segments
 
 

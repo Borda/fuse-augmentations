@@ -71,7 +71,9 @@ This is an allowlist, not a claim about every upstream transform:
 | Albumentations    | `Affine`, `Rotate`, `SafeRotate`, `ShiftScaleRotate`, H/V flip, `RandomRotate90`, `D4`, `Transpose`, `Perspective`    | `RandomBrightnessContrast`, standard 3-channel `Normalize`                                          | `RandomResizedCrop` with backend-specific execution limits |
 | Native/direct     | Rotation, scale, x/y shear, x/y translation, H/V flip                                                                 | Brightness, contrast                                                                                | Not available                                              |
 
-Unknown and nonlinear operations generally become passthrough barriers. That preserves pipeline construction in many image-only cases, but passthrough is not automatically numerically transparent, device-efficient, or auxiliary-target safe.
+Per-channel non-linear scalar maps — `gamma`, `solarize`, `posterize` — are also registered (Kornia `RandomGamma`/`RandomSolarize`/`RandomPosterize`; TorchVision `RandomSolarize`/`RandomPosterize`; Albumentations `RandomGamma`/`Solarize`/`Posterize`). A contiguous run of them composes into a single per-channel lookup table and applies it once instead of falling through as separate passthrough passes. The uint8 (Albumentations native) path is bit-exact versus a native sequential chain; the float-tensor path samples the composed map on a 1024-entry grid and interpolates, so it matches native within a documented interpolation tolerance (never claimed to beat native precision). Residual non-linear ops stay passthrough barriers: cross-channel ops (`saturation`, `hue`) are not per-channel scalar maps, and `equalize` needs a runtime per-image histogram that cannot be pre-composed at plan time.
+
+Other unknown and nonlinear operations generally become passthrough barriers. That preserves pipeline construction in many image-only cases, but passthrough is not automatically numerically transparent, device-efficient, or auxiliary-target safe.
 
 ## 📦 Install
 

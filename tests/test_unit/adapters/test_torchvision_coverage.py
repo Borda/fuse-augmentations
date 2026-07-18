@@ -32,6 +32,9 @@ _CONSTRUCTOR_KWARGS: dict[str, dict] = {
     "ColorJitter": {"brightness": 0.2},
     "RandomResizedCrop": {"size": (32, 32)},
     "Normalize": {"mean": (0.5, 0.4, 0.3), "std": (0.2, 0.3, 0.4)},
+    # Pixel-wise non-linear ops carry a required positional argument.
+    "RandomSolarize": {"threshold": 0.5},
+    "RandomPosterize": {"bits": 4},
 }
 
 BATCH_SIZE, CHANNELS, HEIGHT, WIDTH = 2, 3, 32, 32

@@ -14,7 +14,7 @@ from fuse_augmentations.types import (
 
 
 def _full_adapter_methods():
-    """Return a dict of all seven TransformAdapter method implementations."""
+    """Return a dict of all eight TransformAdapter method implementations."""
     return {
         "category": lambda self, transform: TransformCategory.SPATIAL_KERNEL,
         "sample_params": lambda self, transform, input_shape, device: {},
@@ -23,6 +23,7 @@ def _full_adapter_methods():
         "exact_apply": lambda self, transform, image: image,
         "call_nonfused": lambda self, transform, image, **kwargs: image,
         "build_color_matrix": lambda self, transform, params: torch.eye(4).unsqueeze(0),
+        "build_lut": lambda self, transform, params, values: values,
     }
 
 
@@ -38,15 +39,16 @@ class TestTransformCategory:
             (TransformCategory.SPATIAL_KERNEL, "spatial_kernel"),
             (TransformCategory.PROJECTIVE, "projective"),
             (TransformCategory.POINTWISE_LINEAR, "pointwise_linear"),
+            (TransformCategory.POINTWISE_LUT, "pointwise_lut"),
         ],
     )
     def test_value(self, member, expected_value):
         """Enum member has the expected string value."""
         assert member.value == expected_value, f"{member.name}.value should be {expected_value!r}"
 
-    def test_exactly_seven_members(self):
-        """TransformCategory has exactly 7 members."""
-        assert len(TransformCategory) == 7, f"Expected 7 members, got {len(TransformCategory)}"
+    def test_exactly_eight_members(self):
+        """TransformCategory has exactly 8 members."""
+        assert len(TransformCategory) == 8, f"Expected 8 members, got {len(TransformCategory)}"
 
     def test_member_names(self):
         """TransformCategory member names match the spec."""
@@ -57,6 +59,7 @@ class TestTransformCategory:
             "SPATIAL_KERNEL",
             "PROJECTIVE",
             "POINTWISE_LINEAR",
+            "POINTWISE_LUT",
             "CROP_RESIZE_FIXED",
         }
 
@@ -219,11 +222,11 @@ class TestTransformAdapterProtocol:
     """TransformAdapter @runtime_checkable Protocol -- isinstance contract."""
 
     def test_conforming_class_passes_isinstance(self):
-        """Albu class implementing all seven methods satisfies TransformAdapter."""
+        """A class implementing all eight methods satisfies TransformAdapter."""
         methods = _full_adapter_methods()
         DummyAdapter = type("DummyAdapter", (), methods)
         assert isinstance(DummyAdapter(), TransformAdapter), (
-            "An object with all seven required methods should be an instance of TransformAdapter"
+            "An object with all eight required methods should be an instance of TransformAdapter"
         )
 
     @pytest.mark.parametrize(
@@ -236,6 +239,7 @@ class TestTransformAdapterProtocol:
             "exact_apply",
             "call_nonfused",
             "build_color_matrix",
+            "build_lut",
         ],
     )
     def test_missing_any_one_method_fails_isinstance(self, missing_method):

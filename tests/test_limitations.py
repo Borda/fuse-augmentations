@@ -58,22 +58,20 @@ def _mask() -> torch.Tensor:
 
 
 class TestFusibleClosures:
-    """Rows whose closure is a concrete future behavior (strict-xfail); the mask-aux row is now closed."""
+    """Limitation rows: some still strict-xfail (future behaviour); the mask-aux and lookup rows are now closed."""
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="pixel-wise non-linear ops (saturation, gamma) not fusible yet -- flips when LUT fusion ships",
-    )
     def test_pointwise_nonlinear_chain_fuses(self):
-        """DESIRED: a chain of pixel-wise non-linear ops collapses (no passthrough).
+        """CLOSED: a chain of per-channel non-linear scalar ops collapses (no passthrough).
 
-        Today each ``RandomSaturation`` is a passthrough segment. Composing the
-        per-channel scalar maps into one lookup table would let the chain fuse and
-        save at least one pass.
+        Gamma, solarize, and posterize are pure per-channel intensity maps. A contiguous run of
+        them now composes into one lookup table (``FusedLUTSegment``) and applies it once, so the
+        chain fuses and saves at least one pass instead of falling through as passthrough. (Saturation
+        and hue stay excluded because they are cross-channel; equalize stays excluded because its
+        lookup depends on a runtime per-image histogram.)
         """
         pipe = Compose([
-            kornia_aug.RandomSaturation((0.8, 1.2), p=1.0),
-            kornia_aug.RandomSaturation((0.8, 1.2), p=1.0),
+            kornia_aug.RandomGamma((0.8, 1.2), p=1.0),
+            kornia_aug.RandomSolarize(0.1, 0.1, p=1.0),
         ])
         assert "passthrough" not in pipe.fusion_plan
         assert pipe.n_warps_saved >= 1

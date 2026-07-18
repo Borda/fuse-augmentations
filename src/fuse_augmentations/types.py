@@ -27,6 +27,13 @@ class TransformCategory(Enum):
             affine matrix (brightness, contrast, channel mix).  Consecutive runs are fused into
             a single ``FusedColorSegment`` via ``build_color_matrix``; adapters that do not
             support ``build_color_matrix`` for a given transform fall back to passthrough.
+        POINTWISE_LUT: Reorderable per-pixel *non-linear scalar* op whose per-channel intensity
+            map is a pure lookup (gamma, solarize, posterize).  Consecutive runs are composed into
+            a single per-channel lookup table via ``build_lut`` and applied once by
+            :class:`~fuse_augmentations.affine.segment.FusedLUTSegment`; adapters that do not
+            support ``build_lut`` for a given transform fall back to passthrough.  Distinct from
+            ``POINTWISE_LINEAR`` (which composes into a colour *matrix*) and from ``POINTWISE``
+            (cross-channel ops such as saturation/hue that never fuse into a lookup table).
         CROP_RESIZE_FIXED: Fixed-output-size crop followed by resize.  Each op produces a
             ``CropResizeSegment`` with a single ``grid_sample`` call at the target ``(H, W)``
             dimensions.  The output shape differs from the input shape.
@@ -39,6 +46,7 @@ class TransformCategory(Enum):
     SPATIAL_KERNEL = "spatial_kernel"
     PROJECTIVE = "projective"
     POINTWISE_LINEAR = "pointwise_linear"
+    POINTWISE_LUT = "pointwise_lut"
     CROP_RESIZE_FIXED = "crop_resize_fixed"
 
 
@@ -169,7 +177,7 @@ MaskInterpolationStr = Literal["nearest", "bilinear"]
 PaddingModeStr = Literal["zeros", "border", "reflection"]
 
 #: String literal type for the ``kind`` field of :class:`SegmentDescriptor`.
-SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color", "crop_resize"]
+SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color", "lut", "crop_resize"]
 
 #: String literal type for the ``execution`` strategy of the Albumentations fused
 #: segments. ``"cv2"`` (default) applies one ``cv2.warp*`` per sample -- bit-exact
@@ -393,6 +401,58 @@ class TransformAdapter(Protocol):
         raise NotImplementedError(
             "Adapter does not implement build_color_matrix; required for FusedColorSegment support"
         )
+
+    def build_lut(
+        self,
+        transform: object,
+        params: dict[str, Tensor],
+        values: Tensor,
+    ) -> Tensor:
+        """Apply a ``POINTWISE_LUT`` transform's per-channel intensity map to a grid of values.
+
+        Adapters that support ``POINTWISE_LUT`` fusion (gamma, solarize, posterize) must override
+        this to evaluate the transform's pointwise, per-channel scalar map on ``values`` using its
+        own backend function (never a re-derived formula), returning the mapped intensities. The
+        default implementation raises ``NotImplementedError`` so adapters without lookup-fusion
+        support fall back to passthrough segmentation automatically.
+
+        :class:`~fuse_augmentations.affine.segment.FusedLUTSegment` composes a contiguous run of
+        such ops by *threading a domain grid through each op in order*: ``values`` starts as a
+        uniform grid over ``[0, 1]`` and each op maps it in place, so after the run ``values``
+        holds the composed function sampled on that grid — one lookup table applied once. Because
+        each op is evaluated exactly on the running values (not re-interpolated between ops), the
+        composition itself introduces no error.
+
+        Accuracy caveats vs native backends:
+
+        - **uint8 / 256-entry path (exact).** When the segment enumerates the map over all 256
+          byte values, the composed table is bit-exact against a native sequential chain: each op
+          is a deterministic ``0..255 -> 0..255`` map and integer composition loses nothing.
+        - **float / K-entry interp path (approximate).** For a floating image the composed table
+          is sampled on a uniform ``K``-point grid (default ``K = 1024``) and applied by
+          ``gather`` + linear interpolation. This is exact-ish only for *smooth* maps: a steep
+          region (e.g. ``gamma < 1`` near black) can differ from native by ~2 uint8 levels, and a
+          *discontinuous* map (solarize threshold, posterize step) is smeared across one grid cell
+          (~1/K of the input range), so a small fraction (~1/K) of pixels near the discontinuity
+          diverge. Do not claim the float path beats native precision; gate float-path parity at a
+          documented interpolation tolerance, never as ``>=`` native.
+
+        Args:
+            transform: The backend transform object (``POINTWISE_LUT`` category).
+            params: Canonical parameter dict from :meth:`sample_params`.
+            values: ``(batch_size, channels, num_points)`` float tensor of input intensities in
+                ``[0, 1]`` to map. The per-sample leading dim lets per-sample parameters (a random
+                gamma per image) produce a per-sample lookup table.
+
+        Returns:
+            Tensor of shape ``(batch_size, channels, num_points)``: ``values`` after the
+            transform's per-channel intensity map, clamped to ``[0, 1]`` as the native op does.
+
+        Raises:
+            NotImplementedError: If the adapter does not support lookup-table fusion for this transform.
+
+        """
+        raise NotImplementedError("Adapter does not implement build_lut; required for FusedLUTSegment support")
 
 
 @dataclass(frozen=True, slots=True)

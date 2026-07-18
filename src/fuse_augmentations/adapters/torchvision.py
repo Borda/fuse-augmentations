@@ -54,6 +54,7 @@ _PERSPECTIVE_TYPES: set[type] = set()
 _COLOR_JITTER_TYPES: set[type] = set()
 _NORMALIZE_TYPES: set[type] = set()
 _CROP_RESIZE_TYPES: set[type] = set()
+_LUT_TYPES: set[type] = set()
 
 # v1: torchvision.transforms
 try:
@@ -62,8 +63,10 @@ try:
     from torchvision.transforms import RandomAffine as _V1RandomAffine
     from torchvision.transforms import RandomHorizontalFlip as _V1RandomHorizontalFlip
     from torchvision.transforms import RandomPerspective as _V1RandomPerspective
+    from torchvision.transforms import RandomPosterize as _V1RandomPosterize
     from torchvision.transforms import RandomResizedCrop as _V1RandomResizedCrop
     from torchvision.transforms import RandomRotation as _V1RandomRotation
+    from torchvision.transforms import RandomSolarize as _V1RandomSolarize
     from torchvision.transforms import RandomVerticalFlip as _V1RandomVerticalFlip
 
     _TRANSFORM_REGISTRY[_V1RandomRotation] = TransformCategory.GEOMETRIC_INTERP
@@ -73,6 +76,8 @@ try:
     _TRANSFORM_REGISTRY[_V1RandomPerspective] = TransformCategory.PROJECTIVE
     _TRANSFORM_REGISTRY[_V1ColorJitter] = TransformCategory.POINTWISE_LINEAR
     _TRANSFORM_REGISTRY[_V1Normalize] = TransformCategory.POINTWISE_LINEAR
+    _TRANSFORM_REGISTRY[_V1RandomSolarize] = TransformCategory.POINTWISE_LUT
+    _TRANSFORM_REGISTRY[_V1RandomPosterize] = TransformCategory.POINTWISE_LUT
     _TRANSFORM_REGISTRY[_V1RandomResizedCrop] = TransformCategory.CROP_RESIZE_FIXED
 
     _HFLIP_TYPES.add(_V1RandomHorizontalFlip)
@@ -82,6 +87,8 @@ try:
     _PERSPECTIVE_TYPES.add(_V1RandomPerspective)
     _COLOR_JITTER_TYPES.add(_V1ColorJitter)
     _NORMALIZE_TYPES.add(_V1Normalize)
+    _LUT_TYPES.add(_V1RandomSolarize)
+    _LUT_TYPES.add(_V1RandomPosterize)
     _CROP_RESIZE_TYPES.add(_V1RandomResizedCrop)
 except ImportError:
     pass
@@ -93,8 +100,10 @@ try:
     from torchvision.transforms.v2 import RandomAffine as _V2RandomAffine
     from torchvision.transforms.v2 import RandomHorizontalFlip as _V2RandomHorizontalFlip
     from torchvision.transforms.v2 import RandomPerspective as _V2RandomPerspective
+    from torchvision.transforms.v2 import RandomPosterize as _V2RandomPosterize
     from torchvision.transforms.v2 import RandomResizedCrop as _V2RandomResizedCrop
     from torchvision.transforms.v2 import RandomRotation as _V2RandomRotation
+    from torchvision.transforms.v2 import RandomSolarize as _V2RandomSolarize
     from torchvision.transforms.v2 import RandomVerticalFlip as _V2RandomVerticalFlip
 
     _TRANSFORM_REGISTRY[_V2RandomRotation] = TransformCategory.GEOMETRIC_INTERP
@@ -104,6 +113,8 @@ try:
     _TRANSFORM_REGISTRY[_V2RandomPerspective] = TransformCategory.PROJECTIVE
     _TRANSFORM_REGISTRY[_V2ColorJitter] = TransformCategory.POINTWISE_LINEAR
     _TRANSFORM_REGISTRY[_V2Normalize] = TransformCategory.POINTWISE_LINEAR
+    _TRANSFORM_REGISTRY[_V2RandomSolarize] = TransformCategory.POINTWISE_LUT
+    _TRANSFORM_REGISTRY[_V2RandomPosterize] = TransformCategory.POINTWISE_LUT
     _TRANSFORM_REGISTRY[_V2RandomResizedCrop] = TransformCategory.CROP_RESIZE_FIXED
 
     _HFLIP_TYPES.add(_V2RandomHorizontalFlip)
@@ -113,6 +124,8 @@ try:
     _PERSPECTIVE_TYPES.add(_V2RandomPerspective)
     _COLOR_JITTER_TYPES.add(_V2ColorJitter)
     _NORMALIZE_TYPES.add(_V2Normalize)
+    _LUT_TYPES.add(_V2RandomSolarize)
+    _LUT_TYPES.add(_V2RandomPosterize)
     _CROP_RESIZE_TYPES.add(_V2RandomResizedCrop)
 except ImportError:
     pass
@@ -125,6 +138,7 @@ _AFFINE_TYPES_FS: frozenset[type] = frozenset(_AFFINE_TYPES)
 _PERSPECTIVE_TYPES_FS: frozenset[type] = frozenset(_PERSPECTIVE_TYPES)
 _COLOR_JITTER_TYPES_FS: frozenset[type] = frozenset(_COLOR_JITTER_TYPES)
 _NORMALIZE_TYPES_FS: frozenset[type] = frozenset(_NORMALIZE_TYPES)
+_LUT_TYPES_FS: frozenset[type] = frozenset(_LUT_TYPES)
 _CROP_RESIZE_TYPES_FS: frozenset[type] = frozenset(_CROP_RESIZE_TYPES)
 
 
@@ -313,6 +327,12 @@ class TorchVisionAdapter:
             )
 
         if isinstance(transform, tuple(_NORMALIZE_TYPES_FS)):
+            return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
+
+        # RandomSolarize / RandomPosterize (POINTWISE_LUT): threshold/bits are fixed
+        # constructor attributes read directly in build_lut; only per-op probability
+        # (handled by the fused segment) is stochastic, so a batch sentinel suffices.
+        if isinstance(transform, tuple(_LUT_TYPES_FS)):
             return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
 
         # RandomResizedCrop
@@ -511,6 +531,46 @@ class TorchVisionAdapter:
             return _build_normalize_matrix(transform, params)
 
         msg = f"build_color_matrix not supported for {type(transform).__name__!r}"
+        raise NotImplementedError(msg)
+
+    @staticmethod
+    def build_lut(
+        transform: object,
+        params: dict[str, torch.Tensor],
+        values: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply a TorchVision ``POINTWISE_LUT`` transform's intensity map to ``values``.
+
+        Evaluates the matching ``torchvision.transforms.v2.functional`` op (``solarize``,
+        ``posterize``) with the transform's fixed ``threshold`` / ``bits`` attribute, so the
+        mapped grid matches TorchVision's own op exactly (no re-derived formula). The v2
+        functional accepts both v1 and v2 transform tensors. TorchVision ships no ``RandomGamma``
+        transform (gamma is functional-only via ``adjust_gamma``), so only solarize and posterize
+        are lookup-fusible on this backend.
+
+        Args:
+            transform: A TorchVision ``RandomSolarize`` or ``RandomPosterize`` instance.
+            params: Unused (threshold/bits are fixed attributes); present for Protocol parity.
+            values: ``(batch_size, channels, num_points)`` intensities in ``[0, 1]``.
+
+        Returns:
+            ``(batch_size, channels, num_points)`` mapped intensities in ``[0, 1]``.
+
+        Raises:
+            NotImplementedError: If the transform type has no lookup-table map.
+
+        """
+        from torchvision.transforms.v2 import functional as tv_functional
+
+        grid = values.unsqueeze(2)  # (B, C, 1, N) so the functional sees an image
+        if hasattr(transform, "threshold"):  # RandomSolarize
+            mapped: torch.Tensor = tv_functional.solarize(grid, threshold=float(transform.threshold))
+            return mapped.squeeze(2)
+        if hasattr(transform, "bits"):  # RandomPosterize
+            mapped = tv_functional.posterize(grid, bits=int(transform.bits))
+            return mapped.squeeze(2)
+
+        msg = f"build_lut not supported for {type(transform).__name__!r}"
         raise NotImplementedError(msg)
 
     @staticmethod

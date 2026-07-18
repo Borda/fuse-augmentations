@@ -55,6 +55,7 @@ from fuse_augmentations.affine.segment import (
     ExactAffineSegment,
     FusedAffineSegment,
     FusedColorSegment,
+    FusedLUTSegment,
     ProjectiveSegment,
     _clear_current_call_matrix,
     _current_call_matrix,
@@ -676,7 +677,7 @@ class FusedCompose(nn.Module):
         # Pre-classify segments for the _forward_albu_native hot path: replace
         # per-call isinstance checks with an integer-tagged dispatch list.
         # Tags: 0=AlbuFusedAffineSegment, 1=ExactAffine, 2=FusedColor,
-        # 3=CropResize, 4=Passthrough(Albu), 5=Passthrough(non-Albu), -1=unsupported.
+        # 3=CropResize, 4=Passthrough(Albu), 5=Passthrough(non-Albu), 6=FusedLUT, -1=unsupported.
         # Built only for Albu pipelines where _forward_albu_native is used.
         self._albu_seg_tags: list[int] | None = None
         if self._is_albu_native and self._segments:
@@ -688,6 +689,8 @@ class FusedCompose(nn.Module):
                     tags.append(1)
                 elif isinstance(seg, FusedColorSegment):
                     tags.append(2)
+                elif isinstance(seg, FusedLUTSegment):
+                    tags.append(6)
                 elif isinstance(seg, CropResizeSegment):
                     tags.append(3)
                 elif isinstance(seg, _PassthroughSegment):
@@ -958,6 +961,8 @@ class FusedCompose(nn.Module):
                 elif tag == 3:  # CropResizeSegment
                     for tfm in seg.transforms:
                         img_hwc = tfm(image=img_hwc)["image"]
+                elif tag == 6:  # FusedLUTSegment — one composed uint8 lookup for the whole run
+                    img_hwc = seg.forward_numpy(img_hwc)
                 elif tag == 4:  # Passthrough(Albu adapter)
                     img_hwc = AlbumentationsAdapter.call_nonfused_numpy(seg.transform, img_hwc)
                 elif tag == 5:  # Passthrough(non-Albu adapter)
@@ -992,6 +997,9 @@ class FusedCompose(nn.Module):
                 if isinstance(seg, CropResizeSegment):
                     for tfm in seg.transforms:
                         img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
+                    continue
+                if isinstance(seg, FusedLUTSegment):
+                    img_hwc = seg.forward_numpy(img_hwc)
                     continue
                 if isinstance(seg, _PassthroughSegment):
                     if isinstance(seg.adapter, AlbumentationsAdapter):
@@ -1167,7 +1175,7 @@ class FusedCompose(nn.Module):
         for seg in self._segments:
             if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment, ProjectiveSegment, AlbuProjectiveSegment)):
                 tags.append(_TAG_MATRIX)
-            elif isinstance(seg, (ExactAffineSegment, FusedColorSegment, CropResizeSegment)):
+            elif isinstance(seg, (ExactAffineSegment, FusedColorSegment, FusedLUTSegment, CropResizeSegment)):
                 tags.append(_TAG_PLAIN)
             elif isinstance(seg, _PassthroughSegment):
                 tags.append(_TAG_PASSTHROUGH)
@@ -1416,6 +1424,13 @@ class FusedCompose(nn.Module):
                 num_transforms = len(seg.transforms)
                 if num_transforms > 1:
                     total += num_transforms - 1
+                continue
+
+            if isinstance(seg, FusedLUTSegment):
+                # n lookup ops composed → 1 table lookup, saving n-1 passes.
+                num_transforms = len(seg.transforms)
+                if num_transforms > 1:
+                    total += num_transforms - 1
         return total
 
     def _plan_device(self) -> torch.device:
@@ -1481,6 +1496,11 @@ class FusedCompose(nn.Module):
             if isinstance(seg, FusedColorSegment):
                 names = [type(transform).__name__ for transform in seg.transforms]
                 parts.append(f"color({', '.join(names)})")
+                continue
+
+            if isinstance(seg, FusedLUTSegment):
+                names = [type(transform).__name__ for transform in seg.transforms]
+                parts.append(f"lut({', '.join(names)})")
                 continue
 
             if isinstance(seg, CropResizeSegment):
@@ -1615,6 +1635,18 @@ class FusedCompose(nn.Module):
                     )
                 )
                 prev_backend = backend
+                continue
+            if isinstance(seg, FusedLUTSegment):
+                names = tuple(type(transform).__name__ for transform in seg.transforms)
+                num_saved = len(names) - 1 if len(names) > 1 else 0
+                descriptors.append(
+                    SegmentDescriptor(
+                        kind="lut",
+                        transforms=names,
+                        n_warps_saved=num_saved,
+                        backend=_resolve_backend(seg),
+                    )
+                )
                 continue
             if isinstance(seg, CropResizeSegment):
                 backend = _resolve_backend(seg)
@@ -2706,6 +2738,7 @@ def _wrap_passthrough_segments(
         ProjectiveSegment,
         AlbuProjectiveSegment,
         FusedColorSegment,
+        FusedLUTSegment,
         CropResizeSegment,
     )
 
@@ -2972,6 +3005,17 @@ class _DirectParamAdapter:
             matrix[:, 1, 3] = bias
             matrix[:, 2, 3] = bias
         return matrix
+
+    @staticmethod
+    def build_lut(
+        transform: object,
+        params: dict[str, torch.Tensor],
+        values: torch.Tensor,
+    ) -> torch.Tensor:
+        """Raise: the native/direct backend registers no lookup-table (gamma/solarize/posterize) ops."""
+        del params, values
+        msg = f"build_lut not supported for native transform {type(transform).__name__!r}"
+        raise NotImplementedError(msg)
 
     @staticmethod
     def exact_flip_dims(transform: object) -> list[int]:

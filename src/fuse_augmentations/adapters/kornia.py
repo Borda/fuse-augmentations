@@ -39,15 +39,21 @@ try:
     from kornia.augmentation import RandomAffine as _RandomAffine
     from kornia.augmentation import RandomBrightness as _RandomBrightness
     from kornia.augmentation import RandomContrast as _RandomContrast
+    from kornia.augmentation import RandomGamma as _RandomGamma
     from kornia.augmentation import RandomHorizontalFlip as _RandomHorizontalFlip
     from kornia.augmentation import RandomPerspective as _RandomPerspective
+    from kornia.augmentation import RandomPosterize as _RandomPosterize
     from kornia.augmentation import RandomResizedCrop as _RandomResizedCrop
     from kornia.augmentation import RandomRotation as _RandomRotation
     from kornia.augmentation import RandomRotation90 as _RandomRotation90
     from kornia.augmentation import RandomSaturation as _RandomSaturation
     from kornia.augmentation import RandomShear as _RandomShear
+    from kornia.augmentation import RandomSolarize as _RandomSolarize
     from kornia.augmentation import RandomTranslate as _RandomTranslate
     from kornia.augmentation import RandomVerticalFlip as _RandomVerticalFlip
+    from kornia.enhance import adjust_gamma as _adjust_gamma
+    from kornia.enhance import posterize as _posterize
+    from kornia.enhance import solarize as _solarize
     from kornia.geometry.transform import get_affine_matrix2d as _get_affine_matrix2d
 
     TRANSFORM_REGISTRY: dict[type, TransformCategory] = {
@@ -63,19 +69,26 @@ try:
         _RandomContrast: TransformCategory.POINTWISE_LINEAR,
         _ColorJitter: TransformCategory.POINTWISE_LINEAR,
         _KorniaNormalize: TransformCategory.POINTWISE_LINEAR,
+        # Gamma/solarize/posterize are per-channel *non-linear scalar* maps — reorderable and
+        # composable into a single lookup table (POINTWISE_LUT), but not into a colour matrix.
+        _RandomGamma: TransformCategory.POINTWISE_LUT,
+        _RandomSolarize: TransformCategory.POINTWISE_LUT,
+        _RandomPosterize: TransformCategory.POINTWISE_LUT,
         # Saturation/hue ops are pixel-wise (non-linear in RGB) — reorderable
-        # but not linearly composable into a FusedColorSegment matrix.
+        # but neither linearly composable into a FusedColorSegment matrix nor a per-channel LUT.
         _RandomSaturation: TransformCategory.POINTWISE,
         _RandomResizedCrop: TransformCategory.CROP_RESIZE_FIXED,
     }
 
     _COLOR_TYPES: frozenset[type] = frozenset({_RandomBrightness, _RandomContrast, _ColorJitter})
     _NORMALIZE_TYPES: frozenset[type] = frozenset({_KorniaNormalize})
+    _LUT_TYPES: frozenset[type] = frozenset({_RandomGamma, _RandomSolarize, _RandomPosterize})
 except ImportError:
     TRANSFORM_REGISTRY = {}
     _KorniaNormalize: type = object  # type: ignore[no-redef]
     _COLOR_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _NORMALIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _LUT_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
 
 
 def _batch_size_sentinel(batch_size: int, device: torch.device) -> torch.Tensor:
@@ -321,6 +334,26 @@ class KorniaAdapter:
 
         if TRANSFORM_REGISTRY and ttype is _KorniaNormalize:
             return {"_batch_size": _batch_size_sentinel(batch_size, device)}
+
+        # --- Lookup-table transforms (POINTWISE_LUT) ---
+        # Per-sample factors used verbatim by the matching kornia.enhance functional in build_lut.
+
+        if TRANSFORM_REGISTRY and ttype is _RandomGamma:
+            return {
+                "gamma_factor": params["gamma_factor"].to(device=device),
+                "gain_factor": params["gain_factor"].to(device=device),
+            }
+
+        if TRANSFORM_REGISTRY and ttype is _RandomSolarize:
+            return {
+                "thresholds": params["thresholds"].to(device=device),
+                "additions": params["additions"].to(device=device),
+            }
+
+        if TRANSFORM_REGISTRY and ttype is _RandomPosterize:
+            return {
+                "bits_factor": params["bits_factor"].to(device=device),
+            }
 
         # Unknown - return empty
         return {}
@@ -643,6 +676,49 @@ class KorniaAdapter:
             return _build_normalize_matrix(transform, params)
 
         msg = f"build_color_matrix not supported for {ttype.__name__!r}"
+        raise NotImplementedError(msg)
+
+    @staticmethod
+    def build_lut(
+        transform: object,
+        params: dict[str, torch.Tensor],
+        values: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply a Kornia ``POINTWISE_LUT`` transform's per-channel intensity map to ``values``.
+
+        Evaluates the matching ``kornia.enhance`` functional (``adjust_gamma``, ``solarize``,
+        ``posterize``) with the sampled per-sample factors, so the mapped grid matches Kornia's
+        own op exactly (no re-derived formula). Threading a domain grid through consecutive ops
+        enumerates their composed lookup table for :class:`FusedLUTSegment`.
+
+        Args:
+            transform: A Kornia gamma/solarize/posterize augmentation.
+            params: Parameter dict from :meth:`sample_params` (per-sample factors).
+            values: ``(batch_size, channels, num_points)`` intensities in ``[0, 1]``.
+
+        Returns:
+            ``(batch_size, channels, num_points)`` mapped intensities in ``[0, 1]``.
+
+        Raises:
+            NotImplementedError: If the transform type has no lookup-table map.
+
+        """
+        ttype = type(transform)
+        grid = values.unsqueeze(2)  # (B, C, 1, N) so kornia.enhance functionals see an image
+
+        if TRANSFORM_REGISTRY and ttype is _RandomGamma:
+            mapped = _adjust_gamma(grid, gamma=params["gamma_factor"], gain=params["gain_factor"])
+            return mapped.squeeze(2)
+
+        if TRANSFORM_REGISTRY and ttype is _RandomSolarize:
+            mapped = _solarize(grid, thresholds=params["thresholds"], additions=params["additions"])
+            return mapped.squeeze(2)
+
+        if TRANSFORM_REGISTRY and ttype is _RandomPosterize:
+            mapped = _posterize(grid, bits=params["bits_factor"].round().to(torch.int32))
+            return mapped.squeeze(2)
+
+        msg = f"build_lut not supported for {ttype.__name__!r}"
         raise NotImplementedError(msg)
 
     @staticmethod
