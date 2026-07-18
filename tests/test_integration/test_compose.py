@@ -178,7 +178,7 @@ class TestPassthroughPath:
     """Validate passthrough behavior for non-fusible transforms."""
 
     def test_spatial_kernel_passthrough_shape(self, image32x32_batch2):
-        """Pipeline with a SPATIAL_KERNEL transform (GaussianBlur) executes the passthrough branch."""
+        """A commutable Gaussian blur pipeline preserves the input shape."""
         pipe = Compose([
             kornia_aug.RandomHorizontalFlip(p=1.0),
             kornia_aug.RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
@@ -189,24 +189,23 @@ class TestPassthroughPath:
         assert not torch.isnan(out).any()
 
     def test_spatial_kernel_passthrough_segments(self):
-        """GaussianBlur between two geometric transforms breaks into 3 segments."""
+        """GaussianBlur commutes through a non-downscaling rotated suffix."""
         pipe = Compose([
             kornia_aug.RandomHorizontalFlip(p=1.0),
             kornia_aug.RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
             kornia_aug.RandomRotation(degrees=15, p=1.0),
         ])
-        # Should have 3 segments: fused(hflip), passthrough(GaussianBlur), fused(rotation)
-        assert "passthrough" in pipe.fusion_plan
+        assert pipe.fusion_plan.startswith("gaussian_blur(")
+        assert len(pipe.fusion_plan_descriptors) == 1
 
     def test_spatial_kernel_warps_saved(self):
-        """Single-transform segments on each side of a passthrough save appropriately."""
+        """A blur between rotations moves to the fused affine run's end."""
         pipe = Compose([
             kornia_aug.RandomRotation(30, p=1.0),
             kornia_aug.RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=1.0),
             kornia_aug.RandomRotation(30, p=1.0),
         ])
-        # Each fused segment has only one INTERP transform, so 0 warps saved per segment
-        assert pipe.n_warps_saved == 0
+        assert pipe.n_warps_saved == 1
 
     def test_spatial_kernel_exact_warps_saved(self):
         """ExactAffineSegment single-transform on each side of a passthrough: 1 warp saved each."""

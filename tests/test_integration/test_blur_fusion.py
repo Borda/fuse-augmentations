@@ -7,6 +7,7 @@ import torch
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
 from fuse_augmentations.adapters.kornia import KorniaAdapter
+from fuse_augmentations.affine import segment
 from fuse_augmentations.affine.segment import FusedAffineSegment, _kornia_gaussian_blur
 from fuse_augmentations.compose import Compose
 
@@ -94,16 +95,51 @@ def test_downscale_prefix_commutes_as_one_high_quality_warp() -> None:
 
 
 @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia is required for Gaussian blur fusion")
+def test_rotated_affine_commutes_gaussian_blur_with_sampled_covariance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-downscaling rotated suffix uses the sampled full-covariance kernel."""
+    generator = torch.Generator().manual_seed(0)
+    image = torch.rand(2, 3, 64, 64, dtype=torch.float64, generator=generator)
+    pipe = Compose([
+        kornia_aug.RandomGaussianBlur((3, 3), (1.0, 1.0), p=1.0),
+        kornia_aug.RandomAffine(degrees=(25.0, 25.0), scale=(1.25, 1.25), p=1.0),
+    ])
+    calls = 0
+    original = segment._apply_gaussian_covariance
+
+    def count_full_covariance(image: torch.Tensor, covariance: torch.Tensor) -> torch.Tensor:
+        nonlocal calls
+        calls += 1
+        return original(image, covariance)
+
+    monkeypatch.setattr(segment, "_apply_gaussian_covariance", count_full_covariance)
+    output = pipe(image)
+    blurred = _kornia_gaussian_blur(image, 1.0, 1.0)
+    assert blurred is not None
+    reference = FusedAffineSegment(
+        [kornia_aug.RandomAffine(degrees=(25.0, 25.0), scale=(1.25, 1.25), p=1.0)],
+        KorniaAdapter(),
+    )(blurred)
+
+    assert len(pipe.fusion_plan_descriptors) == 1
+    assert "passthrough(RandomGaussianBlur)" not in pipe.fusion_plan
+    assert calls == 1
+    assert _psnr(output, reference) > 32.0
+    interior = (slice(None), slice(None), slice(4, -4), slice(4, -4))
+    assert _psnr(output[interior], reference[interior]) > 45.0
+    assert (output[interior] - reference[interior]).abs().max() < 0.03
+
+
 @pytest.mark.parametrize(
     "affine",
     [
-        kornia_aug.RandomAffine(degrees=(12.0, 12.0), p=1.0),
-        kornia_aug.RandomAffine(degrees=(0.0, 0.0), scale=(0.8, 0.8), p=1.0),
+        kornia_aug.RandomAffine(degrees=(25.0, 25.0), scale=(0.8, 0.8), p=1.0),
     ],
-    ids=["rotation", "downscale"],
+    ids=["rotated_downscale"],
 )
-def test_unsafe_affines_keep_the_gaussian_blur_barrier(affine) -> None:
-    """Rotation and downscale retain the existing two-segment barrier plan."""
+def test_downscaling_affines_keep_the_gaussian_blur_barrier(affine) -> None:
+    """A rotated downscale retains the two-segment Gaussian blur barrier plan."""
     pipe = Compose([
         kornia_aug.RandomGaussianBlur((3, 3), (1.0, 1.0), p=1.0),
         affine,
@@ -111,6 +147,11 @@ def test_unsafe_affines_keep_the_gaussian_blur_barrier(affine) -> None:
 
     assert len(pipe.fusion_plan_descriptors) == 2
     assert "passthrough(RandomGaussianBlur)" in pipe.fusion_plan
+
+
+@pytest.mark.skip(reason="Kornia 0.8.2 RandomSharpness clamps its intermediate convolution and restores borders.")
+def test_gaussian_blur_and_sharpness_do_not_fuse_as_an_lti_kernel_chain() -> None:
+    """Kornia sharpness remains a barrier because its installed operation is not LTI."""
 
 
 @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia is required for Gaussian blur fusion")

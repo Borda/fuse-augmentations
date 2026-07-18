@@ -92,6 +92,10 @@ if not _ALBUMENTATIONS_AVAILABLE:
 # NumPy paths already accumulate in float64.
 _COMPOSE_DTYPE: torch.dtype = torch.float64
 
+# A sampled Gaussian kernel grows quadratically with its radius. Capping the
+# support keeps adversarial sigma ranges from allocating an unbounded kernel.
+_MAX_SAMPLED_GAUSSIAN_RADIUS = 31
+
 _CURRENT_CALL_MATRIX: ContextVar[Tensor | None] = ContextVar("fuse_current_call_matrix", default=None)
 
 
@@ -1655,7 +1659,8 @@ class FusedGaussianBlurSegment(nn.Module):
     The segment represents an ordered ``geometric -> blur -> geometric`` stretch.
     It samples the blur once per input item, adds variances across consecutive
     blurs, and only moves the result after the affine warp when the sampled
-    matrix is axis-aligned and has no downscaling direction.
+    matrix has no downscaling direction. Axis-aligned matrices retain the
+    native primitive; rotated or sheared matrices use a sampled covariance kernel.
 
     Args:
         transforms: Original transforms in pipeline order.
@@ -1757,13 +1762,15 @@ class FusedGaussianBlurSegment(nn.Module):
             warped, grid = self._geometric._apply_grid(image, acc)
             if aux_targets:
                 self._geometric._route_grid_aux(aux_targets, grid, acc_img, self._geometric.mask_interpolation)
-            sigma = _transform_gaussian_sigma(sigma, suffix)
-            result = _apply_folded_gaussian(warped, sigma)
+            if _is_axis_aligned_gaussian_matrix(suffix):
+                sigma = _transform_gaussian_sigma(sigma, suffix)
+                result = _apply_folded_gaussian(warped, sigma)
+            else:
+                covariance = _transform_gaussian_covariance(sigma, suffix)
+                result = _apply_gaussian_covariance(warped, covariance)
         else:
-            # Safety fallback for a non-commutable sampled matrix. Unreachable for the
-            # supported backends (their build-time check refuses non-axis-aligned or
-            # downscaling suffixes), but a custom transform that hid its scale/shear from
-            # the duck-typed check could reach here: apply the true image order
+            # Safety fallback for a non-commutable sampled matrix. A configured affine
+            # can still sample a downscaling matrix through shear, so apply the true image order
             # suffix(blur(prefix(x))) with separate warps rather than assuming the blur
             # commutes with the prefix. Auxiliary targets transform by the full affine
             # (the blur is a spatial no-op for them), so they still route through ``acc``.
@@ -1860,16 +1867,60 @@ def _apply_folded_gaussian(image: Tensor, sigma: Tensor) -> Tensor:
     return image if blurred is None else blurred
 
 
-def _is_commutable_gaussian_matrix(matrix: Tensor) -> bool:
-    """Return whether an affine matrix preserves diagonal blur covariance safely."""
+def _is_axis_aligned_gaussian_matrix(matrix: Tensor) -> bool:
+    """Return whether an affine matrix preserves diagonal Gaussian covariance."""
     off_diagonal = matrix[:, :2, :2][:, (0, 1), (1, 0)].abs().max()
-    return bool(off_diagonal < _AXIS_ALIGNED_EPS) and estimate_scale(matrix)[0] >= 1.0
+    return bool(off_diagonal < _AXIS_ALIGNED_EPS)
+
+
+def _is_commutable_gaussian_matrix(matrix: Tensor) -> bool:
+    """Return whether an affine matrix can move a Gaussian blur without aliasing."""
+    return estimate_scale(matrix)[0] >= 1.0
 
 
 def _transform_gaussian_sigma(sigma: Tensor, matrix: Tensor) -> Tensor:
     """Transform diagonal blur covariance through an axis-aligned affine matrix."""
     linear = matrix[:, :2, :2].to(dtype=sigma.dtype)
     return torch.stack([linear[:, 0, 0].abs() * sigma[:, 0], linear[:, 1, 1].abs() * sigma[:, 1]], dim=1)
+
+
+def _transform_gaussian_covariance(sigma: Tensor, matrix: Tensor) -> Tensor:
+    """Transform diagonal Gaussian covariance through a full affine matrix."""
+    linear = matrix[:, :2, :2].to(dtype=sigma.dtype)
+    covariance = torch.diag_embed(sigma.square())
+    return linear @ covariance @ linear.transpose(-1, -2)
+
+
+def _apply_gaussian_covariance(image: Tensor, covariance: Tensor) -> Tensor:
+    """Apply a per-sample Gaussian convolution for transformed full covariances."""
+    if bool(covariance[:, 0, 1].abs().max() < _AXIS_ALIGNED_EPS):
+        sigma = covariance.diagonal(dim1=-2, dim2=-1).clamp_min(0.0).sqrt()
+        return _apply_folded_gaussian(image, sigma)
+    return _sampled_gaussian_convolution(image, covariance)
+
+
+def _sampled_gaussian_convolution(image: Tensor, covariance: Tensor) -> Tensor:
+    """Convolve each image with a sampled, normalized full-covariance Gaussian."""
+    work_dtype = torch.float32 if image.dtype in (torch.float16, torch.bfloat16) else image.dtype
+    covariance = covariance.to(dtype=work_dtype)
+    eigenvalues, eigenvectors = torch.linalg.eigh(covariance)
+    safe_eigenvalues = eigenvalues.clamp_min(torch.finfo(work_dtype).eps)
+    safe_covariance = eigenvectors @ torch.diag_embed(safe_eigenvalues) @ eigenvectors.transpose(-1, -2)
+    radius = min(
+        math.ceil(3.0 * float(safe_eigenvalues[:, 1].sqrt().max().item())),
+        _MAX_SAMPLED_GAUSSIAN_RADIUS,
+    )
+    coordinates = torch.arange(-radius, radius + 1, device=image.device, dtype=work_dtype)
+    grid_y, grid_x = torch.meshgrid(coordinates, coordinates, indexing="ij")
+    positions = torch.stack([grid_x, grid_y], dim=-1)
+    inverse = torch.linalg.inv(safe_covariance)
+    quadratic = torch.einsum("hwi,bij,hwj->bhw", positions, inverse, positions)
+    kernel = torch.exp(-0.5 * quadratic)
+    kernel = kernel / kernel.sum(dim=(-1, -2), keepdim=True)
+    batch_size, channels, height, width = image.shape
+    weights = kernel[:, None].expand(-1, channels, -1, -1).reshape(batch_size * channels, 1, *kernel.shape[-2:])
+    padded = F.pad(image.reshape(1, batch_size * channels, height, width), (radius,) * 4, mode="reflect")
+    return F.conv2d(padded, weights.to(dtype=image.dtype), groups=batch_size * channels).reshape_as(image)
 
 
 # ---------------------------------------------------------------------------
@@ -3852,7 +3903,7 @@ def reorder_aggressive(
 
 
 def _can_commute_gaussian_blur(geometric: list[object], adapter: TransformAdapter) -> bool:
-    """Return whether configured geometric transforms are always axis-aligned upscales."""
+    """Return whether configured geometric transforms cannot downscale a Gaussian blur."""
     for transform in geometric:
         category = adapter.category(transform)
         if category is TransformCategory.GEOMETRIC_EXACT:
@@ -3860,25 +3911,10 @@ def _can_commute_gaussian_blur(geometric: list[object], adapter: TransformAdapte
         if category is not TransformCategory.GEOMETRIC_INTERP:
             return False
         generator = getattr(transform, "_param_generator", transform)
-        degrees = getattr(generator, "degrees", getattr(transform, "degrees", (0.0, 0.0)))
-        shear = getattr(generator, "shear", getattr(transform, "shear", None))
         scale = getattr(generator, "scale", getattr(transform, "scale", None))
-        if not _is_zero_range(degrees) or not _is_zero_range(shear):
-            return False
         if isinstance(scale, Sequence) and min(float(value) for value in scale) < 1.0:
             return False
     return True
-
-
-def _is_zero_range(value: object) -> bool:
-    """Return whether a scalar or range only permits zero rotation or shear."""
-    if value is None:
-        return True
-    if isinstance(value, (float, int)):
-        return abs(float(value)) < _AXIS_ALIGNED_EPS
-    if isinstance(value, Sequence):
-        return all(abs(float(item)) < _AXIS_ALIGNED_EPS for item in value)
-    return False
 
 
 def _transform_border_mode(adapter: TransformAdapter, transform: object) -> PaddingModeStr | None:
