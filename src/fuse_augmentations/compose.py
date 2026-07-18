@@ -78,6 +78,7 @@ from fuse_augmentations.types import (
     ExecutionStr,
     InterpolationStr,
     MaskInterpolationStr,
+    PipelineDtypeStr,
     RandomnessPolicy,
     ReorderPolicy,
     SegmentDescriptor,
@@ -111,6 +112,10 @@ _KWARG_ALIASES: dict[str, str | tuple[str, ...]] = {
 # op: their per-sample rotation is not recoverable without re-sampling. When present, an
 # all-exact geometric run is routed through the (still-lossless for D4) grid path.
 _COORD_DATA_KEYS = {"bbox_xyxy", "bbox_xywh", "keypoints"}
+_PIPELINE_TORCH_DTYPES: dict[PipelineDtypeStr, torch.dtype] = {
+    "bfloat16": torch.bfloat16,
+    "float16": torch.float16,
+}
 
 
 def _has_coord_aux(data_keys: list[str] | None) -> bool:
@@ -238,6 +243,14 @@ def _validate_mask_interpolation(mask_interpolation: str) -> MaskInterpolationSt
     return cast(MaskInterpolationStr, mask_interpolation)
 
 
+def _validate_pipeline_dtype(pipeline_dtype: PipelineDtypeStr | None) -> PipelineDtypeStr | None:
+    """Validate the optional GPU image-operation dtype."""
+    if pipeline_dtype is None or pipeline_dtype in _PIPELINE_TORCH_DTYPES:
+        return pipeline_dtype
+    msg = "pipeline_dtype must be 'bfloat16', 'float16', or None"
+    raise ValueError(msg)
+
+
 @dataclass(frozen=True, slots=True)
 class _PassthroughSegment:
     """Serializable passthrough segment that carries its adapter explicitly."""
@@ -355,6 +368,12 @@ class FusedCompose(nn.Module):
         mask_interpolation: Auxiliary mask sampling mode. ``"nearest"`` (default)
             preserves hard labels; ``"bilinear"`` provides differentiable soft-mask
             sampling and requires floating-point mask input.
+        pipeline_dtype: Optional ``"bfloat16"`` or ``"float16"`` GPU execution
+            dtype for fused affine/projective/crop warps and fused color/LUT applies.
+            Matrix composition and inversion remain float32 or float64, and the
+            returned image keeps its input dtype. CPU ignores this option and uses
+            the existing float32/float64 path. MPS supports both requested dtypes
+            for ``affine_grid`` and ``grid_sample`` on PyTorch 2.10.
         **backend_kwargs: Reserved for backend-specific options (currently unused).
 
     """
@@ -374,6 +393,7 @@ class FusedCompose(nn.Module):
         substitute_passthrough: bool = False,
         clip_policy: ClipPolicyStr = "final",
         mask_interpolation: MaskInterpolationStr = "nearest",
+        pipeline_dtype: PipelineDtypeStr | None = None,
         **backend_kwargs: object,
     ) -> None:
         """Initialize ``FusedCompose``."""
@@ -382,6 +402,7 @@ class FusedCompose(nn.Module):
         execution = _validate_execution(execution)
         clip_policy = _validate_clip_policy(clip_policy)
         mask_interpolation = _validate_mask_interpolation(mask_interpolation)
+        pipeline_dtype = _validate_pipeline_dtype(pipeline_dtype)
 
         if reorder not in (ReorderPolicy.NONE, ReorderPolicy.POINTWISE, ReorderPolicy.AGGRESSIVE):
             msg = f"ReorderPolicy.{reorder.name} not yet supported"
@@ -485,6 +506,7 @@ class FusedCompose(nn.Module):
             antialias=antialias,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            pipeline_dtype=pipeline_dtype,
         )
 
     def _setup_instance(
@@ -504,6 +526,7 @@ class FusedCompose(nn.Module):
         antialias: bool = False,
         clip_policy: ClipPolicyStr = "final",
         mask_interpolation: MaskInterpolationStr = "nearest",
+        pipeline_dtype: PipelineDtypeStr | None = None,
     ) -> None:
         """Assign all instance attributes.
 
@@ -521,6 +544,7 @@ class FusedCompose(nn.Module):
         self.antialias: bool = antialias
         self.clip_policy: ClipPolicyStr = clip_policy
         self.mask_interpolation: MaskInterpolationStr = _validate_mask_interpolation(mask_interpolation)
+        self.pipeline_dtype: PipelineDtypeStr | None = _validate_pipeline_dtype(pipeline_dtype)
         self._adapter: TransformAdapter | None = adapter
         # Heterogeneous by design: fused/color/exact/crop segments, passthrough wrappers, or raw
         # legacy transforms — dispatched at runtime via _seg_dispatch_tags, so elements stay Any.
@@ -806,6 +830,9 @@ class FusedCompose(nn.Module):
         if not hasattr(self, "mask_interpolation"):
             # Pickles predating configurable mask sampling retain nearest behavior.
             self.mask_interpolation = "nearest"
+        if not hasattr(self, "pipeline_dtype"):
+            # Pickles predating optional low-precision execution retain default precision.
+            self.pipeline_dtype = None
         if not hasattr(self, "randomness"):
             self.randomness = RandomnessPolicy.BACKEND
         if not hasattr(self, "data_keys"):
@@ -1217,6 +1244,33 @@ class FusedCompose(nn.Module):
             self._seg_dispatch_tags = tags
         return tags
 
+    def _low_precision_segment_dtype(self, segment: object, image: Tensor) -> torch.dtype | None:
+        """Return the requested temporary dtype for one supported GPU segment."""
+        if self.pipeline_dtype is None or image.device.type == "cpu" or not image.is_floating_point():
+            return None
+        supported = (FusedAffineSegment, ProjectiveSegment, CropResizeSegment, FusedColorSegment, FusedLUTSegment)
+        if isinstance(segment, supported):
+            return _PIPELINE_TORCH_DTYPES[self.pipeline_dtype]
+        if isinstance(segment, (AlbuFusedAffineSegment, AlbuProjectiveSegment)) and segment.execution == "torch":
+            return _PIPELINE_TORCH_DTYPES[self.pipeline_dtype]
+        return None
+
+    def _forward_fused_segment(
+        self,
+        segment: nn.Module,
+        image: Tensor,
+        aux_targets: dict[str, Tensor] | None,
+    ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
+        """Run one fused segment, narrowing only its GPU image operation when requested."""
+        requested_dtype = self._low_precision_segment_dtype(segment, image)
+        if requested_dtype is None:
+            return cast("Tensor | tuple[Tensor, dict[str, Tensor]]", segment.forward(image, aux_targets))
+        result = segment.forward(image.to(dtype=requested_dtype), aux_targets)
+        if aux_targets is None:
+            return cast(Tensor, result).to(dtype=image.dtype)
+        output, routed_targets = cast("tuple[Tensor, dict[str, Tensor]]", result)
+        return output.to(dtype=image.dtype), routed_targets
+
     def _forward_single(self, image: torch.Tensor, *, return_matrix: bool = False) -> object:
         """Run the pipeline in single-tensor mode (``data_keys is None``)."""
         # Reset per-call state so transform_matrix returns None when only
@@ -1233,7 +1287,7 @@ class FusedCompose(nn.Module):
             result = self._convert_primary_output(image)
             return (result, None) if return_matrix else result
         _fast_seg = self._single_fused_fast_seg
-        if _fast_seg is not None:
+        if _fast_seg is not None and self._low_precision_segment_dtype(_fast_seg, image) is None:
             image = cast(Tensor, _fast_seg.forward(image, None))
             call_matrix = _current_call_matrix()
             self._last_transform_matrix = call_matrix
@@ -1245,11 +1299,11 @@ class FusedCompose(nn.Module):
         # multi-segment pipeline).
         for seg, tag in zip(self._segments, self._dispatch_tags(), strict=True):
             if tag == _TAG_MATRIX:
-                image = cast(Tensor, seg.forward(image, None))
+                image = cast(Tensor, self._forward_fused_segment(seg, image, None))
                 call_matrix = _current_call_matrix()
                 self._last_transform_matrix = call_matrix
             elif tag == _TAG_PLAIN:
-                image = cast(Tensor, seg.forward(image, None))
+                image = cast(Tensor, self._forward_fused_segment(seg, image, None))
             elif tag == _TAG_PASSTHROUGH:
                 image = seg.adapter.call_nonfused(seg.transform, image)
             else:
@@ -1271,11 +1325,11 @@ class FusedCompose(nn.Module):
 
         for seg, tag in zip(self._segments, self._dispatch_tags(), strict=True):
             if tag == _TAG_MATRIX:
-                image, aux_targets = seg.forward(image, aux_targets)
+                image, aux_targets = self._forward_fused_segment(seg, image, aux_targets)
                 call_matrix = _current_call_matrix()
                 self._last_transform_matrix = call_matrix
             elif tag == _TAG_PLAIN:
-                image, aux_targets = seg.forward(image, aux_targets)
+                image, aux_targets = self._forward_fused_segment(seg, image, aux_targets)
             elif tag == _TAG_PASSTHROUGH:
                 if aux_targets:
                     self._check_passthrough_aux_policy(seg.transform)
@@ -1944,6 +1998,7 @@ class FusedCompose(nn.Module):
         clip_policy: ClipPolicyStr = "final",
         on_unsupported: Literal["raise", "warn_skip"] = "raise",
         mask_interpolation: MaskInterpolationStr = "nearest",
+        pipeline_dtype: PipelineDtypeStr | None = None,
     ) -> FusedCompose:
         """Create a FusedCompose pipeline from a list of TransformSpec objects.
 
@@ -1971,6 +2026,8 @@ class FusedCompose(nn.Module):
             randomness: Batch randomness policy forwarded to :meth:`__init__`.
             clip_policy: Clamp policy for fused color segments.
             mask_interpolation: Auxiliary mask sampling mode forwarded to
+                :meth:`__init__`.
+            pipeline_dtype: Optional fused GPU image-operation dtype forwarded to
                 :meth:`__init__`.
             on_unsupported: Policy for specs whose op the backend cannot build.
                 ``"raise"`` (default) aggregates all offenders into one
@@ -2011,6 +2068,9 @@ class FusedCompose(nn.Module):
                 data_keys=data_keys,
                 output_backend=output_backend,
                 randomness=_coerce_randomness_policy(randomness),
+                clip_policy=clip_policy,
+                mask_interpolation=mask_interpolation,
+                pipeline_dtype=pipeline_dtype,
                 route_coords_via_grid=_has_coord_aux(data_keys),
                 native=True,
             )
@@ -2026,6 +2086,7 @@ class FusedCompose(nn.Module):
             randomness=randomness,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            pipeline_dtype=pipeline_dtype,
         )
 
     @staticmethod
@@ -2200,6 +2261,7 @@ class FusedCompose(nn.Module):
         randomness: RandomnessPolicy | Literal["backend", "per_sample"] = RandomnessPolicy.BACKEND,
         clip_policy: ClipPolicyStr = "final",
         mask_interpolation: MaskInterpolationStr = "nearest",
+        pipeline_dtype: PipelineDtypeStr | None = None,
         *,
         specs: list[TransformSpec] | None = None,
         backend: BackendStr | None = None,
@@ -2264,6 +2326,8 @@ class FusedCompose(nn.Module):
                 when ``backend=`` is set (delegation to :meth:`from_config`).
             clip_policy: Clamp policy forwarded to fused color segments.
             mask_interpolation: Auxiliary mask sampling mode forwarded to
+                :meth:`__init__` or :meth:`from_config`.
+            pipeline_dtype: Optional fused GPU image-operation dtype forwarded to
                 :meth:`__init__` or :meth:`from_config`.
             route_coords_via_grid: Force coordinate auxiliary targets through
                 the grid path for direct-param construction.
@@ -2354,6 +2418,7 @@ class FusedCompose(nn.Module):
                     randomness=randomness,
                     clip_policy=clip_policy,
                     mask_interpolation=mask_interpolation,
+                    pipeline_dtype=pipeline_dtype,
                 )
 
             return cls._from_param_specs(
@@ -2366,6 +2431,7 @@ class FusedCompose(nn.Module):
                 randomness=_coerce_randomness_policy(randomness),
                 clip_policy=clip_policy,
                 mask_interpolation=mask_interpolation,
+                pipeline_dtype=pipeline_dtype,
                 route_coords_via_grid=route_coords_via_grid,
             )
 
@@ -2402,6 +2468,7 @@ class FusedCompose(nn.Module):
                 randomness=randomness,
                 clip_policy=clip_policy,
                 mask_interpolation=mask_interpolation,
+                pipeline_dtype=pipeline_dtype,
             )
 
         # Collect geometric param specs
@@ -2442,6 +2509,7 @@ class FusedCompose(nn.Module):
                 randomness=randomness,
                 clip_policy=clip_policy,
                 mask_interpolation=mask_interpolation,
+                pipeline_dtype=pipeline_dtype,
             )
 
         # Build internal transforms and adapter
@@ -2487,6 +2555,7 @@ class FusedCompose(nn.Module):
             randomness=randomness_policy,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            pipeline_dtype=pipeline_dtype,
         )
 
         return instance
@@ -2503,6 +2572,7 @@ class FusedCompose(nn.Module):
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
         clip_policy: ClipPolicyStr = "final",
         mask_interpolation: MaskInterpolationStr = "nearest",
+        pipeline_dtype: PipelineDtypeStr | None = None,
         route_coords_via_grid: bool = False,
         native: bool = False,
     ) -> FusedCompose:
@@ -2571,6 +2641,7 @@ class FusedCompose(nn.Module):
                 randomness=randomness,
                 clip_policy=clip_policy,
                 mask_interpolation=mask_interpolation,
+                pipeline_dtype=pipeline_dtype,
             )
 
         instance = cls.__new__(cls)
@@ -2599,6 +2670,7 @@ class FusedCompose(nn.Module):
             randomness=randomness,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            pipeline_dtype=pipeline_dtype,
         )
 
         return instance

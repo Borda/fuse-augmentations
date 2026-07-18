@@ -96,6 +96,13 @@ _COMPOSE_DTYPE: torch.dtype = torch.float64
 # support keeps adversarial sigma ranges from allocating an unbounded kernel.
 _MAX_SAMPLED_GAUSSIAN_RADIUS = 31
 
+
+def _matrix_public_dtype(image_dtype: torch.dtype) -> torch.dtype:
+    """Return the full-precision dtype exposed for a composed image matrix."""
+    if image_dtype in (torch.float16, torch.bfloat16):
+        return torch.float32
+    return image_dtype
+
 _CURRENT_CALL_MATRIX: ContextVar[Tensor | None] = ContextVar("fuse_current_call_matrix", default=None)
 
 
@@ -125,11 +132,11 @@ def _set_current_call_matrix(matrix: Tensor) -> None:
 def _matrix_compose_dtype(image_dtype: torch.dtype, device: torch.device, num_transforms: int) -> torch.dtype:
     """Pick the dtype used to accumulate and invert a matrix chain.
 
-    A single transform has no chain to accumulate, so it stays in the image dtype
-    (keeps single-op output bit-for-bit compatible with the native warp). Longer
-    chains use float64 to remove chain-length-dependent drift, except on MPS, which
-    has no float64 support — there the accumulation falls back to the image dtype
-    (typically float32), trading the extra precision for device compatibility.
+    A single transform has no chain to accumulate, so float32/float64 images keep
+    their existing dtype (and native-warp compatibility). Low-precision image
+    operations always use float32 matrix math. Longer float32 chains use float64
+    to remove chain-length-dependent drift, except on MPS, which has no float64
+    support and therefore composes in float32.
 
     Args:
         image_dtype: Dtype of the image tensor being warped.
@@ -140,6 +147,8 @@ def _matrix_compose_dtype(image_dtype: torch.dtype, device: torch.device, num_tr
         The dtype to use for matrix composition and inversion.
 
     """
+    if image_dtype in (torch.float16, torch.bfloat16):
+        return torch.float32
     if num_transforms <= 1 or device.type == "mps":
         return image_dtype
     return _COMPOSE_DTYPE
@@ -953,8 +962,9 @@ class _BaseAffineSegment(nn.Module):
         builds its matrix, masks skipped samples back to identity, and folds the
         chain into a single composed forward matrix. Composition runs in the
         chain-length-independent dtype from :func:`_matrix_compose_dtype` (float64
-        for chains, image dtype for single ops and MPS); the composed matrix is
-        also returned cast to the image dtype for the public matrix contract.
+        for float32 chains, float32 for low-precision image operations and MPS).
+        The public matrix retains the default image dtype, except low-precision
+        image operations expose their full-precision float32 matrix.
 
         Args:
             image: ``(batch_size, channels, height, width)`` float input tensor.
@@ -962,7 +972,7 @@ class _BaseAffineSegment(nn.Module):
         Returns:
             A ``(acc, acc_img)`` tuple: ``acc`` is the composed forward matrix in
             the compose dtype (for inversion and exactness checks), ``acc_img`` is
-            the same matrix cast to the image dtype (for ``_last_matrix`` and
+            the same matrix in the public matrix dtype (for ``_last_matrix`` and
             auxiliary-target routing).
 
         """
@@ -974,11 +984,9 @@ class _BaseAffineSegment(nn.Module):
         # Compose and invert the multi-transform chain in float64: the (B, 3, 3)
         # matmul cost is negligible next to the H x W warp, and float64 removes the
         # chain-length-dependent drift that float32 accumulation introduces. The
-        # composed matrix is cast back to the image dtype only where the public
-        # contract needs it (``_last_matrix``, aux routing). A single transform has
-        # no chain to accumulate, so it stays in the image dtype -- keeping the
-        # common single-op case bit-for-bit compatible with the native warp. MPS
-        # has no float64, so chains there fall back to the image dtype too.
+        # default public matrix dtype remains unchanged. Low-precision image
+        # operations expose float32, and cast only after normalization at the
+        # sampling-grid boundary.
         compose_dtype = _matrix_compose_dtype(dtype, device, len(self.transforms))
         eye = self._eye3.to(device=device, dtype=compose_dtype)
         eye_batch = eye[None].expand(batch_size, -1, -1)
@@ -1006,7 +1014,7 @@ class _BaseAffineSegment(nn.Module):
             mtx_i = torch.where(active[:, None, None], mtx_i, eye_batch)
             acc = matmul3x3(mtx_i, acc)
 
-        return acc, acc.to(dtype=dtype)
+        return acc, acc.to(dtype=_matrix_public_dtype(dtype))
 
     def _apply_grid(self, image: Tensor, acc: Tensor) -> tuple[Tensor, Tensor]:
         """Warp ``image`` by the composed matrix and return the warped image and grid.
@@ -1237,6 +1245,7 @@ class FusedAffineSegment(_BaseAffineSegment):
             and not _has_aux
             and self._fast_path is not None
             and self.randomness is RandomnessPolicy.BACKEND
+            and image.dtype not in (torch.float16, torch.bfloat16)
         ):
             _tfm = self.transforms[0]
 
@@ -1623,7 +1632,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         target_h, target_w, mtx_crop = self._build_crop_matrix(input_shape, device, compose_dtype)
         acc_full = matmul3x3(mtx_crop, acc)  # crop reads geo's output
 
-        self._last_matrix = acc_full.to(dtype=dtype).detach().clone()
+        self._last_matrix = acc_full.to(dtype=_matrix_public_dtype(dtype)).detach().clone()
         _set_current_call_matrix(self._last_matrix)
 
         # Keep the prefilter out of default and mild-downscale calls entirely; the
@@ -1648,7 +1657,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         )
 
         if aux_targets:
-            self._warp_aux(aux_targets, grid, acc_full.to(dtype=dtype), self.mask_interpolation)
+            self._warp_aux(aux_targets, grid, acc_full.to(dtype=_matrix_public_dtype(dtype)), self.mask_interpolation)
 
         if not _has_aux:
             return out
@@ -1808,7 +1817,7 @@ class FusedGaussianBlurSegment(nn.Module):
         sigma = _sample_folded_gaussian_sigma(self.blur_transforms, image, self.randomness)
         suffix, _suffix_img = self._suffix._compose(image)
         acc = matmul3x3(suffix, prefix)
-        acc_img = acc.to(dtype=image.dtype)
+        acc_img = acc.to(dtype=_matrix_public_dtype(image.dtype))
         self._last_matrix = acc_img.detach().clone()
         _set_current_call_matrix(self._last_matrix)
         commutable = _is_commutable_gaussian_matrix(suffix)
@@ -2232,7 +2241,7 @@ class AlbuFusedAffineSegment(nn.Module):
         accs, any_active = self._compose_matrices(image)
         composed_batch = self._stack_matrices(accs)
         self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
-        _set_current_call_matrix(composed_batch.to(device=image.device, dtype=image.dtype).detach().clone())
+        _set_current_call_matrix(composed_batch.to(device=image.device, dtype=torch.float32).detach().clone())
 
         if batch_size == 0 or len(self.transforms) == 0:
             return (image, aux_targets) if _has_aux else image
@@ -2821,7 +2830,7 @@ class AlbuProjectiveSegment(nn.Module):
         accs, any_active = self._compose_matrices(image)
         composed_batch = self._stack_matrices(accs)
         self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
-        _set_current_call_matrix(composed_batch.to(device=image.device, dtype=image.dtype).detach().clone())
+        _set_current_call_matrix(composed_batch.to(device=image.device, dtype=torch.float32).detach().clone())
 
         if batch_size == 0 or len(self.transforms) == 0:
             return (image, aux_targets) if _has_aux else image
@@ -3445,24 +3454,25 @@ def _apply_uint8_lut(image: Tensor, table: Tensor) -> Tensor:
 def _apply_runtime_float_lut(image: Tensor, table: Tensor) -> Tensor:
     """Map floating pixels through a byte-domain lookup table."""
     batch_size, channels, height, width = image.shape
-    index = (image.to(torch.float32).clamp(0.0, 1.0) * 255).floor().long()
+    index = (image.clamp(0.0, 1.0) * 255).floor().long()
     index = index.reshape(batch_size, channels, height * width)
-    mapped = torch.gather(table, 2, index).reshape(batch_size, channels, height, width)
+    mapped = torch.gather(table.to(dtype=image.dtype), 2, index).reshape(batch_size, channels, height, width)
     return mapped.to(image.dtype)
 
 
 def _apply_interp_lut(image: Tensor, composed: Tensor, num_levels: int) -> Tensor:
     """Map floating pixels by interpolating a composed lookup table."""
     batch_size, channels, height, width = image.shape
-    clamped = image.to(torch.float32).clamp(0.0, 1.0).reshape(batch_size, channels, height * width)
+    clamped = image.clamp(0.0, 1.0).reshape(batch_size, channels, height * width)
     pos = clamped * (num_levels - 1)
     lo = pos.floor().clamp(0.0, num_levels - 2)
     frac = pos - lo
     lo_idx = lo.to(torch.long)
-    lo_val = torch.gather(composed, 2, lo_idx)
-    hi_val = torch.gather(composed, 2, lo_idx + 1)
+    table = composed.to(dtype=image.dtype)
+    lo_val = torch.gather(table, 2, lo_idx)
+    hi_val = torch.gather(table, 2, lo_idx + 1)
     out = lo_val + (hi_val - lo_val) * frac
-    jumps = (composed[..., 1:] - composed[..., :-1]).abs()
+    jumps = (table[..., 1:] - table[..., :-1]).abs()
     neighbours = torch.maximum(F.pad(jumps[..., :-1], (1, 0)), F.pad(jumps[..., 1:], (0, 1)))
     discontinuity = (jumps > 8 * neighbours) & (jumps > 2 / (num_levels - 1))
     step = torch.gather(discontinuity, 2, lo_idx)

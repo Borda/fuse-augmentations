@@ -97,6 +97,10 @@ def transform_mask(mask: Tensor, grid: Tensor, mode: MaskInterpolationStr = "nea
         # memory and bandwidth overhead of ``float64``.
         sample_mask = mask.to(dtype=torch.float32)
         sample_grid = grid.to(dtype=torch.float32)
+    elif sample_grid.dtype != sample_mask.dtype:
+        # The image warp may use an opt-in low-precision grid while a floating
+        # auxiliary mask intentionally stays in its caller-provided dtype.
+        sample_grid = grid.to(dtype=sample_mask.dtype)
     if mode == "nearest":
         # Keep the default path exactly as before: nearest sampling is detached.
         with torch.no_grad():

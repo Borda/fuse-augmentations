@@ -203,6 +203,10 @@ ExecutionStr = Literal["cv2", "torch"]
 #: extra passes only where clipping is actually possible.
 ClipPolicyStr = Literal["final", "per_op_parity"]
 
+#: Optional low-precision dtype for fused GPU image operations. Matrix composition
+#: remains in float32 or float64 regardless of this image-operation preference.
+PipelineDtypeStr = Literal["bfloat16", "float16"]
+
 
 @runtime_checkable
 class BackendConverter(Protocol):
