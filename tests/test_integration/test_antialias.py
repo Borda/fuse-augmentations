@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+import fuse_augmentations.affine.segment as segment
 from fuse_augmentations._compat import _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
 from fuse_augmentations.affine.matrix import estimate_scale
 from fuse_augmentations.affine.segment import _antialias_axis_scales, _maybe_antialias_prefilter, _mipmap_sigma
@@ -208,3 +209,31 @@ class TestAntialiasDownscale:
         unfiltered = self._pipe_out(image, target, antialias=False)
         antialiased = self._pipe_out(image, target, antialias=True)
         assert torch.equal(unfiltered, antialiased)
+
+    @pytest.mark.parametrize(
+        ("target", "antialias", "expected_calls"),
+        [(24, False, 0), (64, True, 0), (24, True, 1)],
+        ids=("flag-off", "mild-downscale", "aggressive-downscale"),
+    )
+    def test_crop_resize_only_enters_prefilter_when_required(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        target: int,
+        antialias: bool,
+        expected_calls: int,
+    ) -> None:
+        """Crop-resize invokes the prefilter only for opt-in aggressive downscales."""
+        image = _high_frequency_image(96)
+        original = segment._maybe_antialias_prefilter
+        calls: list[bool] = []
+
+        def spy_prefilter(image: torch.Tensor, mtx: torch.Tensor, enabled: bool) -> torch.Tensor:
+            """Record prefilter entry while preserving the underlying result."""
+            calls.append(enabled)
+            return original(image, mtx, enabled)
+
+        monkeypatch.setattr(segment, "_maybe_antialias_prefilter", spy_prefilter)
+
+        self._pipe_out(image, target, antialias=antialias)
+
+        assert len(calls) == expected_calls

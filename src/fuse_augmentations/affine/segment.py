@@ -512,6 +512,19 @@ def _antialias_axis_scales(mtx: Tensor) -> tuple[float, float]:
     return float(sv), float(sv)
 
 
+def _needs_antialias_prefilter(mtx: Tensor) -> bool:
+    """Return whether ``mtx`` downscales far enough to require prefiltering.
+
+    Args:
+        mtx: ``(batch_size, 3, 3)`` forward pixel matrix of the pending warp.
+
+    Returns:
+        ``True`` when at least one axis scales below the aggressive-downscale threshold.
+
+    """
+    return min(_antialias_axis_scales(mtx)) < _ANTIALIAS_SCALE_THRESHOLD
+
+
 def _maybe_antialias_prefilter(image: Tensor, mtx: Tensor, enabled: bool) -> Tensor:
     """Gaussian-prefilter ``image`` before a downscaling warp when antialiasing is on.
 
@@ -1572,11 +1585,11 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         self._last_matrix = acc_full.to(dtype=dtype).detach().clone()
         _set_current_call_matrix(self._last_matrix)
 
-        # Opt-in antialiasing on the fused geo∘crop downscale. The composed 2x2 may
-        # be rotated/sheared, so a per-axis Gaussian prefilter (mipmap sigma) is
-        # applied to the input before the single warp. No-op unless enabled and the
-        # worst axis downscales past the threshold — default output unchanged.
-        image = _maybe_antialias_prefilter(image, acc_full.to(dtype=dtype), self._antialias)
+        # Keep the prefilter out of default and mild-downscale calls entirely; the
+        # composed matrix still handles rotations and shears in the opt-in case.
+        antialias_mtx = acc_full.to(dtype=dtype)
+        if self._antialias and _needs_antialias_prefilter(antialias_mtx):
+            image = _maybe_antialias_prefilter(image, antialias_mtx, enabled=True)
 
         mtx_inv = inv3x3(acc_full)
         mtx_norm = normalize_matrix_io(mtx_inv, height, width, target_h, target_w).to(dtype=dtype)
@@ -3060,9 +3073,23 @@ class FusedColorSegment(nn.Module):
         # because every fused op is linear (c' = M c + b), the mean transforms exactly as
         # mean(M c + b) = M mean(c) + b, so we carry mean_ch forward through the same matrices.
         mean_ch = image.reshape(batch_size, channels, height * width).mean(dim=2)  # (batch_size, channels)
+        parity_image = image
+        parity_sub = eye.unsqueeze(0).expand(batch_size, -1, -1).clone()
+        parity_sub_started = False
 
         matrices: list[Tensor] = []
         for tfm in self._transforms:
+            if (
+                self.clip_policy == "per_op_parity"
+                and self._is_normalize(tfm)
+                and parity_sub_started
+                and self._range_escapes_gamut(parity_sub)
+            ):
+                parity_image = self._matmul_image(parity_image, parity_sub).clamp(0.0, 1.0)
+                mean_ch = parity_image.reshape(batch_size, channels, height * width).mean(dim=2)
+                parity_sub = eye.unsqueeze(0).expand(batch_size, -1, -1).clone()
+                parity_sub_started = False
+
             prob = _transform_prob(tfm)
             same_on_batch = _shares_randomness_across_batch(self._adapter, tfm, self.randomness)
             if same_on_batch:
@@ -3100,6 +3127,17 @@ class FusedColorSegment(nn.Module):
             mat = mat.to(device=device, dtype=dtype)
             mat = torch.where(active[:, None, None], mat, eye.unsqueeze(0).expand(batch_size, -1, -1))
             matrices.append(mat)
+
+            if self.clip_policy == "per_op_parity" and not self._is_normalize(tfm):
+                candidate = torch.bmm(mat, parity_sub) if parity_sub_started else mat
+                if self._range_escapes_gamut(candidate):
+                    parity_image = self._matmul_image(parity_image, candidate).clamp(0.0, 1.0)
+                    mean_ch = parity_image.reshape(batch_size, channels, height * width).mean(dim=2)
+                    parity_sub = eye.unsqueeze(0).expand(batch_size, -1, -1).clone()
+                    parity_sub_started = False
+                    continue
+                parity_sub = candidate
+                parity_sub_started = True
             mean_ch = self._advance_channel_mean(mean_ch, mat)
 
         image_out = self._apply_color_matrices(image, matrices, eye)
@@ -3819,10 +3857,10 @@ class CropResizeSegment(nn.Module):
             mtx = mtx.expand(batch_size, -1, -1)
         mtx = mtx.to(device=device, dtype=dtype)
 
-        # Opt-in antialiasing: band-limit the input before the downscaling warp so
-        # one grid_sample no longer aliases. No-op unless enabled AND the crop
-        # downscales past the threshold, so the default output is unchanged.
-        image = _maybe_antialias_prefilter(image, mtx, self._antialias)
+        # Default and mild-downscale calls skip the prefilter function entirely,
+        # preserving the original single-warp path bit-for-bit.
+        if self._antialias and _needs_antialias_prefilter(mtx):
+            image = _maybe_antialias_prefilter(image, mtx, enabled=True)
 
         mtx_inv = inv3x3(mtx)
         mtx_norm = normalize_matrix_io(mtx_inv, height, width, target_h, target_w)

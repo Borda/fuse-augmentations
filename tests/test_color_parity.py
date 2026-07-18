@@ -179,3 +179,23 @@ def test_per_operation_clip_policy_matches_native_colorjitter_chain() -> None:
 
     torch.testing.assert_close(per_op, native, atol=1e-6, rtol=1e-6)
     assert not torch.allclose(final, native, atol=1e-6, rtol=1e-6)
+
+
+@pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
+def test_per_operation_clip_recomputes_contrast_mean_after_clamp() -> None:
+    """A contrast after a parity clamp uses the clamped image's luminance mean."""
+    image = torch.tensor(
+        [[[[0.30, 0.55], [0.75, 0.90]], [[0.25, 0.50], [0.70, 0.95]], [[0.20, 0.45], [0.65, 0.85]]]],
+        dtype=torch.float32,
+    )
+    transforms = [
+        tv_v2.ColorJitter(brightness=(1.5, 1.5)),
+        tv_v2.ColorJitter(contrast=(0.5, 0.5)),
+    ]
+
+    native = tv_v2.Compose(transforms)(image)
+    per_op = Compose(transforms, clip_policy="per_op_parity")(image)
+    final = Compose(transforms, clip_policy="final")(image)
+
+    torch.testing.assert_close(per_op, native, atol=1e-6, rtol=1e-6)
+    assert not torch.allclose(final, native, atol=1e-6, rtol=1e-6)
