@@ -115,6 +115,7 @@ def vflip_matrix_np(height: int) -> NDArray[np.float64]:
 try:
     from albumentations import D4 as _D4
     from albumentations import Affine as _Affine
+    from albumentations import GaussianBlur as _GaussianBlur
     from albumentations import HorizontalFlip as _HorizontalFlip
     from albumentations import HueSaturationValue as _HueSaturationValue
     from albumentations import Normalize as _Normalize
@@ -170,6 +171,7 @@ try:
     _POSTERIZE_TYPES: frozenset[type] = frozenset({_Posterize})
     _LUT_TYPES: frozenset[type] = _GAMMA_TYPES | _SOLARIZE_TYPES | _POSTERIZE_TYPES
     _CROP_RESIZE_TYPES: frozenset[type] = frozenset({_RandomResizedCrop})
+    _GAUSSIAN_BLUR_TYPES: frozenset[type] = frozenset({_GaussianBlur})
     # POINTWISE (non-linear color): reorderable but no matrix — return identity.
     _POINTWISE_TYPES: frozenset[type] = frozenset({_HueSaturationValue})
     _ALL_REGISTRY_TYPES: frozenset[type] = frozenset(TRANSFORM_REGISTRY)
@@ -187,6 +189,7 @@ except ImportError:
     _POSTERIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _LUT_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _CROP_RESIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _GAUSSIAN_BLUR_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _POINTWISE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _ALL_REGISTRY_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
 
@@ -242,6 +245,8 @@ class AlbumentationsAdapter:
             ``SPATIAL_KERNEL`` with a ``UserWarning``.
 
         """
+        if _is_albu_instance(transform, _GAUSSIAN_BLUR_TYPES):
+            return TransformCategory.SPATIAL_LINEAR
         # Use isinstance against registered base types so that subclasses or
         # wrapped Albumentations transforms are classified correctly.
         for base_type, cat in TRANSFORM_REGISTRY.items():

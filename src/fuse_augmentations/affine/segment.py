@@ -20,7 +20,7 @@ Example:
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextvars import ContextVar
 from typing import Any, cast
 
@@ -35,6 +35,7 @@ from fuse_augmentations.affine.matrix import (
     _singularity_threshold,
     apply_d4_image,
     classify_d4_batch,
+    estimate_scale,
     inv3x3,
     matmul3x3,
     normalize_matrix,
@@ -530,7 +531,7 @@ def _maybe_antialias_prefilter(image: Tensor, mtx: Tensor, enabled: bool) -> Ten
     return image if blurred is None else blurred
 
 
-def _kornia_gaussian_blur(image: Tensor, sigma_x: float, sigma_y: float) -> Tensor | None:
+def _kornia_gaussian_blur(image: Tensor, sigma_x: float | Tensor, sigma_y: float | Tensor) -> Tensor | None:
     """Anisotropic Gaussian pre-blur via kornia, or ``None`` when kornia is absent.
 
     Blurs ``image`` with per-axis sigmas using the installed kornia
@@ -547,19 +548,28 @@ def _kornia_gaussian_blur(image: Tensor, sigma_x: float, sigma_y: float) -> Tens
         The blurred tensor, or ``None`` when kornia is unavailable or both sigmas are ~0.
 
     """
-    if sigma_x <= 0.0 and sigma_y <= 0.0:
+    batch_size = image.shape[0]
+    sig_x = torch.as_tensor(sigma_x, device=image.device, dtype=image.dtype).reshape(-1)
+    sig_y = torch.as_tensor(sigma_y, device=image.device, dtype=image.dtype).reshape(-1)
+    if sig_x.numel() == 1:
+        sig_x = sig_x.expand(batch_size)
+    if sig_y.numel() == 1:
+        sig_y = sig_y.expand(batch_size)
+    if sig_x.numel() != batch_size or sig_y.numel() != batch_size:
+        msg = "Gaussian blur sigmas must be scalar or have one value per image"
+        raise ValueError(msg)
+    if bool(((sig_x <= 0.0) & (sig_y <= 0.0)).all()):
         return image
     try:
         from kornia.filters import gaussian_blur2d
     except ImportError:
         return None
-    ksize_x = 2 * math.ceil(3.0 * sigma_x) + 1
-    ksize_y = 2 * math.ceil(3.0 * sigma_y) + 1
+    ksize_x = 2 * math.ceil(3.0 * float(sig_x.max().item())) + 1
+    ksize_y = 2 * math.ceil(3.0 * float(sig_y.max().item())) + 1
     # kornia expects positive sigmas on both axes; clamp the near-zero axis to a
     # tiny value so a single-axis downscale still runs through one call.
-    sig_x = max(sigma_x, 1e-6)
-    sig_y = max(sigma_y, 1e-6)
-    return gaussian_blur2d(image, kernel_size=(ksize_y, ksize_x), sigma=(sig_y, sig_x), border_type="reflect")
+    sigma = torch.stack([sig_y.clamp_min(1e-6), sig_x.clamp_min(1e-6)], dim=1)
+    return gaussian_blur2d(image, kernel_size=(ksize_y, ksize_x), sigma=sigma, border_type="reflect")
 
 
 class ExactAffineSegment(nn.Module):
@@ -1627,6 +1637,220 @@ class _FusedGeoCropSegment(FusedAffineSegment):
                 aux_targets[key] = transform_bbox_xywh(val, mtx)
             elif key == "keypoints":
                 aux_targets[key] = transform_keypoints(val, mtx)
+
+
+class FusedGaussianBlurSegment(nn.Module):
+    """Fold Gaussian blurs and safely move them after one affine warp.
+
+    The segment represents an ordered ``geometric -> blur -> geometric`` stretch.
+    It samples the blur once per input item, adds variances across consecutive
+    blurs, and only moves the result after the affine warp when the sampled
+    matrix is axis-aligned and has no downscaling direction.
+
+    Args:
+        transforms: Original transforms in pipeline order.
+        blur_transforms: Consecutive Gaussian blur transforms in the stretch.
+        prefix_geometric_transforms: Geometric transforms before the blur run.
+        suffix_geometric_transforms: Geometric transforms after the blur run.
+        adapter: Backend adapter for sampling affine parameters.
+        interpolation: Optional geometric interpolation mode.
+        padding_mode: Optional geometric padding mode.
+        randomness: Batch randomness policy for sampling.
+        mask_interpolation: Sampling mode for routed masks.
+
+    """
+
+    def __init__(
+        self,
+        transforms: list[object],
+        blur_transforms: list[object],
+        prefix_geometric_transforms: list[object],
+        suffix_geometric_transforms: list[object],
+        adapter: TransformAdapter,
+        interpolation: InterpolationStr | None = None,
+        padding_mode: PaddingModeStr | None = None,
+        randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+        *,
+        mask_interpolation: MaskInterpolationStr = "nearest",
+    ) -> None:
+        """Initialize a folded Gaussian blur and affine segment."""
+        super().__init__()
+        self.transforms = transforms
+        self.blur_transforms = blur_transforms
+        self.prefix_geometric_transforms = prefix_geometric_transforms
+        self.suffix_geometric_transforms = suffix_geometric_transforms
+        self.geometric_transforms = [*prefix_geometric_transforms, *suffix_geometric_transforms]
+        self.adapter = adapter
+        self.randomness = randomness
+        self._geometric = FusedAffineSegment(
+            self.geometric_transforms,
+            adapter,
+            interpolation,
+            padding_mode,
+            randomness,
+            mask_interpolation=mask_interpolation,
+        )
+        self._prefix = FusedAffineSegment(
+            prefix_geometric_transforms,
+            adapter,
+            interpolation,
+            padding_mode,
+            randomness,
+            mask_interpolation=mask_interpolation,
+        )
+        self._suffix = FusedAffineSegment(
+            suffix_geometric_transforms,
+            adapter,
+            interpolation,
+            padding_mode,
+            randomness,
+            mask_interpolation=mask_interpolation,
+        )
+        self._last_matrix: Tensor | None = None
+
+    @property
+    def last_matrix(self) -> Tensor | None:
+        """Return the composed affine matrix from the most recent forward call."""
+        return self._last_matrix
+
+    def forward(
+        self,
+        image: Tensor,
+        aux_targets: dict[str, Tensor] | None = None,
+    ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
+        """Apply folded blur transforms and their adjoining geometric run.
+
+        Args:
+            image: ``(batch_size, channels, height, width)`` float input tensor.
+            aux_targets: Optional mask, box, or keypoint targets for the affine warp.
+
+        Returns:
+            The transformed image, with routed auxiliary targets when supplied.
+
+        """
+        if not self.geometric_transforms:
+            sigma = _sample_folded_gaussian_sigma(self.blur_transforms, image, self.randomness)
+            blurred = _apply_folded_gaussian(image, sigma)
+            if aux_targets is None:
+                return blurred
+            return blurred, aux_targets
+
+        prefix, _prefix_img = self._prefix._compose(image)
+        sigma = _sample_folded_gaussian_sigma(self.blur_transforms, image, self.randomness)
+        suffix, _suffix_img = self._suffix._compose(image)
+        acc = matmul3x3(suffix, prefix)
+        acc_img = acc.to(dtype=image.dtype)
+        self._last_matrix = acc_img.detach().clone()
+        _set_current_call_matrix(self._last_matrix)
+        commutable = _is_commutable_gaussian_matrix(suffix)
+        if commutable:
+            warped, grid = self._geometric._apply_grid(image, acc)
+            if aux_targets:
+                self._geometric._route_grid_aux(aux_targets, grid, acc_img, self._geometric.mask_interpolation)
+            sigma = _transform_gaussian_sigma(sigma, suffix)
+            result = _apply_folded_gaussian(warped, sigma)
+        else:
+            blurred = _apply_folded_gaussian(image, sigma)
+            result, grid = self._geometric._apply_grid(blurred, acc)
+            if aux_targets:
+                self._geometric._route_grid_aux(aux_targets, grid, acc_img, self._geometric.mask_interpolation)
+        if aux_targets is None:
+            return result
+        return result, aux_targets
+
+    def forward_numpy(self, image_hwc: NDArray[Any]) -> NDArray[Any]:
+        """Apply a folded Albumentations Gaussian blur using OpenCV.
+
+        Args:
+            image_hwc: Single HWC NumPy image in an Albumentations-native call.
+
+        Returns:
+            The folded Gaussian-blur result in the original NumPy layout.
+
+        Raises:
+            RuntimeError: If a geometric run or OpenCV is unavailable on this path.
+
+        """
+        if self.geometric_transforms or _cv2 is None:
+            msg = "NumPy Gaussian blur fusion requires OpenCV and no adjoining geometric transforms"
+            raise RuntimeError(msg)
+        variance = 0.0
+        for transform in self.blur_transforms:
+            random_source = getattr(transform, "py_random", None)
+            sigma_range = getattr(transform, "sigma_limit", None)
+            if random_source is None or not isinstance(sigma_range, tuple):
+                msg = f"Unsupported NumPy Gaussian blur transform {type(transform).__name__!r}"
+                raise TypeError(msg)
+            if random_source.random() < _transform_prob(transform):
+                sigma = random_source.uniform(*sigma_range)
+                variance += sigma * sigma
+        if variance == 0.0:
+            return image_hwc
+        sigma = math.sqrt(variance)
+        return _cv2.GaussianBlur(image_hwc, (0, 0), sigmaX=sigma, sigmaY=sigma, borderType=_cv2.BORDER_REFLECT_101)
+
+
+def _sample_folded_gaussian_sigma(
+    transforms: list[object], image: Tensor, randomness: RandomnessPolicy
+) -> Tensor:
+    """Sample and variance-add scalar Gaussian blur sigmas for a tensor batch."""
+    batch_size = image.shape[0]
+    variance = torch.zeros((batch_size, 2), device=image.device, dtype=image.dtype)
+    for transform in transforms:
+        sigma, active = _sample_gaussian_sigma(transform, image, randomness)
+        variance += (sigma * active[:, None]).square()
+    return variance.sqrt()
+
+
+def _sample_gaussian_sigma(
+    transform: object, image: Tensor, randomness: RandomnessPolicy
+) -> tuple[Tensor, Tensor]:
+    """Sample one isotropic Gaussian sigma and activation flag per batch item."""
+    batch_size, channels, height, width = image.shape
+    name = type(transform).__name__
+    if name == "RandomGaussianBlur":
+        params = transform.generate_parameters(torch.Size((batch_size, channels, height, width)))  # type: ignore[attr-defined]
+        raw_sigma = params["sigma"].to(device=image.device, dtype=image.dtype)
+    elif name == "GaussianBlur":
+        sigma_range = getattr(transform, "sigma", None) or getattr(transform, "sigma_limit", None)
+        if not isinstance(sigma_range, tuple):
+            msg = "GaussianBlur must expose a two-value sigma range"
+            raise TypeError(msg)
+        raw_sigma = torch.empty(batch_size, device=image.device, dtype=image.dtype).uniform_(*sigma_range)
+    else:
+        msg = f"Unsupported spatial-linear transform {name!r}"
+        raise TypeError(msg)
+    if raw_sigma.ndim == 0:
+        raw_sigma = raw_sigma.expand(batch_size)
+    if raw_sigma.shape[0] == 1 and batch_size > 1:
+        raw_sigma = raw_sigma.expand(batch_size)
+    sigma = raw_sigma[:, None].expand(-1, 2) if raw_sigma.ndim == 1 else raw_sigma[:, :2]
+    prob = _transform_prob(transform)
+    if name == "GaussianBlur" and not hasattr(transform, "p"):
+        active = torch.ones(batch_size, device=image.device, dtype=torch.bool)
+    elif randomness is not RandomnessPolicy.PER_SAMPLE and bool(getattr(transform, "same_on_batch", False)):
+        active = (torch.rand((), device=image.device) < prob).expand(batch_size)
+    else:
+        active = torch.rand(batch_size, device=image.device) < prob
+    return sigma, active
+
+
+def _apply_folded_gaussian(image: Tensor, sigma: Tensor) -> Tensor:
+    """Apply a batched axis-aligned Gaussian primitive when any sigma is positive."""
+    blurred = _kornia_gaussian_blur(image, sigma[:, 0], sigma[:, 1])
+    return image if blurred is None else blurred
+
+
+def _is_commutable_gaussian_matrix(matrix: Tensor) -> bool:
+    """Return whether an affine matrix preserves diagonal blur covariance safely."""
+    off_diagonal = matrix[:, :2, :2][:, (0, 1), (1, 0)].abs().max()
+    return bool(off_diagonal < _AXIS_ALIGNED_EPS) and estimate_scale(matrix)[0] >= 1.0
+
+
+def _transform_gaussian_sigma(sigma: Tensor, matrix: Tensor) -> Tensor:
+    """Transform diagonal blur covariance through an axis-aligned affine matrix."""
+    linear = matrix[:, :2, :2].to(dtype=sigma.dtype)
+    return torch.stack([linear[:, 0, 0].abs() * sigma[:, 0], linear[:, 1, 1].abs() * sigma[:, 1]], dim=1)
 
 
 # ---------------------------------------------------------------------------
@@ -3605,6 +3829,36 @@ def reorder_aggressive(
     return current
 
 
+def _can_commute_gaussian_blur(geometric: list[object], adapter: TransformAdapter) -> bool:
+    """Return whether configured geometric transforms are always axis-aligned upscales."""
+    for transform in geometric:
+        category = adapter.category(transform)
+        if category is TransformCategory.GEOMETRIC_EXACT:
+            return False
+        if category is not TransformCategory.GEOMETRIC_INTERP:
+            return False
+        generator = getattr(transform, "_param_generator", transform)
+        degrees = getattr(generator, "degrees", getattr(transform, "degrees", (0.0, 0.0)))
+        shear = getattr(generator, "shear", getattr(transform, "shear", None))
+        scale = getattr(generator, "scale", getattr(transform, "scale", None))
+        if not _is_zero_range(degrees) or not _is_zero_range(shear):
+            return False
+        if isinstance(scale, Sequence) and min(float(value) for value in scale) < 1.0:
+            return False
+    return True
+
+
+def _is_zero_range(value: object) -> bool:
+    """Return whether a scalar or range only permits zero rotation or shear."""
+    if value is None:
+        return True
+    if isinstance(value, (float, int)):
+        return abs(float(value)) < _AXIS_ALIGNED_EPS
+    if isinstance(value, Sequence):
+        return all(abs(float(item)) < _AXIS_ALIGNED_EPS for item in value)
+    return False
+
+
 def build_segments(
     transforms: list[object],
     adapter: TransformAdapter,
@@ -3702,6 +3956,7 @@ def build_segments(
     pointwise_linear_cat = TransformCategory.POINTWISE_LINEAR
     pointwise_lut_cat = TransformCategory.POINTWISE_LUT
     crop_resize_cat = TransformCategory.CROP_RESIZE_FIXED
+    spatial_linear_cat = TransformCategory.SPATIAL_LINEAR
 
     segments: list[object] = []
     current_geo: list[object] = []
@@ -3787,7 +4042,10 @@ def build_segments(
             )
         current_proj.clear()
 
-    for transform in transforms:
+    consumed_linear_indices: set[int] = set()
+    for index, transform in enumerate(transforms):
+        if index in consumed_linear_indices:
+            continue
         category = adapter.category(transform)
         if category in fusible:
             _flush_proj()  # flush any pending projective
@@ -3874,6 +4132,56 @@ def build_segments(
                     )
                 )
             continue
+        if category == spatial_linear_cat:
+            blur_end = index + 1
+            while blur_end < len(transforms) and adapter.category(transforms[blur_end]) == spatial_linear_cat:
+                blur_end += 1
+            affine_end = blur_end
+            while affine_end < len(transforms) and adapter.category(transforms[affine_end]) in fusible:
+                affine_end += 1
+            following_geo = transforms[blur_end:affine_end]
+            if following_geo and not use_numpy and _can_commute_gaussian_blur(following_geo, adapter):
+                _flush_proj()
+                _flush_color(current_color, adapter, segments, randomness, clip_policy)
+                _flush_lut(current_lut, adapter, segments, randomness)
+                blur_transforms = transforms[index:blur_end]
+                segments.append(
+                    FusedGaussianBlurSegment(
+                        [*current_geo, *blur_transforms, *following_geo],
+                        blur_transforms,
+                        list(current_geo),
+                        following_geo,
+                        adapter,
+                        interpolation,
+                        padding_mode,
+                        randomness,
+                        mask_interpolation=mask_interpolation,
+                    )
+                )
+                current_geo.clear()
+                consumed_linear_indices.update(range(index + 1, affine_end))
+                continue
+            if blur_end > index + 1:
+                _flush_geo()
+                _flush_proj()
+                _flush_color(current_color, adapter, segments, randomness, clip_policy)
+                _flush_lut(current_lut, adapter, segments, randomness)
+                blur_transforms = transforms[index:blur_end]
+                segments.append(
+                    FusedGaussianBlurSegment(
+                        blur_transforms,
+                        blur_transforms,
+                        [],
+                        [],
+                        adapter,
+                        interpolation,
+                        padding_mode,
+                        randomness,
+                        mask_interpolation=mask_interpolation,
+                    )
+                )
+                consumed_linear_indices.update(range(index + 1, blur_end))
+                continue
         # SPATIAL_KERNEL / POINTWISE barrier (blur/noise, saturation/hue, equalize): flush all
         _flush_geo()
         _flush_proj()

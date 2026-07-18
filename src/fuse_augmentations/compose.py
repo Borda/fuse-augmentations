@@ -55,6 +55,7 @@ from fuse_augmentations.affine.segment import (
     ExactAffineSegment,
     FusedAffineSegment,
     FusedColorSegment,
+    FusedGaussianBlurSegment,
     FusedLUTSegment,
     ProjectiveSegment,
     _clear_current_call_matrix,
@@ -677,7 +678,8 @@ class FusedCompose(nn.Module):
         # Pre-classify segments for the _forward_albu_native hot path: replace
         # per-call isinstance checks with an integer-tagged dispatch list.
         # Tags: 0=AlbuFusedAffineSegment, 1=ExactAffine, 2=FusedColor,
-        # 3=CropResize, 4=Passthrough(Albu), 5=Passthrough(non-Albu), 6=FusedLUT, -1=unsupported.
+        # 3=CropResize, 4=Passthrough(Albu), 5=Passthrough(non-Albu), 6=FusedLUT,
+        # 7=Gaussian blur, -1=unsupported.
         # Built only for Albu pipelines where _forward_albu_native is used.
         self._albu_seg_tags: list[int] | None = None
         if self._is_albu_native and self._segments:
@@ -691,6 +693,8 @@ class FusedCompose(nn.Module):
                     tags.append(2)
                 elif isinstance(seg, FusedLUTSegment):
                     tags.append(6)
+                elif isinstance(seg, FusedGaussianBlurSegment) and not seg.geometric_transforms:
+                    tags.append(7)
                 elif isinstance(seg, CropResizeSegment):
                     tags.append(3)
                 elif isinstance(seg, _PassthroughSegment):
@@ -961,7 +965,7 @@ class FusedCompose(nn.Module):
                 elif tag == 3:  # CropResizeSegment
                     for tfm in seg.transforms:
                         img_hwc = tfm(image=img_hwc)["image"]
-                elif tag == 6:  # FusedLUTSegment — one composed uint8 lookup for the whole run
+                elif tag in (6, 7):  # Folded LUT or Gaussian blur segment
                     img_hwc = seg.forward_numpy(img_hwc)
                 elif tag == 4:  # Passthrough(Albu adapter)
                     img_hwc = AlbumentationsAdapter.call_nonfused_numpy(seg.transform, img_hwc)
@@ -999,6 +1003,9 @@ class FusedCompose(nn.Module):
                         img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
                     continue
                 if isinstance(seg, FusedLUTSegment):
+                    img_hwc = seg.forward_numpy(img_hwc)
+                    continue
+                if isinstance(seg, FusedGaussianBlurSegment) and not seg.geometric_transforms:
                     img_hwc = seg.forward_numpy(img_hwc)
                     continue
                 if isinstance(seg, _PassthroughSegment):
@@ -1173,7 +1180,16 @@ class FusedCompose(nn.Module):
         """Assign one integer dispatch tag to every segment (see the ``_TAG_*`` constants)."""
         tags: list[int] = []
         for seg in self._segments:
-            if isinstance(seg, (FusedAffineSegment, AlbuFusedAffineSegment, ProjectiveSegment, AlbuProjectiveSegment)):
+            if isinstance(
+                seg,
+                (
+                    FusedAffineSegment,
+                    AlbuFusedAffineSegment,
+                    FusedGaussianBlurSegment,
+                    ProjectiveSegment,
+                    AlbuProjectiveSegment,
+                ),
+            ):
                 tags.append(_TAG_MATRIX)
             elif isinstance(seg, (ExactAffineSegment, FusedColorSegment, FusedLUTSegment, CropResizeSegment)):
                 tags.append(_TAG_PLAIN)
@@ -1411,6 +1427,10 @@ class FusedCompose(nn.Module):
                     total += num_transforms - 1
                 continue
 
+            if isinstance(seg, FusedGaussianBlurSegment):
+                total += len(seg.transforms) - (2 if seg.geometric_transforms else 1)
+                continue
+
             if isinstance(seg, ExactAffineSegment):
                 # Each flip in an ExactAffineSegment avoids grid_sample entirely
                 # (uses tensor.flip), so every transform saves exactly 1 warp.
@@ -1486,6 +1506,11 @@ class FusedCompose(nn.Module):
                 names = [type(transform).__name__ for transform in seg.transforms]
                 seg_marker = albu_cv2_marker if isinstance(seg, AlbuFusedAffineSegment) else ""
                 parts.append(f"fused({', '.join(names)}){seg_marker}")
+                continue
+
+            if isinstance(seg, FusedGaussianBlurSegment):
+                names = [type(transform).__name__ for transform in seg.transforms]
+                parts.append(f"gaussian_blur({', '.join(names)})")
                 continue
 
             if isinstance(seg, ExactAffineSegment):
@@ -1602,6 +1627,19 @@ class FusedCompose(nn.Module):
                         n_warps_saved=num_saved,
                         backend=backend,
                         split_reason=self._backend_boundary_reason(backend, prev_backend),
+                    )
+                )
+                prev_backend = backend
+                continue
+            if isinstance(seg, FusedGaussianBlurSegment):
+                names = tuple(type(transform).__name__ for transform in seg.transforms)
+                backend = _resolve_backend(seg)
+                descriptors.append(
+                    SegmentDescriptor(
+                        kind="gaussian_blur",
+                        transforms=names,
+                        n_warps_saved=len(names) - (2 if seg.geometric_transforms else 1),
+                        backend=backend,
                     )
                 )
                 prev_backend = backend
@@ -2739,6 +2777,7 @@ def _wrap_passthrough_segments(
         AlbuProjectiveSegment,
         FusedColorSegment,
         FusedLUTSegment,
+        FusedGaussianBlurSegment,
         CropResizeSegment,
     )
 

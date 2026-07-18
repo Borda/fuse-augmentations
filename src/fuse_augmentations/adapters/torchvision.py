@@ -55,10 +55,12 @@ _COLOR_JITTER_TYPES: set[type] = set()
 _NORMALIZE_TYPES: set[type] = set()
 _CROP_RESIZE_TYPES: set[type] = set()
 _LUT_TYPES: set[type] = set()
+_GAUSSIAN_BLUR_TYPES: set[type] = set()
 
 # v1: torchvision.transforms
 try:
     from torchvision.transforms import ColorJitter as _V1ColorJitter
+    from torchvision.transforms import GaussianBlur as _V1GaussianBlur
     from torchvision.transforms import Normalize as _V1Normalize
     from torchvision.transforms import RandomAffine as _V1RandomAffine
     from torchvision.transforms import RandomHorizontalFlip as _V1RandomHorizontalFlip
@@ -79,6 +81,7 @@ try:
     _TRANSFORM_REGISTRY[_V1RandomSolarize] = TransformCategory.POINTWISE_LUT
     _TRANSFORM_REGISTRY[_V1RandomPosterize] = TransformCategory.POINTWISE_LUT
     _TRANSFORM_REGISTRY[_V1RandomResizedCrop] = TransformCategory.CROP_RESIZE_FIXED
+    _GAUSSIAN_BLUR_TYPES.add(_V1GaussianBlur)
 
     _HFLIP_TYPES.add(_V1RandomHorizontalFlip)
     _VFLIP_TYPES.add(_V1RandomVerticalFlip)
@@ -96,6 +99,7 @@ except ImportError:
 # v2: torchvision.transforms.v2
 try:
     from torchvision.transforms.v2 import ColorJitter as _V2ColorJitter
+    from torchvision.transforms.v2 import GaussianBlur as _V2GaussianBlur
     from torchvision.transforms.v2 import Normalize as _V2Normalize
     from torchvision.transforms.v2 import RandomAffine as _V2RandomAffine
     from torchvision.transforms.v2 import RandomHorizontalFlip as _V2RandomHorizontalFlip
@@ -116,6 +120,7 @@ try:
     _TRANSFORM_REGISTRY[_V2RandomSolarize] = TransformCategory.POINTWISE_LUT
     _TRANSFORM_REGISTRY[_V2RandomPosterize] = TransformCategory.POINTWISE_LUT
     _TRANSFORM_REGISTRY[_V2RandomResizedCrop] = TransformCategory.CROP_RESIZE_FIXED
+    _GAUSSIAN_BLUR_TYPES.add(_V2GaussianBlur)
 
     _HFLIP_TYPES.add(_V2RandomHorizontalFlip)
     _VFLIP_TYPES.add(_V2RandomVerticalFlip)
@@ -140,6 +145,7 @@ _COLOR_JITTER_TYPES_FS: frozenset[type] = frozenset(_COLOR_JITTER_TYPES)
 _NORMALIZE_TYPES_FS: frozenset[type] = frozenset(_NORMALIZE_TYPES)
 _LUT_TYPES_FS: frozenset[type] = frozenset(_LUT_TYPES)
 _CROP_RESIZE_TYPES_FS: frozenset[type] = frozenset(_CROP_RESIZE_TYPES)
+_GAUSSIAN_BLUR_TYPES_FS: frozenset[type] = frozenset(_GAUSSIAN_BLUR_TYPES)
 
 
 def _check_expand(transform: object) -> None:
@@ -202,6 +208,8 @@ class TorchVisionAdapter:
 
         """
         _check_expand(transform)
+        if isinstance(transform, tuple(_GAUSSIAN_BLUR_TYPES_FS)):
+            return TransformCategory.SPATIAL_LINEAR
         for base_type, cat in _TRANSFORM_REGISTRY.items():
             if isinstance(transform, base_type):
                 return cat

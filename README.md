@@ -75,6 +75,10 @@ Per-channel non-linear scalar maps — `gamma`, `solarize`, `posterize` — are 
 
 Other unknown and nonlinear operations generally become passthrough barriers. That preserves pipeline construction in many image-only cases, but passthrough is not automatically numerically transparent, device-efficient, or auxiliary-target safe.
 
+Gaussian blur is a narrow exception: consecutive Gaussian blurs fold into one operation, and a Gaussian blur can move
+through a following axis-aligned upscale so the adjoining affine transforms share one warp. Rotated, sheared, or
+downscaling affine runs, projective transforms, and non-linear kernels remain barriers.
+
 ## 📦 Install
 
 ```bash

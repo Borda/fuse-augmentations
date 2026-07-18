@@ -40,6 +40,7 @@ try:
     from kornia.augmentation import RandomBrightness as _RandomBrightness
     from kornia.augmentation import RandomContrast as _RandomContrast
     from kornia.augmentation import RandomGamma as _RandomGamma
+    from kornia.augmentation import RandomGaussianBlur as _RandomGaussianBlur
     from kornia.augmentation import RandomHorizontalFlip as _RandomHorizontalFlip
     from kornia.augmentation import RandomPerspective as _RandomPerspective
     from kornia.augmentation import RandomPosterize as _RandomPosterize
@@ -83,12 +84,14 @@ try:
     _COLOR_TYPES: frozenset[type] = frozenset({_RandomBrightness, _RandomContrast, _ColorJitter})
     _NORMALIZE_TYPES: frozenset[type] = frozenset({_KorniaNormalize})
     _LUT_TYPES: frozenset[type] = frozenset({_RandomGamma, _RandomSolarize, _RandomPosterize})
+    _GAUSSIAN_BLUR_TYPES: frozenset[type] = frozenset({_RandomGaussianBlur})
 except ImportError:
     TRANSFORM_REGISTRY = {}
     _KorniaNormalize: type = object  # type: ignore[no-redef]
     _COLOR_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _NORMALIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _LUT_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _GAUSSIAN_BLUR_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
 
 
 def _batch_size_sentinel(batch_size: int, device: torch.device) -> torch.Tensor:
@@ -169,6 +172,8 @@ class KorniaAdapter:
             ``SPATIAL_KERNEL`` with a ``UserWarning``.
 
         """
+        if isinstance(transform, tuple(_GAUSSIAN_BLUR_TYPES)):
+            return TransformCategory.SPATIAL_LINEAR
         for base_type, cat in TRANSFORM_REGISTRY.items():
             if isinstance(transform, base_type):
                 return cat

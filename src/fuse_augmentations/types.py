@@ -37,6 +37,8 @@ class TransformCategory(Enum):
         CROP_RESIZE_FIXED: Fixed-output-size crop followed by resize.  Each op produces a
             ``CropResizeSegment`` with a single ``grid_sample`` call at the target ``(H, W)``
             dimensions.  The output shape differs from the input shape.
+        SPATIAL_LINEAR: A Gaussian blur that can fold with adjacent Gaussian blurs and,
+            after a safe axis-aligned upscale, move to the end of an affine chain.
 
     """
 
@@ -48,6 +50,7 @@ class TransformCategory(Enum):
     POINTWISE_LINEAR = "pointwise_linear"
     POINTWISE_LUT = "pointwise_lut"
     CROP_RESIZE_FIXED = "crop_resize_fixed"
+    SPATIAL_LINEAR = "spatial_linear"
 
 
 #: Class names of passthrough transforms that apply a per-pixel *coordinate*
@@ -177,7 +180,7 @@ MaskInterpolationStr = Literal["nearest", "bilinear"]
 PaddingModeStr = Literal["zeros", "border", "reflection"]
 
 #: String literal type for the ``kind`` field of :class:`SegmentDescriptor`.
-SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color", "lut", "crop_resize"]
+SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color", "lut", "crop_resize", "gaussian_blur"]
 
 #: String literal type for the ``execution`` strategy of the Albumentations fused
 #: segments. ``"cv2"`` (default) applies one ``cv2.warp*`` per sample -- bit-exact

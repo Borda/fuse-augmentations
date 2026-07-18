@@ -76,21 +76,12 @@ class TestFusibleClosures:
         assert "passthrough" not in pipe.fusion_plan
         assert pipe.n_warps_saved >= 1
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="spatial-kernel ops (blur, sharpen) are fusion barriers -- flips when blur commutes through affine",
-    )
     def test_blur_chain_stays_one_segment(self):
-        """DESIRED: [Rotate, GaussianBlur, Scale] executes as ONE fused segment.
-
-        Today the blur is a barrier splitting the chain into three segments.
-        Letting a Gaussian blur commute through affine warps (Sigma' = A Sigma A^T)
-        would keep the whole chain as a single fused segment.
-        """
+        """A blur crosses a fixed axis-aligned upscale and leaves one segment."""
         pipe = Compose([
             kornia_aug.RandomRotation(degrees=25, p=1.0),
             kornia_aug.RandomGaussianBlur((3, 3), (0.1, 2.0), p=1.0),
-            kornia_aug.RandomAffine(degrees=0, scale=(0.8, 1.2), p=1.0),
+            kornia_aug.RandomAffine(degrees=0, scale=(1.2, 1.2), p=1.0),
         ])
         assert len(pipe.fusion_plan_descriptors) == 1
         assert "passthrough" not in pipe.fusion_plan
