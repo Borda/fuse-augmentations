@@ -225,10 +225,7 @@ Use per-call matrix return when output and transform provenance must stay paired
 
 ### Test-time de-augmentation
 
-For one fused affine or projective geometric segment, pass the matrix returned
-by the same call to `inverse` to map a prediction back into the original frame.
-This pairing is safe for concurrent calls; `inverse` deliberately does not read
-the mutable `transform_matrix` property.
+For one fused affine or projective geometric segment, pass the matrix returned by the same call to `inverse` to map a prediction back into the original frame. This pairing is safe for concurrent calls; `inverse` deliberately does not read the mutable `transform_matrix` property.
 
 ```python
 import torch
@@ -243,12 +240,7 @@ prediction_original = augment.inverse(prediction_augmented, matrix=matrix)
 assert prediction_original.shape == images.shape
 ```
 
-With `data_keys`, pass the augmented auxiliary targets in the same positional
-order; masks use the matching sampling grid and boxes/keypoints use the inverse
-pixel matrix. `inverse` raises instead of guessing for crop-resize (cropped
-pixels are lost), color/LUT/blur or passthrough segments, exact-only segments,
-multiple segments, or a missing paired matrix. It is geometric-only and cannot
-recover values discarded by interpolation or padding.
+With `data_keys`, pass the augmented auxiliary targets in the same positional order; masks use the matching sampling grid and boxes/keypoints use the inverse pixel matrix. Keypoints and masks recover to sampling precision, but bounding boxes are axis-aligned: a forward-then-inverse box is exact only for axis-aligned transforms (flip, scale, translation) and inflates under a rotation, shear, or projective warp. `inverse` raises instead of guessing for crop-resize (cropped pixels are lost), color/LUT/blur or passthrough segments, exact-only segments, multiple segments, or a missing paired matrix. It is geometric-only and cannot recover values discarded by interpolation or padding.
 
 ## 🧭 Where it fits
 

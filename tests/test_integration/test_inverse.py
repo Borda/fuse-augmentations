@@ -77,6 +77,34 @@ def test_inverse_routes_aux_targets_through_inverse_matrix() -> None:
     torch.testing.assert_close(recovered_keypoints, keypoints, atol=1e-4, rtol=1e-4)
 
 
+def test_inverse_recovers_keypoints_but_inflates_axis_aligned_boxes_under_rotation() -> None:
+    """A rotation round-trips keypoints exactly but inflates axis-aligned boxes.
+
+    Bounding boxes are stored as axis-aligned corners, so rotating then inverse-rotating
+    encloses a larger axis-aligned box than the original. This pins the documented lossy
+    contract: keypoints recover to sampling precision, but boxes do not for a
+    non-axis-aligned warp.
+
+    """
+    image = _smooth_image()
+    boxes_xyxy = torch.tensor([[[20.0, 20.0, 40.0, 40.0]]])
+    keypoints = torch.tensor([[[24.0, 28.0]]])
+    pipe = Compose.from_params(
+        rotation=(23.0, 23.0),
+        data_keys=["input", "bbox_xyxy", "keypoints"],
+    )
+
+    augmented, matrix = pipe(image, boxes_xyxy, keypoints, return_matrix=True)
+    _recovered_image, recovered_xyxy, recovered_keypoints = pipe.inverse(*augmented, matrix=matrix)
+
+    assert matrix is not None
+    # Keypoints return to their original coordinates to sampling precision.
+    torch.testing.assert_close(recovered_keypoints, keypoints, atol=1e-3, rtol=0.0)
+    # The axis-aligned box strictly inflates: round-tripped corners enclose more area.
+    assert bool((recovered_xyxy[..., 0] < boxes_xyxy[..., 0] - 1.0).any())
+    assert bool((recovered_xyxy[..., 2] > boxes_xyxy[..., 2] + 1.0).any())
+
+
 @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia is required for projective inverse coverage")
 def test_projective_inverse_round_trip_uses_homography() -> None:
     """A fused perspective output de-augments through the inverse homography."""

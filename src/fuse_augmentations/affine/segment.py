@@ -103,6 +103,7 @@ def _matrix_public_dtype(image_dtype: torch.dtype) -> torch.dtype:
         return torch.float32
     return image_dtype
 
+
 _CURRENT_CALL_MATRIX: ContextVar[Tensor | None] = ContextVar("fuse_current_call_matrix", default=None)
 
 
@@ -2240,8 +2241,11 @@ class AlbuFusedAffineSegment(nn.Module):
         # by cv2 (default) or a batched grid_sample.
         accs, any_active = self._compose_matrices(image)
         composed_batch = self._stack_matrices(accs)
-        self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
-        _set_current_call_matrix(composed_batch.to(device=image.device, dtype=torch.float32).detach().clone())
+        # The public matrix keeps the image's own precision (float32/float64); only a
+        # low-precision image promotes it to float32, matching the torch affine path.
+        public_dtype = _matrix_public_dtype(image.dtype)
+        self._last_matrix = composed_batch.to(dtype=public_dtype).clone().detach()
+        _set_current_call_matrix(composed_batch.to(device=image.device, dtype=public_dtype).detach().clone())
 
         if batch_size == 0 or len(self.transforms) == 0:
             return (image, aux_targets) if _has_aux else image
@@ -2829,8 +2833,11 @@ class AlbuProjectiveSegment(nn.Module):
         # strategies; only the warp backend differs.
         accs, any_active = self._compose_matrices(image)
         composed_batch = self._stack_matrices(accs)
-        self._last_matrix = composed_batch.to(dtype=torch.float32).clone().detach()
-        _set_current_call_matrix(composed_batch.to(device=image.device, dtype=torch.float32).detach().clone())
+        # The public matrix keeps the image's own precision (float32/float64); only a
+        # low-precision image promotes it to float32, matching the torch affine path.
+        public_dtype = _matrix_public_dtype(image.dtype)
+        self._last_matrix = composed_batch.to(dtype=public_dtype).clone().detach()
+        _set_current_call_matrix(composed_batch.to(device=image.device, dtype=public_dtype).detach().clone())
 
         if batch_size == 0 or len(self.transforms) == 0:
             return (image, aux_targets) if _has_aux else image

@@ -65,6 +65,7 @@ from fuse_augmentations.affine.segment import (
     _clear_current_call_matrix,
     _current_call_matrix,
     _FusedGeoCropSegment,
+    _matrix_public_dtype,
     _OpaqueBorderModeTransform,
     _validate_execution,
     build_segments,
@@ -1451,6 +1452,13 @@ class FusedCompose(nn.Module):
         It applies one ``grid_sample`` to the image and routes declared masks,
         boxes, and keypoints through the inverse pixel matrix.
 
+        Keypoints and masks recover to sampling precision. Bounding boxes are
+        axis-aligned (AABB), so a forward-then-inverse box is exact only for
+        axis-aligned transforms (flip, scale, translation) and inflates under a
+        rotation, shear, or projective warp. The matrix is not validated against
+        the paired image: a matrix from a different call yields silently wrong
+        geometry, so always pass the matrix returned by the same forward call.
+
         Args:
             image: Augmented ``(B, C, H, W)`` floating-point image tensor.
             *auxiliary_targets: Augmented targets in ``data_keys[1:]`` order.
@@ -1501,7 +1509,12 @@ class FusedCompose(nn.Module):
             )
 
         height, width = image.shape[-2:]
-        forward_matrix = matrix.to(device=image.device, dtype=image.dtype)
+        # Normalize and invert the matrix in full precision even when the augmented
+        # image is low precision (mirrors the forward warp), then cast the sampling
+        # grid to the image dtype only at the grid_sample boundary. For float32/float64
+        # images this is a no-op, so the default path is unchanged.
+        matrix_dtype = _matrix_public_dtype(image.dtype)
+        forward_matrix = matrix.to(device=image.device, dtype=matrix_dtype)
         sampling_matrix = normalize_matrix(forward_matrix, height, width)
         if isinstance(self._segments[0], (ProjectiveSegment, AlbuProjectiveSegment)):
             grid = perspective_grid(sampling_matrix, height, width)
@@ -1513,7 +1526,7 @@ class FusedCompose(nn.Module):
             )
         recovered = F.grid_sample(
             image,
-            grid,
+            grid.to(dtype=image.dtype),
             mode=self.interpolation or "bilinear",
             padding_mode=self.padding_mode or "zeros",
             align_corners=True,
