@@ -223,6 +223,33 @@ For detection and segmentation, validate every transform class and warning befor
 
 Use per-call matrix return when output and transform provenance must stay paired.
 
+### Test-time de-augmentation
+
+For one fused affine or projective geometric segment, pass the matrix returned
+by the same call to `inverse` to map a prediction back into the original frame.
+This pairing is safe for concurrent calls; `inverse` deliberately does not read
+the mutable `transform_matrix` property.
+
+```python
+import torch
+
+from fuse_augmentations import Compose
+
+augment = Compose.from_params(translate_x=(2.0, 2.0))
+images = torch.rand(1, 3, 16, 16)
+prediction_augmented, matrix = augment(images, return_matrix=True)
+prediction_original = augment.inverse(prediction_augmented, matrix=matrix)
+
+assert prediction_original.shape == images.shape
+```
+
+With `data_keys`, pass the augmented auxiliary targets in the same positional
+order; masks use the matching sampling grid and boxes/keypoints use the inverse
+pixel matrix. `inverse` raises instead of guessing for crop-resize (cropped
+pixels are lost), color/LUT/blur or passthrough segments, exact-only segments,
+multiple segments, or a missing paired matrix. It is geometric-only and cannot
+recover values discarded by interpolation or padding.
+
 ## 🧭 Where it fits
 
 Use `fuse-augmentations` when:

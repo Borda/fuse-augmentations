@@ -34,13 +34,17 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 import torch
+import torch.nn.functional as F  # noqa: N812
 from torch import Tensor, nn
 
 from fuse_augmentations._backend import Backend, detect_backends_per_transform
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
 from fuse_augmentations.affine.matrix import (
     hflip_matrix,
+    inv3x3,
     matmul3x3,
+    normalize_matrix,
+    perspective_grid,
     rotation_matrix,
     scale_matrix,
     shear_x_matrix,
@@ -60,6 +64,7 @@ from fuse_augmentations.affine.segment import (
     ProjectiveSegment,
     _clear_current_call_matrix,
     _current_call_matrix,
+    _FusedGeoCropSegment,
     _OpaqueBorderModeTransform,
     _validate_execution,
     build_segments,
@@ -1380,6 +1385,115 @@ class FusedCompose(nn.Module):
             msg = f"Unknown segment type {type(seg).__name__!r} — update FusedCompose.forward dispatch"
             raise RuntimeError(msg)
         return pt_adapter.call_nonfused(seg, image)
+
+    def inverse(self, image: Tensor, *auxiliary_targets: Tensor, matrix: Tensor | None = None) -> object:
+        """Map a paired augmented tensor back to its original geometric frame.
+
+        Pass the matrix returned by the exact paired ``forward(...,
+        return_matrix=True)`` call. This avoids reading :attr:`transform_matrix`,
+        which is mutable compatibility state and therefore unsafe to pair with an
+        output from another concurrent call. The method supports one fused affine
+        or projective segment, including a chain already fused into that segment.
+        It applies one ``grid_sample`` to the image and routes declared masks,
+        boxes, and keypoints through the inverse pixel matrix.
+
+        Args:
+            image: Augmented ``(B, C, H, W)`` floating-point image tensor.
+            *auxiliary_targets: Augmented targets in ``data_keys[1:]`` order.
+            matrix: Forward pixel matrix returned by the paired forward call.
+
+        Returns:
+            The de-augmented image, or a tuple in ``data_keys`` order when
+            auxiliary targets are supplied.
+
+        Raises:
+            TypeError: If the image or matrix has an unsupported tensor shape or dtype.
+            ValueError: If the pipeline has a non-invertible segment, no paired
+                matrix, or targets that do not match ``data_keys``.
+
+        Examples:
+            >>> import torch
+            >>> from fuse_augmentations import Compose
+            >>> pipe = Compose.from_params(translate_x=(2.0, 2.0))
+            >>> image = torch.rand(1, 3, 8, 8)
+            >>> augmented, matrix = pipe(image, return_matrix=True)
+            >>> recovered = pipe.inverse(augmented, matrix=matrix)
+            >>> recovered.shape
+            torch.Size([1, 3, 8, 8])
+
+        """
+        unsupported_reason = self._inverse_unsupported_reason()
+        if unsupported_reason is not None:
+            raise ValueError(unsupported_reason)
+        if matrix is None:
+            raise ValueError(
+                "Cannot inverse without a paired forward matrix. Pass matrix= returned by the same "
+                "forward(..., return_matrix=True) call; transform_matrix is mutable shared state."
+            )
+        if image.ndim != 4 or not image.is_floating_point():
+            raise TypeError("inverse image must be a floating-point BCHW tensor")
+        if matrix.ndim != 3 or matrix.shape[1:] != (3, 3):
+            raise TypeError("inverse matrix must have shape (batch_size, 3, 3)")
+        if matrix.shape[0] != image.shape[0]:
+            raise ValueError(
+                f"inverse matrix batch size {matrix.shape[0]} does not match image batch size {image.shape[0]}"
+            )
+        if self.data_keys is None and auxiliary_targets:
+            raise ValueError("inverse auxiliary targets require matching data_keys on the pipeline")
+        if self.data_keys is not None and len(auxiliary_targets) != len(self._aux_keys):
+            raise ValueError(
+                f"inverse expected {len(self._aux_keys)} auxiliary targets for data_keys={self.data_keys}, "
+                f"got {len(auxiliary_targets)}"
+            )
+
+        height, width = image.shape[-2:]
+        forward_matrix = matrix.to(device=image.device, dtype=image.dtype)
+        sampling_matrix = normalize_matrix(forward_matrix, height, width)
+        if isinstance(self._segments[0], (ProjectiveSegment, AlbuProjectiveSegment)):
+            grid = perspective_grid(sampling_matrix, height, width)
+        else:
+            grid = F.affine_grid(
+                sampling_matrix[:, :2, :],
+                [image.shape[0], image.shape[1], height, width],
+                align_corners=True,
+            )
+        recovered = F.grid_sample(
+            image,
+            grid,
+            mode=self.interpolation or "bilinear",
+            padding_mode=self.padding_mode or "zeros",
+            align_corners=True,
+        )
+        if self.data_keys is None:
+            return self._convert_primary_output(recovered)
+
+        args = (image, *auxiliary_targets)
+        aux_targets = self._build_aux_targets(args)
+        inverse_matrix = inv3x3(forward_matrix)
+        # Forward routing uses the forward pixel matrix; de-augmentation uses its
+        # inverse while reusing the matching output-to-input sampling grid.
+        FusedAffineSegment._route_grid_aux(aux_targets, grid, inverse_matrix, self.mask_interpolation)
+        return self._assemble_multi_output(recovered, aux_targets, args)
+
+    def _inverse_unsupported_reason(self) -> str | None:
+        """Return the named reason why this pipeline cannot be geometrically inverted."""
+        for segment in self._segments:
+            if isinstance(segment, (CropResizeSegment, _FusedGeoCropSegment)):
+                return "Cannot inverse a crop-resize pipeline: crop-resize discards pixels outside the crop."
+            if isinstance(segment, (FusedColorSegment, FusedLUTSegment, FusedGaussianBlurSegment)):
+                return "Cannot inverse a pipeline containing a non-geometric color, LUT, or blur segment."
+            if isinstance(segment, _PassthroughSegment):
+                return "Cannot inverse a pipeline containing a passthrough segment without a recorded matrix."
+            if isinstance(segment, ExactAffineSegment):
+                return "Cannot inverse a pipeline containing an exact geometric segment without a recorded matrix."
+        if len(self._segments) != 1:
+            return "Cannot inverse a multi-segment pipeline: return_matrix records only the last segment matrix."
+        if not isinstance(
+            self._segments[0],
+            (FusedAffineSegment, AlbuFusedAffineSegment, ProjectiveSegment, AlbuProjectiveSegment),
+        ):
+            return "Cannot inverse a pipeline with no recorded fused geometric matrix."
+        return None
 
     @property
     def transform_matrix(self) -> torch.Tensor | None:
