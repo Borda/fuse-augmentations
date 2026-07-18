@@ -116,6 +116,7 @@ def vflip_matrix_np(height: int) -> NDArray[np.float64]:
 try:
     from albumentations import D4 as _D4
     from albumentations import Affine as _Affine
+    from albumentations import Equalize as _Equalize
     from albumentations import GaussianBlur as _GaussianBlur
     from albumentations import HorizontalFlip as _HorizontalFlip
     from albumentations import HueSaturationValue as _HueSaturationValue
@@ -151,13 +152,11 @@ try:
         _RandomGamma: TransformCategory.POINTWISE_LUT,
         _Solarize: TransformCategory.POINTWISE_LUT,
         _Posterize: TransformCategory.POINTWISE_LUT,
+        _Equalize: TransformCategory.POINTWISE_LUT,
         # HueSaturationValue is pixel-wise (non-linear in RGB) — reorderable
         # but neither linearly composable into a FusedColorSegment matrix nor a per-channel LUT.
         _HueSaturationValue: TransformCategory.POINTWISE,
         _RandomResizedCrop: TransformCategory.CROP_RESIZE_FIXED,
-        # Equalize is intentionally left unregistered: its lookup table is a runtime per-image
-        # histogram, so it cannot be pre-composed with static neighbours at plan time. Staying
-        # unregistered routes it to the SPATIAL_KERNEL barrier default, keeping the LUT run split.
     }
 
     # Canonical base classes for fast isinstance dispatch in the adapter paths below.
@@ -173,7 +172,8 @@ try:
     _GAMMA_TYPES: frozenset[type] = frozenset({_RandomGamma})
     _SOLARIZE_TYPES: frozenset[type] = frozenset({_Solarize})
     _POSTERIZE_TYPES: frozenset[type] = frozenset({_Posterize})
-    _LUT_TYPES: frozenset[type] = _GAMMA_TYPES | _SOLARIZE_TYPES | _POSTERIZE_TYPES
+    _EQUALIZE_TYPES: frozenset[type] = frozenset({_Equalize})
+    _LUT_TYPES: frozenset[type] = _GAMMA_TYPES | _SOLARIZE_TYPES | _POSTERIZE_TYPES | _EQUALIZE_TYPES
     _CROP_RESIZE_TYPES: frozenset[type] = frozenset({_RandomResizedCrop})
     _GAUSSIAN_BLUR_TYPES: frozenset[type] = frozenset({_GaussianBlur})
     # POINTWISE (non-linear color): reorderable but no matrix — return identity.
@@ -191,6 +191,7 @@ except ImportError:
     _GAMMA_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _SOLARIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _POSTERIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
+    _EQUALIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _LUT_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _CROP_RESIZE_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
     _GAUSSIAN_BLUR_TYPES: frozenset[type] = frozenset()  # type: ignore[no-redef]
@@ -201,6 +202,36 @@ except ImportError:
 def _is_albu_instance(transform: object, candidates: frozenset[type]) -> bool:
     """Return whether ``transform`` is an instance of any Albumentations base type."""
     return any(isinstance(transform, base_type) for base_type in candidates)
+
+
+def _albumentations_pil_equalize_table(histogram: torch.Tensor) -> torch.Tensor:
+    """Return the installed Albumentations PIL-mode equalization table."""
+    nonzero = histogram.ne(0)
+    last_nonzero = nonzero.flip(-1).to(torch.long).argmax(dim=-1)
+    last_count = histogram.gather(-1, 255 - last_nonzero.unsqueeze(-1)).squeeze(-1)
+    step = torch.div(histogram.sum(dim=-1) - last_count, 255, rounding_mode="floor")
+    table = torch.div(
+        histogram.cumsum(dim=-1) + step.unsqueeze(-1) // 2,
+        step.unsqueeze(-1).clamp_min(1),
+        rounding_mode="floor",
+    ).clamp(0, 255)
+    identity = torch.arange(256, device=histogram.device).view(1, 1, 256)
+    table = torch.where(step.unsqueeze(-1).eq(0), identity, table)
+    return table.to(torch.float32).div_(255)
+
+
+def _albumentations_cv_equalize_table(histogram: torch.Tensor) -> torch.Tensor:
+    """Return Albumentations' exposed OpenCV-compatible equalization table."""
+    first_nonzero = histogram.ne(0).to(torch.long).argmax(dim=-1)
+    cumulative = histogram.cumsum(dim=-1)
+    base = cumulative.gather(-1, first_nonzero.unsqueeze(-1)).squeeze(-1)
+    total = histogram.sum(dim=-1)
+    denominator = total - histogram.gather(-1, first_nonzero.unsqueeze(-1)).squeeze(-1)
+    normalized = (cumulative - base.unsqueeze(-1)).to(torch.float32) * 255 / denominator.unsqueeze(-1).clamp_min(1)
+    table = normalized.round().clamp(0, 255)
+    identity = torch.arange(256, device=histogram.device).view(1, 1, 256)
+    table = torch.where(denominator.unsqueeze(-1).eq(0), identity, table)
+    return table.to(torch.float32).div_(255)
 
 
 class AlbumentationsAdapter:
@@ -391,6 +422,8 @@ class AlbumentationsAdapter:
         # transform's own param generator (one draw shared across the batch), stored so
         # build_lut can replay it deterministically through the transform's native apply().
         if _is_albu_instance(transform, _LUT_TYPES):
+            if _is_albu_instance(transform, _EQUALIZE_TYPES):
+                return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
             factor_key, factor_value = _sample_albu_lut_factor(transform)
             return {factor_key: torch.tensor([factor_value], device=device, dtype=torch.float32)}
 
@@ -639,6 +672,9 @@ class AlbumentationsAdapter:
             msg = "per-channel Posterize (list num_bits) is excluded from lookup-table fusion"
             raise NotImplementedError(msg)
 
+        if _is_albu_instance(transform, _EQUALIZE_TYPES):
+            msg = "Equalize needs its input image to build a runtime lookup table"
+            raise NotImplementedError(msg)
         if _is_albu_instance(transform, _GAMMA_TYPES):
             apply_kwargs: dict[str, Any] = {"gamma": float(params["gamma"].item())}
         elif _is_albu_instance(transform, _SOLARIZE_TYPES):
@@ -655,6 +691,57 @@ class AlbumentationsAdapter:
         mapped = transform.apply(np.ascontiguousarray(arr.numpy()), **apply_kwargs)  # type: ignore[attr-defined]
         out = torch.from_numpy(np.ascontiguousarray(mapped)).to(device=values.device, dtype=values.dtype)
         return out.reshape(batch_size, num_points, channels).permute(0, 2, 1).clamp(0.0, 1.0)
+
+    @staticmethod
+    def is_runtime_lut(transform: object) -> bool:
+        """Return whether an Albumentations lookup needs the current image histogram."""
+        return (
+            _is_albu_instance(transform, _EQUALIZE_TYPES)
+            and bool(getattr(transform, "by_channels", False))
+            and getattr(transform, "mask", None) is None
+        )
+
+    @staticmethod
+    def build_runtime_lut(
+        transform: object,
+        params: dict[str, torch.Tensor],
+        image: torch.Tensor,
+    ) -> torch.Tensor:
+        """Build a byte-domain table matching Albumentations equalize's supported modes.
+
+        Only per-channel, unmasked equalization is a scalar lookup. The ``"pil"``
+        branch uses Albumentations' cumulative-count formula. The ``"cv"`` branch
+        follows its exposed OpenCV-compatible CDF normalization and ties-to-even
+        rounding; unsupported luminance or masked modes remain passthrough barriers.
+
+        Args:
+            transform: A supported ``Equalize`` transform.
+            params: Unused sampled parameters, present for adapter parity.
+            image: ``(batch_size, channels, height, width)`` image in byte or unit range.
+
+        Returns:
+            A normalized ``(batch_size, channels, 256)`` equalization table.
+
+        Raises:
+            NotImplementedError: If the Equalize configuration is not scalar-per-channel.
+
+        """
+        del params
+        if not AlbumentationsAdapter.is_runtime_lut(transform):
+            msg = f"build_runtime_lut not supported for {type(transform).__name__!r}"
+            raise NotImplementedError(msg)
+        if image.is_floating_point():
+            values = (image.to(torch.float32).clamp(0.0, 1.0) * 255).round().long()
+        else:
+            values = image.long().clamp(0, 255)
+        batch_size, channels, height, width = values.shape
+        flat = values.reshape(batch_size, channels, height * width)
+        histogram = torch.zeros(batch_size, channels, 256, device=image.device, dtype=torch.long)
+        histogram.scatter_add_(2, flat, torch.ones_like(flat))
+        mode = getattr(transform, "mode", "cv")
+        if mode == "pil":
+            return _albumentations_pil_equalize_table(histogram)
+        return _albumentations_cv_equalize_table(histogram)
 
     @staticmethod
     def is_normalize(transform: object) -> bool:

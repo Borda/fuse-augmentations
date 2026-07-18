@@ -39,6 +39,7 @@ try:
     from kornia.augmentation import RandomAffine as _RandomAffine
     from kornia.augmentation import RandomBrightness as _RandomBrightness
     from kornia.augmentation import RandomContrast as _RandomContrast
+    from kornia.augmentation import RandomEqualize as _RandomEqualize
     from kornia.augmentation import RandomGamma as _RandomGamma
     from kornia.augmentation import RandomGaussianBlur as _RandomGaussianBlur
     from kornia.augmentation import RandomHorizontalFlip as _RandomHorizontalFlip
@@ -75,6 +76,7 @@ try:
         _RandomGamma: TransformCategory.POINTWISE_LUT,
         _RandomSolarize: TransformCategory.POINTWISE_LUT,
         _RandomPosterize: TransformCategory.POINTWISE_LUT,
+        _RandomEqualize: TransformCategory.POINTWISE_LUT,
         # Saturation/hue ops are pixel-wise (non-linear in RGB) — reorderable
         # but neither linearly composable into a FusedColorSegment matrix nor a per-channel LUT.
         _RandomSaturation: TransformCategory.POINTWISE,
@@ -83,7 +85,7 @@ try:
 
     _COLOR_TYPES: frozenset[type] = frozenset({_RandomBrightness, _RandomContrast, _ColorJitter})
     _NORMALIZE_TYPES: frozenset[type] = frozenset({_KorniaNormalize})
-    _LUT_TYPES: frozenset[type] = frozenset({_RandomGamma, _RandomSolarize, _RandomPosterize})
+    _LUT_TYPES: frozenset[type] = frozenset({_RandomGamma, _RandomSolarize, _RandomPosterize, _RandomEqualize})
     _GAUSSIAN_BLUR_TYPES: frozenset[type] = frozenset({_RandomGaussianBlur})
 except ImportError:
     TRANSFORM_REGISTRY = {}
@@ -398,6 +400,9 @@ class KorniaAdapter:
             return {
                 "bits_factor": params["bits_factor"].to(device=device),
             }
+
+        if TRANSFORM_REGISTRY and ttype is _RandomEqualize:
+            return {"_batch_size": _batch_size_sentinel(batch_size, device)}
 
         # Unknown - return empty
         return {}
@@ -764,6 +769,60 @@ class KorniaAdapter:
 
         msg = f"build_lut not supported for {ttype.__name__!r}"
         raise NotImplementedError(msg)
+
+    @staticmethod
+    def is_runtime_lut(transform: object) -> bool:
+        """Return whether a Kornia lookup must be derived from its input histogram."""
+        return bool(TRANSFORM_REGISTRY and type(transform) is _RandomEqualize)
+
+    @staticmethod
+    def build_runtime_lut(
+        transform: object,
+        params: dict[str, torch.Tensor],
+        image: torch.Tensor,
+    ) -> torch.Tensor:
+        """Build Kornia's per-image equalize table using its installed histogram formula.
+
+        Kornia scales floats to byte space, computes a 256-bin histogram, derives
+        ``step = trunc((N - count(max_nonzero_bin)) / 255)``, then shifts the
+        truncated cumulative table by one bin. The returned normalized table is
+        gathered by :class:`~fuse_augmentations.affine.segment.FusedLUTSegment`.
+
+        Args:
+            transform: A ``RandomEqualize`` transform.
+            params: Unused sampled parameters, present for adapter parity.
+            image: ``(batch_size, channels, height, width)`` image in ``[0, 1]``.
+
+        Returns:
+            A normalized ``(batch_size, channels, 256)`` equalization table.
+
+        Raises:
+            NotImplementedError: If the transform is not ``RandomEqualize``.
+
+        """
+        if not (TRANSFORM_REGISTRY and type(transform) is _RandomEqualize):
+            msg = f"build_runtime_lut not supported for {type(transform).__name__!r}"
+            raise NotImplementedError(msg)
+        histograms = [
+            torch.stack([torch.histc(channel * 255, bins=256, min=0, max=255) for channel in sample])
+            for sample in image.to(torch.float32).clamp(0.0, 1.0)
+        ]
+        histogram = torch.stack(histograms).to(torch.long)
+        counts = histogram.sum(dim=-1)
+        last_nonzero = histogram.ne(0).flip(-1).to(torch.long).argmax(dim=-1)
+        last_count = histogram.gather(-1, 255 - last_nonzero.unsqueeze(-1)).squeeze(-1)
+        step = torch.div(counts - last_count, 255, rounding_mode="trunc")
+        params["_runtime_preserve_float"] = step.eq(0)
+        cumulative = histogram.cumsum(dim=-1)
+        table = torch.div(
+            cumulative + torch.div(step.unsqueeze(-1), 2, rounding_mode="trunc"),
+            step.unsqueeze(-1).clamp_min(1),
+            rounding_mode="trunc",
+        )
+        table = torch.cat([torch.zeros_like(table[..., :1]), table[..., :-1]], dim=-1).clamp(0, 255)
+        identity = torch.arange(256, device=image.device).view(1, 1, 256)
+        table = torch.where(step.unsqueeze(-1).eq(0), identity, table)
+        return table.to(torch.float32).div_(255)
 
     @staticmethod
     def call_nonfused(

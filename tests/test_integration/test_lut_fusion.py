@@ -9,15 +9,14 @@ composes the maps into one lookup and applies it once. This module verifies:
   channel. The Kornia/TorchVision integer-tensor path composes each op's byte map by exact
   integer indexing, matching a sequential per-op byte-map chain.
 - **float interpolation tolerance** — on floating tensors the composed map is sampled on a
-  uniform 1024-point grid and applied by gather + linear interpolation. This is *not* exact:
-  the tests assert parity within a documented interpolation tolerance (never ``>=`` native).
-  Smooth maps (gamma) stay within ~2 uint8 levels; a discontinuous map (posterize step,
-  off-centre solarize threshold) smears one grid cell, so a small fraction of pixels near the
-  discontinuity may differ by up to one step height while the mean error stays tiny.
+  uniform 1024-point grid. Smooth intervals use linear interpolation; detected solarize and
+  posterize jumps use a sharp nearest-side step rule. This is still *not* exact: the inferred
+  breakpoint can be part of a grid cell from the native boundary, so tests assert a documented
+  mean and outlier tolerance rather than claiming native-level precision.
 - **fusion plan / warp accounting** — a fused run reports as ``lut(...)`` (never passthrough)
   and credits ``n_warps_saved = n - 1``.
-- **barriers preserved** — cross-channel ops (saturation/hue) and runtime-histogram ops
-  (equalize) stay on the passthrough path and never fold into a lookup.
+- **runtime histograms** — equalize builds a per-image byte lookup inside a fused run; unsupported
+  cross-channel or masked/luminance variants remain passthrough barriers.
 - **pickle round-trip** — a pipeline containing a ``FusedLUTSegment`` survives ``pickle`` (the
   DataLoader-worker contract).
 
@@ -62,8 +61,8 @@ if _TORCHVISION_V2_AVAILABLE:
 #     may differ by up to one step height. Parity is therefore gated on mean + outlier fraction,
 #     never on max, and never claimed to beat native precision.
 _GAMMA_FLOAT_MAX_LEVELS = 2.5
-_DISCONTINUOUS_FLOAT_MEAN_LEVELS = 0.5
-_DISCONTINUOUS_FLOAT_OUTLIER_FRACTION = 0.02  # <=2% of pixels may exceed 2 levels at a discontinuity
+_DISCONTINUOUS_FLOAT_MEAN_LEVELS = 0.08
+_DISCONTINUOUS_FLOAT_OUTLIER_FRACTION = 0.004  # <0.4% of pixels may exceed 2 levels at a discontinuity
 
 pytestmark = pytest.mark.integration
 
@@ -211,10 +210,10 @@ class TestFloatInterpolationTolerance:
         ],
     )
     def test_discontinuous_map_within_documented_tolerance(self, factory):
-        """A discontinuous map keeps a tiny mean error with only a small outlier fraction."""
+        """Breakpoint-aware lookup interpolation has a tighter step-boundary error bound."""
         adapter = KorniaAdapter()
         transforms = factory()
-        image = torch.rand(4, 3, 64, 64)
+        image = torch.linspace(0.0, 1.0, 100_000).reshape(1, 1, 1, -1).expand(1, 3, -1, -1)
 
         fused = FusedLUTSegment(list(transforms), adapter)(image.clone())
         exact = self._exact_composition(adapter, transforms, image)
@@ -286,13 +285,13 @@ class TestFusionPlan:
 
 
 # ---------------------------------------------------------------------------
-# barriers preserved (negative tests)
+# runtime equalize and residual barriers
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia required")
-class TestBarriersPreserved:
-    """Cross-channel and runtime-histogram ops must never fold into a lookup table."""
+class TestRuntimeEqualizeAndBarriers:
+    """Scalar equalization fuses at runtime; cross-channel operations remain barriers."""
 
     def test_saturation_stays_passthrough(self):
         """Saturation is cross-channel (POINTWISE) and remains a passthrough barrier."""
@@ -304,12 +303,79 @@ class TestBarriersPreserved:
         assert "passthrough" in pipe.fusion_plan
         assert "lut" not in pipe.fusion_plan
 
-    def test_equalize_stays_passthrough(self):
-        """Equalize needs a runtime per-image histogram and cannot pre-compose; it stays a barrier."""
-        with pytest.warns(UserWarning, match="Unknown Kornia transform"):
-            pipe = Compose([kornia_aug.RandomEqualize(p=1.0), kornia_aug.RandomEqualize(p=1.0)])
-        assert "passthrough" in pipe.fusion_plan
-        assert "lut" not in pipe.fusion_plan
+    def test_equalize_fuses_and_builds_distinct_tables_per_sample(self):
+        """Kornia equalize uses each batch sample's own runtime histogram table."""
+        adapter = KorniaAdapter()
+        equalize = kornia_aug.RandomEqualize(p=1.0)
+        image = torch.stack(
+            [
+                torch.linspace(0.0, 1.0, 256).reshape(1, 16, 16).expand(3, -1, -1),
+                torch.cat([torch.zeros(128), torch.ones(128)]).reshape(1, 16, 16).expand(3, -1, -1),
+            ]
+        )
+
+        fused = FusedLUTSegment([equalize], adapter)(image.clone())
+        native = equalize(image.clone())
+
+        torch.testing.assert_close(fused, native, rtol=0.0, atol=1.1 / 255)
+        assert Compose([equalize]).fusion_plan == "lut(RandomEqualize)"
+
+    def test_kornia_uint8_equalize_is_not_a_supported_native_contract(self):
+        """Installed Kornia rejects uint8 equalize, so uint8 native parity is inapplicable."""
+        with pytest.raises(TypeError, match=r"torch.float"):
+            kornia_aug.RandomEqualize(p=1.0)(torch.zeros(1, 3, 8, 8, dtype=torch.uint8))
+
+
+@pytest.mark.skipif(not _TORCHVISION_V2_AVAILABLE, reason="torchvision v2 required")
+def test_torchvision_runtime_equalize_uint8_is_exact():
+    """TorchVision's uint8 equalize table matches the installed native kernel exactly."""
+    transforms = [tv2.RandomEqualize(p=1.0)]
+    image = torch.arange(256, dtype=torch.uint8).reshape(1, 1, 16, 16).expand(2, 3, -1, -1).clone()
+    fused = FusedLUTSegment(transforms, TorchVisionAdapter())(image.clone())
+    native = image.clone()
+    for transform in transforms:
+        native = transform(native)
+
+    assert torch.equal(fused, native)
+    assert Compose(transforms).fusion_plan == "lut(RandomEqualize)"
+
+
+@pytest.mark.skipif(not _TORCHVISION_V2_AVAILABLE, reason="torchvision v2 required")
+def test_torchvision_equalize_does_not_split_a_lookup_run():
+    """TorchVision equalize is planned inside contiguous static lookup neighbours."""
+    pipe = Compose([tv2.RandomSolarize(0.4, p=1.0), tv2.RandomEqualize(p=1.0), tv2.RandomPosterize(3, p=1.0)])
+
+    assert pipe.fusion_plan == "lut(RandomSolarize, RandomEqualize, RandomPosterize)"
+
+
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="albumentations required")
+@pytest.mark.parametrize("mode", ["cv", "pil"])
+def test_albumentations_runtime_equalize_uint8_is_exact_inside_a_lut_run(mode):
+    """Supported Albumentations equalize modes fuse without changing their native uint8 output."""
+    transforms = [
+        albu.RandomGamma(gamma_limit=(70, 70), p=1.0),
+        albu.Equalize(mode=mode, by_channels=True, p=1.0),
+        albu.Posterize(num_bits=3, p=1.0),
+    ]
+    image = _channel_ramp_uint8()
+    fused = Compose(transforms)(image=image.copy())["image"]
+    native = image.copy()
+    for transform in transforms:
+        native = transform(image=native)["image"]
+
+    assert np.array_equal(fused, native)
+    assert Compose(transforms).fusion_plan == "lut(RandomGamma, Equalize, Posterize)"
+
+
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="albumentations required")
+def test_albumentations_luminance_equalize_remains_a_barrier():
+    """Luminance equalize mixes channels, so it cannot be represented by per-channel tables."""
+    pipe = Compose([albu.Equalize(by_channels=False, p=1.0)])
+
+    assert "passthrough" in pipe.fusion_plan
+    assert "lut" not in pipe.fusion_plan
+
+
 
 
 # ---------------------------------------------------------------------------

@@ -417,7 +417,7 @@ class TransformAdapter(Protocol):
     ) -> Tensor:
         """Apply a ``POINTWISE_LUT`` transform's per-channel intensity map to a grid of values.
 
-        Adapters that support ``POINTWISE_LUT`` fusion (gamma, solarize, posterize) must override
+        Adapters that support static ``POINTWISE_LUT`` fusion (gamma, solarize, posterize) must override
         this to evaluate the transform's pointwise, per-channel scalar map on ``values`` using its
         own backend function (never a re-derived formula), returning the mapped intensities. The
         default implementation raises ``NotImplementedError`` so adapters without lookup-fusion
@@ -439,10 +439,10 @@ class TransformAdapter(Protocol):
           is sampled on a uniform ``K``-point grid (default ``K = 1024``) and applied by
           ``gather`` + linear interpolation. This is exact-ish only for *smooth* maps: a steep
           region (e.g. ``gamma < 1`` near black) can differ from native by ~2 uint8 levels, and a
-          *discontinuous* map (solarize threshold, posterize step) is smeared across one grid cell
-          (~1/K of the input range), so a small fraction (~1/K) of pixels near the discontinuity
-          diverge. Do not claim the float path beats native precision; gate float-path parity at a
-          documented interpolation tolerance, never as ``>=`` native.
+          *discontinuous* map (solarize threshold, posterize step) uses a detected sharp step instead
+          of a linear ramp, but its inferred breakpoint can still differ by part of a grid cell. Do
+          not claim the float path beats native precision; gate float-path parity at a documented
+          interpolation tolerance, never as ``>=`` native.
 
         Args:
             transform: The backend transform object (``POINTWISE_LUT`` category).

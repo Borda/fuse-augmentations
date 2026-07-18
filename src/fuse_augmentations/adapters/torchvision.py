@@ -63,6 +63,7 @@ try:
     from torchvision.transforms import GaussianBlur as _V1GaussianBlur
     from torchvision.transforms import Normalize as _V1Normalize
     from torchvision.transforms import RandomAffine as _V1RandomAffine
+    from torchvision.transforms import RandomEqualize as _V1RandomEqualize
     from torchvision.transforms import RandomHorizontalFlip as _V1RandomHorizontalFlip
     from torchvision.transforms import RandomPerspective as _V1RandomPerspective
     from torchvision.transforms import RandomPosterize as _V1RandomPosterize
@@ -80,6 +81,7 @@ try:
     _TRANSFORM_REGISTRY[_V1Normalize] = TransformCategory.POINTWISE_LINEAR
     _TRANSFORM_REGISTRY[_V1RandomSolarize] = TransformCategory.POINTWISE_LUT
     _TRANSFORM_REGISTRY[_V1RandomPosterize] = TransformCategory.POINTWISE_LUT
+    _TRANSFORM_REGISTRY[_V1RandomEqualize] = TransformCategory.POINTWISE_LUT
     _TRANSFORM_REGISTRY[_V1RandomResizedCrop] = TransformCategory.CROP_RESIZE_FIXED
     _GAUSSIAN_BLUR_TYPES.add(_V1GaussianBlur)
 
@@ -92,6 +94,7 @@ try:
     _NORMALIZE_TYPES.add(_V1Normalize)
     _LUT_TYPES.add(_V1RandomSolarize)
     _LUT_TYPES.add(_V1RandomPosterize)
+    _LUT_TYPES.add(_V1RandomEqualize)
     _CROP_RESIZE_TYPES.add(_V1RandomResizedCrop)
 except ImportError:
     pass
@@ -102,6 +105,7 @@ try:
     from torchvision.transforms.v2 import GaussianBlur as _V2GaussianBlur
     from torchvision.transforms.v2 import Normalize as _V2Normalize
     from torchvision.transforms.v2 import RandomAffine as _V2RandomAffine
+    from torchvision.transforms.v2 import RandomEqualize as _V2RandomEqualize
     from torchvision.transforms.v2 import RandomHorizontalFlip as _V2RandomHorizontalFlip
     from torchvision.transforms.v2 import RandomPerspective as _V2RandomPerspective
     from torchvision.transforms.v2 import RandomPosterize as _V2RandomPosterize
@@ -119,6 +123,7 @@ try:
     _TRANSFORM_REGISTRY[_V2Normalize] = TransformCategory.POINTWISE_LINEAR
     _TRANSFORM_REGISTRY[_V2RandomSolarize] = TransformCategory.POINTWISE_LUT
     _TRANSFORM_REGISTRY[_V2RandomPosterize] = TransformCategory.POINTWISE_LUT
+    _TRANSFORM_REGISTRY[_V2RandomEqualize] = TransformCategory.POINTWISE_LUT
     _TRANSFORM_REGISTRY[_V2RandomResizedCrop] = TransformCategory.CROP_RESIZE_FIXED
     _GAUSSIAN_BLUR_TYPES.add(_V2GaussianBlur)
 
@@ -131,6 +136,7 @@ try:
     _NORMALIZE_TYPES.add(_V2Normalize)
     _LUT_TYPES.add(_V2RandomSolarize)
     _LUT_TYPES.add(_V2RandomPosterize)
+    _LUT_TYPES.add(_V2RandomEqualize)
     _CROP_RESIZE_TYPES.add(_V2RandomResizedCrop)
 except ImportError:
     pass
@@ -612,6 +618,61 @@ class TorchVisionAdapter:
 
         msg = f"build_lut not supported for {type(transform).__name__!r}"
         raise NotImplementedError(msg)
+
+    @staticmethod
+    def is_runtime_lut(transform: object) -> bool:
+        """Return whether a TorchVision lookup must be derived from image data."""
+        return type(transform).__name__ == "RandomEqualize" and type(transform) in _LUT_TYPES_FS
+
+    @staticmethod
+    def build_runtime_lut(
+        transform: object,
+        params: dict[str, torch.Tensor],
+        image: torch.Tensor,
+    ) -> torch.Tensor:
+        """Build TorchVision's PIL-compatible per-image equalization table.
+
+        TorchVision's installed tensor kernels use the count outside the maximum
+        occupied bin to form ``step = floor(count / 255)`` and map each byte with
+        the previous cumulative count. This reproduces their uint8 table exactly.
+
+        Args:
+            transform: A v1 or v2 ``RandomEqualize`` transform.
+            params: Unused sampled parameters, present for adapter parity.
+            image: ``(batch_size, channels, height, width)`` image in byte or unit range.
+
+        Returns:
+            A normalized ``(batch_size, channels, 256)`` equalization table.
+
+        Raises:
+            NotImplementedError: If the transform is not ``RandomEqualize``.
+
+        """
+        del params
+        if not TorchVisionAdapter.is_runtime_lut(transform):
+            msg = f"build_runtime_lut not supported for {type(transform).__name__!r}"
+            raise NotImplementedError(msg)
+        if image.is_floating_point():
+            values = (image.to(torch.float32).clamp(0.0, 1.0) * 255.999).to(torch.long)
+        else:
+            values = image.long().clamp(0, 255)
+        batch_size, channels, height, width = values.shape
+        flat = values.reshape(batch_size, channels, height * width)
+        histogram = torch.zeros(batch_size, channels, 256, device=image.device, dtype=torch.long)
+        histogram.scatter_add_(2, flat, torch.ones_like(flat))
+        cumulative = histogram.cumsum(dim=-1)
+        last_nonzero = histogram.ne(0).flip(-1).to(torch.long).argmax(dim=-1)
+        last_count = histogram.gather(-1, 255 - last_nonzero.unsqueeze(-1)).squeeze(-1)
+        step = torch.div(flat.shape[-1] - last_count, 255, rounding_mode="floor")
+        table = torch.div(
+            cumulative[..., :-1] + step.unsqueeze(-1) // 2,
+            step.unsqueeze(-1).clamp_min(1),
+            rounding_mode="floor",
+        )
+        table = torch.cat([torch.zeros_like(table[..., :1]), table], dim=-1).clamp(0, 255)
+        identity = torch.arange(256, device=image.device).view(1, 1, 256)
+        table = torch.where(step.unsqueeze(-1).eq(0), identity, table)
+        return table.to(torch.float32).div_(255)
 
     @staticmethod
     def call_nonfused(

@@ -3340,11 +3340,12 @@ _DEFAULT_LUT_LEVELS = 1024
 class FusedLUTSegment(nn.Module):
     """Fused lookup-table segment that composes ``POINTWISE_LUT`` transforms into one lookup.
 
-    Gamma, solarize, and posterize are per-channel *non-linear scalar* maps. A contiguous run of
-    them is composed into a single per-channel lookup table by threading a domain grid through each
-    op in order (each op evaluated exactly on the running values via ``adapter.build_lut``), then
-    applied to the image in one pass. Per-op probability is honoured with a per-sample active mask,
-    exactly like :class:`FusedColorSegment`.
+    Gamma, solarize, and posterize are static per-channel *non-linear scalar* maps. A contiguous
+    run threads their domain grid through ``adapter.build_lut`` and applies each resulting static
+    table once. Equalize is also accepted when its adapter supports a scalar, per-channel runtime
+    histogram table: static tables flush before equalize, equalize builds one table per image, then
+    later static maps begin a new table. Per-op probability is honoured with a per-sample active
+    mask, exactly like :class:`FusedColorSegment`.
 
     Lookup maps leave spatial layout untouched, so auxiliary targets (masks, boxes, keypoints) pass
     through unchanged.
@@ -3353,10 +3354,9 @@ class FusedLUTSegment(nn.Module):
 
     - **Floating image — K-entry interpolation LUT (approximate).** The composed map is sampled on a
       uniform ``num_levels``-point grid over ``[0, 1]`` (default 1024) and applied by ``gather`` +
-      linear interpolation. Exact-ish for smooth maps; a steep region (``gamma < 1`` near black) or a
-      discontinuity (solarize threshold, posterize step) is smeared across ~one grid cell, so a small
-      fraction (~1/``num_levels``) of pixels near a discontinuity diverge from native. This path never
-      claims to beat native precision — parity is bounded by a documented interpolation tolerance.
+      interpolation. Smooth intervals use linear interpolation; a large isolated table jump uses a
+      nearest-side step rule, avoiding a synthetic ramp at solarize and posterize boundaries. This
+      remains an interpolation-tolerance path rather than an exact float implementation.
     - **Integer image — 256-entry table.** The map is enumerated over the 256 byte values, snapping to
       bytes between ops, so the composed table is exact *with respect to this segment's own composed
       byte maps* and carries no interpolation error. Because each op's byte map is built from this
@@ -3441,6 +3441,36 @@ class FusedLUTSegment(nn.Module):
             return out
         return out, aux_targets
 
+    def _sample_lut_params(self, image: Tensor, transform: object) -> tuple[dict[str, Tensor], Tensor]:
+        """Sample one lookup transform's parameters and its per-sample application mask."""
+        batch_size = image.shape[0]
+        device = image.device
+        prob = _transform_prob(transform)
+        if _shares_randomness_across_batch(self._adapter, transform, self.randomness):
+            active = (torch.rand((), device=device) < prob).expand(batch_size)
+        else:
+            active = torch.rand(batch_size, device=device) < prob
+        params = _sample_transform_params(
+            self._adapter, transform, tuple(image.shape), device, self.randomness  # type: ignore[arg-type]
+        )
+        return params, active
+
+    def _is_runtime_lut(self, transform: object) -> bool:
+        """Return whether ``transform`` needs an image-dependent lookup table."""
+        checker = getattr(self._adapter, "is_runtime_lut", None)
+        return bool(checker(transform)) if callable(checker) else False
+
+    def _runtime_table(self, transform: object, params: dict[str, Tensor], image: Tensor) -> Tensor | None:
+        """Build an image-dependent normalized byte table through the active adapter."""
+        builder = getattr(self._adapter, "build_runtime_lut", None)
+        if not callable(builder):
+            return None
+        try:
+            table = cast(Tensor, builder(transform, params, image))
+        except NotImplementedError:
+            return None
+        return table.to(device=image.device, dtype=torch.float32)
+
     def _compose_grid(self, image: Tensor, grid: Tensor, *, snap_levels: int | None) -> Tensor | None:
         """Thread ``grid`` through every op to build the composed per-channel table.
 
@@ -3455,17 +3485,11 @@ class FusedLUTSegment(nn.Module):
             lookup-fusible at forward time (the caller then falls back to sequential application).
 
         """
-        batch_size = image.shape[0]
-        device = image.device
-        input_shape = tuple(image.shape)
         composed = grid
         for tfm in self._transforms:
-            prob = _transform_prob(tfm)
-            if _shares_randomness_across_batch(self._adapter, tfm, self.randomness):
-                active = (torch.rand((), device=device) < prob).expand(batch_size)
-            else:
-                active = torch.rand(batch_size, device=device) < prob
-            params = _sample_transform_params(self._adapter, tfm, input_shape, device, self.randomness)  # type: ignore[arg-type]
+            if self._is_runtime_lut(tfm):
+                return None
+            params, active = self._sample_lut_params(image, tfm)
             try:
                 mapped = self._adapter.build_lut(tfm, params, composed)
             except NotImplementedError:
@@ -3487,14 +3511,34 @@ class FusedLUTSegment(nn.Module):
             .expand(batch_size, channels, num_levels)
             .contiguous()
         )
-        composed = self._compose_grid(image, grid, snap_levels=None)
-        if composed is None:
-            return self._fallback_nonfused(image)
-        return self._apply_interp(image, composed, num_levels)
+        out = image
+        composed = grid
+        for tfm in self._transforms:
+            params, active = self._sample_lut_params(image, tfm)
+            if self._is_runtime_lut(tfm):
+                out = self._apply_interp(out, composed, num_levels)
+                composed = grid
+                table = self._runtime_table(tfm, params, out)
+                if table is None:
+                    return self._fallback_nonfused(image)
+                identity = torch.linspace(0.0, 1.0, 256, device=image.device).view(1, 1, 256)
+                table = torch.where(active[:, None, None], table, identity)
+                mapped = self._apply_runtime_float(out, table)
+                preserve = params.get("_runtime_preserve_float")
+                if preserve is not None:
+                    mapped = torch.where(preserve[:, :, None, None], out, mapped)
+                out = torch.where(active[:, None, None, None], mapped, out)
+                continue
+            try:
+                mapped = self._adapter.build_lut(tfm, params, composed).to(dtype=composed.dtype)
+            except NotImplementedError:
+                return self._fallback_nonfused(image)
+            composed = torch.where(active[:, None, None], mapped, composed)
+        return self._apply_interp(out, composed, num_levels)
 
     def _forward_uint8(self, image: Tensor) -> Tensor:
         """Apply the exact 256-entry path to an integer image (values in ``[0, 255]``)."""
-        batch_size, channels, height, width = image.shape
+        batch_size, channels, _height, _width = image.shape
         levels = 256
         grid = (
             (torch.arange(levels, device=image.device, dtype=torch.float32) / (levels - 1))
@@ -3502,17 +3546,49 @@ class FusedLUTSegment(nn.Module):
             .expand(batch_size, channels, levels)
             .contiguous()
         )
-        composed = self._compose_grid(image, grid, snap_levels=levels)
-        if composed is None:
-            return self._fallback_nonfused(image)
-        table = (composed * (levels - 1)).round().clamp(0, levels - 1).to(torch.long)  # (B, C, 256)
-        idx = image.long().clamp(0, levels - 1).reshape(batch_size, channels, height * width)
-        out = torch.gather(table, 2, idx).reshape(batch_size, channels, height, width)
-        return out.to(image.dtype)
+        out = image
+        composed = grid
+        for tfm in self._transforms:
+            params, active = self._sample_lut_params(image, tfm)
+            if self._is_runtime_lut(tfm):
+                out = self._apply_uint8(out, composed)
+                composed = grid
+                table = self._runtime_table(tfm, params, out)
+                if table is None:
+                    return self._fallback_nonfused(image)
+                identity = torch.linspace(0.0, 1.0, levels, device=image.device).view(1, 1, levels)
+                table = torch.where(active[:, None, None], table, identity)
+                out = self._apply_uint8(out, table)
+                continue
+            try:
+                mapped = self._adapter.build_lut(tfm, params, composed).to(dtype=composed.dtype)
+            except NotImplementedError:
+                return self._fallback_nonfused(image)
+            composed = torch.where(active[:, None, None], mapped, composed)
+            composed = (composed * (levels - 1)).round().clamp(0.0, levels - 1) / (levels - 1)
+        return self._apply_uint8(out, composed)
+
+    @staticmethod
+    def _apply_uint8(image: Tensor, table: Tensor) -> Tensor:
+        """Map an integer image through a normalized 256-entry table exactly."""
+        batch_size, channels, height, width = image.shape
+        table_i = (table * 255).round().clamp(0, 255).to(torch.long)
+        index = image.long().clamp(0, 255).reshape(batch_size, channels, height * width)
+        mapped = torch.gather(table_i, 2, index).reshape(batch_size, channels, height, width)
+        return mapped.to(image.dtype)
+
+    @staticmethod
+    def _apply_runtime_float(image: Tensor, table: Tensor) -> Tensor:
+        """Apply a byte-domain runtime table with the backend's quantized input domain."""
+        batch_size, channels, height, width = image.shape
+        index = (image.to(torch.float32).clamp(0.0, 1.0) * 255).floor().long()
+        index = index.reshape(batch_size, channels, height * width)
+        mapped = torch.gather(table, 2, index).reshape(batch_size, channels, height, width)
+        return mapped.to(image.dtype)
 
     @staticmethod
     def _apply_interp(image: Tensor, composed: Tensor, num_levels: int) -> Tensor:
-        """Map a floating image through the composed table by gather + linear interpolation."""
+        """Map floats by linear interpolation, preserving detected lookup-table jumps sharply."""
         batch_size, channels, height, width = image.shape
         clamped = image.to(torch.float32).clamp(0.0, 1.0).reshape(batch_size, channels, height * width)
         pos = clamped * (num_levels - 1)
@@ -3522,6 +3598,11 @@ class FusedLUTSegment(nn.Module):
         lo_val = torch.gather(composed, 2, lo_idx)
         hi_val = torch.gather(composed, 2, lo_idx + 1)
         out = lo_val + (hi_val - lo_val) * frac
+        jumps = (composed[..., 1:] - composed[..., :-1]).abs()
+        neighbours = torch.maximum(F.pad(jumps[..., :-1], (1, 0)), F.pad(jumps[..., 1:], (0, 1)))
+        discontinuity = (jumps > 8 * neighbours) & (jumps > 2 / (num_levels - 1))
+        step = torch.gather(discontinuity, 2, lo_idx)
+        out = torch.where(step & (frac >= 0.5), hi_val, out)
         return out.reshape(batch_size, channels, height, width).to(image.dtype)
 
     def _fallback_nonfused(self, image: Tensor) -> Tensor:
@@ -3555,6 +3636,12 @@ class FusedLUTSegment(nn.Module):
         probe = np.tile(ramp[None, :, None], (1, 1, num_channels))  # (1, 256, C)
         composed = np.tile(ramp[:, None], (1, num_channels)).astype(np.intp)  # (256, C) identity
         for tfm in self._transforms:
+            if self._is_runtime_lut(tfm):
+                for channel in range(num_channels):
+                    arr[..., channel] = composed[arr[..., channel].astype(np.intp), channel]
+                arr = tfm(image=arr)["image"]  # type: ignore[operator]
+                composed = np.tile(ramp[:, None], (1, num_channels)).astype(np.intp)
+                continue
             # Each op maps the byte ramp to its own (256, C) table; compose by integer indexing.
             mapped_probe = tfm(image=probe)["image"]  # type: ignore[operator]
             lut_i = np.asarray(mapped_probe)[0].astype(np.intp)
@@ -3575,6 +3662,9 @@ def _try_build_lut(adapter: TransformAdapter, transform: object) -> bool:
     the missing param short-circuits before any op is applied.
 
     """
+    runtime_checker = getattr(adapter, "is_runtime_lut", None)
+    if callable(runtime_checker) and runtime_checker(transform):
+        return callable(getattr(adapter, "build_runtime_lut", None))
     try:
         adapter.build_lut(transform, {}, torch.zeros(1, 1, 2))
         return True
