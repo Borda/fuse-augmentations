@@ -1888,7 +1888,11 @@ def _is_axis_aligned_gaussian_matrix(matrix: Tensor) -> bool:
 
 def _is_commutable_gaussian_matrix(matrix: Tensor) -> bool:
     """Return whether an affine matrix can move a Gaussian blur without aliasing."""
-    return estimate_scale(matrix)[0] >= 1.0
+    # A blur only aliases when the warp downscales (smallest singular value < 1). The
+    # tolerance keeps a pure rotation (true minimum singular value 1.0, which float32
+    # can round to just below) on the commuting path instead of the correct-but-slower
+    # fallback; a scale within 1e-6 of unity does not meaningfully alias.
+    return bool(estimate_scale(matrix)[0] >= 1.0 - 1e-6)
 
 
 def _transform_gaussian_sigma(sigma: Tensor, matrix: Tensor) -> Tensor:
@@ -3481,7 +3485,7 @@ class FusedLUTSegment(nn.Module):
 
     def _sample_lut_params(self, image: Tensor, transform: object) -> tuple[dict[str, Tensor], Tensor]:
         """Sample one lookup transform's parameters and its per-sample application mask."""
-        batch_size = image.shape[0]
+        batch_size, channels, height, width = image.shape
         device = image.device
         prob = _transform_prob(transform)
         if _shares_randomness_across_batch(self._adapter, transform, self.randomness):
@@ -3489,7 +3493,11 @@ class FusedLUTSegment(nn.Module):
         else:
             active = torch.rand(batch_size, device=device) < prob
         params = _sample_transform_params(
-            self._adapter, transform, tuple(image.shape), device, self.randomness  # type: ignore[arg-type]
+            self._adapter,
+            transform,
+            (batch_size, channels, height, width),
+            device,
+            self.randomness,
         )
         return params, active
 

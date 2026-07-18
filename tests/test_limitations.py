@@ -91,11 +91,15 @@ class TestFusibleClosures:
 
         The default Compose-level padding override is unchanged. ``per_transform``
         instead splits a geometric run when the compatible border mode changes.
+
         """
-        pipe = Compose([
-            kornia_aug.RandomAffine(degrees=25, padding_mode="reflection", p=1.0),
-            kornia_aug.RandomAffine(degrees=20, padding_mode="zeros", p=1.0),
-        ], padding_mode="per_transform")
+        pipe = Compose(
+            [
+                kornia_aug.RandomAffine(degrees=25, padding_mode="reflection", p=1.0),
+                kornia_aug.RandomAffine(degrees=20, padding_mode="zeros", p=1.0),
+            ],
+            padding_mode="per_transform",
+        )
         assert len(pipe.fusion_plan_descriptors) >= 2
         assert pipe.fusion_plan_descriptors[1].split_reason == "border_mode_change"
 

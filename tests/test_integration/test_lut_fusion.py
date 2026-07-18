@@ -307,12 +307,10 @@ class TestRuntimeEqualizeAndBarriers:
         """Kornia equalize uses each batch sample's own runtime histogram table."""
         adapter = KorniaAdapter()
         equalize = kornia_aug.RandomEqualize(p=1.0)
-        image = torch.stack(
-            [
-                torch.linspace(0.0, 1.0, 256).reshape(1, 16, 16).expand(3, -1, -1),
-                torch.cat([torch.zeros(128), torch.ones(128)]).reshape(1, 16, 16).expand(3, -1, -1),
-            ]
-        )
+        image = torch.stack([
+            torch.linspace(0.0, 1.0, 256).reshape(1, 16, 16).expand(3, -1, -1),
+            torch.cat([torch.zeros(128), torch.ones(128)]).reshape(1, 16, 16).expand(3, -1, -1),
+        ])
 
         fused = FusedLUTSegment([equalize], adapter)(image.clone())
         native = equalize(image.clone())
@@ -374,8 +372,6 @@ def test_albumentations_luminance_equalize_remains_a_barrier():
 
     assert "passthrough" in pipe.fusion_plan
     assert "lut" not in pipe.fusion_plan
-
-
 
 
 # ---------------------------------------------------------------------------
