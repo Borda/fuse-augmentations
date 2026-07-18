@@ -403,6 +403,47 @@ WarpFn = Callable[[Tensor, Tensor, InterpolationStr, PaddingModeStr], tuple[Tens
 _COMPILED_WARP_CACHE: dict[str, WarpFn] = {}
 
 
+ColorFn = Callable[[Tensor, Tensor], Tensor]
+
+
+def _apply_color_matrix(image: Tensor, acc: Tensor) -> Tensor:
+    """Apply a homogeneous color matrix to every RGB pixel in an image batch.
+
+    Args:
+        image: ``(batch_size, 3, height, width)`` image tensor.
+        acc: ``(batch_size, 4, 4)`` homogeneous color matrices.
+
+    Returns:
+        The color-transformed image with the same shape and dtype as ``image``.
+
+    """
+    batch_size, channels, height, width = image.shape
+    pixels = image.reshape(batch_size, channels, height * width)
+    linear = acc[:, :channels, :channels]
+    bias = acc[:, :channels, channels : channels + 1]
+    transformed = torch.baddbmm(bias, linear, pixels)
+    return transformed.reshape(batch_size, channels, height, width)
+
+
+# Color parameter sampling and probability masking stay eager. This cache holds only
+# the dense post-warp matrix application, whose inputs are already ordinary tensors.
+_COMPILED_COLOR_CACHE: dict[str, ColorFn] = {}
+
+
+def _compiled_color_fn() -> ColorFn:
+    """Return the dynamic-shape compiled color-matrix application core.
+
+    Returns:
+        The cached ``torch.compile`` wrapper for :func:`_apply_color_matrix`.
+
+    """
+    cached = _COMPILED_COLOR_CACHE.get("matrix")
+    if cached is None:
+        cached = torch.compile(_apply_color_matrix, dynamic=True)
+        _COMPILED_COLOR_CACHE["matrix"] = cached
+    return cached
+
+
 def _compiled_warp_fn(kind: str) -> WarpFn:
     """Return the ``torch.compile``-wrapped warp core for ``kind`` (``"affine"`` or ``"perspective"``).
 
@@ -2990,6 +3031,8 @@ class FusedColorSegment(nn.Module):
         clip_output: bool = True,
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
         clip_policy: ClipPolicyStr = "final",
+        *,
+        compile_color: bool = False,
     ) -> None:
         """Initialize ``FusedColorSegment``.
 
@@ -3001,6 +3044,7 @@ class FusedColorSegment(nn.Module):
             clip_policy: ``"final"`` (default) fuses the whole chain into one matmul and clamps once;
                 ``"per_op_parity"`` clamps at each op whose intermediate could leave ``[0, 1]``,
                 matching a native per-op clamped chain.
+            compile_color: Compile only the pure color matrix application on non-CPU devices.
 
         """
         super().__init__()
@@ -3012,6 +3056,7 @@ class FusedColorSegment(nn.Module):
             msg = "unknown clip policy {!r}; expected 'final' or 'per_op_parity'"
             raise ValueError(msg.format(clip_policy))
         self.clip_policy: ClipPolicyStr = clip_policy
+        self._compile_color: bool = compile_color and _torch_supports_compile()
         # Register identity matrix as a buffer so device moves (.to(), .cuda())
         # propagate automatically — avoids re-allocating every forward pass.
         self.register_buffer("_eye4", torch.eye(4, dtype=torch.float32))
@@ -3029,6 +3074,8 @@ class FusedColorSegment(nn.Module):
         # clip_policy added later; default "final" preserves the single-matmul behaviour.
         if not hasattr(self, "clip_policy"):
             self.clip_policy = "final"
+        if not hasattr(self, "_compile_color"):
+            self._compile_color = False
 
     @property
     def transforms(self) -> list[object]:
@@ -3178,7 +3225,7 @@ class FusedColorSegment(nn.Module):
             acc = eye.unsqueeze(0).expand(batch_size, -1, -1).clone()
             for mat in matrices:
                 acc = torch.bmm(mat, acc)
-            return self._matmul_image(image, acc)
+            return self._apply_color_matrix(image, acc)
 
         # Apply one fused sub-chain at a time. A Normalize boundary first clamps an escaping
         # prefix because native color ops clamp before Normalize, while Normalize itself does not.
@@ -3187,7 +3234,7 @@ class FusedColorSegment(nn.Module):
         sub_started = False
         for transform, mat in zip(self._transforms, matrices, strict=True):
             if self._is_normalize(transform) and sub_started and self._range_escapes_gamut(sub):
-                out = self._matmul_image(out, sub).clamp(0.0, 1.0)
+                out = self._apply_color_matrix(out, sub).clamp(0.0, 1.0)
                 sub = eye.unsqueeze(0).expand(batch_size, -1, -1).clone()
                 sub_started = False
 
@@ -3197,13 +3244,19 @@ class FusedColorSegment(nn.Module):
                 and not self._is_normalize(transform)
                 and self._range_escapes_gamut(candidate)
             ):
-                out = self._matmul_image(out, candidate).clamp(0.0, 1.0)
+                out = self._apply_color_matrix(out, candidate).clamp(0.0, 1.0)
                 sub = eye.unsqueeze(0).expand(batch_size, -1, -1).clone()
                 sub_started = False
                 continue
             sub = candidate
             sub_started = True
-        return self._matmul_image(out, sub)
+        return self._apply_color_matrix(out, sub)
+
+    def _apply_color_matrix(self, image: Tensor, acc: Tensor) -> Tensor:
+        """Apply a color matrix through the eager or compiled dense tensor core."""
+        if self._compile_color and image.device.type != "cpu":
+            return _compiled_color_fn()(image, acc)
+        return _apply_color_matrix(image, acc)
 
     def _is_normalize(self, transform: object) -> bool:
         """Return whether the adapter identifies *transform* as Normalize."""
@@ -3222,12 +3275,7 @@ class FusedColorSegment(nn.Module):
         drift by ~1e-7 (well within color-parity tolerances).
 
         """
-        batch_size, channels, height, width = image.shape
-        pixels = image.reshape(batch_size, channels, height * width)
-        linear = acc[:, :channels, :channels]  # (B, 3, 3) per-channel mixing
-        bias = acc[:, :channels, channels : channels + 1]  # (B, 3, 1) homogeneous translation column
-        transformed = torch.baddbmm(bias, linear, pixels)  # bias + linear @ pixels, (B, 3, H*W)
-        return transformed.reshape(batch_size, channels, height, width)
+        return _apply_color_matrix(image, acc)
 
     @staticmethod
     def _range_escapes_gamut(acc: Tensor) -> bool:
@@ -3330,6 +3378,7 @@ def _flush_color(
     segments: list[object],
     randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     clip_policy: ClipPolicyStr = "final",
+    compile_color: bool = False,
 ) -> None:
     """Flush a run of ``POINTWISE_LINEAR`` transforms into segments.
 
@@ -3343,6 +3392,7 @@ def _flush_color(
         segments: Output segment list, appended in place.
         randomness: Batch randomness policy passed to the color segment.
         clip_policy: Clamp policy forwarded to :class:`FusedColorSegment`.
+        compile_color: Whether non-CPU color matrix applications may use ``torch.compile``.
 
     """
     if not transforms:
@@ -3363,6 +3413,7 @@ def _flush_color(
             clip_output=clip_output,
             randomness=randomness,
             clip_policy=clip_policy,
+            compile_color=compile_color,
         )
     )
     # Intentionally clears the caller-owned run buffer.
@@ -3377,6 +3428,98 @@ def _is_normalize_transform(adapter: TransformAdapter, transform: object) -> boo
 
 #: Default number of grid points on the float interpolation-LUT path (uniform over ``[0, 1]``).
 _DEFAULT_LUT_LEVELS = 1024
+
+
+LutFn = Callable[..., Tensor]
+
+
+def _apply_uint8_lut(image: Tensor, table: Tensor) -> Tensor:
+    """Map integer pixels through a normalized 256-entry lookup table."""
+    batch_size, channels, height, width = image.shape
+    table_i = (table * 255).round().clamp(0, 255).to(torch.long)
+    index = image.long().clamp(0, 255).reshape(batch_size, channels, height * width)
+    mapped = torch.gather(table_i, 2, index).reshape(batch_size, channels, height, width)
+    return mapped.to(image.dtype)
+
+
+def _apply_runtime_float_lut(image: Tensor, table: Tensor) -> Tensor:
+    """Map floating pixels through a byte-domain lookup table."""
+    batch_size, channels, height, width = image.shape
+    index = (image.to(torch.float32).clamp(0.0, 1.0) * 255).floor().long()
+    index = index.reshape(batch_size, channels, height * width)
+    mapped = torch.gather(table, 2, index).reshape(batch_size, channels, height, width)
+    return mapped.to(image.dtype)
+
+
+def _apply_interp_lut(image: Tensor, composed: Tensor, num_levels: int) -> Tensor:
+    """Map floating pixels by interpolating a composed lookup table."""
+    batch_size, channels, height, width = image.shape
+    clamped = image.to(torch.float32).clamp(0.0, 1.0).reshape(batch_size, channels, height * width)
+    pos = clamped * (num_levels - 1)
+    lo = pos.floor().clamp(0.0, num_levels - 2)
+    frac = pos - lo
+    lo_idx = lo.to(torch.long)
+    lo_val = torch.gather(composed, 2, lo_idx)
+    hi_val = torch.gather(composed, 2, lo_idx + 1)
+    out = lo_val + (hi_val - lo_val) * frac
+    jumps = (composed[..., 1:] - composed[..., :-1]).abs()
+    neighbours = torch.maximum(F.pad(jumps[..., :-1], (1, 0)), F.pad(jumps[..., 1:], (0, 1)))
+    discontinuity = (jumps > 8 * neighbours) & (jumps > 2 / (num_levels - 1))
+    step = torch.gather(discontinuity, 2, lo_idx)
+    out = torch.where(step & (frac >= 0.5), hi_val, out)
+    return out.reshape(batch_size, channels, height, width).to(image.dtype)
+
+
+# Runtime Equalize table construction is deliberately excluded. These functions
+# only gather from an already-built table, so no image-dependent Python control flow
+# enters the compiled region.
+_COMPILED_LUT_CACHE: dict[str, LutFn] = {}
+
+
+def _lut_fn(kind: str) -> LutFn:
+    """Return the eager lookup-table application core for ``kind``.
+
+    Args:
+        kind: ``"uint8"``, ``"runtime_float"``, or ``"interp"`` application mode.
+
+    Returns:
+        The eager function for the requested lookup application.
+
+    Raises:
+        ValueError: If ``kind`` is not a known lookup application mode.
+
+    """
+    functions: dict[str, LutFn] = {
+        "uint8": _apply_uint8_lut,
+        "runtime_float": _apply_runtime_float_lut,
+        "interp": _apply_interp_lut,
+    }
+    try:
+        return functions[kind]
+    except KeyError as exc:
+        msg = f"unknown lookup application mode {kind!r}"
+        raise ValueError(msg) from exc
+
+
+def _compiled_lut_fn(kind: str) -> LutFn:
+    """Return a dynamic-shape compiled lookup-table application core.
+
+    Args:
+        kind: ``"uint8"``, ``"runtime_float"``, or ``"interp"`` application mode.
+
+    Returns:
+        The cached compiled function for the requested lookup application.
+
+    Raises:
+        ValueError: If ``kind`` is not a known lookup application mode.
+
+    """
+    cached = _COMPILED_LUT_CACHE.get(kind)
+    if cached is not None:
+        return cached
+    compiled = torch.compile(_lut_fn(kind), dynamic=True)
+    _COMPILED_LUT_CACHE[kind] = compiled
+    return compiled
 
 
 class FusedLUTSegment(nn.Module):
@@ -3429,6 +3572,8 @@ class FusedLUTSegment(nn.Module):
         adapter: TransformAdapter,
         num_levels: int = _DEFAULT_LUT_LEVELS,
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+        *,
+        compile_lut: bool = False,
     ) -> None:
         """Initialize ``FusedLUTSegment``.
 
@@ -3437,6 +3582,7 @@ class FusedLUTSegment(nn.Module):
             adapter: Adapter providing ``sample_params`` and ``build_lut``.
             num_levels: Grid resolution of the float interpolation-LUT path (>= 2).
             randomness: Batch randomness policy.
+            compile_lut: Compile only the pure LUT gather/interpolation on non-CPU devices.
 
         """
         super().__init__()
@@ -3447,6 +3593,7 @@ class FusedLUTSegment(nn.Module):
         self._adapter = adapter
         self.num_levels = num_levels
         self.randomness = randomness
+        self._compile_lut: bool = compile_lut and _torch_supports_compile()
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Restore state; back-compat defaults for fields absent from older pickles."""
@@ -3455,6 +3602,8 @@ class FusedLUTSegment(nn.Module):
             self.num_levels = _DEFAULT_LUT_LEVELS
         if not hasattr(self, "randomness"):
             self.randomness = RandomnessPolicy.BACKEND
+        if not hasattr(self, "_compile_lut"):
+            self._compile_lut = False
 
     @property
     def transforms(self) -> list[object]:
@@ -3505,6 +3654,19 @@ class FusedLUTSegment(nn.Module):
         """Return whether ``transform`` needs an image-dependent lookup table."""
         checker = getattr(self._adapter, "is_runtime_lut", None)
         return bool(checker(transform)) if callable(checker) else False
+
+    def _apply_lut(
+        self,
+        kind: str,
+        image: Tensor,
+        table: Tensor,
+        num_levels: int | None = None,
+    ) -> Tensor:
+        """Apply an eager or compiled LUT core after table construction completes."""
+        fn = _compiled_lut_fn(kind) if self._compile_lut and image.device.type != "cpu" else _lut_fn(kind)
+        if num_levels is not None:
+            return fn(image, table, num_levels)
+        return fn(image, table)
 
     def _runtime_table(self, transform: object, params: dict[str, Tensor], image: Tensor) -> Tensor | None:
         """Build an image-dependent normalized byte table through the active adapter."""
@@ -3562,14 +3724,14 @@ class FusedLUTSegment(nn.Module):
         for tfm in self._transforms:
             params, active = self._sample_lut_params(image, tfm)
             if self._is_runtime_lut(tfm):
-                out = self._apply_interp(out, composed, num_levels)
+                out = self._apply_lut("interp", out, composed, num_levels)
                 composed = grid
                 table = self._runtime_table(tfm, params, out)
                 if table is None:
                     return self._fallback_nonfused(image)
                 identity = torch.linspace(0.0, 1.0, 256, device=image.device).view(1, 1, 256)
                 table = torch.where(active[:, None, None], table, identity)
-                mapped = self._apply_runtime_float(out, table)
+                mapped = self._apply_lut("runtime_float", out, table)
                 preserve = params.get("_runtime_preserve_float")
                 if preserve is not None:
                     mapped = torch.where(preserve[:, :, None, None], out, mapped)
@@ -3580,7 +3742,7 @@ class FusedLUTSegment(nn.Module):
             except NotImplementedError:
                 return self._fallback_nonfused(image)
             composed = torch.where(active[:, None, None], mapped, composed)
-        return self._apply_interp(out, composed, num_levels)
+        return self._apply_lut("interp", out, composed, num_levels)
 
     def _forward_uint8(self, image: Tensor) -> Tensor:
         """Apply the exact 256-entry path to an integer image (values in ``[0, 255]``)."""
@@ -3597,14 +3759,14 @@ class FusedLUTSegment(nn.Module):
         for tfm in self._transforms:
             params, active = self._sample_lut_params(image, tfm)
             if self._is_runtime_lut(tfm):
-                out = self._apply_uint8(out, composed)
+                out = self._apply_lut("uint8", out, composed)
                 composed = grid
                 table = self._runtime_table(tfm, params, out)
                 if table is None:
                     return self._fallback_nonfused(image)
                 identity = torch.linspace(0.0, 1.0, levels, device=image.device).view(1, 1, levels)
                 table = torch.where(active[:, None, None], table, identity)
-                out = self._apply_uint8(out, table)
+                out = self._apply_lut("uint8", out, table)
                 continue
             try:
                 mapped = self._adapter.build_lut(tfm, params, composed).to(dtype=composed.dtype)
@@ -3612,44 +3774,22 @@ class FusedLUTSegment(nn.Module):
                 return self._fallback_nonfused(image)
             composed = torch.where(active[:, None, None], mapped, composed)
             composed = (composed * (levels - 1)).round().clamp(0.0, levels - 1) / (levels - 1)
-        return self._apply_uint8(out, composed)
+        return self._apply_lut("uint8", out, composed)
 
     @staticmethod
     def _apply_uint8(image: Tensor, table: Tensor) -> Tensor:
         """Map an integer image through a normalized 256-entry table exactly."""
-        batch_size, channels, height, width = image.shape
-        table_i = (table * 255).round().clamp(0, 255).to(torch.long)
-        index = image.long().clamp(0, 255).reshape(batch_size, channels, height * width)
-        mapped = torch.gather(table_i, 2, index).reshape(batch_size, channels, height, width)
-        return mapped.to(image.dtype)
+        return _apply_uint8_lut(image, table)
 
     @staticmethod
     def _apply_runtime_float(image: Tensor, table: Tensor) -> Tensor:
         """Apply a byte-domain runtime table with the backend's quantized input domain."""
-        batch_size, channels, height, width = image.shape
-        index = (image.to(torch.float32).clamp(0.0, 1.0) * 255).floor().long()
-        index = index.reshape(batch_size, channels, height * width)
-        mapped = torch.gather(table, 2, index).reshape(batch_size, channels, height, width)
-        return mapped.to(image.dtype)
+        return _apply_runtime_float_lut(image, table)
 
     @staticmethod
     def _apply_interp(image: Tensor, composed: Tensor, num_levels: int) -> Tensor:
         """Map floats by linear interpolation, preserving detected lookup-table jumps sharply."""
-        batch_size, channels, height, width = image.shape
-        clamped = image.to(torch.float32).clamp(0.0, 1.0).reshape(batch_size, channels, height * width)
-        pos = clamped * (num_levels - 1)
-        lo = pos.floor().clamp(0.0, num_levels - 2)
-        frac = pos - lo
-        lo_idx = lo.to(torch.long)
-        lo_val = torch.gather(composed, 2, lo_idx)
-        hi_val = torch.gather(composed, 2, lo_idx + 1)
-        out = lo_val + (hi_val - lo_val) * frac
-        jumps = (composed[..., 1:] - composed[..., :-1]).abs()
-        neighbours = torch.maximum(F.pad(jumps[..., :-1], (1, 0)), F.pad(jumps[..., 1:], (0, 1)))
-        discontinuity = (jumps > 8 * neighbours) & (jumps > 2 / (num_levels - 1))
-        step = torch.gather(discontinuity, 2, lo_idx)
-        out = torch.where(step & (frac >= 0.5), hi_val, out)
-        return out.reshape(batch_size, channels, height, width).to(image.dtype)
+        return _apply_interp_lut(image, composed, num_levels)
 
     def _fallback_nonfused(self, image: Tensor) -> Tensor:
         """Apply every transform sequentially via the adapter (fusion aborted mid-run)."""
@@ -3730,6 +3870,7 @@ def _flush_lut(
     segments: list[object],
     randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     num_levels: int = _DEFAULT_LUT_LEVELS,
+    compile_lut: bool = False,
 ) -> None:
     """Flush a run of ``POINTWISE_LUT`` transforms into segments.
 
@@ -3743,6 +3884,7 @@ def _flush_lut(
         segments: Output segment list, appended in place.
         randomness: Batch randomness policy passed to the lookup segment.
         num_levels: Float interpolation-LUT grid resolution forwarded to :class:`FusedLUTSegment`.
+        compile_lut: Whether non-CPU lookup applications may use ``torch.compile``.
 
     """
     if not transforms:
@@ -3754,7 +3896,15 @@ def _flush_lut(
             transforms.clear()
             return
     lut_transforms = list(transforms)
-    segments.append(FusedLUTSegment(lut_transforms, adapter, num_levels=num_levels, randomness=randomness))
+    segments.append(
+        FusedLUTSegment(
+            lut_transforms,
+            adapter,
+            num_levels=num_levels,
+            randomness=randomness,
+            compile_lut=compile_lut,
+        )
+    )
     # Intentionally clears the caller-owned run buffer.
     transforms.clear()
 
@@ -4338,20 +4488,20 @@ def build_segments(
         category = adapter.category(transform)
         if category in fusible:
             _flush_proj()  # flush any pending projective
-            _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
-            _flush_lut(current_lut, adapter, segments, randomness)  # mutates current_lut in-place
+            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+            _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
             current_geo.append(transform)
             continue
         if category == projective_cat:
             _flush_geo()  # flush any pending affine
-            _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
-            _flush_lut(current_lut, adapter, segments, randomness)  # mutates current_lut in-place
+            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+            _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
             current_proj.append(transform)
             continue
         if category == pointwise_linear_cat:
             _flush_geo()
             _flush_proj()
-            _flush_lut(current_lut, adapter, segments, randomness)  # colour and LUT runs never fuse together
+            _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
             current_color.append(transform)
             continue
         if category == pointwise_lut_cat:
@@ -4359,7 +4509,7 @@ def build_segments(
             # run. Colour (matrix) and lookup (table) runs are mutually exclusive, so flush colour.
             _flush_geo()
             _flush_proj()
-            _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
+            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
             current_lut.append(transform)
             continue
         if category == crop_resize_cat:
@@ -4374,8 +4524,8 @@ def build_segments(
             # CropResizeSegment (which the Albumentations adapter fully supports for
             # CROP_RESIZE_FIXED) is emitted instead to route aux to the output size.
             _flush_proj()
-            _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
-            _flush_lut(current_lut, adapter, segments, randomness)  # mutates current_lut in-place
+            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+            _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
             if per_transform_padding:
                 _flush_geo()
                 crop_padding_mode = _transform_border_mode(adapter, transform)
@@ -4461,8 +4611,8 @@ def build_segments(
                 and _can_commute_gaussian_blur(following_geo, adapter)
             ):
                 _flush_proj()
-                _flush_color(current_color, adapter, segments, randomness, clip_policy)
-                _flush_lut(current_lut, adapter, segments, randomness)
+                _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+                _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
                 blur_transforms = transforms[index:blur_end]
                 segments.append(
                     FusedGaussianBlurSegment(
@@ -4483,8 +4633,8 @@ def build_segments(
             if blur_end > index + 1:
                 _flush_geo()
                 _flush_proj()
-                _flush_color(current_color, adapter, segments, randomness, clip_policy)
-                _flush_lut(current_lut, adapter, segments, randomness)
+                _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+                _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
                 blur_transforms = transforms[index:blur_end]
                 segments.append(
                     FusedGaussianBlurSegment(
@@ -4504,14 +4654,14 @@ def build_segments(
         # SPATIAL_KERNEL / POINTWISE barrier (blur/noise, saturation/hue, equalize): flush all
         _flush_geo()
         _flush_proj()
-        _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
-        _flush_lut(current_lut, adapter, segments, randomness)  # mutates current_lut in-place
+        _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+        _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
         segments.append(transform)
 
     _flush_geo()
     _flush_proj()
-    _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
-    _flush_lut(current_lut, adapter, segments, randomness)  # mutates current_lut in-place
+    _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+    _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
     return segments
 
 
