@@ -61,6 +61,39 @@ def test_axis_aligned_blur_scale_is_not_a_passthrough_barrier() -> None:
 
 
 @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia is required for Gaussian blur fusion")
+def test_downscale_prefix_commutes_as_one_high_quality_warp() -> None:
+    """A downscaling affine before the blur still fuses to a single warp.
+
+    Commutation is gated on the affine that *follows* the blur (here an upscale), so the surrounding affine run
+    collapses to one warp exactly as any affine chain does. The commuted blur then matches a single-warp reference at
+    high fidelity, confirming the fused path stays correct for a non-identity (downscaling) prefix and avoids the two-
+    warp intermediate detail loss of the previous blur-barrier plan.
+
+    """
+    image = torch.rand(2, 3, 24, 24, dtype=torch.float64)
+    pipe = Compose([
+        kornia_aug.RandomAffine(degrees=(0.0, 0.0), scale=(0.5, 0.5), p=1.0),
+        kornia_aug.RandomGaussianBlur((3, 3), (1.0, 1.0), p=1.0),
+        kornia_aug.RandomAffine(degrees=(0.0, 0.0), scale=(2.0, 2.0), p=1.0),
+    ])
+
+    output = pipe(image)
+    composed_warp = FusedAffineSegment(
+        [
+            kornia_aug.RandomAffine(degrees=(0.0, 0.0), scale=(0.5, 0.5), p=1.0),
+            kornia_aug.RandomAffine(degrees=(0.0, 0.0), scale=(2.0, 2.0), p=1.0),
+        ],
+        KorniaAdapter(),
+    )(image)
+    # The blur commutes through the upscale suffix, so its sigma scales by the suffix factor.
+    reference = _kornia_gaussian_blur(composed_warp, 2.0, 2.0)
+    assert reference is not None
+    assert len(pipe.fusion_plan_descriptors) == 1
+    assert pipe.n_warps_saved >= 1
+    assert _psnr(output, reference) > 40.0
+
+
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia is required for Gaussian blur fusion")
 @pytest.mark.parametrize(
     "affine",
     [

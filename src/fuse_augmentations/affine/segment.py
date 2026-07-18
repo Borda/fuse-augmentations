@@ -1760,10 +1760,23 @@ class FusedGaussianBlurSegment(nn.Module):
             sigma = _transform_gaussian_sigma(sigma, suffix)
             result = _apply_folded_gaussian(warped, sigma)
         else:
-            blurred = _apply_folded_gaussian(image, sigma)
-            result, grid = self._geometric._apply_grid(blurred, acc)
+            # Safety fallback for a non-commutable sampled matrix. Unreachable for the
+            # supported backends (their build-time check refuses non-axis-aligned or
+            # downscaling suffixes), but a custom transform that hid its scale/shear from
+            # the duck-typed check could reach here: apply the true image order
+            # suffix(blur(prefix(x))) with separate warps rather than assuming the blur
+            # commutes with the prefix. Auxiliary targets transform by the full affine
+            # (the blur is a spatial no-op for them), so they still route through ``acc``.
+            working = image
+            if self.prefix_geometric_transforms:
+                working, _ = self._prefix._apply_grid(working, prefix)
+            working = _apply_folded_gaussian(working, sigma)
+            if self.suffix_geometric_transforms:
+                working, _ = self._suffix._apply_grid(working, suffix)
+            result = working
             if aux_targets:
-                self._geometric._route_grid_aux(aux_targets, grid, acc_img, self._geometric.mask_interpolation)
+                _, aux_grid = self._geometric._apply_grid(image, acc)
+                self._geometric._route_grid_aux(aux_targets, aux_grid, acc_img, self._geometric.mask_interpolation)
         if aux_targets is None:
             return result
         return result, aux_targets
@@ -1800,9 +1813,7 @@ class FusedGaussianBlurSegment(nn.Module):
         return _cv2.GaussianBlur(image_hwc, (0, 0), sigmaX=sigma, sigmaY=sigma, borderType=_cv2.BORDER_REFLECT_101)
 
 
-def _sample_folded_gaussian_sigma(
-    transforms: list[object], image: Tensor, randomness: RandomnessPolicy
-) -> Tensor:
+def _sample_folded_gaussian_sigma(transforms: list[object], image: Tensor, randomness: RandomnessPolicy) -> Tensor:
     """Sample and variance-add scalar Gaussian blur sigmas for a tensor batch."""
     batch_size = image.shape[0]
     variance = torch.zeros((batch_size, 2), device=image.device, dtype=image.dtype)
@@ -1812,9 +1823,7 @@ def _sample_folded_gaussian_sigma(
     return variance.sqrt()
 
 
-def _sample_gaussian_sigma(
-    transform: object, image: Tensor, randomness: RandomnessPolicy
-) -> tuple[Tensor, Tensor]:
+def _sample_gaussian_sigma(transform: object, image: Tensor, randomness: RandomnessPolicy) -> tuple[Tensor, Tensor]:
     """Sample one isotropic Gaussian sigma and activation flag per batch item."""
     batch_size, channels, height, width = image.shape
     name = type(transform).__name__
@@ -3297,12 +3306,15 @@ class FusedLUTSegment(nn.Module):
       discontinuity (solarize threshold, posterize step) is smeared across ~one grid cell, so a small
       fraction (~1/``num_levels``) of pixels near a discontinuity diverge from native. This path never
       claims to beat native precision — parity is bounded by a documented interpolation tolerance.
-    - **Integer image — 256-entry table (exact).** The map is enumerated over the 256 byte values,
-      snapping to bytes between ops, so the composed table matches applying each op's byte map in
-      sequence with no interpolation error.
+    - **Integer image — 256-entry table.** The map is enumerated over the 256 byte values, snapping to
+      bytes between ops, so the composed table is exact *with respect to this segment's own composed
+      byte maps* and carries no interpolation error. Because each op's byte map is built from this
+      segment's evaluation rather than the backend's native integer kernel, a uint8 *tensor* result may
+      differ from a backend's own native uint8 op by a few levels at posterize/solarize step boundaries.
 
-    The Albumentations native NumPy (uint8) path is served by :meth:`forward_numpy`, which builds the
-    256-entry table bit-exactly from each transform's own native application.
+    The Albumentations native NumPy (uint8) path is served by :meth:`forward_numpy`, which builds each
+    op's 256-entry table from the transform's own native application, so it is bit-exact against the
+    native sequential chain.
 
     Args:
         transforms: List of ``POINTWISE_LUT`` transform objects to fuse.
@@ -4270,8 +4282,11 @@ def build_segments(
             while affine_end < len(transforms) and adapter.category(transforms[affine_end]) in fusible:
                 affine_end += 1
             following_geo = transforms[blur_end:affine_end]
-            if following_geo and not use_numpy and not per_transform_padding and _can_commute_gaussian_blur(
-                following_geo, adapter
+            if (
+                following_geo
+                and not use_numpy
+                and not per_transform_padding
+                and _can_commute_gaussian_blur(following_geo, adapter)
             ):
                 _flush_proj()
                 _flush_color(current_color, adapter, segments, randomness, clip_policy)

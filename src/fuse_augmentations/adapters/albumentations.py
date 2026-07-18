@@ -155,6 +155,9 @@ try:
         # but neither linearly composable into a FusedColorSegment matrix nor a per-channel LUT.
         _HueSaturationValue: TransformCategory.POINTWISE,
         _RandomResizedCrop: TransformCategory.CROP_RESIZE_FIXED,
+        # Equalize is intentionally left unregistered: its lookup table is a runtime per-image
+        # histogram, so it cannot be pre-composed with static neighbours at plan time. Staying
+        # unregistered routes it to the SPATIAL_KERNEL barrier default, keeping the LUT run split.
     }
 
     # Canonical base classes for fast isinstance dispatch in the adapter paths below.

@@ -75,9 +75,7 @@ Per-channel non-linear scalar maps — `gamma`, `solarize`, `posterize` — are 
 
 Other unknown and nonlinear operations generally become passthrough barriers. That preserves pipeline construction in many image-only cases, but passthrough is not automatically numerically transparent, device-efficient, or auxiliary-target safe.
 
-Gaussian blur is a narrow exception: consecutive Gaussian blurs fold into one operation, and a Gaussian blur can move
-through a following axis-aligned upscale so the adjoining affine transforms share one warp. Rotated, sheared, or
-downscaling affine runs, projective transforms, and non-linear kernels remain barriers.
+Gaussian blur is a narrow exception: consecutive Gaussian blurs fold into one operation, and a Gaussian blur commutes to the end of the run when the affine that immediately follows it is axis-aligned and does not downscale, letting that affine run collapse to a single warp (the surrounding affines then fuse as any affine chain does). The blur stays a barrier when the following affine rotates, shears, or downscales (its smallest singular value drops below one), and always for projective transforms and non-linear kernels.
 
 ## 📦 Install
 
@@ -240,7 +238,7 @@ Prefer the native backend container when you require:
 - full Albumentations dictionary processors;
 - exact native centers, fills, pixels, hooks, or RNG behavior;
 - unsupported spatial transforms with masks, boxes, or keypoints;
-- backend-specific per-transform interpolation semantics; per-transform border modes are available with ``padding_mode="per_transform"`` when they map exactly, while opaque modes stay native boundaries with a warning and the default override is unchanged.
+- backend-specific per-transform interpolation semantics; per-transform border modes are available with `padding_mode="per_transform"` when they map exactly, while opaque modes stay native boundaries with a warning and the default override is unchanged.
 
 ## 📚 Documentation
 
