@@ -39,7 +39,8 @@ from numpy.typing import NDArray
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
 from fuse_augmentations.affine.matrix import crop_resize_matrix, hflip_matrix, matmul3x3, rotation_matrix, vflip_matrix
-from fuse_augmentations.types import SamplingSemantics, TransformCategory
+from fuse_augmentations.affine.segment import _CV2_BORDER
+from fuse_augmentations.types import PaddingModeStr, SamplingSemantics, TransformCategory
 
 __doctest_skip__: list[str] = []
 if not _ALBUMENTATIONS_AVAILABLE:
@@ -258,6 +259,41 @@ class AlbumentationsAdapter:
             stacklevel=2,
         )
         return TransformCategory.SPATIAL_KERNEL
+
+    @staticmethod
+    def border_mode(transform: object) -> PaddingModeStr | None:
+        """Return Albumentations' compatible border mode for a geometric transform.
+
+        Only cv2 constant-zero, replicate, and reflect-101 settings map exactly
+        to the fused engine. Other cv2 modes or non-zero fills remain native
+        passthrough boundaries.
+
+        Args:
+            transform: An Albumentations transform instance.
+
+        Returns:
+            A compatible padding mode, or ``None`` for an opaque mode.
+
+        Example:
+            >>> import albumentations as A
+            >>> AlbumentationsAdapter.border_mode(A.Affine(rotate=10))
+            'zeros'
+
+        """
+        border_transforms = _INTERP_TYPES | frozenset({_Perspective}) if TRANSFORM_REGISTRY else frozenset()
+        if not _is_albu_instance(transform, border_transforms):
+            if _is_albu_instance(transform, frozenset(TRANSFORM_REGISTRY)):
+                return "zeros"
+            return None
+        border_mode = getattr(transform, "border_mode", None)
+        fill = getattr(transform, "fill", None)
+        if border_mode == _CV2_BORDER.get("zeros", 0) and fill == 0:
+            return "zeros"
+        if border_mode == _CV2_BORDER.get("border", 1):
+            return "border"
+        if border_mode == _CV2_BORDER.get("reflection", 4):
+            return "reflection"
+        return None
 
     @staticmethod
     def sample_params(

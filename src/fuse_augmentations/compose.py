@@ -60,6 +60,7 @@ from fuse_augmentations.affine.segment import (
     ProjectiveSegment,
     _clear_current_call_matrix,
     _current_call_matrix,
+    _OpaqueBorderModeTransform,
     _validate_execution,
     build_segments,
     reorder_aggressive,
@@ -68,10 +69,10 @@ from fuse_augmentations.affine.segment import (
 from fuse_augmentations.types import (
     BackendConverter,
     ClipPolicyStr,
+    ComposePaddingModeStr,
     ExecutionStr,
     InterpolationStr,
     MaskInterpolationStr,
-    PaddingModeStr,
     RandomnessPolicy,
     ReorderPolicy,
     SegmentDescriptor,
@@ -238,6 +239,7 @@ class _PassthroughSegment:
 
     transform: object
     adapter: TransformAdapter
+    split_reason: str | None = None
 
 
 class FusedCompose(nn.Module):
@@ -273,8 +275,10 @@ class FusedCompose(nn.Module):
             (``"bilinear"``, ``"nearest"``, ``"bicubic"``).
             Defaults to ``"bilinear"`` when ``None``.
         padding_mode: Padding mode override for fused segments
-            (``"zeros"``, ``"border"``, ``"reflection"``).
-            Defaults to ``"zeros"`` when ``None``.
+            (``"zeros"``, ``"border"``, ``"reflection"``), or the opt-in
+            ``"per_transform"`` policy. The latter honors compatible transform
+            modes and keeps opaque modes as native boundaries. Defaults to
+            ``"zeros"`` when ``None``.
         data_keys: List of key names describing positional arguments to
             :meth:`forward`. The first key should be ``"input"`` (the image).
             Auxiliary keys (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``,
@@ -355,7 +359,7 @@ class FusedCompose(nn.Module):
         transforms: list[object],
         reorder: ReorderPolicy = ReorderPolicy.NONE,
         interpolation: InterpolationStr | None = None,
-        padding_mode: PaddingModeStr | None = None,
+        padding_mode: ComposePaddingModeStr | None = None,
         data_keys: list[str] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
         randomness: RandomnessPolicy | Literal["backend", "per_sample"] = RandomnessPolicy.BACKEND,
@@ -430,13 +434,14 @@ class FusedCompose(nn.Module):
                     transforms=transforms,
                     adapter=adapter,
                     interpolation=interpolation,
-                    padding_mode=padding_mode,
+                    padding_mode=None if padding_mode == "per_transform" else padding_mode,
                     randomness=randomness_policy,
                     use_numpy=(backend == Backend.ALBUMENTATIONS),
                     route_coords_via_grid=_has_coord_aux(data_keys),
                     route_crop_aux=_has_aux_target(data_keys),
                     execution=execution,
                     compile_warp=compile,
+                    per_transform_padding=padding_mode == "per_transform",
                     antialias=antialias,
                     clip_policy=clip_policy,
                     mask_interpolation=mask_interpolation,
@@ -482,7 +487,7 @@ class FusedCompose(nn.Module):
         transforms: list[object],
         reorder: ReorderPolicy,
         interpolation: InterpolationStr | None,
-        padding_mode: PaddingModeStr | None,
+        padding_mode: ComposePaddingModeStr | None,
         data_keys: list[str] | None,
         adapter: TransformAdapter | None,
         segments: list[object],
@@ -503,7 +508,7 @@ class FusedCompose(nn.Module):
         self.original_transforms: list[object] = list(transforms)
         self.reorder: ReorderPolicy = reorder
         self.interpolation: InterpolationStr | None = interpolation
-        self.padding_mode: PaddingModeStr | None = padding_mode
+        self.padding_mode: ComposePaddingModeStr | None = padding_mode
         self.data_keys: list[str] | None = data_keys
         self.randomness: RandomnessPolicy = randomness
         self.execution: ExecutionStr = execution
@@ -1611,7 +1616,8 @@ class FusedCompose(nn.Module):
                         transforms=names,
                         n_warps_saved=num_saved,
                         backend=backend,
-                        split_reason=self._backend_boundary_reason(backend, prev_backend),
+                        split_reason=getattr(seg, "_fusion_split_reason", None)
+                        or self._backend_boundary_reason(backend, prev_backend),
                     )
                 )
                 prev_backend = backend
@@ -1626,7 +1632,8 @@ class FusedCompose(nn.Module):
                         transforms=names,
                         n_warps_saved=num_saved,
                         backend=backend,
-                        split_reason=self._backend_boundary_reason(backend, prev_backend),
+                        split_reason=getattr(seg, "_fusion_split_reason", None)
+                        or self._backend_boundary_reason(backend, prev_backend),
                     )
                 )
                 prev_backend = backend
@@ -1654,7 +1661,8 @@ class FusedCompose(nn.Module):
                         transforms=names,
                         n_warps_saved=num_saved,
                         backend=backend,
-                        split_reason=self._backend_boundary_reason(backend, prev_backend),
+                        split_reason=getattr(seg, "_fusion_split_reason", None)
+                        or self._backend_boundary_reason(backend, prev_backend),
                     )
                 )
                 prev_backend = backend
@@ -1709,7 +1717,7 @@ class FusedCompose(nn.Module):
                         transforms=(type(seg.transform).__name__,),
                         n_warps_saved=0,
                         barrier=self._passthrough_barrier_reason(seg.transform),
-                        split_reason=self._passthrough_split_reason(seg),
+                        split_reason=seg.split_reason or self._passthrough_split_reason(seg),
                         refused="not_fusible",
                     )
                 )
@@ -1814,7 +1822,7 @@ class FusedCompose(nn.Module):
         specs: list[TransformSpec],
         backend: BackendStr,
         interpolation: InterpolationStr = "bilinear",
-        padding_mode: PaddingModeStr = "zeros",
+        padding_mode: ComposePaddingModeStr = "zeros",
         reorder: ReorderPolicy = ReorderPolicy.POINTWISE,
         data_keys: list[str] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
@@ -2071,7 +2079,7 @@ class FusedCompose(nn.Module):
         brightness: float | None = None,
         contrast: float | None = None,
         interpolation: InterpolationStr = "bilinear",
-        padding_mode: PaddingModeStr = "zeros",
+        padding_mode: ComposePaddingModeStr = "zeros",
         reorder: ReorderPolicy = ReorderPolicy.POINTWISE,
         data_keys: list[str] | None = None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
@@ -2346,11 +2354,12 @@ class FusedCompose(nn.Module):
             transforms,
             adapter,
             interpolation,
-            padding_mode,
+            None if padding_mode == "per_transform" else padding_mode,
             randomness_policy,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
             route_coords_via_grid=route_coords_via_grid or _has_coord_aux(data_keys),
+            per_transform_padding=padding_mode == "per_transform",
         )
         instance._setup_instance(
             transforms=transforms,
@@ -2373,7 +2382,7 @@ class FusedCompose(nn.Module):
         cls,
         specs: list[TransformSpec],
         interpolation: InterpolationStr,
-        padding_mode: PaddingModeStr,
+        padding_mode: ComposePaddingModeStr,
         reorder: ReorderPolicy,
         data_keys: list[str] | None,
         output_backend: Literal["numpy", "numpy_hwc", "torch"] | None = None,
@@ -2457,11 +2466,12 @@ class FusedCompose(nn.Module):
             transforms,
             adapter,
             interpolation,
-            padding_mode,
+            None if padding_mode == "per_transform" else padding_mode,
             randomness,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
             route_coords_via_grid=route_coords_via_grid or _has_coord_aux(data_keys),
+            per_transform_padding=padding_mode == "per_transform",
         )
         instance._setup_instance(
             transforms=transforms,
@@ -2630,7 +2640,7 @@ def _build_mixed_segments(
     per_backends: list[Backend | None],
     reorder: ReorderPolicy,
     interpolation: InterpolationStr | None,
-    padding_mode: PaddingModeStr | None,
+    padding_mode: ComposePaddingModeStr | None,
     randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     *,
     route_coords_via_grid: bool = False,
@@ -2727,13 +2737,14 @@ def _build_mixed_segments(
             transforms=group_transforms,
             adapter=adapter,
             interpolation=interpolation,
-            padding_mode=padding_mode,
+            padding_mode=None if padding_mode == "per_transform" else padding_mode,
             randomness=randomness,
             use_numpy=(backend_name == Backend.ALBUMENTATIONS),
             route_coords_via_grid=route_coords_via_grid,
             route_crop_aux=route_crop_aux,
             execution=execution,
             compile_warp=compile_warp,
+            per_transform_padding=padding_mode == "per_transform",
             antialias=antialias,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
@@ -2802,10 +2813,16 @@ def _wrap_passthrough_segments(
             wrapped_segments.append(seg)
             continue
 
+        split_reason = None
+        transform = seg
+        if isinstance(seg, _OpaqueBorderModeTransform):
+            transform = seg.transform
+            split_reason = seg.split_reason
+
         seg_adapter = None
         if transform_adapters is not None:
             # Index-keyed lookup: find the transform's position
-            seg_idx = _id_to_index.get(id(seg))
+            seg_idx = _id_to_index.get(id(transform))
             if seg_idx is not None:
                 seg_adapter = transform_adapters.get(seg_idx)
 
@@ -2831,7 +2848,9 @@ def _wrap_passthrough_segments(
         if seg_adapter is None:
             msg = "Passthrough transform encountered but no adapter found; this is a bug in build_segments"
             raise RuntimeError(msg)
-        wrapped_segments.append(_PassthroughSegment(transform=seg, adapter=seg_adapter))
+        wrapped_segments.append(
+            _PassthroughSegment(transform=transform, adapter=seg_adapter, split_reason=split_reason)
+        )
 
     return wrapped_segments
 

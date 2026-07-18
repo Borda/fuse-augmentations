@@ -27,7 +27,7 @@ from fuse_augmentations.affine.matrix import (
     rotation_matrix,
     vflip_matrix,
 )
-from fuse_augmentations.types import SamplingSemantics, TransformCategory
+from fuse_augmentations.types import PaddingModeStr, SamplingSemantics, TransformCategory
 
 # ---------------------------------------------------------------------------
 # Transform registry - lazy import guards kornia as optional dependency
@@ -183,6 +183,45 @@ class KorniaAdapter:
             stacklevel=2,
         )
         return TransformCategory.SPATIAL_KERNEL
+
+    @staticmethod
+    def border_mode(transform: object) -> PaddingModeStr | None:
+        """Return Kornia's compatible border mode for a geometric transform.
+
+        Kornia's ``RandomAffine`` stores its selected mode in ``flags``. Other
+        supported geometric transforms have no configurable border mode and use
+        the engine's zero-padding equivalent.
+
+        Args:
+            transform: A Kornia transform instance.
+
+        Returns:
+            A compatible padding mode, or ``None`` when the affine mode cannot
+            be interpreted safely.
+
+        Example:
+            >>> import kornia.augmentation as K
+            >>> KorniaAdapter.border_mode(K.RandomAffine(10, padding_mode="border"))
+            'border'
+
+        """
+        if not TRANSFORM_REGISTRY:
+            return None
+        if type(transform) is not _RandomAffine:
+            category = TRANSFORM_REGISTRY.get(type(transform))
+            if category in {
+                TransformCategory.GEOMETRIC_INTERP,
+                TransformCategory.GEOMETRIC_EXACT,
+                TransformCategory.PROJECTIVE,
+                TransformCategory.CROP_RESIZE_FIXED,
+            }:
+                return "zeros"
+            return None
+        mode = getattr(transform, "flags", {}).get("padding_mode")
+        mode_name = getattr(mode, "name", "").lower()
+        if mode_name in ("zeros", "border", "reflection"):
+            return cast("PaddingModeStr", mode_name)
+        return None
 
     @staticmethod
     def sample_params(

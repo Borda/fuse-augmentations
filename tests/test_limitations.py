@@ -86,23 +86,18 @@ class TestFusibleClosures:
         assert len(pipe.fusion_plan_descriptors) == 1
         assert "passthrough" not in pipe.fusion_plan
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="padding mode is segment-level, no per-transform override -- flips when per-transform borders ship",
-    )
     def test_mixed_border_modes_split_per_transform(self):
-        """DESIRED: transforms with different border modes are honored per-transform.
+        """Transforms with different border modes are honored with the explicit opt-in.
 
-        Today a Compose-level padding mode overrides everything, so two affines
-        with different ``padding_mode`` values still fuse into one segment. Honoring
-        per-transform border modes would split the segment on a border-mode change to
-        reproduce native semantics.
+        The default Compose-level padding override is unchanged. ``per_transform``
+        instead splits a geometric run when the compatible border mode changes.
         """
         pipe = Compose([
             kornia_aug.RandomAffine(degrees=25, padding_mode="reflection", p=1.0),
             kornia_aug.RandomAffine(degrees=20, padding_mode="zeros", p=1.0),
-        ])
+        ], padding_mode="per_transform")
         assert len(pipe.fusion_plan_descriptors) >= 2
+        assert pipe.fusion_plan_descriptors[1].split_reason == "border_mode_change"
 
     def test_rotate90_routes_aux_mask_without_raising(self):
         """CLOSED: a non-flip exact op routes an aux mask without raising.

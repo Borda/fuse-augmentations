@@ -20,8 +20,10 @@ Example:
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Callable, Sequence
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, cast
 
 import numpy as np
@@ -91,6 +93,14 @@ if not _ALBUMENTATIONS_AVAILABLE:
 _COMPOSE_DTYPE: torch.dtype = torch.float64
 
 _CURRENT_CALL_MATRIX: ContextVar[Tensor | None] = ContextVar("fuse_current_call_matrix", default=None)
+
+
+@dataclass(frozen=True, slots=True)
+class _OpaqueBorderModeTransform:
+    """Carry a geometric transform that must remain a native border boundary."""
+
+    transform: object
+    split_reason: str = "opaque_border_mode"
 
 
 def _clear_current_call_matrix() -> None:
@@ -3859,6 +3869,55 @@ def _is_zero_range(value: object) -> bool:
     return False
 
 
+def _transform_border_mode(adapter: TransformAdapter, transform: object) -> PaddingModeStr | None:
+    """Return a transform's compatible border mode, treating unknown modes as opaque."""
+    accessor = getattr(adapter, "border_mode", None)
+    if accessor is None:
+        return "zeros"
+    mode = accessor(transform)
+    if mode in ("zeros", "border", "reflection"):
+        return cast("PaddingModeStr", mode)
+    return None
+
+
+def _partition_border_modes(
+    transforms: list[object],
+    adapter: TransformAdapter,
+) -> list[tuple[list[object], PaddingModeStr | None, str | None]]:
+    """Partition a geometric run into compatible constant-border sub-runs."""
+    partitions: list[tuple[list[object], PaddingModeStr | None, str | None]] = []
+    current: list[object] = []
+    current_mode: PaddingModeStr | None = None
+    current_split_reason: str | None = None
+
+    for transform in transforms:
+        mode = _transform_border_mode(adapter, transform)
+        if mode is None:
+            if current:
+                partitions.append((current, current_mode, current_split_reason))
+                current = []
+            partitions.append(([transform], None, "opaque_border_mode"))
+            current_mode = None
+            current_split_reason = None
+            continue
+        if not current:
+            current = [transform]
+            current_mode = mode
+            current_split_reason = None
+            continue
+        if mode == current_mode:
+            current.append(transform)
+            continue
+        partitions.append((current, current_mode, current_split_reason))
+        current = [transform]
+        current_mode = mode
+        current_split_reason = "border_mode_change"
+
+    if current:
+        partitions.append((current, current_mode, current_split_reason))
+    return partitions
+
+
 def build_segments(
     transforms: list[object],
     adapter: TransformAdapter,
@@ -3871,6 +3930,7 @@ def build_segments(
     route_crop_aux: bool = False,
     execution: ExecutionStr = "cv2",
     compile_warp: bool = False,
+    per_transform_padding: bool = False,
     antialias: bool = False,
     clip_policy: ClipPolicyStr = "final",
     mask_interpolation: MaskInterpolationStr = "nearest",
@@ -3930,6 +3990,9 @@ def build_segments(
             default and a no-op on CPU or older torch — the eager output is unchanged.
             Crop-resize segments (:class:`CropResizeSegment`, :class:`_FusedGeoCropSegment`)
             build their warp inline and do not honor this flag.
+        per_transform_padding: When ``True``, partition geometric runs by each
+            transform's compatible border mode instead of applying ``padding_mode``
+            to the entire run. Opaque modes remain native passthrough boundaries.
         antialias: When ``True``, crop-resize segments prefilter the input before an
             aggressive downscale so the single warp does not alias. Off by default and
             a no-op unless the scale drops past the threshold — the output is unchanged.
@@ -3964,82 +4027,124 @@ def build_segments(
     current_color: list[object] = []
     current_lut: list[object] = []
 
+    def _append_segment(segment: object, split_reason: str | None) -> None:
+        """Append a segment and retain its construction-time split reason."""
+        if split_reason is not None:
+            cast("Any", segment)._fusion_split_reason = split_reason
+        segments.append(segment)
+
+    def _append_geo_segment(
+        geo_transforms: list[object],
+        geo_padding_mode: PaddingModeStr | None,
+        split_reason: str | None,
+    ) -> None:
+        """Build one geometric segment using a single compatible border mode."""
+        has_interp = any(
+            adapter.category(transform) == TransformCategory.GEOMETRIC_INTERP for transform in geo_transforms
+        )
+        if use_numpy:
+            if has_interp:
+                _append_segment(
+                    AlbuFusedAffineSegment(
+                        transforms=geo_transforms,
+                        adapter=adapter,
+                        interpolation=interpolation,
+                        padding_mode=geo_padding_mode,
+                        execution=execution,
+                        mask_interpolation=mask_interpolation,
+                    ),
+                    split_reason,
+                )
+            else:
+                _append_segment(ExactAffineSegment(geo_transforms, adapter, randomness=randomness), split_reason)
+            return
+
+        if has_interp or route_coords_via_grid:
+            _append_segment(
+                FusedAffineSegment(
+                    transforms=geo_transforms,
+                    adapter=adapter,
+                    interpolation=interpolation,
+                    padding_mode=geo_padding_mode,
+                    randomness=randomness,
+                    compile_warp=compile_warp,
+                    mask_interpolation=mask_interpolation,
+                ),
+                split_reason,
+            )
+            return
+
+        _append_segment(ExactAffineSegment(geo_transforms, adapter, randomness=randomness), split_reason)
+
     def _flush_geo() -> None:
         if not current_geo:
             return
 
-        has_interp = any(adapter.category(transform) == TransformCategory.GEOMETRIC_INTERP for transform in current_geo)
-
-        if use_numpy:
-            # Albumentations path: use AlbuFusedAffineSegment only when interpolation is present;
-            # keep ExactAffineSegment for GEOMETRIC_EXACT-only runs to preserve lossless flips and
-            # auxiliary-target handling.
-            if has_interp:
-                segments.append(
-                    AlbuFusedAffineSegment(
-                        transforms=list(current_geo),
-                        adapter=adapter,
-                        interpolation=interpolation,
-                        padding_mode=padding_mode,
-                        execution=execution,
-                        mask_interpolation=mask_interpolation,
+        if per_transform_padding:
+            for group, group_mode, split_reason in _partition_border_modes(current_geo, adapter):
+                if group_mode is None:
+                    transform = group[0]
+                    warnings.warn(
+                        f"{type(transform).__name__} has an opaque border mode; keeping it as a native boundary.",
+                        UserWarning,
+                        stacklevel=3,
                     )
-                )
-            else:
-                segments.append(ExactAffineSegment(list(current_geo), adapter, randomness=randomness))
+                    segments.append(_OpaqueBorderModeTransform(transform, split_reason or "opaque_border_mode"))
+                else:
+                    _append_geo_segment(group, group_mode, split_reason)
+        else:
+            _append_geo_segment(list(current_geo), padding_mode, None)
+        current_geo.clear()
 
-            current_geo.clear()
-            return
-
-        # Route through the grid FusedAffineSegment when the run interpolates, OR when
-        # it is all-exact but the pipeline carries box/keypoint aux (ExactAffineSegment
-        # cannot route those). An all-exact run always composes to a D4 element, so the
-        # fused segment's exact-dispatch keeps it lossless while routing coords through
-        # the composed matrix.
-        if has_interp or route_coords_via_grid:
-            segments.append(
-                FusedAffineSegment(
-                    transforms=list(current_geo),
+    def _append_projective_segment(
+        projective_transforms: list[object],
+        projective_padding_mode: PaddingModeStr | None,
+        split_reason: str | None,
+    ) -> None:
+        """Build one projective segment using a single compatible border mode."""
+        if use_numpy:
+            _append_segment(
+                AlbuProjectiveSegment(
+                    transforms=projective_transforms,
                     adapter=adapter,
                     interpolation=interpolation,
-                    padding_mode=padding_mode,
-                    randomness=randomness,
-                    compile_warp=compile_warp,
+                    padding_mode=projective_padding_mode,
+                    execution=execution,
                     mask_interpolation=mask_interpolation,
-                )
+                ),
+                split_reason,
             )
-            current_geo.clear()
             return
-
-        segments.append(ExactAffineSegment(list(current_geo), adapter, randomness=randomness))
-        current_geo.clear()
+        _append_segment(
+            ProjectiveSegment(
+                transforms=projective_transforms,
+                adapter=adapter,
+                interpolation=interpolation,
+                padding_mode=projective_padding_mode,
+                randomness=randomness,
+                compile_warp=compile_warp,
+                mask_interpolation=mask_interpolation,
+            ),
+            split_reason,
+        )
 
     def _flush_proj() -> None:
         if not current_proj:
             return
-        if use_numpy:
-            segments.append(
-                AlbuProjectiveSegment(
-                    transforms=list(current_proj),
-                    adapter=adapter,
-                    interpolation=interpolation,
-                    padding_mode=padding_mode,
-                    execution=execution,
-                    mask_interpolation=mask_interpolation,
-                )
-            )
+        if per_transform_padding:
+            for group, group_mode, split_reason in _partition_border_modes(current_proj, adapter):
+                if group_mode is None:
+                    transform = group[0]
+                    warnings.warn(
+                        f"{type(transform).__name__} has an opaque border mode; keeping it as a native boundary.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+                    segments.append(_OpaqueBorderModeTransform(transform, split_reason or "opaque_border_mode"))
+                else:
+                    _append_projective_segment(group, group_mode, split_reason)
         else:
-            segments.append(
-                ProjectiveSegment(
-                    transforms=list(current_proj),
-                    adapter=adapter,
-                    interpolation=interpolation,
-                    padding_mode=padding_mode,
-                    randomness=randomness,
-                    compile_warp=compile_warp,
-                    mask_interpolation=mask_interpolation,
-                )
-            )
+            _append_projective_segment(list(current_proj), padding_mode, None)
         current_proj.clear()
 
     consumed_linear_indices: set[int] = set()
@@ -4087,6 +4192,31 @@ def build_segments(
             _flush_proj()
             _flush_color(current_color, adapter, segments, randomness, clip_policy)  # mutates current_color in-place
             _flush_lut(current_lut, adapter, segments, randomness)  # mutates current_lut in-place
+            if per_transform_padding:
+                _flush_geo()
+                crop_padding_mode = _transform_border_mode(adapter, transform)
+                if crop_padding_mode is None:
+                    warnings.warn(
+                        f"{type(transform).__name__} has an opaque border mode; keeping it as a native boundary.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+                    segments.append(_OpaqueBorderModeTransform(transform))
+                elif use_numpy and not route_crop_aux:
+                    segments.append(transform)
+                else:
+                    segments.append(
+                        CropResizeSegment(
+                            transform=transform,
+                            adapter=adapter,
+                            interpolation=interpolation,
+                            padding_mode=crop_padding_mode,
+                            randomness=randomness,
+                            antialias=antialias,
+                            mask_interpolation=mask_interpolation,
+                        )
+                    )
+                continue
             if use_numpy:
                 _flush_geo()
                 if route_crop_aux:
@@ -4140,7 +4270,9 @@ def build_segments(
             while affine_end < len(transforms) and adapter.category(transforms[affine_end]) in fusible:
                 affine_end += 1
             following_geo = transforms[blur_end:affine_end]
-            if following_geo and not use_numpy and _can_commute_gaussian_blur(following_geo, adapter):
+            if following_geo and not use_numpy and not per_transform_padding and _can_commute_gaussian_blur(
+                following_geo, adapter
+            ):
                 _flush_proj()
                 _flush_color(current_color, adapter, segments, randomness, clip_policy)
                 _flush_lut(current_lut, adapter, segments, randomness)

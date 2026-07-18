@@ -179,6 +179,10 @@ MaskInterpolationStr = Literal["nearest", "bilinear"]
 #: ``padding_mode`` values; ordered by quality (reflection > border > zeros).
 PaddingModeStr = Literal["zeros", "border", "reflection"]
 
+#: Padding mode accepted by pipeline constructors. ``"per_transform"`` is an
+#: opt-in segmentation policy rather than a ``grid_sample`` padding value.
+ComposePaddingModeStr = PaddingModeStr | Literal["per_transform"]
+
 #: String literal type for the ``kind`` field of :class:`SegmentDescriptor`.
 SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color", "lut", "crop_resize", "gaussian_blur"]
 

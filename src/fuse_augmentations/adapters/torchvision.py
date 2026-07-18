@@ -39,7 +39,7 @@ from fuse_augmentations.affine.matrix import (
     rotation_matrix,
     vflip_matrix,
 )
-from fuse_augmentations.types import SamplingSemantics, TransformCategory
+from fuse_augmentations.types import PaddingModeStr, SamplingSemantics, TransformCategory
 
 # ---------------------------------------------------------------------------
 # Transform registry -- lazy import guards (torchvision is optional)
@@ -219,6 +219,38 @@ class TorchVisionAdapter:
             stacklevel=2,
         )
         return TransformCategory.SPATIAL_KERNEL
+
+    @staticmethod
+    def border_mode(transform: object) -> PaddingModeStr | None:
+        """Return TorchVision's compatible implicit border mode.
+
+        TorchVision geometric transforms expose a fill value instead of a border
+        strategy. Zero fill maps to the engine's zero padding; any other fill is
+        opaque because no equivalent post-composite path exists.
+
+        Args:
+            transform: A TorchVision transform instance.
+
+        Returns:
+            ``"zeros"`` for zero fill, otherwise ``None`` for opaque fill.
+
+        Example:
+            >>> from torchvision.transforms.v2 import RandomAffine
+            >>> TorchVisionAdapter.border_mode(RandomAffine(10))
+            'zeros'
+
+        """
+        category = TorchVisionAdapter.category(transform)
+        geometric = {
+            TransformCategory.GEOMETRIC_INTERP,
+            TransformCategory.GEOMETRIC_EXACT,
+            TransformCategory.PROJECTIVE,
+            TransformCategory.CROP_RESIZE_FIXED,
+        }
+        if category not in geometric:
+            return None
+        fill = getattr(transform, "fill", 0)
+        return "zeros" if fill in (None, 0) else None
 
     @staticmethod
     def sample_params(

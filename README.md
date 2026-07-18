@@ -240,7 +240,7 @@ Prefer the native backend container when you require:
 - full Albumentations dictionary processors;
 - exact native centers, fills, pixels, hooks, or RNG behavior;
 - unsupported spatial transforms with masks, boxes, or keypoints;
-- backend-specific per-transform interpolation and padding semantics.
+- backend-specific per-transform interpolation semantics; per-transform border modes are available with ``padding_mode="per_transform"`` when they map exactly, while opaque modes stay native boundaries with a warning and the default override is unchanged.
 
 ## 📚 Documentation
 
