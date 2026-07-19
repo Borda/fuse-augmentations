@@ -1,4 +1,4 @@
-# 🔗 fuse-augmentations
+# ⚛️ Fuse augmentations
 
 **Write image augmentation as independent transforms. Execute compatible geometry with fewer resampling passes.**
 

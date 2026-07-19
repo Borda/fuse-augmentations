@@ -3,6 +3,7 @@
 The implementation lives in :mod:`fuse_augmentations.pipeline`. This module
 forwards both public and historical private attributes so existing imports and
 pickle payloads that reference ``fuse_augmentations.compose`` remain valid.
+
 """
 
 from __future__ import annotations

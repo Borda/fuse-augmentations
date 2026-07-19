@@ -3,6 +3,7 @@
 The mixin deliberately depends only on lower-level configuration, planning, matrix,
 and type modules. ``FusedCompose`` remains defined in :mod:`pipeline` so its
 public import and pickle identity stay stable.
+
 """
 
 from __future__ import annotations
@@ -42,6 +43,11 @@ from fuse_augmentations.types import (
 
 if TYPE_CHECKING:
     from fuse_augmentations.resolver import BackendStr, OpStr
+
+# The from_config doctest builds a Kornia-backed pipeline, so it is skipped when
+# Kornia is not installed (pytest-doctestplus reads this module-level mapping of
+# doctest name patterns to their required modules).
+__doctest_requires__ = {"FactoriesMixin.from_config": ["kornia"]}
 
 
 class FactoriesMixin:

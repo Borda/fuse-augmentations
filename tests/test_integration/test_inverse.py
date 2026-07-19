@@ -118,17 +118,29 @@ def test_projective_inverse_round_trip_uses_homography() -> None:
     assert _psnr(recovered[..., 8:-8, 8:-8], image[..., 8:-8, 8:-8]) > 25.0
 
 
-@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia is required for non-invertible segment coverage")
-@pytest.mark.parametrize(
-    ("pipe", "message"),
+# Built at import time, so the Kornia transforms must only be constructed when
+# the optional backend is installed; otherwise the parametrization collapses to a
+# single skipped case (constructing them unconditionally raises NameError during
+# collection on a minimal install without Kornia).
+_NON_INVERTIBLE_PIPELINES = (
     [
-        (
+        pytest.param(
             Compose([kornia_aug.RandomResizedCrop(size=(32, 32), scale=(0.8, 0.8), ratio=(1.0, 1.0), p=1.0)]),
             "crop-resize",
+            id="crop-resize",
         ),
-        (Compose([kornia_aug.RandomBrightness(brightness=(0.8, 0.8), p=1.0)]), "non-geometric color"),
-    ],
+        pytest.param(
+            Compose([kornia_aug.RandomBrightness(brightness=(0.8, 0.8), p=1.0)]),
+            "non-geometric color",
+            id="non-geometric-color",
+        ),
+    ]
+    if _KORNIA_AVAILABLE
+    else [pytest.param(None, "", marks=pytest.mark.skip(reason="kornia is required"), id="kornia-missing")]
 )
+
+
+@pytest.mark.parametrize(("pipe", "message"), _NON_INVERTIBLE_PIPELINES)
 def test_inverse_rejects_non_invertible_pipeline(pipe: Compose, message: str) -> None:
     """Information-losing and non-geometric segments fail with named reasons."""
     with pytest.raises(ValueError, match=message):

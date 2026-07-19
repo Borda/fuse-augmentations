@@ -37,14 +37,16 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
 from fuse_augmentations.affine.matrix import crop_resize_matrix, hflip_matrix, matmul3x3, rotation_matrix, vflip_matrix
 from fuse_augmentations.affine.segment import _CV2_BORDER
 from fuse_augmentations.types import PaddingModeStr, SamplingSemantics, TransformCategory
 
-__doctest_skip__: list[str] = []
-if not _ALBUMENTATIONS_AVAILABLE:
-    __doctest_skip__ += ["AlbumentationsAdapter.call_nonfused_numpy"]
+# Doctests that import the optional Albumentations backend are skipped when it
+# is not installed (pytest-doctestplus reads this module-level mapping of
+# doctest name patterns to their required modules).
+__doctest_requires__ = {
+    ("AlbumentationsAdapter.border_mode", "AlbumentationsAdapter.call_nonfused_numpy"): ["albumentations"],
+}
 
 # ---------------------------------------------------------------------------
 # Inline NumPy matrix helpers (moved from _np_matrix.py)

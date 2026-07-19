@@ -41,6 +41,11 @@ from fuse_augmentations.affine.matrix import (
 )
 from fuse_augmentations.types import PaddingModeStr, SamplingSemantics, TransformCategory
 
+# Doctests that import the optional TorchVision backend are skipped when it is
+# not installed (pytest-doctestplus reads this module-level mapping of doctest
+# name patterns to their required modules).
+__doctest_requires__ = {"TorchVisionAdapter.border_mode": ["torchvision"]}
+
 # ---------------------------------------------------------------------------
 # Transform registry -- lazy import guards (torchvision is optional)
 # ---------------------------------------------------------------------------

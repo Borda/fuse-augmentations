@@ -25,12 +25,17 @@ from fuse_augmentations.affine.segment import (
     ProjectiveSegment,
     build_segments,
 )
-from fuse_augmentations.compose import (
+from fuse_augmentations.converters import NumpyToTorchConverter, TorchToNumpyConverter
+
+# Import from the implementation module (not the ``compose`` compatibility
+# shim, whose runtime ``__getattr__`` forwarding is invisible to static doc
+# tooling such as griffe/mkdocstrings). ``compose`` stays a valid import and
+# pickle path for historical payloads.
+from fuse_augmentations.pipeline import (
     AugmentationSequential,
     Compose,
     FusedCompose,
 )
-from fuse_augmentations.converters import NumpyToTorchConverter, TorchToNumpyConverter
 from fuse_augmentations.targets import (
     transform_bbox_xywh,
     transform_bbox_xyxy,

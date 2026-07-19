@@ -131,13 +131,18 @@ def test_rotated_affine_commutes_gaussian_blur_with_sampled_covariance(
     assert (output[interior] - reference[interior]).abs().max() < 0.03
 
 
-@pytest.mark.parametrize(
-    "affine",
-    [
-        kornia_aug.RandomAffine(degrees=(25.0, 25.0), scale=(0.8, 0.8), p=1.0),
-    ],
-    ids=["rotated_downscale"],
+# Built at import time, so the Kornia transform must only be constructed when the
+# optional backend is installed; otherwise the parametrization collapses to a
+# single skipped case (constructing it unconditionally raises NameError during
+# collection on a minimal install without Kornia).
+_DOWNSCALE_AFFINES = (
+    [pytest.param(kornia_aug.RandomAffine(degrees=(25.0, 25.0), scale=(0.8, 0.8), p=1.0), id="rotated_downscale")]
+    if _KORNIA_AVAILABLE
+    else [pytest.param(None, marks=pytest.mark.skip(reason="kornia is required"), id="rotated_downscale")]
 )
+
+
+@pytest.mark.parametrize("affine", _DOWNSCALE_AFFINES)
 def test_downscaling_affines_keep_the_gaussian_blur_barrier(affine) -> None:
     """A rotated downscale retains the two-segment Gaussian blur barrier plan."""
     pipe = Compose([

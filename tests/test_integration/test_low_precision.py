@@ -11,6 +11,7 @@ The MPS-vs-CPU values include the MPS float32 sampler's own 24.53 dB parity,
 so the low-precision gates compare to the MPS float32 path separately. The
 committed floors retain at least 3 dB margin from the measured low-precision
 values and do not claim float32-exact output.
+
 """
 
 from __future__ import annotations

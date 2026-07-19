@@ -1,7 +1,8 @@
 """Shared validation and construction configuration helpers.
 
-This leaf module keeps configuration normalization independent of pipeline runtime,
-factory construction, and inspection so those layers do not import one another.
+This leaf module keeps configuration normalization independent of pipeline runtime, factory construction, and inspection
+so those layers do not import one another.
+
 """
 
 from __future__ import annotations

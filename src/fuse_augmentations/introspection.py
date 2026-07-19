@@ -3,6 +3,7 @@
 The mixin reads only state owned by ``FusedCompose`` and lower-level segment and
 type modules. It imports the direct-parameter adapter from the factory module,
 never from :mod:`pipeline`, so the package dependency direction remains acyclic.
+
 """
 
 from __future__ import annotations

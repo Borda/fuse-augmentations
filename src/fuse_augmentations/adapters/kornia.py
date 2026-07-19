@@ -29,6 +29,11 @@ from fuse_augmentations.affine.matrix import (
 )
 from fuse_augmentations.types import PaddingModeStr, SamplingSemantics, TransformCategory
 
+# Doctests that import the optional Kornia backend are skipped when it is not
+# installed (pytest-doctestplus reads this module-level mapping of doctest name
+# patterns to their required modules).
+__doctest_requires__ = {"KorniaAdapter.border_mode": ["kornia"]}
+
 # ---------------------------------------------------------------------------
 # Transform registry - lazy import guards kornia as optional dependency
 # ---------------------------------------------------------------------------

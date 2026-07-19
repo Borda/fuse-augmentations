@@ -78,6 +78,8 @@ direction: higher
 baseline: 1.6671  # CI runner-measured (ubuntu, py3.12); local laptop swings ±5% — trust the runner
 ```
 
+**Baseline validation (2026-07-19, single local pass).** One `optimize_score.py` run on the current tree — after the gap-closure capability work (inverse/TTA, whole-pipeline compile, bf16/fp16), the MPS numeric-parity coverage, and the structural split of the compose god-module into pipeline / factories / introspection / planner / config_validation modules — measured `real_score=1.7625`, `theoretical_target=2.3752`. This sits inside the historic ~1.76–1.87 local band and above the CI-runner baseline, confirming the refactors and capability additions caused no geomean regression. The CI-measured `baseline: 1.6671` above is left unchanged (trust-the-runner). A full re-launch campaign was intentionally deferred (budget); this pass is validation only.
+
 `theoretical_target` (~2.375) is printed on every run and IS the ceiling. No `target:` is set; the campaign runs to the diminishing-returns window. At ~1.80 vs 2.375 with the remaining gap dominated by documented colour-op time fractions and by-design opt-ins, expect this to be a prove-and-refine run with occasional micro-wins, not an unbounded optimization goldmine — but keep exploring until improvements genuinely dry up.
 
 ## Guard

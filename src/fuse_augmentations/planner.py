@@ -1,7 +1,8 @@
 """Plan fusion segments across augmentation backends.
 
-This module groups mixed-backend transforms, builds backend-specific segments,
-and keeps passthrough dispatch metadata stable across pickle round-trips.
+This module groups mixed-backend transforms, builds backend-specific segments, and keeps passthrough dispatch metadata
+stable across pickle round-trips.
+
 """
 
 from __future__ import annotations

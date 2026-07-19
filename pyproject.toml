@@ -212,7 +212,14 @@ ini_options.markers = [
 ini_options.filterwarnings = [
   "error::FutureWarning",
   "error::DeprecationWarning",
-  "ignore:`torch.jit.script_method` is deprecated.*:DeprecationWarning:torch.jit._script",
+  # Kornia calls torch.jit.script / script_method internally at import time.
+  # Newer torch deprecates both and, on Python 3.14+, warns they are "not
+  # supported" (a different wording than "is deprecated"). Match each symbol
+  # with a trailing wildcard so either wording is ignored and collection of
+  # every Kornia-backed test is not aborted. script_method is matched
+  # separately from script so neither pattern shadows the other.
+  "ignore:`torch.jit.script_method`.*:DeprecationWarning",
+  "ignore:`torch.jit.script`.*:DeprecationWarning",
 ]
 ini_options.xfail_strict = true
 ini_options.junit_duration_report = "call"

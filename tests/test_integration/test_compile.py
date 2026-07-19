@@ -133,23 +133,32 @@ class TestCompiledColorMatchesEager:
 class TestCompiledLUTMatchesEager:
     """The compiled lookup-table gather reproduces eager interpolation."""
 
-    def test_compiled_lut_allclose_eager_without_graph_breaks(self) -> None:
-        """A static LUT gather matches eager output and has no Dynamo graph breaks."""
+    def test_compiled_lut_region_has_no_graph_breaks(self) -> None:
+        """The static LUT gather produces one graph with zero breaks (eager, no toolchain)."""
         image = torch.rand(2, 3, 24, 24, dtype=torch.float32)
         table = torch.linspace(0.0, 1.0, 1024).view(1, 1, -1).expand(2, 3, -1).contiguous()
-        eager_out = _apply_interp_lut(image, table, 1024)
-        compiled = _compiled_lut_fn("interp")
-        compiled_out = compiled(image, table, 1024)
-        assert torch.allclose(eager_out, compiled_out, atol=1e-5)
-        narrow_image = torch.rand(1, 3, 17, 31, dtype=torch.float32)
-        narrow_table = table[:1]
-        assert torch.allclose(
-            _apply_interp_lut(narrow_image, narrow_table, 1024),
-            compiled(narrow_image, narrow_table, 1024),
-            atol=1e-5,
-        )
         explanation = torch._dynamo.explain(_apply_interp_lut)(image, table, 1024)
         assert explanation.graph_break_count == 0
+
+    def test_cached_compiled_lut_fn_allclose_eager(self) -> None:
+        """The cached default-backend LUT gather round-trips (full and narrow) when codegen is available."""
+        image = torch.rand(2, 3, 24, 24, dtype=torch.float32)
+        table = torch.linspace(0.0, 1.0, 1024).view(1, 1, -1).expand(2, 3, -1).contiguous()
+        narrow_image = torch.rand(1, 3, 17, 31, dtype=torch.float32)
+        narrow_table = table[:1]
+        eager_out = _apply_interp_lut(image, table, 1024)
+        narrow_eager_out = _apply_interp_lut(narrow_image, narrow_table, 1024)
+        compiled = _compiled_lut_fn("interp")
+        try:
+            compiled_out = compiled(image, table, 1024)
+            narrow_compiled_out = compiled(narrow_image, narrow_table, 1024)
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            if "Compiler" in reason or "setuptools" in reason or "InductorError" in reason:
+                pytest.skip(f"inductor codegen unavailable on this runner: {reason}")
+            raise
+        assert torch.allclose(eager_out, compiled_out, atol=1e-5)
+        assert torch.allclose(narrow_eager_out, narrow_compiled_out, atol=1e-5)
 
 
 @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
