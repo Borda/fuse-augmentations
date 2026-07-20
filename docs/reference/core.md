@@ -113,17 +113,18 @@ fused ('RandomRotation', 'RandomHorizontalFlip', 'RandomAffine') 2
 
 ## Constructor options that change semantics
 
-| Option                          | Effect                                                                                         |
-| ------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `reorder`                       | Preserves order by default; `POINTWISE` may move color operations to extend geometric runs     |
-| `randomness`                    | Preserves backend sampling by default; `per_sample` requests independent draws where supported |
-| `execution`                     | Selects `cv2` or `torch` execution for fused Albumentations geometry only                      |
-| `interpolation`, `padding_mode` | Segment-level sampling choices for fused geometry                                              |
-| `clip_policy`                   | Controls boundaries/clamping in fused color runs                                               |
-| `mask_interpolation`            | `nearest` for hard labels or `bilinear` for floating soft masks                                |
-| `compile`                       | Opts eligible non-CPU torch warp cores into `torch.compile`                                    |
-| `antialias`                     | Enables supported downscale prefiltering                                                       |
-| `substitute_passthrough`        | Opts into behavior-changing registered passthrough substitutions                               |
+| Option                          | Effect                                                                                             |
+| ------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `reorder`                       | Preserves order by default; `POINTWISE` may move color operations to extend geometric runs         |
+| `randomness`                    | Preserves backend sampling by default; `per_sample` requests independent draws where supported     |
+| `execution`                     | Selects `cv2` or `torch` execution for fused Albumentations geometry only                          |
+| `interpolation`, `padding_mode` | Segment-level sampling choices for fused geometry                                                  |
+| `clip_policy`                   | Controls boundaries/clamping in fused color runs                                                   |
+| `mask_interpolation`            | `nearest` for hard labels or `bilinear` for floating soft masks                                    |
+| `compile`                       | Opts eligible non-CPU torch warp cores into `torch.compile`                                        |
+| `antialias`                     | Enables supported downscale prefiltering                                                           |
+| `substitute_passthrough`        | Opts into behavior-changing registered passthrough substitutions                                   |
+| `pipeline_dtype`                | `"bfloat16"` or `"float16"` low-precision execution for fused warp/color/LUT cores; default `None` |
 
 Extra `backend_kwargs` are currently reserved and unused; do not rely on them as an extension mechanism.
 
@@ -144,6 +145,7 @@ Extra `backend_kwargs` are currently reserved and unused; do not rely on them as
             - fusion_plan_descriptors
             - n_warps_saved
             - transform_matrix
+            - inverse
 
 ## NumPy converters
 

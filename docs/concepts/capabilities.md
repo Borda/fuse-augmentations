@@ -68,13 +68,38 @@ print(
 
 ## Live-transform registry and execution coverage
 
-These are the registered transform classes recognized when live backend objects are passed to `Compose`.
+These are the registered transform classes recognized when live backend objects are passed to `Compose`. Rows are primitives named by the most common class name across backends; a check means the backend registers that class name, otherwise the cell shows the backend-specific class or a note.
 
-| Backend           | Affine and exact geometry                                                                                                            | Projective          | Linear color                                                                                        | Crop-resize                                                                                                                                                                                                                              |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Kornia            | `RandomRotation`, `RandomAffine`, `RandomShear`, `RandomTranslate`, `RandomHorizontalFlip`, `RandomVerticalFlip`, `RandomRotation90` | `RandomPerspective` | `RandomBrightness`, `RandomContrast`, brightness/contrast-only `ColorJitter`, 3-channel `Normalize` | `RandomResizedCrop`                                                                                                                                                                                                                      |
-| TorchVision v1/v2 | `RandomRotation`, `RandomAffine`, `RandomHorizontalFlip`, `RandomVerticalFlip`                                                       | `RandomPerspective` | Brightness/contrast-only `ColorJitter`, 3-channel `Normalize`                                       | `RandomResizedCrop`                                                                                                                                                                                                                      |
-| Albumentations    | `Affine`, `Rotate`, `SafeRotate`, `ShiftScaleRotate`, `HorizontalFlip`, `VerticalFlip`, `RandomRotate90`, `D4`, `Transpose`          | `Perspective`       | `RandomBrightnessContrast`, standard 3-channel `Normalize`                                          | `RandomResizedCrop` is registered; on the NumPy/cv2 path it is never geo-crop fused, and it is native passthrough for image-only pipelines but routes to a standalone crop-resize segment when `data_keys` auxiliary targets are present |
+=== "Geometry"
+
+    | Primitive              | Kornia             | TorchVision v1/v2  | Albumentations               |
+    | ---------------------- | ------------------ | ------------------ | ---------------------------- |
+    | `RandomRotation`       | ✓                  | ✓ (`expand=False`) | `Rotate`, `SafeRotate`       |
+    | `RandomAffine`         | ✓                  | ✓                  | `Affine`, `ShiftScaleRotate` |
+    | `RandomShear`          | ✓                  | —                  | —                            |
+    | `RandomTranslate`      | ✓                  | —                  | —                            |
+    | `RandomHorizontalFlip` | ✓                  | ✓                  | `HorizontalFlip`             |
+    | `RandomVerticalFlip`   | ✓                  | ✓                  | `VerticalFlip`               |
+    | `RandomRotate90`       | `RandomRotation90` | —                  | ✓                            |
+    | `D4`                   | —                  | —                  | ✓                            |
+    | `Transpose`            | —                  | —                  | ✓                            |
+    | `RandomPerspective`    | ✓                  | ✓                  | `Perspective`                |
+    | `RandomResizedCrop`    | ✓                  | ✓                  | ✓ (see note below)           |
+
+    Albumentations `RandomResizedCrop`: on the NumPy/cv2 path it is never geo-crop fused; it is native passthrough for image-only pipelines but routes to a standalone crop-resize segment when `data_keys` auxiliary targets are present.
+
+=== "Color"
+
+    | Primitive          | Kornia                  | TorchVision v1/v2       | Albumentations                            |
+    | ------------------ | ----------------------- | ----------------------- | ----------------------------------------- |
+    | `RandomBrightness` | ✓                       | via `ColorJitter`       | via `RandomBrightnessContrast`            |
+    | `RandomContrast`   | ✓                       | via `ColorJitter`       | via `RandomBrightnessContrast`            |
+    | `ColorJitter`      | ✓ (brightness/contrast) | ✓ (brightness/contrast) | —                                         |
+    | `Normalize`        | ✓ (3-channel RGB)       | ✓ (3-channel RGB)       | ✓ (standard affine mode, 3-channel RGB)   |
+    | `RandomGamma`      | ✓                       | —                       | ✓                                         |
+    | `RandomSolarize`   | ✓                       | ✓                       | `Solarize`                                |
+    | `RandomPosterize`  | ✓                       | ✓                       | `Posterize`                               |
+    | `RandomEqualize`   | ✓ (float tensors only)  | ✓                       | `Equalize` (unmasked, `by_channels=True`) |
 
 Important parameter limits:
 
@@ -103,12 +128,13 @@ The native declarative backend exposes the canonical operations `rotation`, `sca
 
 Unregistered transforms from a recognized backend are normally classified as barriers and executed through that backend's native transform call. Examples include spatial kernels and nonlinear color operations.
 
-| Operation kind                                                                                           | Behavior                                                                                         |
-| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Nonlinear pointwise, such as saturation/hue                                                              | Native passthrough; geometric fusion stops at the operation unless reordering moves it           |
-| Spatial kernel, such as blur                                                                             | Native passthrough and a segment boundary                                                        |
-| Named coordinate-changing distortion on the finite refusal list, such as elastic/grid/optical distortion | Image-only passthrough; raises when auxiliary targets would become misaligned                    |
-| Unsupported `ColorJitter` saturation/hue                                                                 | The pending color run falls back to native passthrough rather than dropping nonlinear components |
+| Operation kind                                                                                           | Behavior                                                                                                                                                                                                                                                                           |
+| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Nonlinear pointwise, such as saturation/hue                                                              | Native passthrough; geometric fusion stops at the operation unless reordering moves it                                                                                                                                                                                             |
+| Spatial kernel other than Gaussian blur, such as Kornia sharpness                                        | Native passthrough and a segment boundary                                                                                                                                                                                                                                          |
+| Gaussian blur                                                                                            | Folds with adjacent Gaussian blurs and, when the following affine does not downscale, commutes past it so that affine collapses to one warp; otherwise native passthrough and a segment boundary. See [How fusion works](how-fusion-works.md#segmentation-comes-before-execution). |
+| Named coordinate-changing distortion on the finite refusal list, such as elastic/grid/optical distortion | Image-only passthrough; raises when auxiliary targets would become misaligned                                                                                                                                                                                                      |
+| Unsupported `ColorJitter` saturation/hue                                                                 | The pending color run falls back to native passthrough rather than dropping nonlinear components                                                                                                                                                                                   |
 
 Passthrough means “call the native transform on the package's supported data representation,” not bit-for-bit transparency for every native workflow.
 

@@ -28,14 +28,16 @@ The implementation inverts that forward mapping when it builds the sampling grid
 
 Construction classifies every recognized transform and partitions the pipeline into segments.
 
-| Segment     | What joins the segment                                                         | Execution result                                                    |
-| ----------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
-| Affine      | Consecutive registered affine and compatible exact transforms from one backend | One affine resampling step for the run                              |
-| Exact       | A run containing only supported discrete transforms such as flips              | Lossless tensor operations; no interpolation                        |
-| Projective  | Consecutive registered perspective transforms from one backend                 | One projective resampling step for the run                          |
-| Color       | Consecutive supported per-channel affine color transforms                      | One composed color-matrix application                               |
-| Crop-resize | A registered `RandomResizedCrop` without a preceding compatible affine run     | One resampling step at the target size                              |
-| Passthrough | A recognized backend transform without a fusion representation                 | Native transform execution on the package's supported data contract |
+| Segment       | What joins the segment                                                                                    | Execution result                                                                                      |
+| ------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Affine        | Consecutive registered affine and compatible exact transforms from one backend                            | One affine resampling step for the run                                                                |
+| Exact         | A run containing only supported discrete transforms such as flips                                         | Lossless tensor operations; no interpolation                                                          |
+| Projective    | Consecutive registered perspective transforms from one backend                                            | One projective resampling step for the run                                                            |
+| Color         | Consecutive supported per-channel affine color transforms                                                 | One composed color-matrix application                                                                 |
+| Color-LUT     | Consecutive supported per-channel nonlinear scalar maps, such as gamma, solarize, posterize, and equalize | One composed lookup-table application                                                                 |
+| Crop-resize   | A registered `RandomResizedCrop` without a preceding compatible affine run                                | One resampling step at the target size                                                                |
+| Gaussian blur | Consecutive Gaussian blurs, optionally commuted across a following non-downscaling affine                 | One folded blur application; the affine run collapses to a single warp when the blur commutes past it |
+| Passthrough   | A recognized backend transform without a fusion representation                                            | Native transform execution on the package's supported data contract                                   |
 
 An affine run and a projective run are separate today, even though both use homogeneous matrices. For example, rotation → perspective uses two segments. Consecutive perspective transforms can still fuse with each other.
 
@@ -46,7 +48,7 @@ A new segment starts when any of these conditions applies:
 - the backend changes;
 - execution changes between affine/exact and projective geometry;
 - a nonlinear pointwise operation appears;
-- a spatial-kernel operation such as blur appears;
+- a spatial-kernel operation appears, unless it is a Gaussian blur eligible to fold with an adjacent blur or commute across a following non-downscaling affine (see the segmentation table above);
 - a coordinate-changing passthrough such as elastic distortion appears;
 - a crop-resize cannot be absorbed by the preceding affine run.
 

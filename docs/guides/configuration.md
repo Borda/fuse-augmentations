@@ -75,6 +75,16 @@ reorder = ReorderPolicy.NONE
 
 Only enable `POINTWISE` after measuring the output and performance trade-off. `AGGRESSIVE` currently follows the same implementation as `POINTWISE`; it is not a stronger optimizer today.
 
+## Low-precision execution (`pipeline_dtype`)
+
+`pipeline_dtype="bfloat16"` or `pipeline_dtype="float16"` runs the fused affine/projective/crop warp and the fused color/LUT applies in that dtype. Matrix composition and inversion stay in float32 or float64, and the returned image is cast back to its input dtype, so the low-precision path is confined to the sampling and lookup cores.
+
+```python
+augment = Compose.from_params(rotation=(-15.0, 15.0), pipeline_dtype="bfloat16")
+```
+
+CPU ignores this option and keeps the existing float32/float64 path; it only affects non-CPU execution. Reach for it when non-CPU memory pressure or throughput is the bottleneck, and expect a numeric difference from the fp32 path rather than a guaranteed speedup.
+
 ## Serialize specs
 
 `TransformSpec` is a frozen value object with dictionary helpers:

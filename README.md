@@ -1,6 +1,6 @@
 # ⚛️ Fuse augmentations
 
-**Write image augmentation as independent transforms. Execute compatible geometry with fewer resampling passes.**
+**Write image augmentation as independent transforms — from Kornia, TorchVision, Albumentations, or plain numeric ranges. Execute compatible geometry with fewer resampling passes, and compatible color as one fused matrix or lookup table.**
 
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/fuse-augmentations)](https://pypi.org/project/fuse-augmentations/) [![PyPI version](https://img.shields.io/pypi/v/fuse-augmentations)](https://pypi.org/project/fuse-augmentations/) [![Documentation](https://img.shields.io/badge/docs-MkDocs%20Material-4051b5)](https://borda.github.io/fuse-augmentations/) [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/Borda/fuse-augmentations/blob/main/LICENSE) [![CI](https://github.com/Borda/fuse-augmentations/actions/workflows/ci_testing.yml/badge.svg)](https://github.com/Borda/fuse-augmentations/actions/workflows/ci_testing.yml)
 
@@ -45,33 +45,57 @@ See [three fixed recipes for each of Kornia, TorchVision, and Albumentations](ht
 
 ## ✨ What the package can do
 
-| Capability             | What is implemented                                                                                                                                                               |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Affine fusion          | Registered rotation, affine, shear, translation, scale, and exact discrete operations are grouped within compatible same-backend runs.                                            |
-| Exact geometry         | Supported flips and discrete operations use lossless tensor paths where the segment contract permits it.                                                                          |
-| Projective fusion      | Consecutive registered perspective transforms compose as 3×3 homographies; affine↔projective transitions remain boundaries.                                                       |
-| Linear color fusion    | Supported brightness, contrast, brightness/contrast-only `ColorJitter`, and standard RGB Normalize paths can collapse into color-matrix segments.                                 |
-| Crop-resize            | Registered `RandomResizedCrop` has a dedicated segment; a preceding affine run can be absorbed on Kornia/TorchVision torch paths.                                                 |
-| Flexible construction  | Native numeric ranges, Kornia transforms, TorchVision transforms, Albumentations transforms, or a mixed-backend list.                                                             |
-| Portable configuration | Frozen `TransformSpec` values resolve a declarative pipeline against a chosen backend with strict unsupported-operation handling.                                                 |
-| Auxiliary coordinates  | Masks, dense xyxy/xywh boxes, and dense keypoints can follow supported fused matrices, subject to the safety limits below.                                                        |
-| NumPy bridges          | HWC/BHWC NumPy ↔ BCHW torch converters and NumPy output are available; conversion to NumPy detaches and moves data to CPU.                                                        |
-| Execution controls     | Albumentations cv2 or torch execution, optional torch compilation on non-CPU paths, Kornia-dependent downscale antialiasing, interpolation, padding, and color clipping policies. |
-| Plan inspection        | Human-readable plans, structured descriptors, a warp-saving estimate, and the last matrix-producing segment are exposed.                                                          |
-| Training integration   | Pipelines are `nn.Module` objects and have tested pickle/serialization paths for common worker use.                                                                               |
+| Capability             | What is implemented                                                                                                                                                                                                  |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Affine fusion          | Registered rotation, affine, shear, translation, scale, and exact discrete operations are grouped within compatible same-backend runs.                                                                               |
+| Exact geometry         | Supported flips and discrete operations use lossless tensor paths where the segment contract permits it.                                                                                                             |
+| Projective fusion      | Consecutive registered perspective transforms compose as 3×3 homographies; affine↔projective transitions remain boundaries.                                                                                          |
+| Linear color fusion    | Supported brightness, contrast, brightness/contrast-only `ColorJitter`, and standard RGB Normalize paths can collapse into color-matrix segments.                                                                    |
+| Crop-resize            | Registered `RandomResizedCrop` has a dedicated segment; a preceding affine run can be absorbed on Kornia/TorchVision torch paths.                                                                                    |
+| Flexible construction  | Native numeric ranges, Kornia transforms, TorchVision transforms, Albumentations transforms, or a mixed-backend list.                                                                                                |
+| Portable configuration | Frozen `TransformSpec` values resolve a declarative pipeline against a chosen backend with strict unsupported-operation handling.                                                                                    |
+| Auxiliary coordinates  | Masks, dense xyxy/xywh boxes, and dense keypoints can follow supported fused matrices, subject to the safety limits below.                                                                                           |
+| NumPy bridges          | HWC/BHWC NumPy ↔ BCHW torch converters and NumPy output are available; conversion to NumPy detaches and moves data to CPU.                                                                                           |
+| Execution controls     | Albumentations cv2 or torch execution, Kornia-dependent downscale antialiasing, interpolation, padding, and color clipping policies.                                                                                 |
+| Precision and compile  | Optional `torch.compile` of warp/color/LUT cores on non-CPU paths; opt-in `pipeline_dtype="bfloat16"\|"float16"` low-precision cores with matrices and parameter sampling kept in float32/64, no accuracy guarantee. |
+| Plan inspection        | Human-readable plans, structured descriptors, a warp-saving estimate, and the last matrix-producing segment are exposed.                                                                                             |
+| Training integration   | Pipelines are `nn.Module` objects and have tested pickle/serialization paths for common worker use.                                                                                                                  |
 
 ### Built-in live-transform coverage
 
-This is an allowlist, not a claim about every upstream transform:
+This is an allowlist, not a claim about every upstream transform. Rows are primitives named by the most common class name across backends; a check means the backend registers that class name, otherwise the cell shows the backend-specific class, entry point, or a note. Native/direct cells name the `Compose.from_params` arguments.
 
-| Backend           | Registered geometry                                                                                                   | Registered linear color                                                                             | Crop-resize                                                |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Kornia            | `RandomRotation`, `RandomAffine`, `RandomShear`, `RandomTranslate`, H/V flip, `RandomRotation90`, `RandomPerspective` | `RandomBrightness`, `RandomContrast`, brightness/contrast-only `ColorJitter`, 3-channel `Normalize` | `RandomResizedCrop`                                        |
-| TorchVision v1/v2 | `RandomRotation` (`expand=False`), `RandomAffine`, H/V flip, `RandomPerspective`                                      | Brightness/contrast-only `ColorJitter`, 3-channel `Normalize`                                       | `RandomResizedCrop`                                        |
-| Albumentations    | `Affine`, `Rotate`, `SafeRotate`, `ShiftScaleRotate`, H/V flip, `RandomRotate90`, `D4`, `Transpose`, `Perspective`    | `RandomBrightnessContrast`, standard 3-channel `Normalize`                                          | `RandomResizedCrop` with backend-specific execution limits |
-| Native/direct     | Rotation, scale, x/y shear, x/y translation, H/V flip                                                                 | Brightness, contrast                                                                                | Not available                                              |
+**Geometry**
 
-Per-channel non-linear scalar maps — `gamma`, `solarize`, `posterize`, and supported per-channel `equalize` — are registered (Kornia `RandomGamma`/`RandomSolarize`/`RandomPosterize`/`RandomEqualize`; TorchVision `RandomSolarize`/`RandomPosterize`/`RandomEqualize`; Albumentations `RandomGamma`/`Solarize`/`Posterize`/unmasked, `by_channels=True` `Equalize`). Static maps compose into a table; equalize builds a separate per-image, per-channel histogram table at its runtime position, so static neighbours remain fused on either side. The uint8 Albumentations native path and the TorchVision equalize table match their native sequential operations exactly; Kornia's installed equalize accepts floating tensors only. The float tensor path retains an interpolation tolerance: it detects large lookup jumps and switches to a sharp step rule there, rather than smearing a discontinuity across a grid cell. Residual non-linear barriers include cross-channel `saturation`/`hue` and Albumentations masked or luminance (`by_channels=False`) equalize, which are not per-channel scalar maps.
+| Primitive              | Kornia             | TorchVision v1/v2  | Albumentations                        | Native/direct        |
+| ---------------------- | ------------------ | ------------------ | ------------------------------------- | -------------------- |
+| `RandomRotation`       | ✓                  | ✓ (`expand=False`) | `Rotate`, `SafeRotate`                | `rotation`           |
+| `RandomAffine`         | ✓                  | ✓                  | `Affine`, `ShiftScaleRotate`          | —                    |
+| Scale                  | via `RandomAffine` | via `RandomAffine` | via `Affine`, `ShiftScaleRotate`      | `scale`, `scale_x/y` |
+| `RandomShear`          | ✓                  | —                  | —                                     | `shear_x`, `shear_y` |
+| `RandomTranslate`      | ✓                  | —                  | —                                     | `translate_x/y`      |
+| `RandomHorizontalFlip` | ✓                  | ✓                  | `HorizontalFlip`                      | `hflip_p`            |
+| `RandomVerticalFlip`   | ✓                  | ✓                  | `VerticalFlip`                        | `vflip_p`            |
+| `RandomRotate90`       | `RandomRotation90` | —                  | ✓                                     | —                    |
+| `D4`                   | —                  | —                  | ✓                                     | —                    |
+| `Transpose`            | —                  | —                  | ✓                                     | —                    |
+| `RandomPerspective`    | ✓                  | ✓                  | `Perspective`                         | —                    |
+| `RandomResizedCrop`    | ✓                  | ✓                  | ✓ (backend-specific execution limits) | —                    |
+
+**Color**
+
+| Primitive          | Kornia                  | TorchVision v1/v2       | Albumentations                            | Native/direct |
+| ------------------ | ----------------------- | ----------------------- | ----------------------------------------- | ------------- |
+| `RandomBrightness` | ✓                       | via `ColorJitter`       | via `RandomBrightnessContrast`            | `brightness`  |
+| `RandomContrast`   | ✓                       | via `ColorJitter`       | via `RandomBrightnessContrast`            | `contrast`    |
+| `ColorJitter`      | ✓ (brightness/contrast) | ✓ (brightness/contrast) | —                                         | —             |
+| `Normalize`        | ✓ (3-channel RGB)       | ✓ (3-channel RGB)       | ✓ (standard mode, 3-channel RGB)          | —             |
+| `RandomGamma`      | ✓                       | —                       | ✓                                         | —             |
+| `RandomSolarize`   | ✓                       | ✓                       | `Solarize`                                | —             |
+| `RandomPosterize`  | ✓                       | ✓                       | `Posterize`                               | —             |
+| `RandomEqualize`   | ✓ (float tensors only)  | ✓                       | `Equalize` (unmasked, `by_channels=True`) | —             |
+
+Per-channel non-linear scalar maps — `gamma`, `solarize`, `posterize`, and supported per-channel `equalize` — are registered per backend as listed in the Color table above. Static maps compose into a table; equalize builds a separate per-image, per-channel histogram table at its runtime position, so static neighbours remain fused on either side. The uint8 Albumentations native path and the TorchVision equalize table match their native sequential operations exactly; Kornia's installed equalize accepts floating tensors only. The float tensor path retains an interpolation tolerance: it detects large lookup jumps and switches to a sharp step rule there, rather than smearing a discontinuity across a grid cell. Residual non-linear barriers include cross-channel `saturation`/`hue` and Albumentations masked or luminance (`by_channels=False`) equalize, which are not per-channel scalar maps.
 
 Other unknown and nonlinear operations generally become passthrough barriers. That preserves pipeline construction in many image-only cases, but passthrough is not automatically numerically transparent, device-efficient, or auxiliary-target safe.
 
@@ -288,6 +312,8 @@ uv run --all-extras --group benchmark python experiments/optimize_score.py
 uv run --all-extras --group benchmark python experiments/bench_gpu_batch.py --quick
 uv run --all-extras --group benchmark python experiments/bench_memory.py --quick
 ```
+
+These three headline commands are not the full set: `experiments/` holds five benchmark scripts in total, including `bench_augmentation_pipelines.py` and `bench_primitive_vs_affine.py`, and the [quality and benchmark evidence](https://borda.github.io/fuse-augmentations/research/benchmarks/) documentation page walks through all of them.
 
 Treat quick runs as smoke evidence. Release-grade comparisons need independent processes, uncertainty intervals, paired RNG state, output-parity assertions, and full environment provenance.
 

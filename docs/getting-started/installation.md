@@ -23,35 +23,27 @@ Install only the adapter ecosystems you use:
 
 === "Kornia"
 
-````
 ```bash
 python -m pip install "fuse-augmentations[kornia]"
 ```
-````
 
 === "TorchVision"
 
-````
 ```bash
 python -m pip install "fuse-augmentations[torchvision]"
 ```
-````
 
 === "Albumentations"
 
-````
 ```bash
 python -m pip install "fuse-augmentations[albumentations]"
 ```
-````
 
 === "All adapters"
 
-````
 ```bash
 python -m pip install "fuse-augmentations[all]"
 ```
-````
 
 The extras enable adapter support; they do not make every upstream transform or parameter combination fusible. Check the [capability tables](../concepts/capabilities.md).
 

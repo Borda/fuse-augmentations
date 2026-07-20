@@ -76,3 +76,27 @@ The matrix is the forward pixel-space matrix for the **last matrix-producing seg
 The `transform_matrix` property exposes the same mutable last-call state and can be `None` for a pipeline with no matrix-producing segment. It is not safe as shared cross-thread request state. Prefer `return_matrix=True` when the matrix must stay paired with its output.
 
 For a pipeline deliberately constrained to one matrix segment, the returned `(B, 3, 3)` matrix can route coordinates or be stored as augmentation provenance.
+
+## Test-time de-augmentation with `inverse`
+
+Pair a `return_matrix=True` output with `inverse(prediction, matrix=...)` to map a prediction back into the original geometric frame:
+
+```python
+translate_pipe = Compose.from_params(translate_x=(2.0, 2.0))
+translate_images = torch.rand(1, 3, 8, 8)
+augmented, matrix = translate_pipe(translate_images, return_matrix=True)
+recovered = translate_pipe.inverse(augmented, matrix=matrix)
+```
+
+Pass the `matrix` returned by the same forward call rather than reading `transform_matrix`. `inverse` does not read that mutable property, so pairing a call's own matrix this way is safe under concurrent calls.
+
+`inverse` supports one fused affine or projective segment, including a chain already fused into that segment. It raises `ValueError` instead of guessing for:
+
+- crop-resize segments (`CropResizeSegment`, `_FusedGeoCropSegment`) — crop-resize discards pixels outside the crop;
+- non-geometric segments (`FusedColorSegment`, `FusedLUTSegment`, `FusedGaussianBlurSegment`) — color, LUT, and blur segments carry no geometric matrix;
+- passthrough segments — no recorded matrix;
+- exact-only segments (`ExactAffineSegment`) — flips and D4/90° ops have no recorded matrix;
+- multi-segment pipelines — `return_matrix` records only the last segment's matrix;
+- a missing paired `matrix` argument.
+
+Auxiliary targets recover at different fidelities. Keypoints and masks recover to sampling precision. Bounding boxes are axis-aligned (AABB), so a forward-then-inverse box is exact only for axis-aligned transforms (flip, scale, translation) and inflates under a rotation, shear, or projective warp.

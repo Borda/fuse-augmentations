@@ -116,6 +116,14 @@ No. It is a planning heuristic. It does not measure runtime, transfers, or nativ
 
 Use it experimentally for aggressive crop-resize downscales and validate image quality and speed. It depends on Kornia; without Kornia it falls back to the unfiltered warp. The antialias decision is batch-global, so one aggressively downscaled sample can filter the entire batch.
 
+## Can I undo augmentation on predictions?
+
+Yes, with `pipe.inverse(prediction, matrix=matrix)`, where `matrix` is the matrix returned by the exact paired `forward(..., return_matrix=True)` call. Each `inverse` call must be paired with its own forward call's matrix; do not read the mutable `transform_matrix` property instead.
+
+This supports one fused affine or projective segment only. It raises for crop-resize, color/LUT/blur or passthrough segments, exact-only segments, and multi-segment pipelines, since `return_matrix` records only the last segment's matrix. Boxes are axis-aligned, so a forward-then-inverse box is exact only for axis-aligned transforms and inflates under rotation, shear, or a projective warp.
+
+See [Introspection](guides/introspection.md) and the README's [Test-time de-augmentation](https://github.com/Borda/fuse-augmentations#test-time-de-augmentation) example.
+
 ## When should I keep the native backend instead?
 
 Keep the native pipeline when you require PIL/TVTensor/native dictionary input, native target processors, exact native pixels or RNG streams, unsupported spatial transforms, or an upstream option the adapter does not preserve.

@@ -121,6 +121,12 @@ Passthrough operations are particularly important on accelerators. A native CPU-
 
 `n_warps_saved` is a planning heuristic, not a literal count of native interpolations or an observed speedup. In particular, exact flips can contribute to the metric even though native flips are already non-interpolating.
 
+## Test-time inverse limits
+
+`pipe.inverse(prediction, matrix=matrix)` maps a prediction back to the original geometric frame, but only for a pipeline that reduces to one fused affine or projective segment. It raises for crop-resize (cropped pixels are lost and cannot be recovered), color/LUT/blur or passthrough segments, exact-only segments, and multi-segment pipelines, because `return_matrix` records only the last segment's matrix.
+
+The inverse is geometric-only. It cannot recover values discarded by interpolation or padding, and it does not undo color, LUT, or blur operations. Recovered boxes are axis-aligned, so a forward-then-inverse box is exact only for axis-aligned transforms (flip, scale, translation) and inflates under rotation, shear, or a projective warp. Always pass the matrix returned by the same `forward(..., return_matrix=True)` call rather than the mutable `transform_matrix` property.
+
 ## How to decide whether the package fits
 
 Use `fuse-augmentations` when all of the following are true:
