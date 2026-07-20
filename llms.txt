@@ -1,0 +1,34 @@
+# fuse-augmentations
+
+> Evidence-backed documentation for a PyTorch tensor-first engine that fuses compatible image augmentation transforms into fewer resampling passes.
+
+Important: this package is not a general drop-in replacement for Kornia, TorchVision, or Albumentations Compose containers. Unknown spatial passthrough operations are unsafe with auxiliary targets. Performance depends on backend, device, shape, batch, and transform mix.
+
+## Start
+
+- [Overview](https://borda.github.io/fuse-augmentations/): Verified capabilities, critical warnings, and navigation by goal.
+- [Installation](https://borda.github.io/fuse-augmentations/getting-started/installation/): Base and optional-backend installation.
+- [Quickstart](https://borda.github.io/fuse-augmentations/getting-started/quickstart/): Runnable backend-free BCHW tensor example.
+
+## Contracts and guides
+
+- [Capabilities](https://borda.github.io/fuse-augmentations/concepts/capabilities/): Exact backend and transform support boundaries.
+- [Backend pipelines](https://borda.github.io/fuse-augmentations/guides/backend-pipelines/): Kornia, TorchVision, Albumentations, native, and mixed-backend usage.
+- [Auxiliary targets](https://borda.github.io/fuse-augmentations/guides/auxiliary-targets/): Safe mask, box, and keypoint routing contracts.
+- [Reproducibility](https://borda.github.io/fuse-augmentations/guides/reproducibility/): RNG domains and research controls.
+- [Known limitations](https://borda.github.io/fuse-augmentations/known-limitations/): Unsafe, approximate, unsupported, and unverified behavior.
+- [FAQ](https://borda.github.io/fuse-augmentations/faq/): Direct answers to common developer and researcher questions.
+
+## Research and reference
+
+- [Quality and fidelity](https://borda.github.io/fuse-augmentations/research/quality-and-fidelity/): Why fewer resampling passes can help and why native pixels differ.
+- [Benchmarks](https://borda.github.io/fuse-augmentations/research/benchmarks/): Scoped CPU/MPS performance and memory results, including regressions.
+- [Methodology](https://borda.github.io/fuse-augmentations/research/methodology/): A reproducible benchmark and parity protocol.
+- [Core API](https://borda.github.io/fuse-augmentations/reference/core/): Generated `Compose` and `FusedCompose` API.
+- [Configuration API](https://borda.github.io/fuse-augmentations/reference/configuration/): Generated declarative configuration API.
+- [Types and targets API](https://borda.github.io/fuse-augmentations/reference/types-and-targets/): Generated enums, descriptors, converters, and coordinate helpers.
+
+## Source
+
+- [GitHub repository](https://github.com/Borda/fuse-augmentations): Source, tests, experiments, and issue tracker.
+- [PyPI project](https://pypi.org/project/fuse-augmentations/): Published distributions and installation metadata.
