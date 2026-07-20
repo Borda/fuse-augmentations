@@ -18,12 +18,15 @@ against the installed source of both the origin and target op). The registry shi
 with one entry -- Albumentations ``GaussianBlur`` -> Kornia ``RandomGaussianBlur`` --
 and is extensible.
 
-Example:
+Examples:
+    ```pycon
     >>> from fuse_augmentations.substitution import substitution_target_name
     >>> substitution_target_name("GaussianBlur")
     'RandomGaussianBlur'
     >>> substitution_target_name("MotionBlur") is None
     True
+
+    ```
 
 """
 
@@ -104,10 +107,13 @@ def substitution_target_name(origin_class_name: str) -> str | None:
         is registered for that op.
 
     Examples:
+        ```pycon
         >>> substitution_target_name("GaussianBlur")
         'RandomGaussianBlur'
         >>> substitution_target_name("Unknown") is None
         True
+
+        ```
 
     """
     entry = _PASSTHROUGH_SUBSTITUTIONS.get(origin_class_name)
@@ -131,10 +137,13 @@ def try_substitute_passthrough(transform: object) -> object | None:
         Kornia adapter's ``call_nonfused``, or ``None`` to keep the original.
 
     Examples:
+        ```pycon
         >>> import albumentations as A  # doctest: +SKIP
         >>> sub = try_substitute_passthrough(A.GaussianBlur(p=1.0))  # doctest: +SKIP
         >>> type(sub).__name__  # doctest: +SKIP
         'RandomGaussianBlur'
+
+        ```
 
     """
     entry = _PASSTHROUGH_SUBSTITUTIONS.get(type(transform).__name__)

@@ -4,7 +4,8 @@
 of geometric transforms, inverts the composed matrix once, and executes a single
 ``grid_sample`` call. No intermediate image warps are performed.
 
-Example:
+Examples:
+    ```pycon
     >>> import torch
     >>> import kornia.augmentation as K
     >>> from fuse_augmentations.affine.segment import FusedAffineSegment
@@ -14,6 +15,8 @@ Example:
     >>> out = seg(torch.zeros(1, 3, 8, 8))
     >>> out.shape
     torch.Size([1, 3, 8, 8])
+
+    ```
 
 """
 
@@ -252,10 +255,13 @@ def _validate_execution(execution: str) -> ExecutionStr:
         ValueError: If ``execution`` is neither ``"cv2"`` nor ``"torch"``.
 
     Examples:
+        ```pycon
         >>> _validate_execution("cv2")
         'cv2'
         >>> _validate_execution("torch")
         'torch'
+
+        ```
 
     """
     if execution not in ("cv2", "torch"):
@@ -386,10 +392,13 @@ def _torch_supports_compile() -> bool:
     Returns:
         ``True`` when ``torch.__version__`` is ``2.2`` or newer, ``False`` otherwise.
 
-    Example:
+    Examples:
+        ```pycon
         >>> from fuse_augmentations.affine.segment import _torch_supports_compile
         >>> isinstance(_torch_supports_compile(), bool)
         True
+
+        ```
 
     """
     parts = torch.__version__.split("+", 1)[0].split(".")
@@ -504,10 +513,13 @@ def _mipmap_sigma(scale: float) -> float:
     Returns:
         The Gaussian standard deviation in input pixels (``0.0`` when ``scale >= 1``).
 
-    Example:
+    Examples:
+        ```pycon
         >>> from fuse_augmentations.affine.segment import _mipmap_sigma
         >>> round(_mipmap_sigma(0.25), 4)
         1.9365
+
+        ```
 
     """
     if scale >= 1.0:
@@ -542,7 +554,8 @@ def _antialias_axis_scales(mtx: Tensor) -> tuple[float, float]:
     Returns:
         A ``(scale_x, scale_y)`` tuple: the width-axis and height-axis scales.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> from fuse_augmentations.affine.segment import _antialias_axis_scales
         >>> mtx = torch.eye(3).unsqueeze(0)
@@ -550,6 +563,8 @@ def _antialias_axis_scales(mtx: Tensor) -> tuple[float, float]:
         >>> sx, sy = _antialias_axis_scales(mtx)
         >>> round(sx, 3), round(sy, 3)
         (0.9, 0.2)
+
+        ```
 
     """
     linear = mtx[:, :2, :2].to(dtype=torch.float32)
@@ -675,7 +690,8 @@ class ExactAffineSegment(nn.Module):
         randomness: Batch randomness policy. ``BACKEND`` preserves native
             backend semantics; ``PER_SAMPLE`` draws probability masks per item.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> import kornia.augmentation as K
         >>> from fuse_augmentations.affine.segment import ExactAffineSegment
@@ -685,6 +701,8 @@ class ExactAffineSegment(nn.Module):
         >>> out = seg(torch.zeros(1, 3, 8, 8))
         >>> out.shape
         torch.Size([1, 3, 8, 8])
+
+        ```
 
     """
 
@@ -1534,7 +1552,8 @@ class _FusedGeoCropSegment(FusedAffineSegment):
             Defaults to ``"zeros"`` when ``None``.
         randomness: Batch randomness policy for the fused geometric run.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> import kornia.augmentation as K
         >>> from fuse_augmentations.affine.segment import _FusedGeoCropSegment
@@ -1544,6 +1563,8 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         >>> seg = _FusedGeoCropSegment([geo], crop, KorniaAdapter())
         >>> seg(torch.zeros(1, 3, 16, 16)).shape
         torch.Size([1, 3, 8, 8])
+
+        ```
 
     """
 
@@ -2057,12 +2078,15 @@ def _inv3x3_affine_np(mtx: MatrixArray) -> MatrixArray:
         The (3, 3) inverse affine matrix as a float64 ndarray.
 
     Examples:
+        ```pycon
         >>> import numpy as np
         >>> mtx = np.eye(3, dtype=np.float64)
         >>> _inv3x3_affine_np(mtx)
         array([[ 1., -0.,  0.],
                [-0.,  1.,  0.],
                [ 0.,  0.,  1.]])
+
+        ```
 
     """
     m00, m01, trans_x = mtx[0, 0], mtx[0, 1], mtx[0, 2]
@@ -2108,7 +2132,8 @@ class AlbuFusedAffineSegment(nn.Module):
         mask_interpolation: Sampling mode for auxiliary masks. ``"nearest"``
             preserves hard labels; ``"bilinear"`` supports float soft masks.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import numpy as np
         >>> import torch
         >>> from fuse_augmentations.affine.segment import AlbuFusedAffineSegment
@@ -2117,6 +2142,8 @@ class AlbuFusedAffineSegment(nn.Module):
         >>> out = seg(torch.zeros(1, 3, 8, 8))
         >>> out.shape
         torch.Size([1, 3, 8, 8])
+
+        ```
 
     """
 
@@ -2493,6 +2520,7 @@ class AlbuFusedAffineSegment(nn.Module):
             via this path.
 
         Examples:
+            ```pycon
             >>> import numpy as np
             >>> from fuse_augmentations.affine.segment import AlbuFusedAffineSegment
             >>> from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
@@ -2501,6 +2529,8 @@ class AlbuFusedAffineSegment(nn.Module):
             >>> out = seg.forward_numpy(img)
             >>> out.shape
             (8, 8, 3)
+
+            ```
 
         """
         if not img_hwc.flags["C_CONTIGUOUS"]:
@@ -3575,11 +3605,14 @@ class FusedLUTSegment(nn.Module):
         num_levels: Grid resolution of the float interpolation-LUT path. Default 1024.
         randomness: Batch randomness policy (mirrors :class:`FusedColorSegment`).
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> from fuse_augmentations.affine.segment import FusedLUTSegment  # doctest: +SKIP
         >>> seg = FusedLUTSegment([gamma_tfm, solarize_tfm], adapter)  # doctest: +SKIP
         >>> out = seg(torch.rand(2, 3, 8, 8))  # doctest: +SKIP
+
+        ```
 
     """
 
@@ -4108,7 +4141,7 @@ def reorder_pointwise(
         ``POINTWISE`` ops sit after geometric runs within each
         barrier-bounded stretch.
 
-    Example:
+    Examples:
         Given a pipeline ``[Rotate, Brightness, HFlip]`` where ``Brightness``
         is ``POINTWISE`` and ``Rotate`` / ``HFlip`` are geometric, the
         ``Brightness`` is pushed after the geometric group:
@@ -4119,6 +4152,7 @@ def reorder_pointwise(
         Using stub objects (the KorniaAdapter registry does not include any
         POINTWISE transforms in v0.2):
 
+    ```pycon
     >>> from fuse_augmentations.affine.segment import reorder_pointwise
     >>> from fuse_augmentations.types import TransformCategory
     >>> class _StubAdapter:
@@ -4135,6 +4169,8 @@ def reorder_pointwise(
     >>> result = reorder_pointwise([geo, pw, geo], adapter)
     >>> [transform._cat.name for transform in result]
     ['GEOMETRIC_INTERP', 'GEOMETRIC_INTERP', 'POINTWISE']
+
+    ```
 
     """
     geometric = {TransformCategory.GEOMETRIC_INTERP, TransformCategory.GEOMETRIC_EXACT, TransformCategory.PROJECTIVE}

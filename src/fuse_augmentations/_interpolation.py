@@ -4,13 +4,16 @@ When multiple transforms are fused into a single grid_sample call,
 a single interpolation mode and padding mode must be chosen. These
 functions resolve the modes by taking the finest/highest-quality option.
 
-Example:
+Examples:
+    ```pycon
     >>> from fuse_augmentations._interpolation import resolve_interpolation, resolve_padding
     >>> from fuse_augmentations.types import InterpolationMode, PaddingMode
     >>> resolve_interpolation([InterpolationMode.BILINEAR, InterpolationMode.NEAREST])
     <InterpolationMode.BILINEAR: 1>
     >>> resolve_padding([PaddingMode.ZEROS, PaddingMode.REFLECTION])
     <PaddingMode.REFLECTION: 2>
+
+    ```
 
 """
 
@@ -35,11 +38,14 @@ def resolve_interpolation(
     Returns:
         Resolved InterpolationMode.
 
-    Example:
+    Examples:
+        ```pycon
         >>> from fuse_augmentations._interpolation import resolve_interpolation
         >>> from fuse_augmentations.types import InterpolationMode
         >>> resolve_interpolation([InterpolationMode.BILINEAR, InterpolationMode.BICUBIC])
         <InterpolationMode.BICUBIC: 2>
+
+        ```
 
     """
     if override is not None:
@@ -65,11 +71,14 @@ def resolve_padding(
     Returns:
         Resolved PaddingMode.
 
-    Example:
+    Examples:
+        ```pycon
         >>> from fuse_augmentations._interpolation import resolve_padding
         >>> from fuse_augmentations.types import PaddingMode
         >>> resolve_padding([PaddingMode.ZEROS, PaddingMode.REFLECTION])
         <PaddingMode.REFLECTION: 2>
+
+        ```
 
     """
     if override is not None:

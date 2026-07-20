@@ -8,10 +8,13 @@ Each backend adapter exposes wrapper classes (e.g. Kornia's ``_RandomRotation``,
 This module builds a reverse lookup from canonical operation names (``"rotation"``, ``"hflip"``, etc.) to those wrapper
 classes, importing each backend lazily to avoid hard dependencies.
 
-Example:
+Examples:
+    ```pycon
     >>> from fuse_augmentations.resolver import SUPPORTED_OPS
     >>> "rotation" in SUPPORTED_OPS
     True
+
+    ```
 
 """
 
@@ -234,12 +237,15 @@ def capability_matrix() -> dict[str, frozenset[str]]:
     Returns:
         Mapping from each backend in :data:`SUPPORTED_BACKENDS` to the frozenset of canonical op names it can build.
 
-    Example:
+    Examples:
+        ```pycon
         >>> matrix = capability_matrix()
         >>> set(matrix) == set(SUPPORTED_BACKENDS)
         True
         >>> "rotation90" in matrix["torchvision"]
         False
+
+        ```
 
     """
     return {
@@ -349,9 +355,12 @@ def resolve_op(operation: OpStr, backend: BackendStr) -> type | _NativeOpSpec:
             is not in :data:`SUPPORTED_BACKENDS`, or the backend does not
             support the requested operation.
 
-    Example:
+    Examples:
+        ```pycon
         >>> resolve_op("hflip", "torchvision").__name__
         'RandomHorizontalFlip'
+
+        ```
 
     """
     if backend not in SUPPORTED_BACKENDS:

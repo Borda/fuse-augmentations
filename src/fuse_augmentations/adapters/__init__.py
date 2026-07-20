@@ -3,11 +3,14 @@
 Each adapter implements the ``TransformAdapter`` protocol to bridge
 framework-specific transforms to the fused affine engine.
 
-Example:
+Examples:
+    ```pycon
     >>> from fuse_augmentations.adapters import KorniaAdapter
     >>> adapter = KorniaAdapter()
     >>> adapter  # doctest: +ELLIPSIS
     <...KorniaAdapter...>
+
+    ```
 
 """
 

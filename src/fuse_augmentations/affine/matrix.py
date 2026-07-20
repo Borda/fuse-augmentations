@@ -4,12 +4,15 @@ All functions operate on batched ``(B, 3, 3)`` homogeneous matrices in
 pixel coordinates with ``align_corners=True`` convention. Center of image
 is ``cx = (W-1)/2``, ``cy = (H-1)/2``.
 
-Example:
+Examples:
+    ```pycon
     >>> import torch
     >>> from fuse_augmentations.affine.matrix import rotation_matrix, matmul3x3, inv3x3
     >>> matrix = rotation_matrix(torch.zeros(2), height=64, width=64)
     >>> matrix.shape
     torch.Size([2, 3, 3])
+
+    ```
 
 """
 
@@ -36,11 +39,14 @@ def rotation_matrix(angle_rad: torch.Tensor, height: int, width: int) -> torch.T
     Returns:
         ``(batch_size, 3, 3)`` forward rotation matrix in pixel coordinates.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> matrix = rotation_matrix(torch.zeros(2), height=64, width=64)
         >>> torch.allclose(matrix, torch.eye(3).unsqueeze(0).expand(2, -1, -1))
         True
+
+        ```
 
     """
     center_x = (width - 1) / 2.0
@@ -68,11 +74,14 @@ def scale_matrix(scale_x: torch.Tensor, scale_y: torch.Tensor, height: int, widt
     Returns:
         ``(batch_size, 3, 3)`` forward scale matrix.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> matrix = scale_matrix(torch.ones(1), torch.ones(1), height=64, width=64)
         >>> torch.allclose(matrix, torch.eye(3).unsqueeze(0))
         True
+
+        ```
 
     """
     center_x = (width - 1) / 2.0
@@ -100,11 +109,14 @@ def shear_x_matrix(shear_x_tan: torch.Tensor, height: int, width: int) -> torch.
     Returns:
         ``(batch_size, 3, 3)`` forward x-shear matrix.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> matrix = shear_x_matrix(torch.zeros(1), height=64, width=64)
         >>> torch.allclose(matrix, torch.eye(3).unsqueeze(0))
         True
+
+        ```
 
     """
     center_y = (height - 1) / 2.0
@@ -131,11 +143,14 @@ def shear_y_matrix(shear_y_tan: torch.Tensor, height: int, width: int) -> torch.
     Returns:
         ``(batch_size, 3, 3)`` forward y-shear matrix.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> matrix = shear_y_matrix(torch.zeros(1), height=64, width=64)
         >>> torch.allclose(matrix, torch.eye(3).unsqueeze(0))
         True
+
+        ```
 
     """
     center_x = (width - 1) / 2.0
@@ -158,11 +173,14 @@ def translate_matrix(translation_x: torch.Tensor, translation_y: torch.Tensor) -
     Returns:
         ``(batch_size, 3, 3)`` translation matrix.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> matrix = translate_matrix(torch.zeros(1), torch.zeros(1))
         >>> torch.allclose(matrix, torch.eye(3).unsqueeze(0))
         True
+
+        ```
 
     """
     batch_size = translation_x.shape[0]
@@ -186,13 +204,16 @@ def hflip_matrix(width: int, batch_size: int, device: torch.device, dtype: torch
     Returns:
         ``(batch_size, 3, 3)`` horizontal flip matrix.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> matrix = hflip_matrix(width=4, batch_size=1, device=torch.device("cpu"), dtype=torch.float32)
         >>> matrix[0, 0, 0].item()
         -1.0
         >>> matrix[0, 0, 2].item()
         3.0
+
+        ```
 
     """
     matrix = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)
@@ -215,13 +236,16 @@ def vflip_matrix(height: int, batch_size: int, device: torch.device, dtype: torc
     Returns:
         ``(batch_size, 3, 3)`` vertical flip matrix.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> matrix = vflip_matrix(height=4, batch_size=1, device=torch.device("cpu"), dtype=torch.float32)
         >>> matrix[0, 1, 1].item()
         -1.0
         >>> matrix[0, 1, 2].item()
         3.0
+
+        ```
 
     """
     matrix = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)
@@ -336,12 +360,15 @@ def classify_d4_batch(matrix: torch.Tensor, height: int, width: int) -> str | No
         A member of :data:`_D4_OPS` when the whole batch shares one D4 element,
         else ``None``.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> from fuse_augmentations.affine.matrix import hflip_matrix, classify_d4_batch
         >>> m = hflip_matrix(width=8, batch_size=2, device=torch.device("cpu"), dtype=torch.float32)
         >>> classify_d4_batch(m, height=8, width=8)
         'hflip'
+
+        ```
 
     """
     # Work in float32 on the source device: MPS has no float64, and D4 entries are
@@ -382,11 +409,14 @@ def apply_d4_image(image: torch.Tensor, name: str) -> torch.Tensor:
     Raises:
         ValueError: If ``name`` is not a recognised D4 op.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> from fuse_augmentations.affine.matrix import apply_d4_image
         >>> apply_d4_image(torch.zeros(1, 1, 4, 4), "rot90").shape
         torch.Size([1, 1, 4, 4])
+
+        ```
 
     """
     if name == "identity":
@@ -422,12 +452,15 @@ def matmul3x3(matrix_a: torch.Tensor, matrix_b: torch.Tensor) -> torch.Tensor:
     Returns:
         ``(B, 3, 3)`` product ``A @ B``.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> mtx_identity = torch.eye(3).unsqueeze(0).expand(2, -1, -1)
         >>> mtx_result = matmul3x3(mtx_identity, mtx_identity)
         >>> torch.allclose(mtx_result, mtx_identity)
         True
+
+        ```
 
     """
     return torch.bmm(matrix_a, matrix_b)
@@ -468,11 +501,14 @@ def inv3x3(matrix: torch.Tensor, *, compiling: bool | None = None) -> torch.Tens
             per-axis scale stays well above ``sqrt(finfo.eps)`` (≈3.5e-4 for
             float32) to avoid rare training crashes.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> mtx_identity = torch.eye(3).unsqueeze(0)
         >>> torch.allclose(inv3x3(mtx_identity), mtx_identity)
         True
+
+        ```
 
     """
     # Single singularity threshold shared by ALL branches so eager and compiled
@@ -568,11 +604,14 @@ def normalize_matrix(matrix: torch.Tensor, height: int, width: int) -> torch.Ten
     Raises:
         ValueError: If ``width == 1`` or ``height == 1`` (division by zero).
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> mtx_norm = normalize_matrix(torch.eye(3).unsqueeze(0), height=64, width=64)
         >>> mtx_norm.shape
         torch.Size([1, 3, 3])
+
+        ```
 
     """
     if width == 1:
@@ -660,13 +699,16 @@ def crop_resize_matrix(
             ``target_w`` element is ``<= 1`` (align-corners endpoint mapping
             would become singular).
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> top = torch.zeros(1)
         >>> matrix = crop_resize_matrix(top, top, torch.full((1,), 32.0), torch.full((1,), 32.0),
         ...                        torch.full((1,), 32.0), torch.full((1,), 32.0))
         >>> torch.allclose(matrix, torch.eye(3).unsqueeze(0))
         True
+
+        ```
 
     """
     if bool((crop_h <= 1).any() or (crop_w <= 1).any() or (target_h <= 1).any() or (target_w <= 1).any()):
@@ -708,7 +750,8 @@ def estimate_scale(matrix: torch.Tensor) -> tuple[float, float]:
         A ``(scale_min, scale_max)`` tuple of Python floats: the smaller and
         larger per-axis scale factors, with ``scale_min <= scale_max``.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> half = torch.eye(3).unsqueeze(0)
         >>> half[:, 0, 0] = 0.25  # shrink x to a quarter
@@ -716,6 +759,8 @@ def estimate_scale(matrix: torch.Tensor) -> tuple[float, float]:
         >>> lo, hi = estimate_scale(half)
         >>> round(lo, 4), round(hi, 4)
         (0.25, 0.5)
+
+        ```
 
     """
     linear = matrix[:, :2, :2].to(dtype=torch.float32)
@@ -757,12 +802,15 @@ def normalize_matrix_io(
     Raises:
         ValueError: If any dimension is < 2.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> mtx_inv = torch.eye(3).unsqueeze(0)
         >>> mtx_norm = normalize_matrix_io(mtx_inv, height_in=64, width_in=64, height_out=32, width_out=32)
         >>> mtx_norm.shape
         torch.Size([1, 3, 3])
+
+        ```
 
     """
     for name, val in (
@@ -835,12 +883,15 @@ def perspective_from_points(src: torch.Tensor, dst: torch.Tensor) -> torch.Tenso
         ``(batch_size, 3, 3)`` forward homography matrices normalised so that
         ``H[..., 2, 2] = 1``.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> corners = torch.tensor([[[0., 0.], [1., 0.], [1., 1.], [0., 1.]]])
         >>> mtx_homography = perspective_from_points(corners, corners)
         >>> torch.allclose(mtx_homography, torch.eye(3).unsqueeze(0), atol=1e-5)
         True
+
+        ```
 
     """
     batch_size, num_points, _ = src.shape  # num_points=4
@@ -895,11 +946,14 @@ def perspective_grid(matrix_inv_norm: torch.Tensor, height: int, width: int) -> 
         ``(batch_size, height, width, 2)`` sampling grid for ``F.grid_sample`` with
         ``align_corners=True``.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> grid = perspective_grid(torch.eye(3).unsqueeze(0), height=4, width=4)
         >>> grid.shape
         torch.Size([1, 4, 4, 2])
+
+        ```
 
     """
     batch_size = matrix_inv_norm.shape[0]

@@ -15,13 +15,16 @@ pipeline. ``_PassthroughSegment`` carries non-fused transforms across
 pickle round-trips via an index-keyed adapter map that survives
 deserialisation (object ids change; positional indices do not).
 
-Example:
+Examples:
+    ```pycon
     >>> import torch
     >>> from fuse_augmentations.compose import Compose
     >>> pipe = Compose([])
     >>> image = torch.zeros(1, 3, 8, 8)
     >>> pipe(image).shape
     torch.Size([1, 3, 8, 8])
+
+    ```
 """
 
 from __future__ import annotations
@@ -716,10 +719,13 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
             state: The pickled instance ``__dict__`` restored by :mod:`pickle`.
 
         Examples:
+            ```pycon
             >>> import pickle
             >>> from fuse_augmentations import Compose  # doctest: +SKIP
             >>> pipe = Compose([...])  # doctest: +SKIP
             >>> reloaded = pickle.loads(pickle.dumps(pipe))  # doctest: +SKIP
+
+            ```
 
         """
         super().__setstate__(state)  # type: ignore[no-untyped-call]
@@ -781,6 +787,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
             returns for the positional tensor path.
 
         Examples:
+            ```pycon
             >>> import numpy as np
             >>> import albumentations as A
             >>> from fuse_augmentations import Compose
@@ -789,6 +796,8 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
             >>> out = pipe(image=img)
             >>> isinstance(out, dict) and out["image"].shape == (8, 8, 3)
             True
+
+            ```
 
         """
         # Dict-out: an Albumentations-style keyword call (image=..., mask=..., etc.)
@@ -1376,6 +1385,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
                 matrix, or targets that do not match ``data_keys``.
 
         Examples:
+            ```pycon
             >>> import torch
             >>> from fuse_augmentations import Compose
             >>> pipe = Compose.from_params(translate_x=(2.0, 2.0))
@@ -1384,6 +1394,8 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
             >>> recovered = pipe.inverse(augmented, matrix=matrix)
             >>> recovered.shape
             torch.Size([1, 3, 8, 8])
+
+            ```
 
         """
         unsupported_reason = self._inverse_unsupported_reason()

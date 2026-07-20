@@ -34,22 +34,25 @@ This is a Python 3.10+ project managed with `uv`.
 uv sync --all-extras --group dev
 ```
 
-For documentation builds, also install the docs group:
+For documentation work, also install the docs group. Build once with `--strict` to catch broken links and nav entries, or serve with live reload while editing:
 
 ```bash
 uv sync --all-extras --group dev --group docs
 uv run --group docs mkdocs build --strict
+uv run --group docs mkdocs serve
+# INFO    -  Building documentation...
+# INFO    -  Documentation built in 0.69 seconds
+# INFO    -  [22:44:18] Watching paths for changes: 'docs', 'mkdocs.yml', 'src/fuse_augmentations'
+# INFO    -  [22:44:18] Serving on http://127.0.0.1:8000/fuse-augmentations/
 ```
+
+`mkdocs serve` watches `docs/`, `mkdocs.yml`, and `src/fuse_augmentations` (docstrings feed the API reference pages) and rebuilds at <http://127.0.0.1:8000> on save.
 
 ## Tests and quality checks
 
-Run the focused checks for the files you change, then the relevant full checks:
+Run before opening a pull request:
 
 ```bash
-python -m pytest . -v --cov=fuse_augmentations
-ruff check .
-ruff format --check .
-python -m mypy
 pre-commit run --all-files
 ```
 

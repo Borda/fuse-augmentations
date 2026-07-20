@@ -3,11 +3,14 @@
 Both ``import fuse_augmentations`` and ``import fuse_aug`` expose the same
 public API. All implementation lives here; ``fuse_aug`` re-exports via star.
 
-Example:
+Examples:
+    ```pycon
     >>> from fuse_augmentations import Compose
     >>> pipe = Compose([])
     >>> pipe.__class__.__name__
     'FusedCompose'
+
+    ```
 
 """
 

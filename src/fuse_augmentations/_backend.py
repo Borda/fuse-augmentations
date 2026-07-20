@@ -7,10 +7,13 @@ Detection is driven by a pluggable adapter registry. The three built-in backends
 group; those are loaded **lazily** on the first detection miss (never at package import) so that ``import
 fuse_augmentations`` neither executes third-party code nor pays their import cost.
 
-Example:
+Examples:
+    ```pycon
     >>> from fuse_augmentations._backend import detect_backend
     >>> detect_backend([])
     <Backend.UNKNOWN: 'unknown'>
+
+    ```
 
 """
 
@@ -75,9 +78,12 @@ def adapter_capabilities(adapter: object) -> frozenset[str]:
     Returns:
         The adapter's ``capabilities`` as a ``frozenset[str]``, or an empty frozenset when the member is absent.
 
-    Example:
+    Examples:
+        ```pycon
         >>> adapter_capabilities(object())
         frozenset()
+
+        ```
 
     """
     return frozenset(getattr(adapter, "capabilities", frozenset()))
@@ -105,12 +111,15 @@ def register_adapter(
         backend: The :class:`Backend` enum member this adapter maps to. Defaults to ``Backend.UNKNOWN`` for
             third-party backends without a built-in enum member.
 
-    Example:
+    Examples:
+        ```pycon
         >>> class _Dummy:
         ...     capabilities = frozenset({"rotation"})
         >>> register_adapter("dummy", _Dummy(), "dummypkg.")
         >>> "dummy" in _ADAPTER_REGISTRY
         True
+
+        ```
 
     """
     prefixes = (module_prefixes,) if isinstance(module_prefixes, str) else tuple(module_prefixes)
@@ -215,9 +224,12 @@ def detect_backend(transforms: list[object]) -> Backend:
     Raises:
         ValueError: If transforms come from more than one backend.
 
-    Example:
+    Examples:
+        ```pycon
         >>> detect_backend([])
         <Backend.UNKNOWN: 'unknown'>
+
+        ```
 
     """
     backends: set[Backend] = set()
@@ -265,9 +277,12 @@ def detect_backends_per_transform(transforms: list[object]) -> list[Backend | No
     Returns:
         List of ``Backend | None``, same length as *transforms*.
 
-    Example:
+    Examples:
+        ```pycon
         >>> detect_backends_per_transform([])
         []
+
+        ```
 
     """
     result: list[Backend | None] = []

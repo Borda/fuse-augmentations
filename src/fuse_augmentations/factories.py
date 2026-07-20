@@ -111,7 +111,8 @@ class FactoriesMixin:
                 ``on_unsupported="raise"``, if any spec's operation is unknown or unsupported by the chosen backend
                 (all offenders reported together). This validation applies even when ``specs`` is empty.
 
-        Example:
+        Examples:
+            ```pycon
             >>> import torch
             >>> from fuse_augmentations.compose import FusedCompose
             >>> from fuse_augmentations.types import TransformSpec
@@ -119,6 +120,8 @@ class FactoriesMixin:
             >>> pipe = FusedCompose.from_config([spec], backend="kornia")
             >>> pipe(torch.zeros(1, 3, 8, 8)).shape
             torch.Size([1, 3, 8, 8])
+
+            ```
 
         """
         from fuse_augmentations.resolver import SUPPORTED_BACKENDS
@@ -281,10 +284,13 @@ class FactoriesMixin:
         Raises:
             KeyError: If *backend* is not in :data:`~fuse_augmentations.resolver.SUPPORTED_BACKENDS`.
 
-        Example:
+        Examples:
+            ```pycon
             >>> from fuse_augmentations.compose import FusedCompose
             >>> "hflip" in FusedCompose.supported_ops("kornia")  # doctest: +SKIP
             True
+
+            ```
 
         """
         from fuse_augmentations.resolver import capability_matrix
@@ -298,10 +304,13 @@ class FactoriesMixin:
         Returns:
             Mapping from each supported backend to the frozenset of canonical op names it can build.
 
-        Example:
+        Examples:
+            ```pycon
             >>> from fuse_augmentations.compose import FusedCompose
             >>> sorted(FusedCompose.capability_matrix())
             ['albumentations', 'kornia', 'native', 'torchvision']
+
+            ```
 
         """
         from fuse_augmentations.resolver import capability_matrix
@@ -439,7 +448,8 @@ class FactoriesMixin:
             ValueError: If a backend-native kwarg in ``TransformSpec.params``
                 is not accepted by the backend constructor.
 
-        Example:
+        Examples:
+            ```pycon
             >>> import torch
             >>> from fuse_augmentations.compose import FusedCompose
             >>> pipe = FusedCompose.from_params(rotation=(-30, 30), hflip_p=0.5)
@@ -447,6 +457,8 @@ class FactoriesMixin:
             >>> out = pipe(x)
             >>> out.shape
             torch.Size([2, 3, 64, 64])
+
+            ```
 
         """
         # --- specs= overload path ---

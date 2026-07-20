@@ -243,12 +243,15 @@ class IntrospectionMixin:
             segments, and ``None`` for passthrough segments and backend-free
             pipelines created via :meth:`from_params`.
 
-        Example:
+        Examples:
+            ```pycon
             >>> import torch
             >>> from fuse_augmentations.compose import FusedCompose
             >>> pipe = FusedCompose([])
             >>> pipe.fusion_plan_descriptors
             []
+
+            ```
 
         Note:
             The ``backend`` field on passthrough segments is always ``None``,

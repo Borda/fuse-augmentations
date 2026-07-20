@@ -31,12 +31,15 @@ def _has_coord_aux(data_keys: list[str] | None) -> bool:
         is present, else ``False``.
 
     Examples:
+        ```pycon
         >>> _has_coord_aux(["input", "keypoints"])
         True
         >>> _has_coord_aux(["input", "mask"])
         False
         >>> _has_coord_aux(None)
         False
+
+        ```
 
     """
     if data_keys is None:
@@ -58,12 +61,15 @@ def _has_aux_target(data_keys: list[str] | None) -> bool:
         ``True`` if any auxiliary key (any entry beyond ``data_keys[0]``) is present.
 
     Examples:
+        ```pycon
         >>> _has_aux_target(["input", "mask"])
         True
         >>> _has_aux_target(["input"])
         False
         >>> _has_aux_target(None)
         False
+
+        ```
 
     """
     return data_keys is not None and len(data_keys) > 1

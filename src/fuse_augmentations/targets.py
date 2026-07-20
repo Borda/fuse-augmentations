@@ -14,7 +14,8 @@ dimension ``batch_size``. Nearest-neighbour mask sampling preserves the historic
 non-differentiable behavior; bilinear sampling is available for float soft masks.
 The other three functions are differentiable.
 
-Example:
+Examples:
+    ```pycon
     >>> import torch
     >>> from fuse_augmentations.targets import transform_keypoints
     >>> keypoints = torch.tensor([[[10.0, 20.0]]])  # (batch_size=1, num_points=1, 2)
@@ -22,6 +23,8 @@ Example:
     >>> out = transform_keypoints(keypoints, matrix)
     >>> torch.allclose(out, keypoints)
     True
+
+    ```
 
 """
 
@@ -65,9 +68,10 @@ def transform_mask(mask: Tensor, grid: Tensor, mode: MaskInterpolationStr = "nea
     Returns:
         Warped mask with the same shape and dtype as ``mask``.
 
-    Example:
+    Examples:
         Identity grid leaves the mask unchanged:
 
+        ```pycon
         >>> import torch
         >>> import torch.nn.functional as F
         >>> mask = torch.zeros(1, 1, 4, 4)
@@ -79,6 +83,8 @@ def transform_mask(mask: Tensor, grid: Tensor, mode: MaskInterpolationStr = "nea
         torch.Size([1, 1, 4, 4])
         >>> bool(out[0, 0, 1, 1] == 1)
         True
+
+        ```
 
     """
     if mode not in ("nearest", "bilinear"):
@@ -144,15 +150,18 @@ def transform_bbox_xyxy(boxes: Tensor, mtx_forward: Tensor) -> Tensor:
     Returns:
         Transformed AABB boxes. Shape ``(batch_size, num_boxes, 4)``, xyxy format.
 
-    Example:
+    Examples:
         Identity matrix leaves boxes unchanged:
 
+        ```pycon
         >>> import torch
         >>> boxes = torch.tensor([[[10.0, 20.0, 50.0, 80.0]]])  # (batch_size=1, num_boxes=1, 4)
         >>> mtx_identity = torch.eye(3).unsqueeze(0)
         >>> out = transform_bbox_xyxy(boxes, mtx_identity)
         >>> torch.allclose(out, boxes)
         True
+
+        ```
 
     """
     box_x1 = boxes[..., 0]  # (batch_size, num_boxes)
@@ -214,15 +223,18 @@ def transform_bbox_xywh(boxes: Tensor, mtx_forward: Tensor) -> Tensor:
     Returns:
         Transformed boxes in xywh format. Shape ``(batch_size, num_boxes, 4)``.
 
-    Example:
+    Examples:
         Identity matrix leaves boxes unchanged:
 
+        ```pycon
         >>> import torch
         >>> boxes = torch.tensor([[[10.0, 20.0, 40.0, 60.0]]])  # x, y, w, h
         >>> mtx_identity = torch.eye(3).unsqueeze(0)
         >>> out = transform_bbox_xywh(boxes, mtx_identity)
         >>> torch.allclose(out, boxes)
         True
+
+        ```
 
     """
     box_left, box_top, box_width, box_height = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
@@ -257,15 +269,18 @@ def transform_keypoints(keypoints: Tensor, mtx_forward: Tensor) -> Tensor:
     Returns:
         Transformed keypoints. Shape ``(batch_size, num_points, 2)``.
 
-    Example:
+    Examples:
         Identity matrix leaves keypoints unchanged:
 
+        ```pycon
         >>> import torch
         >>> keypoints = torch.tensor([[[10.0, 20.0], [30.0, 40.0]]])  # (batch_size=1, num_points=2, 2)
         >>> mtx_identity = torch.eye(3).unsqueeze(0)
         >>> out = transform_keypoints(keypoints, mtx_identity)
         >>> torch.allclose(out, keypoints)
         True
+
+        ```
 
     """
     batch_size, num_kps, _ = keypoints.shape

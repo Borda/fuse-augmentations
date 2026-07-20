@@ -95,6 +95,7 @@ def is_coordinate_changing_passthrough(transform: object) -> bool:
         ``False`` for a kernel/pointwise passthrough op.
 
     Examples:
+        ```pycon
         >>> class ElasticTransform:
         ...     pass
         >>> class GaussianBlur:
@@ -103,6 +104,8 @@ def is_coordinate_changing_passthrough(transform: object) -> bool:
         True
         >>> is_coordinate_changing_passthrough(GaussianBlur())
         False
+
+        ```
 
     """
     return type(transform).__name__ in _COORDINATE_CHANGING_PASSTHROUGH_NAMES
@@ -140,9 +143,12 @@ class RandomnessPolicy(Enum):
 class InterpolationMode(IntEnum):
     """Interpolation modes ordered by quality (higher = finer).
 
-    Example:
+    Examples:
+        ```pycon
         >>> InterpolationMode.BICUBIC > InterpolationMode.BILINEAR
         True
+
+        ```
 
     """
 
@@ -154,9 +160,12 @@ class InterpolationMode(IntEnum):
 class PaddingMode(IntEnum):
     """Padding modes ordered by quality (higher = fewer artifacts).
 
-    Example:
+    Examples:
+        ```pycon
         >>> PaddingMode.REFLECTION > PaddingMode.ZEROS
         True
+
+        ```
 
     """
 
@@ -484,12 +493,15 @@ class TransformSpec:
             OmegaConf ``ListConfig``, etc.) automatically.
         prob: Per-sample application probability. Default ``1.0``.
 
-    Example:
+    Examples:
+        ```pycon
         >>> spec = TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=0.8)
         >>> spec.operation
         'rotation'
         >>> spec.prob
         0.8
+
+        ```
 
     """
 
@@ -510,10 +522,13 @@ class TransformSpec:
         Returns:
             Dict with keys ``"operation"``, ``"params"``, and ``"prob"``.
 
-        Example:
+        Examples:
+            ```pycon
             >>> spec = TransformSpec(operation="hflip", params={}, prob=0.5)
             >>> spec.to_dict()
             {'operation': 'hflip', 'params': {}, 'prob': 0.5}
+
+            ```
 
         """
         params = _to_json_compatible(self.params)
@@ -539,12 +554,15 @@ class TransformSpec:
             OmegaConf ``DictConfig`` objects can be passed directly without calling
             ``OmegaConf.to_container()`` first. This is documented behaviour, not a bug.
 
-        Example:
+        Examples:
+            ```pycon
             >>> import json
             >>> spec = TransformSpec(operation="rotation", params={"degrees": (-30.0, 30.0)}, prob=0.8)
             >>> restored = TransformSpec.from_dict(json.loads(json.dumps(spec.to_dict())))
             >>> restored == spec  # list → tuple restored
             True
+
+            ```
 
         """
         if "params" in data_dict:
@@ -667,7 +685,8 @@ class SegmentDescriptor:
             ``"substitution_unavailable"`` when substitution was requested but the
             target backend was not importable.
 
-    Example:
+    Examples:
+        ```pycon
         >>> d = SegmentDescriptor(
         ...     kind="fused",
         ...     transforms=("RandomRotation", "RandomHorizontalFlip"),
@@ -682,6 +701,8 @@ class SegmentDescriptor:
         True
         >>> d.to_dict()  # doctest: +SKIP
         {'kind': 'fused', 'transforms': ['RandomRotation', ...], ...}
+
+        ```
 
     """
 
@@ -702,7 +723,8 @@ class SegmentDescriptor:
             The ``"transforms"`` value is a ``list`` of strings (not a ``tuple``)
             for JSON compatibility.
 
-        Example:
+        Examples:
+            ```pycon
             >>> d = SegmentDescriptor(
             ...     kind="passthrough",
             ...     transforms=("RandomGaussianBlur",),
@@ -715,6 +737,8 @@ class SegmentDescriptor:
             'spatial_kernel'
             >>> d.to_dict()["refused"]
             'not_fusible'
+
+            ```
 
         """
         return {

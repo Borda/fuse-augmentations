@@ -4,13 +4,16 @@ Provides the canonical ``import fuse_aug`` entry point as specified in §19
 of the project spec. All public symbols live in ``fuse_augmentations``; this
 package simply re-exports them.
 
-Example:
+Examples:
+    ```pycon
     >>> import fuse_aug
     >>> fuse_aug.__name__
     'fuse_aug'
     >>> from fuse_aug import Compose
     >>> Compose.__name__
     'FusedCompose'
+
+    ```
 
 """
 

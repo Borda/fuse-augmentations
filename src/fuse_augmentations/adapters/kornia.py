@@ -3,11 +3,14 @@
 Bridges Kornia augmentation transforms to the canonical parameter
 representation and matrix primitives used by ``FusedAffineSegment``.
 
-Example:
+Examples:
+    ```pycon
     >>> from fuse_augmentations.adapters.kornia import KorniaAdapter
     >>> adapter = KorniaAdapter()
     >>> adapter  # doctest: +ELLIPSIS
     <...KorniaAdapter...>
+
+    ```
 
 """
 
@@ -118,10 +121,13 @@ def _batch_size_sentinel(batch_size: int, device: torch.device) -> torch.Tensor:
     Returns:
         A ``(batch_size,)`` ``int64`` tensor.
 
-    Example:
+    Examples:
+        ```pycon
         >>> import torch
         >>> _batch_size_sentinel(4, torch.device("cpu")).shape[0]
         4
+
+        ```
 
     """
     return torch.zeros(batch_size, device=device, dtype=torch.int64)
@@ -135,10 +141,13 @@ class KorniaAdapter:
     ``RandomTranslate``, ``RandomHorizontalFlip``, ``RandomVerticalFlip``
     (affine path), and ``RandomPerspective`` (projective path).
 
-    Example:
+    Examples:
+        ```pycon
         >>> adapter = KorniaAdapter()
         >>> isinstance(adapter, KorniaAdapter)
         True
+
+        ```
 
     """
 
@@ -206,10 +215,13 @@ class KorniaAdapter:
             A compatible padding mode, or ``None`` when the affine mode cannot
             be interpreted safely.
 
-        Example:
+        Examples:
+            ```pycon
             >>> import kornia.augmentation as K
             >>> KorniaAdapter.border_mode(K.RandomAffine(10, padding_mode="border"))
             'border'
+
+            ```
 
         """
         if not TRANSFORM_REGISTRY:

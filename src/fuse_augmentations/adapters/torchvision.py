@@ -15,11 +15,14 @@ uses this sentinel to construct their matrices from the shared matrix primitives
 Optional: ``torchvision`` must be installed at runtime for transform dispatch
 to function; the module is importable without it.
 
-Example:
+Examples:
+    ```pycon
     >>> from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
     >>> adapter = TorchVisionAdapter()
     >>> adapter  # doctest: +ELLIPSIS
     <...TorchVisionAdapter...>
+
+    ```
 
 """
 
@@ -185,10 +188,13 @@ class TorchVisionAdapter:
     and ``RandomVerticalFlip`` from both ``torchvision.transforms`` (v1) and
     ``torchvision.transforms.v2``.
 
-    Example:
+    Examples:
+        ```pycon
         >>> adapter = TorchVisionAdapter()
         >>> isinstance(adapter, TorchVisionAdapter)
         True
+
+        ```
 
     """
 
@@ -245,10 +251,13 @@ class TorchVisionAdapter:
         Returns:
             ``"zeros"`` for zero fill, otherwise ``None`` for opaque fill.
 
-        Example:
+        Examples:
+            ```pycon
             >>> from torchvision.transforms.v2 import RandomAffine
             >>> TorchVisionAdapter.border_mode(RandomAffine(10))
             'zeros'
+
+            ```
 
         """
         category = TorchVisionAdapter.category(transform)

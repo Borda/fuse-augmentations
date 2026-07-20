@@ -20,11 +20,14 @@ constructs their matrices from inline NumPy helpers.
 Requires ``albumentations >= 2.0``.
 
 
-Example:
+Examples:
+    ```pycon
     >>> from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
     >>> adapter = AlbumentationsAdapter()
     >>> adapter  # doctest: +ELLIPSIS
     <...AlbumentationsAdapter...>
+
+    ```
 
 """
 
@@ -64,12 +67,15 @@ def hflip_matrix_np(width: int) -> NDArray[np.float64]:
     Returns:
         ``(3, 3)`` float64 forward horizontal flip matrix.
 
-    Example:
+    Examples:
+        ```pycon
         >>> mtx = hflip_matrix_np(width=4)
         >>> mtx[0].tolist()
         [-1.0, 0.0, 3.0]
         >>> mtx[1].tolist()
         [0.0, 1.0, 0.0]
+
+        ```
 
     """
     return np.array(
@@ -93,12 +99,15 @@ def vflip_matrix_np(height: int) -> NDArray[np.float64]:
     Returns:
         ``(3, 3)`` float64 forward vertical flip matrix.
 
-    Example:
+    Examples:
+        ```pycon
         >>> mtx = vflip_matrix_np(height=4)
         >>> mtx[1].tolist()
         [0.0, -1.0, 3.0]
         >>> mtx[0].tolist()
         [1.0, 0.0, 0.0]
+
+        ```
 
     """
     return np.array(
@@ -248,10 +257,13 @@ class AlbumentationsAdapter:
     Requires ``albumentations >= 2.0``. The adapter reads the pre-built ``matrix`` key returned by affine-style
     transforms and ``Perspective`` rather than reconstructing affine or projective matrices from raw parameters.
 
-    Example:
+    Examples:
+        ```pycon
         >>> adapter = AlbumentationsAdapter()
         >>> isinstance(adapter, AlbumentationsAdapter)
         True
+
+        ```
 
     """
 
@@ -310,10 +322,13 @@ class AlbumentationsAdapter:
         Returns:
             A compatible padding mode, or ``None`` for an opaque mode.
 
-        Example:
+        Examples:
+            ```pycon
             >>> import albumentations as A
             >>> AlbumentationsAdapter.border_mode(A.Affine(rotate=10))
             'zeros'
+
+            ```
 
         """
         border_transforms = _INTERP_TYPES | frozenset({_Perspective}) if TRANSFORM_REGISTRY else frozenset()
@@ -821,6 +836,7 @@ class AlbumentationsAdapter:
             Transformed ``(height, width, channels)`` NumPy array.
 
         Examples:
+            ```pycon
             >>> import numpy as np
             >>> import albumentations as A
             >>> from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
@@ -828,6 +844,8 @@ class AlbumentationsAdapter:
             >>> out = AlbumentationsAdapter.call_nonfused_numpy(A.GaussianBlur(p=1.0), image)
             >>> out.shape
             (8, 8, 3)
+
+            ```
 
         """
         return transform(image=image_hwc)["image"]  # type: ignore[operator,no-any-return]

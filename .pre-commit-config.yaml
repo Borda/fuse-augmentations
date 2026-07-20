@@ -66,6 +66,14 @@ repos:
         additional_dependencies: [tomli]
         args: ["--in-place"]
 
+  - repo: local
+    hooks:
+      - id: check-doctest-fences
+        name: Doctest examples wrapped in ```pycon fences
+        entry: python .github/scripts/check_doctest_fences.py
+        language: system
+        files: ^src/.*\.py$
+
   - repo: https://github.com/tox-dev/pyproject-fmt
     rev: v2.19.0
     hooks:
