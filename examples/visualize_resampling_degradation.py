@@ -8,17 +8,16 @@ Pixel differences are therefore caused by sequential versus composed resampling,
 not different random draws.
 
 Run:
-    uv run --all-extras --group benchmark python examples/visualize_resampling_loss.py
+    uv run --all-extras --group benchmark python examples/visualize_resampling_degradation.py
 
 Render a TorchVision case:
-    uv run --all-extras --group benchmark python examples/visualize_resampling_loss.py \
+    uv run --all-extras --group benchmark python examples/visualize_resampling_degradation.py \
         --backend torchvision --case camera-jitter
 
 """
 
 from __future__ import annotations
 
-import argparse
 import copy
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +33,8 @@ Backend = Literal["kornia", "torchvision", "albumentations"]
 _BACKENDS: tuple[Backend, ...] = ("kornia", "torchvision", "albumentations")
 _INPUT_SIZE = 512
 _IMAGE_NAMES = ("astronaut", "camera", "chelsea", "coffee", "coins")
+_SEQ_ACCENT = "#ff00ff"  # native sequential border/label = pure magenta (255, 0, 255), the overlay tint
+_FUSED_ACCENT = "#00ff00"  # fused border/label = pure green (0, 255, 0), the overlay channel
 
 
 @dataclass(frozen=True)
@@ -122,10 +123,10 @@ def _to_image(tensor: torch.Tensor) -> torch.Tensor:
 
 
 def _channel_overlay(sequential: torch.Tensor, fused: torch.Tensor) -> torch.Tensor:
-    """Encode sequential luminance in red and fused luminance in green."""
+    """Encode sequential luminance in magenta and fused luminance in green (overlap reads white)."""
     sequential_luminance = _to_image(sequential).mean(dim=-1)
     fused_luminance = _to_image(fused).mean(dim=-1)
-    return torch.stack((sequential_luminance, fused_luminance, torch.zeros_like(sequential_luminance)), dim=-1)
+    return torch.stack((sequential_luminance, fused_luminance, sequential_luminance), dim=-1)
 
 
 def _run_pair(case: DemoCase, image: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, int]:
@@ -176,20 +177,28 @@ def _render_case(image: torch.Tensor, case: DemoCase, output_path: Path) -> None
     legend_axis = figure.add_subplot(grid[1, :])
     legend_axis.set_axis_off()
     panels = (
-        (_to_image(image), "Input"),
-        (_channel_overlay(sequential, fused), "Overlay"),
-        (_to_image(sequential), "Native sequential: 3 resamples"),
-        (_to_image(fused), "Fuse Compose: 1 resample"),
+        (_to_image(image), "Input", None),
+        (_channel_overlay(sequential, fused), "Overlay", None),
+        (_to_image(sequential), "Native composite: 3 resamples", _SEQ_ACCENT),
+        (_to_image(fused), "Fused composite: 1 resample", _FUSED_ACCENT),
     )
-    for axis, (panel, title) in zip(axes.flat, panels, strict=True):
+    for axis, (panel, title, accent) in zip(axes.flat, panels, strict=True):
         axis.imshow(panel)
-        axis.set_axis_off()
-        axis.set_title(title, weight="bold")
+        if accent is None:
+            axis.set_axis_off()
+            axis.set_title(title, weight="bold")
+            continue
+        axis.set_xticks([])
+        axis.set_yticks([])
+        for spine in axis.spines.values():
+            spine.set_edgecolor(accent)
+            spine.set_linewidth(3.0)
+        axis.set_title(title, weight="bold", color=accent)
     legend_axis.legend(
         handles=[
-            Patch(color="red", label="Native sequential only"),
-            Patch(color="lime", label="Fuse Compose only"),
-            Patch(color="yellow", label="Perfect overlap"),
+            Patch(facecolor="#ff00ff", label="Native composite only"),
+            Patch(facecolor="#00ff00", label="Fused composite only"),
+            Patch(facecolor="white", edgecolor="0.3", label="Perfect overlap"),
         ],
         loc="center",
         ncols=3,
@@ -216,36 +225,33 @@ def render(output_dir: Path, image_name: str, backend: Backend, selected_case: s
     )
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse the selected input image and destination directory."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("docs/assets/images"),
-        help="Directory for generated WebP figures.",
-    )
-    parser.add_argument(
-        "--image",
-        choices=_IMAGE_NAMES,
-        default="coins",
-        help="Bundled scikit-image sample image to transform.",
-    )
-    parser.add_argument(
-        "--case",
-        choices=tuple(recipe.stem for recipe in _RECIPES),
-        default="framing",
-        help="Named scenario to render.",
-    )
-    parser.add_argument("--backend", choices=_BACKENDS, default="kornia", help="Native backend to compare.")
-    return parser.parse_args()
+def main(
+    output_dir: str = "docs/assets/images",
+    image: str = "coins",
+    backend: Backend = "kornia",
+    case: str = "framing",
+) -> None:
+    """Generate one deterministic native-versus-fused comparison figure.
 
+    Args:
+        output_dir: Directory for the generated WebP figure.
+        image: Bundled scikit-image sample to transform.
+        backend: Native backend to compare (kornia, torchvision, albumentations).
+        case: Named scenario stem (framing, camera-jitter, off-axis-jitter).
 
-def main() -> None:
-    """Generate deterministic native-versus-fused comparison figures."""
-    args = parse_args()
-    render(args.output_dir, args.image, args.backend, args.case)
+    Examples:
+        >>> callable(main)
+        True
+
+    """
+    cases = tuple(recipe.stem for recipe in _RECIPES)
+    assert image in _IMAGE_NAMES, f"--image must be one of {_IMAGE_NAMES}, got {image!r}"
+    assert backend in _BACKENDS, f"--backend must be one of {_BACKENDS}, got {backend!r}"
+    assert case in cases, f"--case must be one of {cases}, got {case!r}"
+    render(Path(output_dir), image, backend, case)
 
 
 if __name__ == "__main__":
-    main()
+    import fire
+
+    fire.Fire(main)

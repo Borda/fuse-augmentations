@@ -52,7 +52,7 @@ The public `n_warps_saved` value should be interpreted as a planner estimate, no
 
 The figures below avoid selecting one favourable backend or one random draw. They apply the same three fixed geometry recipes—rotation → scale → x-shear—to Kornia, TorchVision v2, and Albumentations. All angle, scale, and shear ranges collapse to one value, so the native and fused paths for a given backend use identical transform parameters. The only intended execution difference is three sequential bilinear resamples versus one composed resample.
 
-The top-right overlay puts native-backend-only detail in red, Fuse Compose-only detail in green, and a perfect overlap in yellow. Compare each backend only with its own native output: backend centre conventions, border handling, and interpolation differ by design.
+The top-right overlay puts native-backend-only detail in magenta, Fuse Compose-only detail in green, and a perfect overlap in white. Compare each backend only with its own native output: backend centre conventions, border handling, and interpolation differ by design.
 
 #### Framing
 
@@ -96,7 +96,69 @@ The top-right overlay puts native-backend-only detail in red, Fuse Compose-only 
 
     ![Albumentations off-axis jitter: sequential and fused resampling](../assets/images/sequential-vs-fused-albumentations-off-axis-jitter.webp)
 
-This is a backend-specific resampling illustration, not a native-pixel-parity, cross-backend-equivalence, or task-quality claim. Recreate the default Kornia framing figure with `uv run --all-extras --group benchmark python examples/visualize_resampling_loss.py`. Select another recipe with `--case camera-jitter`, another backend with `--backend torchvision`, or another bundled image with `--image astronaut`.
+This is a backend-specific resampling illustration, not a native-pixel-parity, cross-backend-equivalence, or task-quality claim. Recreate the default Kornia framing figure with `uv run --all-extras --group benchmark python examples/visualize_resampling_degradation.py`. Select another recipe with `--case camera-jitter`, another backend with `--backend torchvision`, or another bundled image with `--image astronaut`.
+
+### Animated walk-through
+
+The animation replays each fixed recipe one step at a time. The native panel resamples once per geometric step and its counter climbs to three, while Fuse Compose reaches its final image on the very first tick and holds—one warp, done immediately, not one warp per step. A channel-split frame then renders the sequential result in magenta and the fused result in green, and the closing overlay stacks them: agreement turns white, native-only drift stays magenta, fused-only coverage stays green.
+
+Animated WebP does not play in macOS Preview or Finder Quick Look. Open the file in a browser (Chrome, Safari, Firefox) or view this page online. Only the Albumentations animations are committed; regenerate any backend with the command shown in its tab.
+
+#### Framing
+
+=== "Kornia"
+
+    ```bash
+    uv run --all-extras --group benchmark python examples/animate_resampling_degradation.py --backend kornia --case framing
+    ```
+
+=== "TorchVision v2"
+
+    ```bash
+    uv run --all-extras --group benchmark python examples/animate_resampling_degradation.py --backend torchvision --case framing
+    ```
+
+=== "Albumentations"
+
+    ![Albumentations framing animation: three native resamples versus one fused warp](../assets/images/animated-sequential-vs-fused-albumentations-framing.webp)
+
+#### Camera jitter
+
+=== "Kornia"
+
+    ```bash
+    uv run --all-extras --group benchmark python examples/animate_resampling_degradation.py --backend kornia --case camera-jitter
+    ```
+
+=== "TorchVision v2"
+
+    ```bash
+    uv run --all-extras --group benchmark python examples/animate_resampling_degradation.py --backend torchvision --case camera-jitter
+    ```
+
+=== "Albumentations"
+
+    ![Albumentations camera jitter animation: three native resamples versus one fused warp](../assets/images/animated-sequential-vs-fused-albumentations-camera-jitter.webp)
+
+#### Off-axis jitter
+
+=== "Kornia"
+
+    ```bash
+    uv run --all-extras --group benchmark python examples/animate_resampling_degradation.py --backend kornia --case off-axis-jitter
+    ```
+
+=== "TorchVision v2"
+
+    ```bash
+    uv run --all-extras --group benchmark python examples/animate_resampling_degradation.py --backend torchvision --case off-axis-jitter
+    ```
+
+=== "Albumentations"
+
+    ![Albumentations off-axis jitter animation: three native resamples versus one fused warp](../assets/images/animated-sequential-vs-fused-albumentations-off-axis-jitter.webp)
+
+Render the whole grid at once with `--all_cases`.
 
 ## Native-backend parity
 

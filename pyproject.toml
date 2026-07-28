@@ -43,6 +43,9 @@ optional-dependencies.all = [
   "kornia>=0.6.12",
   "torchvision>=0.15",
 ]
+optional-dependencies.cli = [
+  "fire>=0.6",
+]
 optional-dependencies.kornia = [
   "kornia>=0.6.12",
 ]

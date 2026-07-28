@@ -6,6 +6,10 @@
 
 `fuse-augmentations` is a PyTorch tensor-first engine for reducing repeated interpolation in image augmentation pipelines. It recognizes a finite set of Kornia, TorchVision, and Albumentations transforms—or builds a pipeline directly from numeric ranges—then composes compatible transform matrices before pixels are sampled.
 
+![Animated: three native resamples versus one fused warp](https://raw.githubusercontent.com/Borda/fuse-augmentations/main/docs/assets/images/animated-sequential-vs-fused-albumentations-camera-jitter.webp)
+
+> Animated WebP renders on GitHub and in any browser; macOS Preview and Finder Quick Look show only the first frame.
+
 You keep the readable pipeline: rotate, scale, shear, translate, flip. The engine finds compatible runs and can replace several geometric warps with one.
 
 > [!IMPORTANT]
@@ -20,15 +24,51 @@ You keep the readable pipeline: rotate, scale, shear, translate, flip. The engin
 
 A conventional chain may interpolate the same pixels after every geometric operation:
 
-```text
-Conventional chain — 4 resampling passes
+**Native composite — each transform is its own warp (3 warps):**
 
-  Input ──▶ Rotate ─warp 1─▶ Scale ─warp 2─▶ Shear ─warp 3─▶ Translate ─warp 4─▶ Output
+```mermaid
+flowchart LR
+  IN["Input<br/>image + annotations"]
+  subgraph W1["Warp 1"]
+    A1[Rotate]
+  end
+  subgraph W2["Warp 2"]
+    A2[Translate]
+  end
+  subgraph W3["Warp 3"]
+    A3[HFlip]
+  end
+  OUT["Output<br/>image + annotations"]
+  IN --> W1 --> W2 --> W3 --> OUT
+  classDef warp fill:#f7d0f7,stroke:#ff00ff,color:#000;
+  classDef input fill:#ffff00,stroke:#cccc00,color:#000;
+  class A1,A2,A3 warp;
+  class IN input;
+  style W1 fill:#d4edda,stroke:#00ff00;
+  style W2 fill:#d4edda,stroke:#00ff00;
+  style W3 fill:#d4edda,stroke:#00ff00;
+```
 
-Fused compatible chain — 1 resampling pass
+**Fused composite — the transforms collapse into one fused block (1 warp):**
 
-  Input ──▶ sample parameters ──▶ M = M_translate · M_shear · M_scale · M_rotate
-        ──▶ one sampling grid ─warp 1─▶ Output
+```mermaid
+flowchart TB
+  subgraph steps [" "]
+    direction LR
+    T1[Rotate] -.-> T2[Translate] -.-> T3[HFlip]
+  end
+  subgraph flow [" "]
+    direction LR
+    FIN["Input<br/>image + annotations"] --> FB["Fused block · warp 1<br/>M = M_hflip · M_trans · M_rot"] --> FOUT["Output<br/>image + annotations"]
+  end
+  steps --> FB
+  classDef warp fill:#f7d0f7,stroke:#ff00ff,color:#000;
+  classDef input fill:#ffff00,stroke:#cccc00,color:#000;
+  class T1,T2,T3 warp;
+  class FIN input;
+  style steps fill:#ffffff,stroke:#ffffff;
+  style flow fill:#ffffff,stroke:#ffffff;
+  style FB fill:#d4edda,stroke:#00ff00,color:#000;
 ```
 
 Repeated interpolation adds work, creates intermediate tensors, and can progressively discard high-frequency detail. Matrix composition is cheap by comparison: for a compatible run, the package samples the individual parameters, multiplies their homogeneous matrices in declared order, and evaluates the result through one sampling grid.
@@ -37,7 +77,7 @@ This does **not** mean the fused output is pixel-identical to the native chain. 
 
 ### Matched-parameter visual example
 
-The same fixed Kornia rotation → scale → shear recipe is evaluated below. The native route resamples three times; Fuse Compose composes the geometry and samples once. The red/green/yellow overlay makes local disagreement visible without claiming native-pixel parity.
+The same fixed Kornia rotation → scale → shear recipe is evaluated below. The native route resamples three times; Fuse Compose composes the geometry and samples once. The magenta/green/white overlay makes local disagreement visible without claiming native-pixel parity.
 
 ![Fixed Kornia parameters: native sequential versus Fuse Compose resampling](https://raw.githubusercontent.com/Borda/fuse-augmentations/main/docs/assets/images/sequential-vs-fused-kornia-framing.webp)
 
