@@ -306,6 +306,37 @@ assert prediction_original.shape == images.shape
 
 With `data_keys`, pass the augmented auxiliary targets in the same positional order; masks use the matching sampling grid and boxes/keypoints use the inverse pixel matrix. Keypoints and masks recover to sampling precision, but bounding boxes are axis-aligned: a forward-then-inverse box is exact only for axis-aligned transforms (flip, scale, translation) and inflates under a rotation, shear, or projective warp. `inverse` raises instead of guessing for crop-resize (cropped pixels are lost), color/LUT/blur or passthrough segments, exact-only segments, multiple segments, or a missing paired matrix. It is geometric-only and cannot recover values discarded by interpolation or padding.
 
+## 🎨 Synthetic datasets
+
+Generate small labelled datasets of colored shapes — no training loop, no Lightning. Draw `square`/`rectangle`/`triangle`/`circle` in red/green/blue and export **COCO** or **YOLO** for **detection**, **segmentation**, or **oriented bounding box (OBB)**.
+
+```python
+import tempfile
+
+from fuse_augmentations import generate_dataset
+
+with tempfile.TemporaryDirectory() as out_dir:
+    # COCO detection, 70/20/10 split, reproducible (pass a real path to keep it)
+    counts = generate_dataset(
+        out_dir, num_images=100, fmt="coco", task="detection", seed=0
+    )
+
+print(counts)
+```
+
+<details>
+<summary>Per-split image counts for the synthetic COCO dataset</summary>
+
+```
+{'train': 70, 'val': 20, 'test': 10}
+```
+
+</details>
+
+Swap `fmt="yolo"`, `task="obb"`, or `class_mode="color"` for other layouts, tasks, and class schemes.
+
+`rectangle` plus random per-shape rotation give oriented boxes real orientation; all generation is seeded for byte-identical output. Generation streams — feed a training loop straight from `SyntheticGenerator.generate(n)` or a `DataLoader` via `SyntheticIterableDataset`, with no disk round-trip and bounded memory even for huge datasets. See the [synthetic datasets guide](docs/guides/synthetic-datasets.md) and `examples/generate_synthetic_dataset.py`.
+
 ## 🧭 Where it fits
 
 Use `fuse-augmentations` when:

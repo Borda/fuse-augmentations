@@ -64,6 +64,7 @@ No CI runner has GPU access: tests marked `gpu` (`pytest -m gpu`) are skipped in
 
 Python examples in `README.md` and `docs/**/*.md` are generated into ignored pytest modules. Keep each example runnable from a clean generated test context:
 
+- write the code in a plain ```` ```python ```` fence — a normal script body, not a ```` ```pycon ```` REPL session with `>>>` prompts. The `>>>` / ```` ```pycon ```` style is reserved for docstrings under `src/**` (rendered by Griffe, enforced by `check_doctest_fences.py`); Markdown examples pair a `python` fence with a following output fence instead;
 - include imports, deterministic seeds, and all required setup in the block or an explicitly shared setup block;
 - assert the user-visible contract, including output shape, dtype, and important invariants;
 - use `print(...)` only for meaningful information a reader should see when running the example, such as a fusion plan, capability summary, descriptor, or recorded metadata;
