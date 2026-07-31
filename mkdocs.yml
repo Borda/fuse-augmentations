@@ -122,6 +122,7 @@ nav:
       - Auxiliary targets: guides/auxiliary-targets.md
       - Introspection: guides/introspection.md
       - Reproducibility: guides/reproducibility.md
+      - Synthetic datasets: guides/synthetic-datasets.md
   - Applications: applications.md
   - Research:
       - Quality and fidelity: research/quality-and-fidelity.md

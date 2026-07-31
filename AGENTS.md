@@ -13,6 +13,6 @@ For the contributor workflow, use [.github/CONTRIBUTING.md](.github/CONTRIBUTING
 
 - Python support starts at 3.10. Use `uv` and treat `pyproject.toml` and `.github/workflows/` as the source of truth.
 - The package uses a `src/` layout and supports optional Kornia, TorchVision, and Albumentations backends.
-- Documentation Python examples in `README.md` and `docs/**/*.md` are generated into ignored `tests/integration/` modules with `.github/scripts/generate_doc_tests.py`.
+- Documentation Python examples in `README.md` and `docs/**/*.md` are generated into ignored `tests/integration/` modules with `.github/scripts/generate_doc_tests.py`. Write them as plain ```` ```python ```` script blocks (`print(...)` + a following output fence in `<details>`) — never as ```` ```pycon ```` `>>>` sessions, which are reserved for `src/**` docstrings.
 - Run `python .github/scripts/generate_doc_tests.py` before `python -m pytest tests/integration -q` when changing executable documentation.
 - CI regenerates the documentation suite in the all-extras job. Do not commit generated files; there is intentionally no Makefile wrapper.
