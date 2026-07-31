@@ -17,6 +17,7 @@ Examples:
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from fuse_augmentations.__about__ import *  # noqa: F403
 from fuse_augmentations.affine.segment import (
@@ -81,11 +82,22 @@ __all__ = [
     "TransformCategory",
     "TransformSpec",
     "build_segments",
+    "generate_dataset",  # noqa: F405 - provided lazily via module __getattr__
     "transform_bbox_xywh",
     "transform_bbox_xyxy",
     "transform_keypoints",
     "transform_mask",
 ]
+
+
+def __getattr__(name: str) -> Any:  # noqa: ANN401 - module-level lazy attribute access
+    """Lazily expose the dataset-generation facade, deferring the datasets subpackage and Pillow until first use."""
+    if name == "generate_dataset":
+        from fuse_augmentations.data import generate_dataset
+
+        return generate_dataset
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 _PATH_PACKAGE = os.path.realpath(os.path.dirname(__file__))
 _PATH_PROJECT = os.path.dirname(_PATH_PACKAGE)
