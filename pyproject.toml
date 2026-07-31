@@ -33,6 +33,7 @@ classifiers = [
 dynamic = [ "version" ]
 dependencies = [
   "numpy",
+  "pillow>=10",
   "torch>=2.2",
 ]
 optional-dependencies.albumentations = [
