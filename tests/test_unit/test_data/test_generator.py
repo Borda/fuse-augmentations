@@ -105,3 +105,41 @@ def test_class_names_belong_to_mode(mode, expected):
     for ann in sample.annotations:
         assert ann.class_name in vocab
         assert class_names(mode)[ann.class_id] == ann.class_name
+
+
+def test_sample_reaches_requested_count_under_pressure():
+    # min==max fixes num_objects; a tight-but-feasible scene forces retries yet must still
+    # place every object rather than silently dropping any.
+    config = SyntheticConfig(
+        img_size=96, min_objects=8, max_objects=8, min_size_ratio=0.16, max_size_ratio=0.26, overlap_iou=0.05
+    )
+    sample = SyntheticGenerator(config).sample(np.random.default_rng(0))
+    assert len(sample.annotations) == 8
+
+
+def test_sample_retry_is_reproducible_for_a_seed():
+    config = SyntheticConfig(
+        img_size=96, min_objects=8, max_objects=8, min_size_ratio=0.16, max_size_ratio=0.26, overlap_iou=0.05
+    )
+    gen = SyntheticGenerator(config)
+    first = [ann.bbox_xyxy for ann in gen.sample(np.random.default_rng(3)).annotations]
+    second = [ann.bbox_xyxy for ann in gen.sample(np.random.default_rng(3)).annotations]
+    assert first == second
+
+
+def test_sample_raises_when_min_objects_unreachable():
+    # Near-full shapes with zero tolerated overlap and full-containment cannot fit min_objects.
+    config = SyntheticConfig(
+        img_size=32,
+        min_objects=8,
+        max_objects=8,
+        min_size_ratio=0.9,
+        max_size_ratio=1.0,
+        overlap_iou=0.0,
+        boundary_tolerance=0.0,
+        max_placement_attempts=5,
+        rotate=False,
+    )
+    gen = SyntheticGenerator(config)
+    with pytest.raises(RuntimeError, match="min_objects"):
+        gen.sample(np.random.default_rng(0))

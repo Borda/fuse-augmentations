@@ -89,26 +89,30 @@ class SyntheticGenerator:
         self.config = config
         self.class_names = class_names(config.class_mode)
 
-    def _place_one(
+    def _attempt_placement(
         self, rng: np.random.Generator, kept: list[_BBox]
     ) -> tuple[Shape, Color, NDArray[np.float64]] | None:
-        """Sample a non-overlapping in-bounds shape, or ``None`` if attempts exhaust."""
+        """Draw one candidate shape; return it if in-bounds and non-overlapping, else ``None``.
+
+        Exactly one candidate is sampled per call (fixed RNG draw order: shape, color, size, centre x, centre y, then
+        angle when rotation applies), so the caller controls the retry budget and the RNG consumption stays
+        deterministic for a given seed.
+
+        """
         cfg = self.config
         shapes, colors = list(Shape), list(Color)
-        for _ in range(cfg.max_placement_attempts):
-            shape = shapes[int(rng.integers(len(shapes)))]
-            color = colors[int(rng.integers(len(colors)))]
-            size_px = float(rng.uniform(cfg.min_size_ratio, cfg.max_size_ratio)) * cfg.img_size
-            center = (float(rng.uniform(0, cfg.img_size)), float(rng.uniform(0, cfg.img_size)))
-            angle = float(rng.uniform(0, 2 * np.pi)) if cfg.rotate and shape is not Shape.CIRCLE else 0.0
-            poly = shape_polygon(shape.value, center, size_px, angle)
-            bbox = polygon_to_bbox_xyxy(poly)
-            if _boundary_overlap(bbox, cfg.img_size) > cfg.boundary_tolerance:
-                continue
-            if any(bbox_iou(bbox, other) > cfg.overlap_iou for other in kept):
-                continue
-            return shape, color, poly
-        return None
+        shape = shapes[int(rng.integers(len(shapes)))]
+        color = colors[int(rng.integers(len(colors)))]
+        size_px = float(rng.uniform(cfg.min_size_ratio, cfg.max_size_ratio)) * cfg.img_size
+        center = (float(rng.uniform(0, cfg.img_size)), float(rng.uniform(0, cfg.img_size)))
+        angle = float(rng.uniform(0, 2 * np.pi)) if cfg.rotate and shape is not Shape.CIRCLE else 0.0
+        poly = shape_polygon(shape.value, center, size_px, angle)
+        bbox = polygon_to_bbox_xyxy(poly)
+        if _boundary_overlap(bbox, cfg.img_size) > cfg.boundary_tolerance:
+            return None
+        if any(bbox_iou(bbox, other) > cfg.overlap_iou for other in kept):
+            return None
+        return shape, color, poly
 
     def sample(self, rng: np.random.Generator) -> Sample:
         """Generate one image and its annotations.
@@ -118,6 +122,11 @@ class SyntheticGenerator:
 
         Returns:
             A :class:`Sample` with an RGB ``uint8`` image and one annotation per drawn shape.
+
+        Raises:
+            RuntimeError: If fewer than ``min_objects`` shapes could be placed within the overall
+                attempt budget (``num_objects * max_placement_attempts``); relax ``overlap_iou`` or
+                ``boundary_tolerance``, lower ``min_objects``, or raise ``max_placement_attempts``.
 
         Examples:
             ```pycon
@@ -139,8 +148,13 @@ class SyntheticGenerator:
 
         annotations: list[Annotation] = []
         kept: list[_BBox] = []
-        for _ in range(num_objects):
-            placed = self._place_one(rng, kept)
+        # Retry failed placements against a shared budget so we reach num_objects when feasible
+        # instead of silently dropping objects; the budget bounds RNG draws deterministically.
+        budget = num_objects * cfg.max_placement_attempts
+        for _ in range(budget):
+            if len(annotations) >= num_objects:
+                break
+            placed = self._attempt_placement(rng, kept)
             if placed is None:
                 continue
             shape, color, poly = placed
@@ -156,6 +170,12 @@ class SyntheticGenerator:
                     bbox_xyxy=bbox,
                     obb_corners=[float(v) for v in polygon_to_obb(poly).reshape(-1)],
                 )
+            )
+        if len(annotations) < cfg.min_objects:
+            raise RuntimeError(
+                f"could not place the required min_objects={cfg.min_objects} shapes within the "
+                f"placement budget of {budget} attempts (placed {len(annotations)}); relax overlap_iou/"
+                f"boundary_tolerance, lower min_objects, or raise max_placement_attempts"
             )
         return Sample(image=np.asarray(canvas), annotations=annotations, width=cfg.img_size, height=cfg.img_size)
 

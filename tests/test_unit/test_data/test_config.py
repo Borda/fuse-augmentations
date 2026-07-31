@@ -44,6 +44,29 @@ def test_synthetic_config_rejects_inverted_size_ratio():
 
 
 @pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"overlap_iou": -0.1}, "overlap_iou"),
+        ({"overlap_iou": 1.5}, "overlap_iou"),
+        ({"boundary_tolerance": -0.2}, "boundary_tolerance"),
+        ({"boundary_tolerance": 2.0}, "boundary_tolerance"),
+        ({"max_placement_attempts": 0}, "max_placement_attempts"),
+        ({"max_placement_attempts": -5}, "max_placement_attempts"),
+    ],
+)
+def test_synthetic_config_rejects_out_of_range_placement_knobs(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        SyntheticConfig(**kwargs)
+
+
+@pytest.mark.parametrize("value", [0.0, 1.0, 0.5])
+def test_synthetic_config_accepts_boundary_values(value):
+    config = SyntheticConfig(overlap_iou=value, boundary_tolerance=value, max_placement_attempts=1)
+    assert config.overlap_iou == value
+    assert config.max_placement_attempts == 1
+
+
+@pytest.mark.parametrize(
     ("mode", "expected"),
     [
         (ClassMode.SHAPE, [s.value for s in Shape]),

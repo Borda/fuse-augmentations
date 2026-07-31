@@ -5,7 +5,7 @@ description: Generate COCO and YOLO datasets of colored shapes for detection, se
 
 # Synthetic shape datasets
 
-`fuse_augmentations.data` draws colored shapes on a canvas and writes ready-to-train datasets. It is a standalone generation utility: no dataset loaders, no model, no training loop. Use it for pipeline smoke tests, augmentation demos, teaching material, and quick detector sanity checks where a real dataset is overkill.
+`fuse_augmentations.data` draws colored shapes on a canvas and writes ready-to-train datasets. It is a standalone generation utility: no file-backed dataset loader, no model, no training loop. Use it for pipeline smoke tests, augmentation demos, teaching material, and quick detector sanity checks where a real dataset is overkill.
 
 It supports two output formats — **COCO** and **YOLO** — across three tasks — **detection**, **segmentation**, and **oriented bounding box (OBB)**.
 
@@ -167,7 +167,7 @@ Example detection rows (`labels/train/img_000000.txt`):
 
 ## In-memory streaming and training feed
 
-Generation and writing are decoupled: `SyntheticGenerator` produces `Sample` objects, and writers persist them. Both paths are **streaming** — only one `Sample` is materialized at a time — so you can feed a training loop with no disk round-trip and write arbitrarily large datasets without a memory ceiling.
+Generation and writing are decoupled: `SyntheticGenerator` produces `Sample` objects, and writers persist them. Image **pixels** always stream: when you iterate `SyntheticGenerator` or drive a writer directly, only one `Sample` is materialized at a time, so you can feed a training loop with no disk round-trip and generation never holds more than one image in memory. This one-sample guarantee covers direct generator and writer iteration only — wrapping the source in a batching or multi-worker `DataLoader` (see below) is the exception. Label bookkeeping depends on the format: the YOLO writer emits one label file per image and the in-memory `SyntheticIterableDataset` retains nothing, so both stay memory-bounded regardless of `num_images`. The COCO writer emits a single JSON document per split, so it retains lightweight per-image and per-annotation metadata records (no pixels) in memory — O(n) in the split's image and annotation counts — until that split is written.
 
 Iterate samples directly (no I/O):
 
@@ -203,7 +203,7 @@ print(sum(len(batch) for batch in loader))
 
 </details>
 
-Set `num_workers>0` for multi-process loading: `SyntheticIterableDataset` is worker-shard aware, so each worker generates a disjoint, deterministically-seeded slice of `num_images`. When writing to disk, `generate_dataset` streams the same single sample source through per-split views, so peak memory stays bounded regardless of `num_images`.
+Set `num_workers>0` for multi-process loading: `SyntheticIterableDataset` is worker-shard aware, so each worker generates a disjoint, deterministically-seeded slice of `num_images`. Note that a `DataLoader` relaxes the one-sample bound: a batch materializes up to `batch_size` samples at once, prefetching holds `prefetch_factor` batches per worker, and each of `num_workers` workers materializes its own sample concurrently — so in-memory peak scales with `batch_size × num_workers`, not with a single image. When writing to disk, `generate_dataset` streams the same single sample source through per-split views, so image pixels never accumulate; peak memory then depends on the writer — bounded for YOLO, and O(n) COCO metadata (per the note above) for COCO.
 
 ## Reproducibility and tuning
 

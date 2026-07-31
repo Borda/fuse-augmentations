@@ -8,6 +8,7 @@ import yaml
 
 from fuse_augmentations.data.config import SyntheticConfig, Task, class_names
 from fuse_augmentations.data.generator import SyntheticGenerator
+from fuse_augmentations.data.sample import Annotation, Sample
 from fuse_augmentations.data.writers import YoloWriter
 
 
@@ -79,3 +80,26 @@ def test_image_label_parity(tmp_path):
         lbls = {p.stem for p in (tmp_path / "labels" / split).glob("*.txt")}
         assert imgs == lbls
         assert len(imgs) == 3
+
+
+def test_write_rejects_empty_splits(tmp_path):
+    names = class_names(SyntheticConfig().class_mode)
+    with pytest.raises(ValueError, match="at least one split"):
+        YoloWriter(Task.DETECTION, names).write({}, tmp_path)
+    assert list(tmp_path.iterdir()) == []  # guarded before any partial output is created
+
+
+def test_detection_label_clamps_edge_crossing_box(tmp_path):
+    # bbox crosses the left/top edges; the YOLO label must describe the clipped visible box.
+    ann = Annotation(
+        class_id=0,
+        class_name="square",
+        polygon=[-20.0, 10.0, 40.0, 10.0, 40.0, 50.0, -20.0, 50.0],
+        bbox_xyxy=(-20.0, 10.0, 40.0, 50.0),
+        obb_corners=[-20.0, 10.0, 40.0, 10.0, 40.0, 50.0, -20.0, 50.0],
+    )
+    sample = Sample(image=np.zeros((100, 100, 3), dtype=np.uint8), annotations=[ann], width=100, height=100)
+    YoloWriter(Task.DETECTION, class_names(SyntheticConfig().class_mode)).write({"train": [sample]}, tmp_path)
+    cx, cy, w, h = (float(v) for v in (tmp_path / "labels" / "train" / "img_000000.txt").read_text().split()[1:])
+    # Clipped box is (0, 10, 40, 50): cx=0.2, cy=0.3, w=0.4, h=0.4 — not the unclipped cx=0.1, w=0.6.
+    assert (cx, cy, w, h) == pytest.approx((0.2, 0.3, 0.4, 0.4))
