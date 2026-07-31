@@ -53,6 +53,8 @@ def test_deterministic_labels(tmp_path):
 
 
 def test_enum_and_string_args_equivalent(tmp_path):
+    import json
+
     from fuse_augmentations.data import ClassMode, OutputFormat, Task
 
     a = tmp_path / "str"
@@ -62,3 +64,29 @@ def test_enum_and_string_args_equivalent(tmp_path):
         b, num_images=5, fmt=OutputFormat.COCO, task=Task.DETECTION, class_mode=ClassMode.COLOR, seed=3
     )
     assert counts_str == counts_enum
+    # Split counts alone miss normalization defects; compare the generated COCO annotations too.
+    for split in counts_str:
+        doc_str = json.loads((a / split / "_annotations.coco.json").read_text())
+        doc_enum = json.loads((b / split / "_annotations.coco.json").read_text())
+        assert doc_str["categories"] == doc_enum["categories"]
+        assert doc_str["annotations"] == doc_enum["annotations"]
+        assert doc_str["images"] == doc_enum["images"]
+
+
+@pytest.mark.parametrize("bad", [0, -1, -10])
+def test_rejects_non_positive_num_images(tmp_path, bad):
+    with pytest.raises(ValueError, match="num_images"):
+        generate_dataset(tmp_path, num_images=bad, fmt="coco", seed=0)
+
+
+def test_supplied_config_ignores_invalid_class_mode(tmp_path):
+    import json
+
+    from fuse_augmentations.data import ClassMode, SyntheticConfig
+
+    config = SyntheticConfig(img_size=64, class_mode=ClassMode.COLOR)
+    # An invalid class_mode string must be ignored (not normalized) when a config is supplied.
+    counts = generate_dataset(tmp_path, num_images=5, fmt="coco", class_mode="not-a-real-mode", config=config, seed=0)
+    assert sum(counts.values()) == 5
+    doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
+    assert len(doc["categories"]) == 3  # config's COLOR vocabulary, not the ignored class_mode

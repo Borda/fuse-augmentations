@@ -69,14 +69,20 @@ jobs:
 
       # Gate logic (see .github/scripts/ci_perf_gate_compare.py for details):
       #   - Baseline absent -> neutral pass + bootstrap instructions in summary.
-      #   - Baseline present -> fail if real_score < baseline * 0.95.
+      #   - Baseline present -> fail if real_score < baseline * 0.90.
+      # Threshold is 0.90, not 0.95: the benchmark's run-to-run variance on
+      # shared GitHub-hosted runners is ~5-7% peak-to-peak for identical code
+      # (observed real_score 1.569-1.687 across runs on the same commit), so a
+      # 5% margin sat inside the noise band and flagged noise as regressions.
+      # 0.90 still catches a genuine >10% regression. Refresh the baseline via
+      # `workflow_dispatch` when the fusion core legitimately changes speed.
       # Summary is written before the exit so it appears even on gate failure.
       - name: 🔍 Compare against baseline and write summary
         run: |
           python3 .github/scripts/ci_perf_gate_compare.py \
             --current ci_score.json \
             --baseline .github/perf_baseline/ci_baseline_score.json \
-            --threshold 0.95 \
+            --threshold 0.90 \
             ${GITHUB_STEP_SUMMARY:+--summary-file "$GITHUB_STEP_SUMMARY"}
 
       # Always upload regardless of gate result so the artifact is available

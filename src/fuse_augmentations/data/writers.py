@@ -131,8 +131,12 @@ class CocoWriter(DatasetWriter):
     def write(self, splits: dict[str, Iterable[Sample]], output_dir: str | Path) -> None:
         """Stream each split to ``<output_dir>/<split>/`` in a single pass over its samples.
 
-        Images are written as they are produced; only lightweight COCO metadata (no pixels) accumulates in memory, so
-        arbitrarily large datasets stay bounded.
+        Image pixels are written as they are produced and never held in memory. The COCO schema,
+        however, emits one JSON document per split, so lightweight per-image and per-annotation
+        metadata records (no pixels) accumulate for the duration of the split and are serialized
+        once the split is exhausted: memory is O(n) in the split's image and annotation counts, not
+        constant. For a constant-memory path use the YOLO writer (one label file per image) or the
+        in-memory :class:`~fuse_augmentations.data.datasets.SyntheticIterableDataset`.
 
         """
         output_dir = Path(output_dir)
@@ -175,7 +179,12 @@ class YoloWriter(DatasetWriter):
     def _label_row(self, ann: Annotation, width: int, height: int) -> str:
         """Format one YOLO label row for the writer's task, clamping to ``[0, 1]``."""
         if self.task is Task.DETECTION:
-            x1, y1, x2, y2 = ann.bbox_xyxy
+            # Clamp corners to the image extent before deriving cx/cy/w/h so an edge-crossing box's
+            # label matches its clipped visible box (consistent with CocoWriter._annotation_dict).
+            x1 = _clamp(ann.bbox_xyxy[0], 0.0, width)
+            y1 = _clamp(ann.bbox_xyxy[1], 0.0, height)
+            x2 = _clamp(ann.bbox_xyxy[2], 0.0, width)
+            y2 = _clamp(ann.bbox_xyxy[3], 0.0, height)
             coords = [(x1 + x2) / 2 / width, (y1 + y2) / 2 / height, (x2 - x1) / width, (y2 - y1) / height]
         else:
             flat = ann.polygon if self.task is Task.SEGMENTATION else ann.obb_corners
@@ -197,6 +206,8 @@ class YoloWriter(DatasetWriter):
 
     def _data_yaml(self, splits: dict[str, Iterable[Sample]]) -> str:
         """Build the ``data.yaml`` contents referencing present splits."""
+        if not splits:  # defensive backstop; write() is the primary guard
+            raise ValueError("YoloWriter requires at least one split, got an empty mapping")
         lines = ["path: .", f"train: images/{'train' if 'train' in splits else next(iter(splits))}"]
         if "val" in splits:
             lines.append("val: images/val")
@@ -208,7 +219,14 @@ class YoloWriter(DatasetWriter):
         return "\n".join(lines) + "\n"
 
     def write(self, splits: dict[str, Iterable[Sample]], output_dir: str | Path) -> None:
-        """Write images, labels, and ``data.yaml`` under ``output_dir``."""
+        """Write images, labels, and ``data.yaml`` under ``output_dir``.
+
+        Raises:
+            ValueError: If ``splits`` is empty (checked before any output directory is created).
+
+        """
+        if not splits:
+            raise ValueError("YoloWriter requires at least one split, got an empty mapping")
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         for split, samples in splits.items():

@@ -111,6 +111,9 @@ def generate_dataset(
     Returns:
         Ordered mapping of split name to the number of images written.
 
+    Raises:
+        ValueError: If ``num_images`` is not a positive integer.
+
     Examples:
         ```pycon
         >>> import tempfile
@@ -123,12 +126,15 @@ def generate_dataset(
         ```
 
     """
+    if num_images < 1:
+        raise ValueError(f"num_images must be a positive integer, got {num_images}")
     fmt = OutputFormat(fmt)
     task = Task(task)
-    class_mode = ClassMode(class_mode)
     split_ratios = split_ratios or SplitRatios()
     if config is None:
-        config = SyntheticConfig(class_mode=class_mode, **config_kwargs)
+        # ``class_mode`` feeds only the config built here; when a ``config`` is supplied it is
+        # ignored, so normalize (and validate) it lazily to avoid rejecting a valid ``config`` call.
+        config = SyntheticConfig(class_mode=ClassMode(class_mode), **config_kwargs)
 
     counts = _assign_splits(num_images, split_ratios)
 

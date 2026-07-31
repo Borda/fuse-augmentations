@@ -258,7 +258,8 @@ class SyntheticConfig:
         class_mode: How classes are derived (see :class:`ClassMode`).
 
     Raises:
-        ValueError: On non-positive sizes or inverted min/max ranges.
+        ValueError: On non-positive sizes, inverted min/max ranges, an ``overlap_iou`` or
+            ``boundary_tolerance`` outside ``[0, 1]``, or ``max_placement_attempts`` below 1.
 
     Examples:
         ```pycon
@@ -283,7 +284,7 @@ class SyntheticConfig:
     class_mode: ClassMode = ClassMode.SHAPE
 
     def __post_init__(self) -> None:
-        """Validate size, object-count, and ratio ranges."""
+        """Validate size, object-count, ratio, and placement-knob ranges."""
         if self.img_size <= 0:
             raise ValueError(f"img_size must be positive, got {self.img_size}")
         if not 1 <= self.min_objects <= self.max_objects:
@@ -292,3 +293,9 @@ class SyntheticConfig:
             raise ValueError(
                 f"require 0 < min_size_ratio <= max_size_ratio <= 1, got {self.min_size_ratio}, {self.max_size_ratio}"
             )
+        if not 0 <= self.overlap_iou <= 1:
+            raise ValueError(f"overlap_iou must be within [0, 1], got {self.overlap_iou}")
+        if not 0 <= self.boundary_tolerance <= 1:
+            raise ValueError(f"boundary_tolerance must be within [0, 1], got {self.boundary_tolerance}")
+        if self.max_placement_attempts < 1:
+            raise ValueError(f"max_placement_attempts must be >= 1, got {self.max_placement_attempts}")
