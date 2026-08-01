@@ -62,19 +62,27 @@ Four shapes (`square`, `rectangle`, `triangle`, `circle`) in three colors (`red`
 
 ## Tasks
 
-Each task exposes a different annotation representation. The overlays below (yellow) are the exported annotations drawn back onto generated images.
+Each task exposes a different annotation representation. In the looping previews below (yellow overlay), every generated image appears first bare, then with its exported annotation drawn back on. All three clips share the same seeded sample stream, so the shapes line up one-for-one — only the label type differs.
 
-### Detection — axis-aligned boxes
+=== "Detection"
 
-![Synthetic detection sample with axis-aligned boxes](../assets/datasets/detection.png)
+    Axis-aligned boxes.
 
-### Segmentation — filled-shape polygons
+    ![Synthetic detection sample with axis-aligned boxes](../assets/datasets/detection.webp)
 
-![Synthetic segmentation sample with polygon outlines](../assets/datasets/segmentation.png)
+=== "Segmentation"
 
-### OBB — oriented boxes
+    Filled-shape polygons.
 
-![Synthetic OBB sample with oriented boxes](../assets/datasets/obb.png)
+    ![Synthetic segmentation sample with polygon outlines](../assets/datasets/segmentation.webp)
+
+=== "OBB"
+
+    Oriented boxes.
+
+    ![Synthetic OBB sample with oriented boxes](../assets/datasets/obb.webp)
+
+Regenerate these clips with `python examples/animate_synthetic_dataset.py`.
 
 ## COCO output
 
