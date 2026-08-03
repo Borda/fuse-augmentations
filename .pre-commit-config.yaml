@@ -51,7 +51,7 @@ repos:
       - id: ruff-format
         name: Ruff/black formatter
 
-  - repo: https://github.com/JoC0de/pre-commit-prettier
+  - repo: https://github.com/rbubley/mirrors-prettier
     rev: v3.9.6
     hooks:
       - id: prettier
