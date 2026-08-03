@@ -392,10 +392,11 @@ class TestColorMatrixFusionAlgebra:
     )
     @settings(max_examples=100)
     def test_n_color_ops_fuse_to_single_matrix(self, seed: int, n_ops: int) -> None:
-        """N consecutive linear color ops: A_N*...*A_1 applied once equals sequential application
+        """N consecutive linear color ops: A_N*...*A_1 applied once equals sequential application.
 
         Validates the inductive proof from D.5: any chain of POINTWISE_LINEAR ops can be collapsed to a single 4x4
         matrix.
+
         """
         torch.manual_seed(seed)
 

@@ -1,11 +1,9 @@
 """Numeric-parity gate for the fused color matmul micro-optimisation (PRF-3).
 
-``FusedColorSegment._matmul_image`` applies a composed ``(B, 4, 4)`` homogeneous
-color matrix to a ``(B, 3, H, W)`` image. It was rewritten from an augmented
-homogeneous matmul (``cat([pixels, ones])`` + ``bmm`` of the full 4x4) to a single
-``baddbmm`` on the 3x3 linear block plus the translation column. The two forms are
-mathematically identical up to accumulation order, so this pins the new form to the
-homogeneous reference within float round-off.
+``FusedColorSegment._matmul_image`` applies a composed ``(B, 4, 4)`` homogeneous color matrix to a ``(B, 3, H, W)``
+image. It was rewritten from an augmented homogeneous matmul (``cat([pixels, ones])`` + ``bmm`` of the full 4x4) to a
+single ``baddbmm`` on the 3x3 linear block plus the translation column. The two forms are mathematically identical up to
+accumulation order, so this pins the new form to the homogeneous reference within float round-off.
 
 """
 

@@ -1,11 +1,9 @@
 """``split_reason="backend_boundary"`` fires for adjacent fused↔fused backend changes (XB-2).
 
-Two adjacent fused geometric segments from different backends (e.g. ``kornia.RandomAffine``
-then ``A.Affine``) cannot be composed into one warp; the break is a genuine backend-driven
-split. ``fusion_plan_descriptors`` previously computed ``split_reason`` only for
-crop/passthrough segments, so this common mixed boundary reported ``None`` despite the
-documented contract. The second fused segment of such a pair now carries
-``split_reason="backend_boundary"``.
+Two adjacent fused geometric segments from different backends (e.g. ``kornia.RandomAffine`` then ``A.Affine``) cannot be
+composed into one warp; the break is a genuine backend-driven split. ``fusion_plan_descriptors`` previously computed
+``split_reason`` only for crop/passthrough segments, so this common mixed boundary reported ``None`` despite the
+documented contract. The second fused segment of such a pair now carries ``split_reason="backend_boundary"``.
 
 Requires kornia and albumentations.
 

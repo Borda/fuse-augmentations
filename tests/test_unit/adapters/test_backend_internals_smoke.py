@@ -1,8 +1,8 @@
 """Smoke tests pinning the private backend internals the adapters depend on.
 
-The adapters bind to undocumented backend APIs (Albumentations ``get_params_dependent_on_data`` result keys,
-Kornia ``transform._params``, TorchVision ``transforms.v2`` module layout). These can silently change across
-backend minor versions; each test here fails fast in CI on a version bump instead of at user runtime.
+The adapters bind to undocumented backend APIs (Albumentations ``get_params_dependent_on_data`` result keys, Kornia
+``transform._params``, TorchVision ``transforms.v2`` module layout). These can silently change across backend minor
+versions; each test here fails fast in CI on a version bump instead of at user runtime.
 
 """
 

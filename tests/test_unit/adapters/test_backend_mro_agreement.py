@@ -1,9 +1,10 @@
 """Regression tests: ``detect_backend`` and ``detect_backends_per_transform`` agree via MRO (CORE-5).
 
 ``detect_backend`` previously matched only a transform's direct ``__module__`` prefix, while
-``detect_backends_per_transform`` additionally walked the MRO. A user subclass of a backend
-transform (defined outside the backend package) therefore resolved differently between the two.
-Both now share the same module-plus-MRO classification helper and agree.
+``detect_backends_per_transform`` additionally walked the MRO. A user subclass of a backend transform (defined outside
+the backend package) therefore resolved differently between the two. Both now share the same module-plus-MRO
+classification helper and agree.
+
 """
 
 from __future__ import annotations
@@ -22,8 +23,8 @@ class TestDetectBackendSubclassMRO:
     def _make_subclass() -> object:
         """Return an instance of a locally-defined subclass of a kornia transform.
 
-        The subclass's own ``__module__`` is this test module (not ``kornia.*``), so a correct
-        resolution must come from walking its MRO to the kornia ancestor.
+        The subclass's own ``__module__`` is this test module (not ``kornia.*``), so a correct resolution must come from
+        walking its MRO to the kornia ancestor.
 
         """
         from kornia.augmentation import RandomRotation

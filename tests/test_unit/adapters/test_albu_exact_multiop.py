@@ -183,10 +183,9 @@ class TestBatchUniformParams:
     """Batch>1: real Albumentations transforms expose no ``same_on_batch`` attribute, so ``_apply_discrete_exact``
     always takes the per-sample ``get_params()`` loop (adapters/albumentations.py:666-668).
 
-    Pinning ``get_params`` to a fixed
-    ``return_value`` makes every sampled draw identical across the batch by
-    construction of the mock -- this is the "per-batch uniform" case; per-sample
-    *differing* params are never exercised for genuine Albumentations transforms.
+    Pinning ``get_params`` to a fixed ``return_value`` makes every sampled draw identical across the batch by
+    construction of the mock -- this is the "per-batch uniform" case; per-sample *differing* params are never exercised
+    for genuine Albumentations transforms.
 
     """
 

@@ -343,9 +343,9 @@ class MemSample:
 def _timeline_stats(prof: profile) -> tuple[float, int]:
     """Reconstruct (peak bytes, alloc count) from the profiler memory timeline.
 
-    The timeline is a stream of ``(ts, action, key, nbytes)`` records; ``nbytes``
-    is positive for allocations and negative for frees. The running total's maximum
-    is the peak, and the number of positive records is the allocation count.
+    The timeline is a stream of ``(ts, action, key, nbytes)`` records; ``nbytes`` is positive for allocations and
+    negative for frees. The running total's maximum is the peak, and the number of positive records is the allocation
+    count.
 
     """
     try:
@@ -388,14 +388,12 @@ def _measure_cpu(thunk: Callable, warmup: int) -> MemSample:
 def _measure_mps(thunk: Callable, warmup: int) -> MemSample:
     """MPS resident footprint via current_allocated_memory delta; allocs from profiler (approx).
 
-    Metal has no ``reset_peak_memory_stats`` in this torch build, so a true transient
-    peak is not exposed. Instead the thunk output is held live and
-    ``current_allocated_memory`` is read while it is still referenced — the delta over
-    an emptied-cache baseline is the *resident* device footprint of the result plus any
-    tensors the pipeline keeps alive. ``driver_allocated_memory`` (the Metal driver's
-    total reservation) is reported alongside as an upper bound. The allocation count
-    comes from the profiler's CPU-side timeline and is flagged approximate — Metal
-    kernel-level allocations are not fully represented there.
+    Metal has no ``reset_peak_memory_stats`` in this torch build, so a true transient peak is not exposed. Instead the
+    thunk output is held live and ``current_allocated_memory`` is read while it is still referenced — the delta over an
+    emptied-cache baseline is the *resident* device footprint of the result plus any tensors the pipeline keeps alive.
+    ``driver_allocated_memory`` (the Metal driver's total reservation) is reported alongside as an upper bound. The
+    allocation count comes from the profiler's CPU-side timeline and is flagged approximate — Metal kernel-level
+    allocations are not fully represented there.
 
     """
     for _ in range(warmup):

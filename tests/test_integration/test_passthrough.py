@@ -119,10 +119,10 @@ class TestSubstitutePassthrough:
     def test_substitution_avoids_numpy_round_trip(self, monkeypatch: pytest.MonkeyPatch):
         """With substitution on, the blur runs torch-native — the image never converts to numpy.
 
-        The spy counts ``.numpy()`` conversions (the signature of the Albumentations host
-        boundary) rather than ``.cpu()``: the substituted torch-native backend may move tensors
-        internally for its own bookkeeping (kornia 0.8.2 caches a detached CPU copy of the
-        output image; 0.8.3 does not), and that is not the round-trip this test guards against.
+        The spy counts ``.numpy()`` conversions (the signature of the Albumentations host boundary) rather than
+        ``.cpu()``: the substituted torch-native backend may move tensors internally for its own bookkeeping (kornia
+        0.8.2 caches a detached CPU copy of the output image; 0.8.3 does not), and that is not the round-trip this test
+        guards against.
 
         """
         calls = {"numpy": 0}

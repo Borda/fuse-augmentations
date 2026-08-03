@@ -1,9 +1,10 @@
 """Regression tests: kornia flip/rot90 ``build_matrix`` derives batch from shape, not ``.item()`` (PRF-8).
 
-Flip / rot90 / saturation / normalize transforms carry the batch size in a ``_batch_size`` sentinel.
-The sentinel now encodes the count in its *leading dimension* so ``build_matrix`` reads it via
-``.shape[0]`` (a metadata read) instead of ``.item()`` (a GPU->host synchronization inside fused GPU
-chains). Matrices are numerically identical; these tests pin the batch shape and the flip values.
+Flip / rot90 / saturation / normalize transforms carry the batch size in a ``_batch_size`` sentinel. The sentinel now
+encodes the count in its *leading dimension* so ``build_matrix`` reads it via ``.shape[0]`` (a metadata read) instead of
+``.item()`` (a GPU->host synchronization inside fused GPU chains). Matrices are numerically identical; these tests pin
+the batch shape and the flip values.
+
 """
 
 from __future__ import annotations

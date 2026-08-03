@@ -212,6 +212,7 @@ class TestTorchVisionColorMatrixCorrectness:
         TorchVision's ColorJitter has no `clip_output` flag, so this test stays inside the [0.25, 0.75] safe range and
         compares against a manually-computed multiplicative reference rather than calling the transform directly — this
         isolates the matrix-construction step from TorchVision's parameter-sampling and per-sample loop.
+
         """
         torch.manual_seed(42)
         transform = tv_trans.ColorJitter(brightness=0.3)

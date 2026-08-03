@@ -1,9 +1,6 @@
 [build-system]
 build-backend = "setuptools.build_meta"
-requires = [
-  "setuptools>=61",
-  "wheel",
-]
+requires = [ "setuptools>=61" ]
 
 [project]
 name = "fuse-augmentations"
@@ -97,9 +94,9 @@ benchmark = [
 ]
 
 [tool.setuptools]
-dynamic.version.attr = "fuse_augmentations.__about__.__version__"
 packages.find.where = [ "src" ]
-packages.find.include = [ "fuse_augmentations*", "fuse_aug*" ]
+packages.find.include = [ "fuse_aug*", "fuse_augmentations*" ]
+dynamic.version.attr = "fuse_augmentations.__about__.__version__"
 
 [tool.ruff]
 target-version = "py310"
@@ -169,7 +166,7 @@ lint.mccabe.max-complexity = 10
 lint.pydocstyle.convention = "google"
 
 [tool.codespell]
-# skip = '*.py'
+# skip = "*.py"
 quiet-level = 3
 
 [tool.docformatter]
@@ -184,25 +181,25 @@ blank = true
 keep_full_version = true
 
 [tool.mypy]
-python_version = "3.10"
 files = [ "src/fuse_augmentations" ]
 exclude = [ "^tests/" ]
-strict = true
 ignore_missing_imports = true
+python_version = "3.10"
+strict = true
 warn_unused_configs = true
 
 [tool.pytest]
+ini_options.testpaths = [ "src", "tests" ]
 ini_options.norecursedirs = [
+  ".claude",
   ".git",
   ".github",
-  ".claude",
-  "dist",
   "build",
+  "dist",
   "docs",
-  "scripts",
   "experiments",
+  "scripts",
 ]
-ini_options.testpaths = [ "tests", "src" ]
 ini_options.addopts = [
   "--strict-markers",
   "--doctest-plus",
@@ -210,13 +207,14 @@ ini_options.addopts = [
   "--capture=sys",
 ]
 ini_options.markers = [
-  "integration: requires kornia or another external backend",
-  "gpu: requires a CUDA-capable GPU",
   "compile: tests torch.compile behaviour",
+  "gpu: requires a CUDA-capable GPU",
+  "integration: requires kornia or another external backend",
 ]
+ini_options.xfail_strict = true
 ini_options.filterwarnings = [
-  "error::FutureWarning",
   "error::DeprecationWarning",
+  "error::FutureWarning",
   # Kornia calls torch.jit.script / script_method internally at import time.
   # Newer torch deprecates both and, on Python 3.14+, warns they are "not
   # supported" (a different wording than "is deprecated"). Match each symbol
@@ -226,7 +224,6 @@ ini_options.filterwarnings = [
   "ignore:`torch.jit.script_method`.*:DeprecationWarning",
   "ignore:`torch.jit.script`.*:DeprecationWarning",
 ]
-ini_options.xfail_strict = true
 ini_options.junit_duration_report = "call"
 
 [tool.coverage]

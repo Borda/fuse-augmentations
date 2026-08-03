@@ -352,10 +352,9 @@ class TestLastMatrixValue:
 def test_flip_segment_cuda_device(adapter):
     """Flip segment runs on CUDA without device-mismatch errors and matches the CPU result numerically.
 
-    This is the only place in the suite that exercises real CUDA numerics (the ``gpu`` marker is never selected in
-    CI, which has no CUDA runner -- see CONTRIBUTING). Same-seed CPU vs. GPU parity is asserted here in addition to
-    the original shape/not-NaN checks so a local GPU run gives an actual correctness signal, not just "didn't
-    crash".
+    This is the only place in the suite that exercises real CUDA numerics (the ``gpu`` marker is never selected in CI,
+    which has no CUDA runner -- see CONTRIBUTING). Same-seed CPU vs. GPU parity is asserted here in addition to the
+    original shape/not-NaN checks so a local GPU run gives an actual correctness signal, not just "didn't crash".
 
     """
     batch_size, num_channels, height, width = 2, 3, 32, 32

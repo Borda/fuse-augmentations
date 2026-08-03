@@ -1,16 +1,13 @@
 """Opt-in ``torch.compile`` of warp, color, and LUT tensor cores (``compile=True``).
 
-Verifies the compiled warp region matches the eager path within tolerance, that the
-compiled region has no graph breaks, and that the default (``compile=False``) path is
-unaffected. CPU is a documented no-op, so the compiled function is exercised directly
-on the module-level warp core to check graph-break freedom regardless of device.
+Verifies the compiled warp region matches the eager path within tolerance, that the compiled region has no graph breaks,
+and that the default (``compile=False``) path is unaffected. CPU is a documented no-op, so the compiled function is
+exercised directly on the module-level warp core to check graph-break freedom regardless of device.
 
-The numerical-parity and graph-break checks use ``backend="eager"`` and the explicit
-``compiling=True`` entry point respectively — neither needs a native C/C++ toolchain,
-so they run on any CI runner. A separate smoke test opportunistically exercises the
-real (default-backend, typically inductor) cached compiled function and skips itself
-when the environment lacks a working codegen toolchain, rather than failing CI on an
-unrelated compiler/packaging gap.
+The numerical-parity and graph-break checks use ``backend="eager"`` and the explicit ``compiling=True`` entry point
+respectively — neither needs a native C/C++ toolchain, so they run on any CI runner. A separate smoke test
+opportunistically exercises the real (default-backend, typically inductor) cached compiled function and skips itself
+when the environment lacks a working codegen toolchain, rather than failing CI on an unrelated compiler/packaging gap.
 
 """
 
@@ -60,10 +57,9 @@ class TestCompiledWarpMatchesEager:
     def test_compiled_affine_allclose_eager(self) -> None:
         """Compiled affine warp (traced, eager backend) matches plain eager output within atol 1e-5.
 
-        Uses ``backend="eager"`` rather than the package default (inductor): this test's
-        contract is that the compile-safe Cramer-rule branch of ``inv3x3`` is numerically
-        correct under dynamo tracing, which the eager backend proves without requiring a
-        native C/C++ toolchain (inductor's CPU codegen needs one and is not universally
+        Uses ``backend="eager"`` rather than the package default (inductor): this test's contract is that the compile-
+        safe Cramer-rule branch of ``inv3x3`` is numerically correct under dynamo tracing, which the eager backend
+        proves without requiring a native C/C++ toolchain (inductor's CPU codegen needs one and is not universally
         available across CI runners/OSes).
 
         """

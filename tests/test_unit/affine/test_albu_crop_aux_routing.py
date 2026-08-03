@@ -87,9 +87,9 @@ def test_mixed_kornia_albu_crop_routes_mask(execution):
 def test_albu_crop_aux_matches_across_executions():
     """The ``cv2`` and ``torch`` strategies build the same crop segment, so aux outputs match bit-for-bit.
 
-    Each crop instance is pinned to the same Albumentations RNG seed so both pipelines
-    sample the same crop window; any output divergence then reflects an execution-path
-    routing difference, which must not exist for the shared ``CropResizeSegment``.
+    Each crop instance is pinned to the same Albumentations RNG seed so both pipelines sample the same crop window; any
+    output divergence then reflects an execution-path routing difference, which must not exist for the shared
+    ``CropResizeSegment``.
 
     """
     crop_cv2 = albu.RandomResizedCrop(size=(CROP_H, CROP_W), p=1.0)
