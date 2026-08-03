@@ -1,0 +1,19 @@
+:root {
+  --md-primary-fg-color: #3949ab;
+  --md-accent-fg-color: #ef6c00;
+}
+
+.md-typeset .admonition.critical,
+.md-typeset details.critical {
+  border-color: #d32f2f;
+}
+
+.md-typeset .critical > .admonition-title,
+.md-typeset .critical > summary {
+  background-color: rgb(211 47 47 / 10%);
+}
+
+.md-typeset .critical > .admonition-title::before,
+.md-typeset .critical > summary::before {
+  background-color: #d32f2f;
+}
