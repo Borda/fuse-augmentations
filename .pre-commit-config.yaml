@@ -24,7 +24,7 @@ repos:
       - id: detect-private-key
 
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.4.2
+    rev: v2.4.3
     hooks:
       - id: codespell
         additional_dependencies: [tomli]
@@ -43,7 +43,7 @@ repos:
           - mdformat-mkdocs==5.2.0
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.6
+    rev: v0.16.1
     hooks:
       - id: ruff-check
         name: Ruff linter
@@ -52,7 +52,7 @@ repos:
         name: Ruff/black formatter
 
   - repo: https://github.com/JoC0de/pre-commit-prettier
-    rev: v3.8.1
+    rev: v3.9.6
     hooks:
       - id: prettier
         files: \.(json|yml|yaml|toml)
@@ -60,7 +60,7 @@ repos:
         args: ["--print-width=120"]
 
   - repo: https://github.com/PyCQA/docformatter
-    rev: v1.7.7
+    rev: v1.7.8
     hooks:
       - id: docformatter
         additional_dependencies: [tomli]
@@ -75,7 +75,7 @@ repos:
         files: ^src/.*\.py$
 
   - repo: https://github.com/tox-dev/pyproject-fmt
-    rev: v2.19.0
+    rev: v2.26.0
     hooks:
       - id: pyproject-fmt
         additional_dependencies: [tox]
