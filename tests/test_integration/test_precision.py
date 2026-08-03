@@ -54,6 +54,7 @@ FINDING -- TorchVision's ``RandomRotation`` needs an inverse-sign conversion
     multi-operation direction regression test guards it. Fused-vs-native PSNR
     still combines the effect of fewer resampling passes with backend rasterizer
     and coordinate differences; it is not a task-quality result.
+
 """
 
 from __future__ import annotations
@@ -359,9 +360,8 @@ def test_backend_free_fusion_beats_multipass(capsys) -> None:
 def test_reference_matrix_matches_independent_composition() -> None:
     """Pipeline's composed matrix equals a hand-built float64 rot+scale composition.
 
-    Kornia's positive rotation is clockwise; the package ``rotation_matrix`` is
-    counter-clockwise, so the adapter negates the angle.  The chain applies
-    rotation then scale, giving forward matrix ``scale @ rotation``.
+    Kornia's positive rotation is clockwise; the package ``rotation_matrix`` is counter-clockwise, so the adapter
+    negates the angle.  The chain applies rotation then scale, giving forward matrix ``scale @ rotation``.
 
     """
     height = width = 96

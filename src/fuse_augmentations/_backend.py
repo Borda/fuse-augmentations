@@ -51,6 +51,7 @@ class _Entry:
         adapter: The adapter instance implementing ``TransformAdapter``.
         prefixes: Module-path prefixes (e.g. ``"kornia."``) that identify transforms handled by this adapter.
         capabilities: Canonical op names the adapter can build.
+
     """
 
     backend: Backend
@@ -134,9 +135,9 @@ def register_adapter(
 def _load_entrypoints() -> None:
     """Lazily load third-party adapters from the entry-point group (idempotent, failure-isolated).
 
-    Called on the first detection miss, never at package import (avoids executing third-party code and
-    paying its import cost on ``import fuse_augmentations``). Each entry point is loaded in isolation; a failing
-    ``load()`` or ``register()`` is warned and skipped so one broken plugin cannot break detection for the rest.
+    Called on the first detection miss, never at package import (avoids executing third-party code and paying its import
+    cost on ``import fuse_augmentations``). Each entry point is loaded in isolation; a failing ``load()`` or
+    ``register()`` is warned and skipped so one broken plugin cannot break detection for the rest.
 
     """
     global _ENTRYPOINTS_LOADED

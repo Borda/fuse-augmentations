@@ -1,8 +1,7 @@
 """Factory methods and backend-free direct-parameter construction support.
 
-The mixin deliberately depends only on lower-level configuration, planning, matrix,
-and type modules. ``FusedCompose`` remains defined in :mod:`pipeline` so its
-public import and pickle identity stay stable.
+The mixin deliberately depends only on lower-level configuration, planning, matrix, and type modules. ``FusedCompose``
+remains defined in :mod:`pipeline` so its public import and pickle identity stay stable.
 
 """
 

@@ -1,13 +1,11 @@
 """Cross-version unpickling rebuilds every derived dispatch attribute (CORE-1).
 
-``FusedCompose._setup_instance`` derives roughly ten runtime dispatch attributes
-(``_seg_dispatch_tags``, ``_multi_target``, ``_aux_keys``, the single-segment fast
-paths, ``_is_albu_native``, ``_albu_seg_tags``, ``_output_converter``) from the core
-pickled state. ``__setstate__`` previously rebuilt only three of them, so a pickle
-produced before the others existed raised ``AttributeError`` on the first forward.
-``__setstate__`` now calls the same ``_build_derived_state`` builder as construction,
-so an older pickle (simulated here by stripping the derived attributes from the
-restored state) is fully reconstructed.
+``FusedCompose._setup_instance`` derives roughly ten runtime dispatch attributes (``_seg_dispatch_tags``,
+``_multi_target``, ``_aux_keys``, the single-segment fast paths, ``_is_albu_native``, ``_albu_seg_tags``,
+``_output_converter``) from the core pickled state. ``__setstate__`` previously rebuilt only three of them, so a pickle
+produced before the others existed raised ``AttributeError`` on the first forward. ``__setstate__`` now calls the same
+``_build_derived_state`` builder as construction, so an older pickle (simulated here by stripping the derived attributes
+from the restored state) is fully reconstructed.
 
 Requires kornia.
 

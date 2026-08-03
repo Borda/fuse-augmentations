@@ -72,6 +72,7 @@ class TestCropResizeMatrix:
         With align_corners=True, the discrete scale factor is (W_out - 1) / (W_in - 1)
         rather than the naive W_out / W_in. For a 64->32 downscale this yields 31/63,
         not 0.5 — this test pins that convention.
+
         """
         height, width = 64, 64
         top = torch.zeros(1)
@@ -275,9 +276,9 @@ class TestBuildSegmentsCropResize:
     def test_crop_resize_fuses_preceding_geo(self):
         """A preceding GEOMETRIC_INTERP run fuses with the crop into one warp.
 
-        On the torch path a crop-resize immediately after a fusible geometric run composes
-        ``M_crop @ M_geo`` into a single ``_FusedGeoCropSegment`` — one ``grid_sample`` at the
-        crop's target size instead of a fused-affine warp followed by a separate crop warp.
+        On the torch path a crop-resize immediately after a fusible geometric run composes ``M_crop @ M_geo`` into a
+        single ``_FusedGeoCropSegment`` — one ``grid_sample`` at the crop's target size instead of a fused-affine warp
+        followed by a separate crop warp.
 
         """
         rotate_transform = kornia_aug.RandomRotation(degrees=30.0, p=1.0)
@@ -387,9 +388,8 @@ class TestFusionPlanDescriptors:
     def test_full_pipeline_descriptor_kinds(self):
         """Rotation → CropResize → HFlip gives [fused, exact].
 
-        The rotation fuses with the crop-resize into one ``fused`` segment,
-        so no standalone ``crop_resize`` descriptor remains; the trailing flip is a
-        separate ``exact`` segment.
+        The rotation fuses with the crop-resize into one ``fused`` segment, so no standalone ``crop_resize`` descriptor
+        remains; the trailing flip is a separate ``exact`` segment.
 
         """
         transforms = [

@@ -1,9 +1,9 @@
 """Cross-backend parity test parametrized over the pipeline input's origin dtype ({float32, uint8}).
 
 Every other cross-backend parity fixture in this suite constructs a float32 ``[0, 1]`` tensor directly via
-``torch.rand`` (see ``test_integration/test_cross_backend.py`` and ``test_integration/test_mixed_backend.py``).
-Real pipelines commonly feed ``uint8`` images instead; this file closes that gap by also sourcing the input from a
-uint8 NumPy array via the public ``NumpyToTorchConverter``, so both origins reach both backends as tensors.
+``torch.rand`` (see ``test_integration/test_cross_backend.py`` and ``test_integration/test_mixed_backend.py``). Real
+pipelines commonly feed ``uint8`` images instead; this file closes that gap by also sourcing the input from a uint8
+NumPy array via the public ``NumpyToTorchConverter``, so both origins reach both backends as tensors.
 
 """
 
@@ -53,11 +53,11 @@ def test_hflip_bit_exact_across_backends_by_input_origin(origin: str) -> None:
     A single-transform ``HorizontalFlip(p=1.0)`` pipeline routes to ``ExactAffineSegment``, which flips the tensor
     directly (``image.flip(dims=[3])``) instead of going through ``grid_sample`` -- so the op is lossless and both
     backends apply the identical operation to the identical input tensor. Tolerance is 0 (``torch.equal``), not a
-    loosened numeric tolerance, by design: the uint8-origin input is converted to float32 once, upfront, via the
-    public ``NumpyToTorchConverter`` (documented uint8 -> float32 via division by 255), and both backends then
-    receive that same already-converted tensor -- a lossless flip cannot introduce backend-specific rounding on top
-    of it. An interpolating (grid_sample-based) op would need a non-zero, justified tolerance instead; that is a
-    separate concern already covered by this suite's existing rotation/affine parity tests.
+    loosened numeric tolerance, by design: the uint8-origin input is converted to float32 once, upfront, via the public
+    ``NumpyToTorchConverter`` (documented uint8 -> float32 via division by 255), and both backends then receive that
+    same already-converted tensor -- a lossless flip cannot introduce backend-specific rounding on top of it. An
+    interpolating (grid_sample-based) op would need a non-zero, justified tolerance instead; that is a separate concern
+    already covered by this suite's existing rotation/affine parity tests.
 
     """
     img = NumpyToTorchConverter().convert(_uint8_image()) if origin == "uint8" else _float32_image()

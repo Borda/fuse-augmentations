@@ -356,11 +356,10 @@ def _compiling_grid_sample_affine_batched(
 ) -> tuple[Tensor, Tensor]:
     """``_grid_sample_affine_batched`` with the compile-safe inversion branch pinned on.
 
-    The only entry point ``torch.compile`` wraps. Binding ``compiling=True`` here is
-    a plain Python constant fixed at trace time, not an ambient runtime probe, so
-    branch selection cannot depend on how a given torch/dynamo version reports its
-    own tracing state from a resumed frame (observed as a spurious graph break with
-    ambient detection on torch 2.2).
+    The only entry point ``torch.compile`` wraps. Binding ``compiling=True`` here is a plain Python constant fixed at
+    trace time, not an ambient runtime probe, so branch selection cannot depend on how a given torch/dynamo version
+    reports its own tracing state from a resumed frame (observed as a spurious graph break with ambient detection on
+    torch 2.2).
 
     """
     return _grid_sample_affine_batched(image, acc, interpolation, padding_mode, compiling=True)
@@ -3891,11 +3890,10 @@ class FusedLUTSegment(nn.Module):
 def _try_build_lut(adapter: TransformAdapter, transform: object) -> bool:
     """Probe whether *adapter* supports ``build_lut`` for *transform*.
 
-    Mirrors :func:`_try_build_color_matrix`: calls the method with an empty param dict and a tiny
-    value grid, classifying the outcome. A supported op reads a missing param key and raises
-    ``KeyError`` (treated as supported); an unsupported op raises ``NotImplementedError`` /
-    ``AttributeError`` (treated as unsupported). The probe never draws backend randomness because
-    the missing param short-circuits before any op is applied.
+    Mirrors :func:`_try_build_color_matrix`: calls the method with an empty param dict and a tiny value grid,
+    classifying the outcome. A supported op reads a missing param key and raises ``KeyError`` (treated as supported); an
+    unsupported op raises ``NotImplementedError`` / ``AttributeError`` (treated as unsupported). The probe never draws
+    backend randomness because the missing param short-circuits before any op is applied.
 
     """
     runtime_checker = getattr(adapter, "is_runtime_lut", None)

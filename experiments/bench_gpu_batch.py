@@ -314,11 +314,9 @@ def _tensor_thunks(seq: Sequence, backend: str, device: Device, batch: int) -> t
 def _albu_thunks(seq: Sequence, device: Device, batch: int) -> tuple[Callable, Callable]:
     """Build (native, fused) thunks for Albumentations on the given device.
 
-    On CPU both modes use the NumPy dict path; a batch of ``B`` is timed as ``B``
-    sequential calls. On non-CPU devices native Albu has no path (it raises
-    :class:`SkipCase`), and the fused tensor path is exercised (and skipped with
-    a recorded reason if unsupported) by the caller's warmup — not eagerly here,
-    so it cannot suppress unrelated cases.
+    On CPU both modes use the NumPy dict path; a batch of ``B`` is timed as ``B`` sequential calls. On non-CPU devices
+    native Albu has no path (it raises :class:`SkipCase`), and the fused tensor path is exercised (and skipped with a
+    recorded reason if unsupported) by the caller's warmup — not eagerly here, so it cannot suppress unrelated cases.
 
     """
     tfms = seq.albumentations

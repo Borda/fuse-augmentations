@@ -76,8 +76,8 @@ def _channel_ramp_uint8(size: int = 16) -> np.ndarray:
 def _sequential_byte_map_reference(adapter, transforms, ramp: torch.Tensor) -> torch.Tensor:
     """Apply each op's own 256-entry byte map to ``ramp`` in sequence (snap to bytes between ops).
 
-    Independent of :class:`FusedLUTSegment`'s internal threading, so equality is a genuine
-    cross-check that the fused integer-tensor path composes byte maps without loss.
+    Independent of :class:`FusedLUTSegment`'s internal threading, so equality is a genuine cross-check that the fused
+    integer-tensor path composes byte maps without loss.
 
     """
     levels = 256

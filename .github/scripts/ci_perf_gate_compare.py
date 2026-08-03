@@ -99,9 +99,11 @@ def _format_summary(
         min_score: float = baseline["real_score"] * threshold
         lines += [
             "",
-            f"> **Failure**: `real_score={real_score:.4f}` is below the minimum "
-            f"`{min_score:.4f}` (= baseline `{baseline['real_score']:.4f}` x `{threshold}`). "
-            "Investigate the regression in `src/` or `experiments/` before merging.",
+            (
+                f"> **Failure**: `real_score={real_score:.4f}` is below the minimum "
+                f"`{min_score:.4f}` (= baseline `{baseline['real_score']:.4f}` x `{threshold}`). "
+                "Investigate the regression in `src/` or `experiments/` before merging."
+            ),
         ]
 
     return "\n".join(lines) + "\n"

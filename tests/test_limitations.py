@@ -63,11 +63,11 @@ class TestFusibleClosures:
     def test_pointwise_nonlinear_chain_fuses(self):
         """CLOSED: a chain of per-channel non-linear scalar ops collapses (no passthrough).
 
-        Gamma, solarize, and posterize are pure per-channel intensity maps. A contiguous run of
-        them now composes into one lookup table (``FusedLUTSegment``) and applies it once, so the
-        chain fuses and saves at least one pass instead of falling through as passthrough. (Saturation
-        and hue stay excluded because they are cross-channel; equalize stays excluded because its
-        lookup depends on a runtime per-image histogram.)
+        Gamma, solarize, and posterize are pure per-channel intensity maps. A contiguous run of them now composes into
+        one lookup table (``FusedLUTSegment``) and applies it once, so the chain fuses and saves at least one pass
+        instead of falling through as passthrough. (Saturation and hue stay excluded because they are cross-channel;
+        equalize stays excluded because its lookup depends on a runtime per-image histogram.)
+
         """
         pipe = Compose([
             kornia_aug.RandomGamma((0.8, 1.2), p=1.0),
@@ -89,8 +89,8 @@ class TestFusibleClosures:
     def test_mixed_border_modes_split_per_transform(self):
         """Transforms with different border modes are honored with the explicit opt-in.
 
-        The default Compose-level padding override is unchanged. ``per_transform``
-        instead splits a geometric run when the compatible border mode changes.
+        The default Compose-level padding override is unchanged. ``per_transform`` instead splits a geometric run when
+        the compatible border mode changes.
 
         """
         pipe = Compose(
@@ -106,10 +106,9 @@ class TestFusibleClosures:
     def test_rotate90_routes_aux_mask_without_raising(self):
         """CLOSED: a non-flip exact op routes an aux mask without raising.
 
-        ``RandomRotation90`` with a mask previously raised RuntimeError in the
-        exact (image-only) segment. The mask now routes through the same lossless
-        rotation applied to the image (shared per-sample sampling), so the forward
-        pass returns both image and mask.
+        ``RandomRotation90`` with a mask previously raised RuntimeError in the exact (image-only) segment. The mask now
+        routes through the same lossless rotation applied to the image (shared per-sample sampling), so the forward pass
+        returns both image and mask.
 
         """
         pipe = Compose(
@@ -124,9 +123,9 @@ class TestFusibleClosures:
     def test_albu_pipeline_with_mask_constructs(self):
         """CLOSED: an Albumentations pipeline with a mask data_key constructs and runs.
 
-        Albumentations fused segments now route auxiliary targets through the
-        composed pixel matrix, so ``Compose`` no longer raises at construction and
-        the forward pass transforms both the image and the mask.
+        Albumentations fused segments now route auxiliary targets through the composed pixel matrix, so ``Compose`` no
+        longer raises at construction and the forward pass transforms both the image and the mask.
+
         """
         pipe = Compose(
             [albu.Affine(rotate=15, p=1.0), albu.HorizontalFlip(p=1.0)],
@@ -139,9 +138,9 @@ class TestFusibleClosures:
     def test_output_backend_applies_to_multi_target(self):
         """CLOSED: output_backend conversion is applied per multi-target output.
 
-        With more than one ``data_key`` the pipeline converts image and mask
-        targets to the requested backend, so a numpy backend yields numpy arrays
-        for both.
+        With more than one ``data_key`` the pipeline converts image and mask targets to the requested backend, so a
+        numpy backend yields numpy arrays for both.
+
         """
         import numpy as np
 

@@ -1,9 +1,10 @@
 """Regression tests: ``KorniaAdapter.category`` matches subclasses via ``isinstance`` (ADP-3).
 
-The kornia adapter previously looked up categories with an exact ``type(...)`` lookup, so a user
-subclass of a registered kornia transform fell through to the ``SPATIAL_KERNEL`` barrier (with a
-spurious warning). It now uses an ``isinstance`` loop over the registry -- mirroring the TorchVision
-and Albumentations adapters -- so subclasses inherit their parent's category.
+The kornia adapter previously looked up categories with an exact ``type(...)`` lookup, so a user subclass of a
+registered kornia transform fell through to the ``SPATIAL_KERNEL`` barrier (with a spurious warning). It now uses an
+``isinstance`` loop over the registry -- mirroring the TorchVision and Albumentations adapters -- so subclasses inherit
+their parent's category.
+
 """
 
 from __future__ import annotations

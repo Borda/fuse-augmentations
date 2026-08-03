@@ -502,12 +502,11 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
     def _build_derived_state(self) -> None:
         """Derive every runtime dispatch attribute from the assigned/restored core state.
 
-        Called by both :meth:`_setup_instance` (construction) and :meth:`__setstate__`
-        (unpickling). The derived attributes are pure functions of the core state
-        (``_segments``, ``_adapter``, ``data_keys``, ``randomness``, ``_output_backend``),
-        so recomputing them on unpickle is always safe and repopulates any attribute
-        absent from an older pickle. This keeps :meth:`forward` free of per-call
-        fallbacks and prevents ``AttributeError`` on cross-version pickles.
+        Called by both :meth:`_setup_instance` (construction) and :meth:`__setstate__` (unpickling). The derived
+        attributes are pure functions of the core state (``_segments``, ``_adapter``, ``data_keys``, ``randomness``,
+        ``_output_backend``), so recomputing them on unpickle is always safe and repopulates any attribute absent from
+        an older pickle. This keeps :meth:`forward` free of per-call fallbacks and prevents ``AttributeError`` on cross-
+        version pickles.
 
         """
         adapter = self._adapter
@@ -1307,10 +1306,9 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
     ) -> torch.Tensor | NDArray[Any] | tuple[torch.Tensor, ...]:
         """Assemble the multi-target return value in ``data_keys`` order.
 
-        When ``output_backend`` is set, the conversion is applied per target: the
-        image and every mask are converted (both are ``(B, C, H, W)`` tensors);
-        coordinate targets (boxes, keypoints) are left as tensors because the
-        NumPy image converter's channel-last layout does not apply to them.
+        When ``output_backend`` is set, the conversion is applied per target: the image and every mask are converted
+        (both are ``(B, C, H, W)`` tensors); coordinate targets (boxes, keypoints) are left as tensors because the NumPy
+        image converter's channel-last layout does not apply to them.
 
         """
         data_keys = cast("list[str]", self.data_keys)

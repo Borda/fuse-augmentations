@@ -1,9 +1,8 @@
 """Regression tests for misrouted ``image=`` keyword calls on tensor pipelines (CORE-3).
 
-A single-tensor pipeline invoked as ``pipe(image=<tensor>)`` previously fell through to
-``forward()`` and produced an opaque ``TypeError`` ("unexpected keyword argument") whose exact
-wording depended on the adapter/backend. An early guard now raises a clear, backend-independent
-message telling the caller to pass the image positionally.
+A single-tensor pipeline invoked as ``pipe(image=<tensor>)`` previously fell through to ``forward()`` and produced an
+opaque ``TypeError`` ("unexpected keyword argument") whose exact wording depended on the adapter/backend. An early guard
+now raises a clear, backend-independent message telling the caller to pass the image positionally.
 
 """
 

@@ -21,8 +21,8 @@ class NumpyToTorchConverter:
 
     All pipeline outputs are ``(batch_size, channels, height, width)`` ``torch.Tensor`` regardless of backend. ``uint8``
     inputs are normalised to ``float32`` in ``[0, 1]`` (÷255); ``uint16`` likewise (÷65535); ``float32`` inputs are
-    passed through unchanged. Any other dtype (``float64``, ``float16``, signed integers) is cast to ``float32``
-    WITHOUT rescaling — values keep their original range.
+    passed through unchanged. Any other dtype (``float64``, ``float16``, signed integers) is cast to ``float32`` WITHOUT
+    rescaling — values keep their original range.
 
     """
 

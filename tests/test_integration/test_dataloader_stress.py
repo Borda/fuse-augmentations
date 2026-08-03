@@ -67,12 +67,10 @@ LOADER_TIMEOUT_S = 60.0
 class _AugmentedDataset(Dataset):
     """Dataset that applies a fresh fused pipeline inside ``__getitem__``.
 
-    A new ``Compose.from_params`` pipeline is built per item on purpose: it is
-    cheap, backend-free (no optional deps), and exercises the per-sample draw
-    from the global torch RNG that per-worker seeding must make independent.
-    Returns ``(output_tensor, matrix_signature)`` where the signature is the
-    flattened, rounded ``transform_matrix`` -- a compact fingerprint of the
-    augmentation actually applied, comparable across workers and runs.
+    A new ``Compose.from_params`` pipeline is built per item on purpose: it is cheap, backend-free (no optional deps),
+    and exercises the per-sample draw from the global torch RNG that per-worker seeding must make independent. Returns
+    ``(output_tensor, matrix_signature)`` where the signature is the flattened, rounded ``transform_matrix`` -- a
+    compact fingerprint of the augmentation actually applied, comparable across workers and runs.
 
     """
 

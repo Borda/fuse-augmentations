@@ -117,10 +117,10 @@ class TestExecutionParity:
     def test_projective_matrix_and_interior_identical(self) -> None:
         """Projective: same homography and interior warp across cv2 and torch strategies.
 
-        ``albu.Perspective`` draws its corner jitter from Albumentations' own internal
-        RNG, which ``np.random.seed`` / ``torch.manual_seed`` do NOT reset -- so the
-        transform's ``set_random_seed`` is used to lock the geometry before comparing
-        the two warp strategies.
+        ``albu.Perspective`` draws its corner jitter from Albumentations' own internal RNG, which ``np.random.seed`` /
+        ``torch.manual_seed`` do NOT reset -- so the transform's ``set_random_seed`` is used to lock the geometry before
+        comparing the two warp strategies.
+
         """
         image = _smooth_image(batch_size=2)
 

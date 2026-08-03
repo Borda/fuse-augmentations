@@ -1,10 +1,9 @@
 """Fused ``Perspective(keep_size=False)`` raises instead of silently keeping the canvas (ADP-2).
 
-Albumentations ``Perspective`` with ``keep_size=False`` returns a crop of different spatial
-dimensions. The batched shape-preserving fusion engine cannot reproduce that in a single warp:
-the fused matrix path previously warped into the original ``HxW`` canvas with no error, silently
-diverging from native. The fused projective path now raises ``NotImplementedError`` for
-``keep_size=False``; ``keep_size=True`` (whose output resize folds into the homography) is
+Albumentations ``Perspective`` with ``keep_size=False`` returns a crop of different spatial dimensions. The batched
+shape-preserving fusion engine cannot reproduce that in a single warp: the fused matrix path previously warped into the
+original ``HxW`` canvas with no error, silently diverging from native. The fused projective path now raises
+``NotImplementedError`` for ``keep_size=False``; ``keep_size=True`` (whose output resize folds into the homography) is
 unaffected.
 
 Requires albumentations.

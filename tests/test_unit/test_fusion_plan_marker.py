@@ -1,10 +1,10 @@
 """``fusion_plan`` surfaces the hidden CPU round-trip of Albumentations cv2 warps (XB-3).
 
-Albumentations fused/projective segments on the default ``"cv2"`` execution strategy warp
-each sample with OpenCV, copying to host and back on every call. On a non-CPU pipeline this
-device round-trip is a poison pill, but ``fusion_plan`` previously rendered them as a plain
-``fused(...)`` with no marker. They now carry the same ``" [CPU passthrough]"`` marker as a
-passthrough segment; switching to ``execution="torch"`` keeps the warp on-device and drops it.
+Albumentations fused/projective segments on the default ``"cv2"`` execution strategy warp each sample with OpenCV,
+copying to host and back on every call. On a non-CPU pipeline this device round-trip is a poison pill, but
+``fusion_plan`` previously rendered them as a plain ``fused(...)`` with no marker. They now carry the same ``" [CPU
+passthrough]"`` marker as a passthrough segment; switching to ``execution="torch"`` keeps the warp on-device and drops
+it.
 
 A meta device is used to force the non-CPU branch without requiring CUDA/MPS.
 

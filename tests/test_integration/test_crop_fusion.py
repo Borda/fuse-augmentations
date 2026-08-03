@@ -122,9 +122,9 @@ def _reference_f64(image: torch.Tensor, mtx_full: torch.Tensor) -> torch.Tensor:
 class _FixedGeoCropAdapter:
     """Stub adapter returning fixed rotation and crop matrices for deterministic testing.
 
-    ``ROTATE`` sentinel transforms build the fixed rotation matrix; the ``CROP``
-    sentinel builds the fixed crop-resize matrix and reports the fixed target size.
-    Every call ignores RNG so fused / separate / reference paths coincide exactly.
+    ``ROTATE`` sentinel transforms build the fixed rotation matrix; the ``CROP`` sentinel builds the fixed crop-resize
+    matrix and reports the fixed target size. Every call ignores RNG so fused / separate / reference paths coincide
+    exactly.
 
     """
 

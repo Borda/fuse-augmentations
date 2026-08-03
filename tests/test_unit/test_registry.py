@@ -1,7 +1,7 @@
 """Tests for the pluggable adapter registry.
 
-Covers registration, capability flags on the built-in adapters, longest-prefix detection routing to a registered
-third-party adapter, lazy entry-point discovery (via a monkeypatched group), and backwards-compatible ``isinstance``.
+Covers registration, capability flags on the built-in adapters, longest-prefix detection routing to a registered third-
+party adapter, lazy entry-point discovery (via a monkeypatched group), and backwards-compatible ``isinstance``.
 
 """
 

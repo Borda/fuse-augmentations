@@ -1,10 +1,9 @@
 """Regression tests pinning the Albumentations quarter-turn matrix direction.
 
-The build_matrix quarter-turn branch (RandomRotate90 / D4 r90/r270) must warp in the
-same direction as native ``np.rot90(+k)`` and the adapter's own ``exact_apply`` path.
-The matrix path only executes when a quarter-turn is fused with an interpolating
-transform, so single-transform pipelines never exercise it — these tests pin it
-directly and through mixed fusion.
+The build_matrix quarter-turn branch (RandomRotate90 / D4 r90/r270) must warp in the same direction as native
+``np.rot90(+k)`` and the adapter's own ``exact_apply`` path. The matrix path only executes when a quarter-turn is fused
+with an interpolating transform, so single-transform pipelines never exercise it — these tests pin it directly and
+through mixed fusion.
 
 """
 
@@ -132,9 +131,8 @@ class TestMixedFusionQuarterTurnDirection:
         ],
     )
     def test_fused_cv2_execution_matches_native_direction(self, factor):
-        """cv2 execution: mean-abs bound — border pixels round differently on the composed grid
-        (isolated outliers up to ~3e-2 max), while a direction regression shifts the whole image
-        to ~6e-2 MEAN — 60x above this bound."""
+        """Cv2 execution: mean-abs bound — border pixels round differently on the composed grid (isolated outliers up
+        to ~3e-2 max), while a direction regression shifts the whole image to ~6e-2 MEAN — 60x above this bound."""
         fused, affine_only = _fused_and_affine_only(factor, "cv2")
 
         expected = torch.rot90(affine_only, k=factor, dims=(-2, -1))

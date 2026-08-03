@@ -180,8 +180,8 @@ class TestFusedAffineSegmentD4Dispatch:
     def test_non_d4_chain_still_uses_grid_sample(self) -> None:
         """A non-D4 (45-degree) interpolating chain stays on the grid_sample path.
 
-        Uses ``batch>1`` so the torch grid path runs (not the B=1 cv2 fast path); a
-        non-D4 composition must fall through to ``grid_sample``.
+        Uses ``batch>1`` so the torch grid path runs (not the B=1 cv2 fast path); a non-D4 composition must fall through
+        to ``grid_sample``.
 
         """
         torch.manual_seed(0)
