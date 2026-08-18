@@ -5,11 +5,11 @@ frame per task. This script renders a short looping animation instead: it draws 
 fixed, seeded stream of synthetic images and, for every task, cycles through them
 showing each image first bare and then with its yellow annotation overlay drawn
 back on — axis-aligned boxes for detection, filled-shape polygons for
-segmentation, and oriented boxes for OBB.
+segmentation, oriented boxes for OBB, and landmark dots plus a skeleton for keypoints.
 
-Because all three tasks share the same seeded sample stream, the clips line up
+Because all tasks share the same seeded sample stream, the clips line up
 image-for-image: the same shapes appear in each, differing only in the label type
-overlaid, so the three annotation representations can be compared directly.
+overlaid, so the annotation representations can be compared directly.
 
 Frames are written as an animated WebP (smaller than GIF, matching the existing
 WebP assets); ``--image_format gif`` is available as a fallback.
@@ -20,7 +20,7 @@ silhouettes) writes ``animals-<task>.webp`` so both sets can live side by side i
 the docs. The animal scene uses fewer, larger objects, because a snake or a giraffe
 needs more pixels than a square to stay readable at preview size.
 
-Render every task (detection, segmentation, obb):
+Render every task (detection, segmentation, obb; keypoints when using animals):
     python examples/animate_synthetic_dataset.py
 
 Render the animal-shape previews:
@@ -34,14 +34,26 @@ Render one task:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TypedDict
 
 from PIL import Image, ImageDraw
 
 from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
-from fuse_augmentations.data.config import DEFAULT_SHAPES, Shape
+from fuse_augmentations.data.config import DEFAULT_SHAPES, KEYPOINT_SKELETON, Shape, Task
 from fuse_augmentations.data.sample import Annotation, Sample
 
-TASKS = ("detection", "segmentation", "obb")
+TASKS = ("detection", "segmentation", "obb", "keypoints")
+
+
+class _Scene(TypedDict):
+    """Typed scene-size settings shared by the two preview vocabularies."""
+
+    min_objects: int
+    max_objects: int
+    min_size_ratio: float
+    max_size_ratio: float
+
+
 #: Drawable vocabulary per ``--shapes`` choice; ``animals`` is everything the enum gained
 #: on top of the original four, so a new animal is picked up without editing this script.
 SHAPE_SETS = {
@@ -50,13 +62,14 @@ SHAPE_SETS = {
 }
 #: Scene knobs per vocabulary. ``geometric`` reproduces the original clips byte-for-byte;
 #: ``animals`` trades object count for object size so each silhouette stays legible.
-SCENES = {
+SCENES: dict[str, _Scene] = {
     "geometric": {"min_objects": 5, "max_objects": 7, "min_size_ratio": 0.1, "max_size_ratio": 0.3},
     "animals": {"min_objects": 3, "max_objects": 5, "min_size_ratio": 0.2, "max_size_ratio": 0.42},
 }
 #: Filename prefix per vocabulary, keeping the pre-existing asset names untouched.
 PREFIXES = {"geometric": "", "animals": "animals-"}
 _OVERLAY_RGB = (255, 255, 0)  # yellow annotation overlay, matching the static previews
+_KEYPOINT_COLORS = {1: (255, 165, 0), 2: (255, 255, 0)}  # visible points are bright yellow
 _SUPERSAMPLE = 2  # render overlays at 2x then downscale so diagonal edges read smooth
 _BARE_MS = 500  # hold the un-annotated image briefly before the label appears
 _LABELLED_MS = 1300  # hold the annotated image long enough to read the overlay
@@ -72,6 +85,23 @@ def _draw_annotation(draw: ImageDraw.ImageDraw, ann: Annotation, task: str, scal
     if task == "detection":
         x1, y1, x2, y2 = (v * scale for v in ann.bbox_xyxy)
         draw.rectangle((x1, y1, x2, y2), outline=_OVERLAY_RGB, width=width)
+        return
+    if task == "keypoints":
+        if ann.keypoints is None:
+            return
+        visible = {
+            index: (x * scale, y * scale) for index, (x, y, visibility) in enumerate(ann.keypoints) if visibility > 0
+        }
+        for first, second in KEYPOINT_SKELETON:
+            if first in visible and second in visible:
+                draw.line((visible[first], visible[second]), fill=_OVERLAY_RGB, width=max(1, width // 2))
+        radius = max(2, width // 2)
+        for _index, (x, y, visibility) in enumerate(ann.keypoints):
+            if visibility <= 0:
+                continue
+            px, py = x * scale, y * scale
+            color = _KEYPOINT_COLORS.get(visibility, _OVERLAY_RGB)
+            draw.ellipse((px - radius, py - radius, px + radius, py + radius), fill=color)
         return
     points = _pairs(ann.polygon if task == "segmentation" else ann.obb_corners, scale)
     draw.line([*points, points[0]], fill=_OVERLAY_RGB, width=width, joint="curve")
@@ -141,7 +171,7 @@ def main(
 
     Args:
         output_dir: Directory for the generated animations.
-        task: One of ``detection``, ``segmentation``, ``obb``, or ``all``.
+        task: One of ``detection``, ``segmentation``, ``obb``, ``keypoints``, or ``all``.
         img_size: Output canvas side length in pixels.
         num_images: Number of distinct images cycled in each clip.
         seed: Seed for the shared sample stream (byte-identical output).
@@ -156,11 +186,18 @@ def main(
     """
     assert image_format in ("webp", "gif"), f"--image_format must be 'webp' or 'gif', got {image_format!r}"
     assert shapes in SHAPE_SETS, f"--shapes must be one of {tuple(SHAPE_SETS)}, got {shapes!r}"
-    tasks = TASKS if task == "all" else (task,)
+    tasks: tuple[str, ...] = TASKS if task == "all" else (task,)
     assert all(t in TASKS for t in tasks), f"--task must be one of {TASKS} or 'all', got {task!r}"
+    if shapes == "geometric" and "keypoints" in tasks:
+        if task == "all":
+            tasks = TASKS[:-1]
+        else:
+            raise AssertionError("--task keypoints requires --shapes animals")
 
     # One shared, seeded stream so every task clip shows the same shapes, only the overlay differs.
-    config = SyntheticConfig(img_size=img_size, rotate=True, shapes=SHAPE_SETS[shapes], **SCENES[shapes])
+    config_task = Task.KEYPOINTS if "keypoints" in tasks else Task.DETECTION
+    scene = SCENES[shapes]
+    config = SyntheticConfig(img_size=img_size, rotate=True, task=config_task, shapes=SHAPE_SETS[shapes], **scene)
     samples = list(SyntheticGenerator(config).generate(num_images, seed=seed))
 
     out_dir = Path(output_dir)

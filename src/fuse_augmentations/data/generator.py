@@ -7,6 +7,10 @@ representation (polygon, axis-aligned box, oriented box). All randomness flows
 through a caller-supplied :class:`numpy.random.Generator`, so a fixed seed yields
 byte-identical output.
 
+Under :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS` each annotation also carries the
+animal's landmarks, derived from the placement that was already sampled — no extra random draw —
+so a seed produces the same scene whatever the configured task.
+
 Examples:
     ```pycon
     >>> import numpy as np
@@ -31,9 +35,15 @@ from typing import TYPE_CHECKING
 import numpy as np
 from PIL import Image, ImageDraw
 
-from fuse_augmentations.data.config import Color, Shape, class_id_of, class_names
+from fuse_augmentations.data.config import Color, Shape, Task, class_id_of, class_names
 from fuse_augmentations.data.sample import Annotation, Sample
-from fuse_augmentations.data.shapes import bbox_iou, polygon_to_bbox_xyxy, polygon_to_obb, shape_polygon
+from fuse_augmentations.data.shapes import (
+    animal_keypoints,
+    bbox_iou,
+    polygon_to_bbox_xyxy,
+    polygon_to_obb,
+    shape_polygon,
+)
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -41,6 +51,33 @@ if TYPE_CHECKING:
     from fuse_augmentations.data.config import SyntheticConfig
 
 _BBox = tuple[float, float, float, float]
+
+#: COCO visibility flags emitted for a landmark: ``2`` is "labeled and visible", ``0`` is
+#: "not labeled". The intermediate ``1`` ("labeled but not visible") never occurs here — the
+#: placement loop rejects overlapping objects, so only the canvas frame can hide a landmark.
+_KEYPOINT_VISIBLE = 2
+_KEYPOINT_HIDDEN = 0
+
+
+def _visible_keypoints(points: NDArray[np.float64], img_size: int) -> tuple[tuple[float, float, int], ...]:
+    """Tag each landmark with its COCO visibility flag, zeroing the ones off the canvas.
+
+    Args:
+        points: ``(num_keypoints, 2)`` landmark coordinates in image pixels.
+        img_size: Canvas side length in pixels.
+
+    Returns:
+        One ``(x, y, visibility)`` triple per landmark, in input order: the real coordinates with
+        :data:`_KEYPOINT_VISIBLE` while the point lies inside ``[0, img_size)`` on both axes, and
+        ``(0.0, 0.0)`` with :data:`_KEYPOINT_HIDDEN` otherwise. Zeroing a clipped point (rather than
+        keeping its off-canvas coordinates) is COCO's "not labeled" convention.
+
+    """
+    triples: list[tuple[float, float, int]] = []
+    for x, y in points:
+        inside = 0.0 <= x < img_size and 0.0 <= y < img_size
+        triples.append((float(x), float(y), _KEYPOINT_VISIBLE) if inside else (0.0, 0.0, _KEYPOINT_HIDDEN))
+    return tuple(triples)
 
 
 def _boundary_overlap(bbox: _BBox, img_size: int) -> float:
@@ -91,7 +128,7 @@ class SyntheticGenerator:
 
     def _attempt_placement(
         self, rng: np.random.Generator, kept: list[_BBox]
-    ) -> tuple[Shape, Color, NDArray[np.float64]] | None:
+    ) -> tuple[Shape, Color, NDArray[np.float64], NDArray[np.float64] | None] | None:
         """Draw one candidate shape; return it if in-bounds and non-overlapping, else ``None``.
 
         Exactly one candidate is sampled per call (fixed RNG draw order: shape, color, size, centre x, centre y, then
@@ -100,6 +137,9 @@ class SyntheticGenerator:
 
         The shape is drawn from ``cfg.shapes`` rather than the full :class:`Shape` vocabulary, so widening the enum
         never changes what an existing seeded configuration produces.
+
+        Landmarks (last tuple element, ``None`` off the keypoints task) are a pure function of the placement that was
+        just sampled, so computing them consumes no further randomness and leaves every seeded stream unchanged.
 
         """
         cfg = self.config
@@ -115,7 +155,8 @@ class SyntheticGenerator:
             return None
         if any(bbox_iou(bbox, other) > cfg.overlap_iou for other in kept):
             return None
-        return shape, color, poly
+        keypoints = animal_keypoints(shape, center, size_px, angle) if cfg.task is Task.KEYPOINTS else None
+        return shape, color, poly, keypoints
 
     def sample(self, rng: np.random.Generator) -> Sample:
         """Generate one image and its annotations.
@@ -160,7 +201,7 @@ class SyntheticGenerator:
             placed = self._attempt_placement(rng, kept)
             if placed is None:
                 continue
-            shape, color, poly = placed
+            shape, color, poly, points = placed
             draw.polygon([(float(x), float(y)) for x, y in poly], fill=color.rgb)
             bbox = polygon_to_bbox_xyxy(poly)
             kept.append(bbox)
@@ -172,6 +213,7 @@ class SyntheticGenerator:
                     polygon=[float(v) for v in poly.reshape(-1)],
                     bbox_xyxy=bbox,
                     obb_corners=[float(v) for v in polygon_to_obb(poly).reshape(-1)],
+                    keypoints=None if points is None else _visible_keypoints(points, cfg.img_size),
                 )
             )
         if len(annotations) < cfg.min_objects:

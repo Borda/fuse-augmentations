@@ -1,8 +1,10 @@
-"""Analytic shape geometry: polygons, rotation, and box derivation.
+"""Analytic shape geometry: polygons, keypoints, rotation, and box derivation.
 
 Pure NumPy, no image-library dependency. Polygons are ``(num_points, 2)`` float
 arrays of ``(x, y)`` pixel coordinates. Boxes are derived from the polygon so
-annotations always match the rasterized pixels.
+annotations always match the rasterized pixels. :func:`animal_keypoints` places an
+animal's landmark table through the very same scale/rotate/translate pipeline as
+:func:`shape_polygon`, so keypoints always land on the silhouette that was drawn.
 
 Examples:
     ```pycon
@@ -21,10 +23,14 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from fuse_augmentations.data.animal_shapes import ANIMAL_POLYGONS
+from fuse_augmentations.data.animal_shapes import ANIMAL_KEYPOINTS, ANIMAL_POLYGONS
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
+
+    # Type-only: at runtime this module reads a shape's ``.value`` and never imports the
+    # configuration layer, keeping the geometry layer free of that dependency.
+    from fuse_augmentations.data.config import Shape
 
 #: Number of vertices used to approximate a circle outline.
 CIRCLE_POINTS = 32
@@ -115,6 +121,26 @@ def rotate_polygon(
     return rotated
 
 
+def _placed(points: NDArray[np.float64], center: tuple[float, float], angle: float) -> NDArray[np.float64]:
+    """Rotate origin-centered ``points`` by ``angle`` and translate them onto ``center``.
+
+    Shared by :func:`shape_polygon` and :func:`animal_keypoints` so an outline and its landmarks
+    can never drift apart: both are placed by this one implementation.
+
+    Args:
+        points: ``(num_points, 2)`` array already scaled and centered on the origin.
+        center: Target center ``(x, y)`` in pixels.
+        angle: Rotation in radians applied about the origin (i.e. about the shape center).
+
+    Returns:
+        ``(num_points, 2)`` float array in image coordinates.
+
+    """
+    if angle:
+        points = points @ _rotation_matrix(angle).T
+    return points + np.asarray(center, dtype=np.float64)
+
+
 def shape_polygon(shape: str, center: tuple[float, float], size: float, angle: float = 0.0) -> NDArray[np.float64]:
     """Build a rotated, translated polygon for a shape.
 
@@ -137,10 +163,51 @@ def shape_polygon(shape: str, center: tuple[float, float], size: float, angle: f
         ```
 
     """
-    base = _base_polygon(shape, size)
-    if angle:
-        base = base @ _rotation_matrix(angle).T
-    return base + np.asarray(center, dtype=np.float64)
+    return _placed(_base_polygon(shape, size), center, angle)
+
+
+def animal_keypoints(shape: Shape, center: tuple[float, float], size: float, angle: float = 0.0) -> NDArray[np.float64]:
+    """Place one animal's landmark table into image coordinates.
+
+    The table is looked up in :data:`~fuse_augmentations.data.animal_shapes.ANIMAL_KEYPOINTS`,
+    scaled, rotated, and translated exactly as :func:`shape_polygon` treats the matching outline,
+    so passing the same ``center``, ``size``, and ``angle`` to both puts every landmark on the
+    silhouette that was drawn. No randomness is involved: the result is a pure function of the
+    placement the generator already sampled.
+
+    Args:
+        shape: An animal :class:`~fuse_augmentations.data.config.Shape` member; the geometric
+            shapes have no landmark table (a square's 4-fold symmetry gives a fixed landmark no
+            stable identity).
+        center: Target center ``(x, y)`` in pixels — the same value passed to :func:`shape_polygon`.
+        size: Bounding size in pixels — the same value passed to :func:`shape_polygon`.
+        angle: Rotation in radians about the shape center — likewise.
+
+    Returns:
+        ``(5, 2)`` float array of landmark coordinates in image pixels, ordered by
+        :data:`~fuse_augmentations.data.config.KEYPOINT_NAMES`. Points may fall outside the canvas;
+        clipping is the caller's decision.
+
+    Raises:
+        ValueError: If ``shape`` has no keypoint table.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.config import Shape
+        >>> from fuse_augmentations.data.shapes import animal_keypoints
+        >>> points = animal_keypoints(Shape.DUCK, center=(50.0, 50.0), size=20.0)
+        >>> points.shape
+        (5, 2)
+
+        ```
+
+    """
+    table = ANIMAL_KEYPOINTS.get(shape.value)
+    if table is None:
+        known = ", ".join(ANIMAL_KEYPOINTS)
+        raise ValueError(f"shape {shape.value!r} has no keypoint table; expected one of {known}")
+    # The stored table is frozen, so multiplying returns a fresh writable array, never an alias.
+    return _placed(table * size, center, angle)
 
 
 def polygon_to_bbox_xyxy(points: NDArray[np.float64]) -> tuple[float, float, float, float]:
