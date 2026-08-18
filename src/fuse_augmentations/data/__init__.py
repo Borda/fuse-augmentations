@@ -24,6 +24,8 @@ import itertools
 from typing import TYPE_CHECKING, Any
 
 from fuse_augmentations.data.config import (
+    KEYPOINT_NAMES,
+    KEYPOINT_SKELETON,
     ClassMode,
     Color,
     OutputFormat,
@@ -44,6 +46,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 __all__ = [
+    "KEYPOINT_NAMES",
+    "KEYPOINT_SKELETON",
     "Annotation",
     "ClassMode",
     "CocoWriter",

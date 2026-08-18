@@ -19,6 +19,13 @@ YOLO layout (Ultralytics-style)::
 COCO has no native oriented-box field, so for :attr:`Task.OBB` the four corners are
 stored as a 4-point ``segmentation`` polygon alongside the axis-aligned ``bbox``.
 
+For :attr:`Task.KEYPOINTS` both writers emit the landmark block in addition to the box: COCO gains
+per-category ``keypoints``/``skeleton`` plus per-annotation ``keypoints``/``num_keypoints``, and
+YOLO appends ``x y v`` triples to the detection row and declares ``kpt_shape`` in ``data.yaml``. An
+annotation that carries no landmarks — one generated for a different task and then handed to a
+keypoint writer — is written as an all-zero, visibility-``0`` ("not labeled") table rather than a
+short record, so every row and record still matches the schema the task declares.
+
 """
 
 from __future__ import annotations
@@ -30,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 from PIL import Image
 
-from fuse_augmentations.data.config import OutputFormat, Task
+from fuse_augmentations.data.config import KEYPOINT_NAMES, KEYPOINT_SKELETON, OutputFormat, Task
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -50,6 +57,30 @@ def _clamp(value: float, lo: float, hi: float) -> float:
 def _clamp_flat(flat: list[float], img_w: float, img_h: float) -> list[float]:
     """Clamp a flat ``[x1, y1, ...]`` coordinate list to the image extent."""
     return [_clamp(v, 0.0, img_w) if i % 2 == 0 else _clamp(v, 0.0, img_h) for i, v in enumerate(flat)]
+
+
+def _keypoint_triples(ann: Annotation, img_w: float, img_h: float) -> list[tuple[float, float, int]]:
+    """Return one ``(x, y, visibility)`` landmark triple per keypoint, clamped to the image.
+
+    Args:
+        ann: The annotation to read landmarks from.
+        img_w: Image width in pixels.
+        img_h: Image height in pixels.
+
+    Returns:
+        One triple per name in :data:`~fuse_augmentations.data.config.KEYPOINT_NAMES`, in that
+        order. A visible point is clamped to the image extent like every other coordinate field; an
+        invisible one keeps the zeroed placeholder coordinates rather than being clamped into a
+        spurious corner position. An annotation without landmarks yields the all-zero, "not
+        labeled" table — see the module docstring.
+
+    """
+    if ann.keypoints is None:
+        return [(0.0, 0.0, 0)] * len(KEYPOINT_NAMES)
+    return [
+        (_clamp(x, 0.0, img_w), _clamp(y, 0.0, img_h), visibility) if visibility > 0 else (0.0, 0.0, visibility)
+        for x, y, visibility in ann.keypoints
+    ]
 
 
 def _save_image(image: NDArray[Any], path: Path) -> None:
@@ -115,11 +146,27 @@ class CocoWriter(DatasetWriter):
             record["segmentation"] = [_clamp_flat(ann.polygon, img_w, img_h)]
         elif self.task is Task.OBB:
             record["segmentation"] = [_clamp_flat(ann.obb_corners, img_w, img_h)]
+        elif self.task is Task.KEYPOINTS:
+            triples = _keypoint_triples(ann, img_w, img_h)
+            record["keypoints"] = [value for triple in triples for value in triple]
+            record["num_keypoints"] = sum(1 for *_, visibility in triples if visibility > 0)
         return record
+
+    def _categories(self) -> list[dict[str, Any]]:
+        """Build the category records, adding the keypoint schema for the pose task."""
+        categories: list[dict[str, Any]] = [
+            {"id": i + 1, "name": name, "supercategory": "none"} for i, name in enumerate(self.class_names)
+        ]
+        if self.task is Task.KEYPOINTS:
+            for category in categories:
+                category["keypoints"] = list(KEYPOINT_NAMES)
+                # COCO skeleton edges are 1-based indices into the category's own keypoint list.
+                category["skeleton"] = [[i + 1, j + 1] for i, j in KEYPOINT_SKELETON]
+        return categories
 
     def _coco_doc(self, images: list[dict[str, Any]], annotations: list[dict[str, Any]]) -> dict[str, Any]:
         """Wrap image and annotation records into a COCO document with categories."""
-        categories = [{"id": i + 1, "name": name, "supercategory": "none"} for i, name in enumerate(self.class_names)]
+        categories = self._categories()
         return {
             "info": {"description": "fuse-augmentations synthetic dataset"},
             "licenses": [],
@@ -176,21 +223,42 @@ class YoloWriter(DatasetWriter):
 
     """
 
+    @staticmethod
+    def _box_coords(ann: Annotation, width: int, height: int) -> list[float]:
+        """Return the normalized ``cx cy w h`` of the box clipped to the image extent."""
+        # Clamp corners to the image extent before deriving cx/cy/w/h so an edge-crossing box's
+        # label matches its clipped visible box (consistent with CocoWriter._annotation_dict).
+        x1 = _clamp(ann.bbox_xyxy[0], 0.0, width)
+        y1 = _clamp(ann.bbox_xyxy[1], 0.0, height)
+        x2 = _clamp(ann.bbox_xyxy[2], 0.0, width)
+        y2 = _clamp(ann.bbox_xyxy[3], 0.0, height)
+        return [(x1 + x2) / 2 / width, (y1 + y2) / 2 / height, (x2 - x1) / width, (y2 - y1) / height]
+
+    @staticmethod
+    def _keypoint_tokens(ann: Annotation, width: int, height: int) -> list[str]:
+        """Return the trailing ``x y v`` tokens of a pose row, three per landmark.
+
+        Coordinates are normalized and clamped like every other coordinate; the visibility flag is an index into COCO's
+        scale, so it is written as a plain integer and never normalized.
+
+        """
+        tokens: list[str] = []
+        for x, y, visibility in _keypoint_triples(ann, float(width), float(height)):
+            tokens += [f"{_clamp(x / width, 0.0, 1.0):.6f}", f"{_clamp(y / height, 0.0, 1.0):.6f}", str(visibility)]
+        return tokens
+
     def _label_row(self, ann: Annotation, width: int, height: int) -> str:
-        """Format one YOLO label row for the writer's task, clamping to ``[0, 1]``."""
-        if self.task is Task.DETECTION:
-            # Clamp corners to the image extent before deriving cx/cy/w/h so an edge-crossing box's
-            # label matches its clipped visible box (consistent with CocoWriter._annotation_dict).
-            x1 = _clamp(ann.bbox_xyxy[0], 0.0, width)
-            y1 = _clamp(ann.bbox_xyxy[1], 0.0, height)
-            x2 = _clamp(ann.bbox_xyxy[2], 0.0, width)
-            y2 = _clamp(ann.bbox_xyxy[3], 0.0, height)
-            coords = [(x1 + x2) / 2 / width, (y1 + y2) / 2 / height, (x2 - x1) / width, (y2 - y1) / height]
+        """Format one YOLO label row for the writer's task, clamping coordinates to ``[0, 1]``."""
+        if self.task in (Task.DETECTION, Task.KEYPOINTS):
+            # A pose row is a detection row plus the landmark block (Ultralytics' order).
+            coords = self._box_coords(ann, width, height)
         else:
             flat = ann.polygon if self.task is Task.SEGMENTATION else ann.obb_corners
             coords = [v / width if i % 2 == 0 else v / height for i, v in enumerate(flat)]
-        coords = [_clamp(c, 0.0, 1.0) for c in coords]
-        return " ".join([str(ann.class_id), *(f"{c:.6f}" for c in coords)])
+        tokens = [str(ann.class_id), *(f"{_clamp(c, 0.0, 1.0):.6f}" for c in coords)]
+        if self.task is Task.KEYPOINTS:
+            tokens += self._keypoint_tokens(ann, width, height)
+        return " ".join(tokens)
 
     def _write_split(self, split: str, samples: Iterable[Sample], output_dir: Path) -> None:
         """Write images and label files for one split."""
@@ -214,6 +282,10 @@ class YoloWriter(DatasetWriter):
         if "test" in splits:
             lines.append("test: images/test")
         lines.append(f"nc: {len(self.class_names)}")
+        if self.task is Task.KEYPOINTS:
+            # Ultralytics carries one dataset-wide (num_keypoints, dims) shape, hence one shared
+            # landmark schema for every class; dims is 3 because each point ships its visibility.
+            lines.append(f"kpt_shape: [{len(KEYPOINT_NAMES)}, 3]")
         lines.append("names:")
         lines.extend(f"  {i}: {name}" for i, name in enumerate(self.class_names))
         return "\n".join(lines) + "\n"

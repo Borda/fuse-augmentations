@@ -67,6 +67,23 @@ class Shape(str, Enum):
 #: geometric shapes, i.e. the vocabulary that predates the animal silhouettes.
 DEFAULT_SHAPES: tuple[Shape, ...] = (Shape.SQUARE, Shape.RECTANGLE, Shape.TRIANGLE, Shape.CIRCLE)
 
+#: Shapes carrying a landmark table and therefore usable with :attr:`Task.KEYPOINTS` — the eight
+#: animal silhouettes. The geometric shapes are excluded on purpose: a square is 4-fold symmetric
+#: and a circle rotation-invariant, so a fixed landmark on them has no identity a model could learn.
+#: Listed explicitly rather than imported from
+#: :data:`~fuse_augmentations.data.animal_shapes.ANIMAL_KEYPOINTS` so this module stays plain Python;
+#: a test pins the two against each other.
+KEYPOINT_SHAPES: tuple[Shape, ...] = (
+    Shape.DUCK,
+    Shape.SNAIL,
+    Shape.ELEPHANT,
+    Shape.GIRAFFE,
+    Shape.FISH,
+    Shape.TURTLE,
+    Shape.SNAKE,
+    Shape.RABBIT,
+)
+
 
 class Color(str, Enum):
     """Fill-color vocabulary; :attr:`rgb` yields the 8-bit RGB tuple.
@@ -107,6 +124,8 @@ class Task(str, Enum):
         DETECTION: Axis-aligned bounding boxes only.
         SEGMENTATION: Bounding boxes plus filled polygon masks.
         OBB: Oriented (rotated) bounding boxes as four corner points.
+        KEYPOINTS: Bounding boxes plus the five named landmarks of
+            :data:`KEYPOINT_NAMES`; restricted to :data:`KEYPOINT_SHAPES`.
 
     The canonical ``OBB`` value is ``"oriented_bounding_boxes"``; the short alias
     ``"obb"`` is also accepted (case-insensitive).
@@ -118,6 +137,8 @@ class Task(str, Enum):
         True
         >>> Task("oriented_bounding_boxes") is Task.OBB
         True
+        >>> Task("keypoints") is Task.KEYPOINTS
+        True
 
         ```
 
@@ -126,6 +147,7 @@ class Task(str, Enum):
     DETECTION = "detection"
     SEGMENTATION = "segmentation"
     OBB = "oriented_bounding_boxes"
+    KEYPOINTS = "keypoints"
 
     @classmethod
     def _missing_(cls, value: object) -> Task | None:
@@ -133,6 +155,17 @@ class Task(str, Enum):
         if isinstance(value, str) and value.lower() in {"obb", "oriented_bounding_box"}:
             return cls.OBB
         return None
+
+
+#: Landmark names for :attr:`Task.KEYPOINTS`, in the order every keypoint table, annotation, and
+#: label row uses. One shared schema across all animals: Ultralytics' YOLO pose format carries a
+#: single dataset-wide ``kpt_shape``, so a per-class name list is not representable.
+KEYPOINT_NAMES: tuple[str, ...] = ("head", "eye", "back", "tail", "foot")
+
+#: Skeleton edges as index pairs into :data:`KEYPOINT_NAMES` — ``head-eye``, ``head-back``,
+#: ``back-tail``, ``back-foot``. Purely a visualization aid (COCO viewers connect the dots with it);
+#: nothing in generation, writing, or validation depends on it.
+KEYPOINT_SKELETON: tuple[tuple[int, int], ...] = ((0, 1), (0, 2), (2, 3), (2, 4))
 
 
 class OutputFormat(str, Enum):
@@ -298,19 +331,26 @@ class SyntheticConfig:
             :data:`DEFAULT_SHAPES`; pass e.g. ``(Shape.DUCK, Shape.GIRAFFE)`` to draw
             animal silhouettes instead. Restricting this does **not** renumber classes:
             class ids always index the full :class:`Shape` vocabulary.
+        task: Annotation task the generated samples target. Only :attr:`Task.KEYPOINTS`
+            changes what the generator computes (it adds the landmark table); the other
+            tasks all read the same polygon/box fields, so they differ at write time only.
 
     Raises:
         ValueError: On non-positive sizes, inverted min/max ranges, an ``overlap_iou`` or
             ``boundary_tolerance`` outside ``[0, 1]``, ``max_placement_attempts`` below 1,
-            or a ``shapes`` tuple that is empty or holds a non-:class:`Shape` element.
+            a ``shapes`` tuple that is empty or holds a non-:class:`Shape` element, a ``task``
+            that is not a :class:`Task` member, or a :attr:`Task.KEYPOINTS` task combined with
+            a shape that has no keypoint table (see :data:`KEYPOINT_SHAPES`).
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.data.config import Shape, SyntheticConfig
+        >>> from fuse_augmentations.data.config import Shape, SyntheticConfig, Task
         >>> SyntheticConfig(img_size=128).img_size
         128
         >>> SyntheticConfig(shapes=(Shape.DUCK, Shape.SNAIL)).shapes
         (<Shape.DUCK: 'duck'>, <Shape.SNAIL: 'snail'>)
+        >>> SyntheticConfig(task=Task.KEYPOINTS, shapes=(Shape.DUCK,)).task
+        <Task.KEYPOINTS: 'keypoints'>
 
         ```
 
@@ -328,9 +368,10 @@ class SyntheticConfig:
     rotate: bool = True
     class_mode: ClassMode = ClassMode.SHAPE
     shapes: tuple[Shape, ...] = DEFAULT_SHAPES
+    task: Task = Task.DETECTION
 
     def __post_init__(self) -> None:
-        """Validate size, object-count, ratio, placement-knob, and shape-vocabulary ranges."""
+        """Validate size, object-count, ratio, and placement-knob ranges, then the vocabulary."""
         if self.img_size <= 0:
             raise ValueError(f"img_size must be positive, got {self.img_size}")
         if not 1 <= self.min_objects <= self.max_objects:
@@ -345,6 +386,20 @@ class SyntheticConfig:
             raise ValueError(f"boundary_tolerance must be within [0, 1], got {self.boundary_tolerance}")
         if self.max_placement_attempts < 1:
             raise ValueError(f"max_placement_attempts must be >= 1, got {self.max_placement_attempts}")
+        self._validate_vocabulary()
+
+    def _validate_vocabulary(self) -> None:
+        """Reject an unusable shape tuple, a non-:class:`Task` task, or an unannotatable pairing.
+
+        Split out of :meth:`__post_init__` so neither routine outgrows the project's complexity
+        budget; it carries every check that reads the enum-valued fields rather than the numbers.
+
+        Raises:
+            ValueError: If ``shapes`` is empty or holds a non-:class:`Shape` element, ``task`` is
+                not a :class:`Task` member, or a :attr:`Task.KEYPOINTS` task is paired with a shape
+                that has no keypoint table.
+
+        """
         if not self.shapes:
             raise ValueError("shapes must name at least one Shape, got an empty sequence")
         # ``Shape`` is a str-Enum, so a bare "duck" compares equal to Shape.DUCK yet is not an
@@ -352,3 +407,15 @@ class SyntheticConfig:
         invalid = [value for value in self.shapes if not isinstance(value, Shape)]
         if invalid:
             raise ValueError(f"shapes must contain only Shape members, got {invalid!r}")
+        # Same trap for the task: a bare "keypoints" equals Task.KEYPOINTS but fails every identity
+        # test downstream, which would silently emit a detection dataset instead of raising.
+        if not isinstance(self.task, Task):
+            raise ValueError(f"task must be a Task member, got {self.task!r}; pass e.g. Task.KEYPOINTS")
+        if self.task is Task.KEYPOINTS:
+            unsupported = [shape.value for shape in self.shapes if shape not in KEYPOINT_SHAPES]
+            if unsupported:
+                supported = ", ".join(shape.value for shape in KEYPOINT_SHAPES)
+                raise ValueError(
+                    f"task {Task.KEYPOINTS.value!r} needs a keypoint table for every drawable shape, but "
+                    f"{unsupported} have none; restrict shapes to the animal silhouettes: {supported}"
+                )

@@ -7,7 +7,7 @@ description: Generate COCO and YOLO datasets of colored shapes for detection, se
 
 `fuse_augmentations.data` draws colored shapes on a canvas and writes ready-to-train datasets. It is a standalone generation utility: no file-backed dataset loader, no model, no training loop. Use it for pipeline smoke tests, augmentation demos, teaching material, and quick detector sanity checks where a real dataset is overkill.
 
-It supports two output formats — **COCO** and **YOLO** — across three tasks — **detection**, **segmentation**, and **oriented bounding box (OBB)**.
+It supports two output formats — **COCO** and **YOLO** — across four tasks — **detection**, **segmentation**, **oriented bounding box (OBB)**, and **keypoints / pose**.
 
 ## Install
 
@@ -64,9 +64,44 @@ The class vocabulary always spans the full shape enum, independently of which sh
 
 `rectangle` (non-square) plus a random per-shape rotation give oriented boxes real orientation; a circle is rotation-invariant, so its OBB collapses to the axis-aligned box. Every animal silhouette is asymmetric, so all eight carry orientation.
 
+## Animal shapes
+
+Pass `shapes=` (or the CLI's `--shapes animals`) to draw the eight animal silhouettes instead of the four geometric shapes. Each outline is asymmetric and traced from a CC0 reference silhouette rather than hand-guessed, so every shape stays recognizable and carries real orientation under rotation (see `fuse_augmentations.data.animal_shapes` for provenance per animal).
+
+| Shape      | Archetype       |
+| ---------- | --------------- |
+| `duck`     | compact-organic |
+| `snail`    | compact-round   |
+| `elephant` | bulky           |
+| `giraffe`  | tall-thin       |
+| `fish`     | streamlined     |
+| `turtle`   | flat-round      |
+| `snake`    | elongated-thin  |
+| `rabbit`   | compact-eared   |
+
+All four tasks work on animal shapes; `keypoints` is animal-only (the geometric shapes have no keypoint tables):
+
+=== "Detection"
+
+    ![Synthetic detection sample with animal silhouettes](../assets/datasets/animals-detection.webp)
+
+=== "Segmentation"
+
+    ![Synthetic segmentation sample with animal silhouettes](../assets/datasets/animals-segmentation.webp)
+
+=== "OBB"
+
+    ![Synthetic OBB sample with animal silhouettes](../assets/datasets/animals-obb.webp)
+
+=== "Keypoints / pose"
+
+    ![Synthetic keypoint sample with animal silhouettes](../assets/datasets/animals-keypoints.webp)
+
+Regenerate these clips with `python examples/animate_synthetic_dataset.py --shapes animals --task all`.
+
 ## Tasks
 
-Each task exposes a different annotation representation. In the looping previews below (yellow overlay), every generated image appears first bare, then with its exported annotation drawn back on. All three clips share the same seeded sample stream, so the shapes line up one-for-one — only the label type differs.
+Each task exposes a different annotation representation. In the looping previews below (yellow overlay), every generated image appears first bare, then with its exported annotation drawn back on. The clips share the same seeded sample stream, so the shapes line up one-for-one — only the label type differs.
 
 === "Detection"
 
@@ -86,7 +121,60 @@ Each task exposes a different annotation representation. In the looping previews
 
     ![Synthetic OBB sample with oriented boxes](../assets/datasets/obb.webp)
 
+=== "Keypoints / pose"
+
+    Animal silhouettes with the five landmark points and skeleton edges.
+
+    ![Synthetic keypoint sample with landmark overlays](../assets/datasets/animals-keypoints.webp)
+
 Regenerate these clips with `python examples/animate_synthetic_dataset.py`.
+
+## Keypoints / pose
+
+The `keypoints` task is available for the eight animal silhouettes and uses one fixed, dataset-wide schema in this order:
+
+| Index | Name   | Meaning                                                                           |
+| ----- | ------ | --------------------------------------------------------------------------------- |
+| 1     | `head` | Head landmark                                                                     |
+| 2     | `eye`  | Eye landmark                                                                      |
+| 3     | `back` | Back landmark                                                                     |
+| 4     | `tail` | Tail landmark                                                                     |
+| 5     | `foot` | Lowest ventral or locomotion point; for legless animals this is not a literal leg |
+
+Visibility follows COCO: `v=2` means the point is labeled and visible inside the canvas; `v=0` means it is not labeled because it fell outside the canvas, and its coordinates are zeroed. Partial occlusion is not modeled.
+
+COCO adds the keypoint schema and skeleton to each category, then stores one flat triple per point on each annotation:
+
+```json
+{
+  "categories": [
+    {
+      "id": 5,
+      "name": "duck",
+      "keypoints": ["head", "eye", "back", "tail", "foot"],
+      "skeleton": [[1, 2], [1, 3], [3, 4], [3, 5]]
+    }
+  ],
+  "annotations": [
+    {
+      "keypoints": [x1, y1, v1, x2, y2, v2, x3, y3, v3, x4, y4, v4, x5, y5, v5],
+      "num_keypoints": 5
+    }
+  ]
+}
+```
+
+YOLO pose labels extend the detection row with the same ordered triples, and `data.yaml` declares the shared shape:
+
+```yaml
+path: .
+kpt_shape: [5, 3]
+names:
+  0: square
+  4: duck
+```
+
+Each pose row is `cls cx cy w h x1 y1 v1 ... x5 y5 v5`. The keypoint tables are packaged JSON assets under `fuse_augmentations/data/zoo/`; each file records its CC0 source in the `source` field.
 
 ## COCO output
 

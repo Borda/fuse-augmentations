@@ -1,8 +1,9 @@
 """Format-agnostic in-memory representation of one synthetic image.
 
 A :class:`Sample` carries the rendered image plus every annotation field a writer
-could need (polygon, axis-aligned box, oriented box). Writers pick the subset that
-their target task requires, so the generator never needs to know the output format.
+could need (polygon, axis-aligned box, oriented box, and — for the keypoints task —
+landmarks). Writers pick the subset that their target task requires, so the generator
+never needs to know the output format.
 
 """
 
@@ -28,6 +29,11 @@ class Annotation:
         polygon: Filled-shape outline as a flat pixel-coordinate list.
         bbox_xyxy: Axis-aligned box ``(x_min, y_min, x_max, y_max)`` in pixels.
         obb_corners: Oriented box as four corners, flat ``[x1, y1, x2, y2, x3, y3, x4, y4]``.
+        keypoints: Landmarks as ``(x, y, visibility)`` triples in
+            :data:`~fuse_augmentations.data.config.KEYPOINT_NAMES` order, or ``None`` for any task
+            other than :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS`. Visibility follows
+            COCO: ``2`` for a point inside the canvas, ``0`` for one clipped away by the frame — a
+            ``0`` point carries ``(0.0, 0.0)`` rather than its off-canvas coordinates.
 
     Examples:
         ```pycon
@@ -36,6 +42,8 @@ class Annotation:
         ...                  (0.0, 0.0, 2.0, 2.0), [0.0, 0.0, 2.0, 0.0, 2.0, 2.0, 0.0, 2.0])
         >>> ann.class_name
         'square'
+        >>> ann.keypoints is None
+        True
 
         ```
 
@@ -46,6 +54,7 @@ class Annotation:
     polygon: list[float]
     bbox_xyxy: tuple[float, float, float, float]
     obb_corners: list[float]
+    keypoints: tuple[tuple[float, float, int], ...] | None = None
 
 
 @dataclass(frozen=True)
