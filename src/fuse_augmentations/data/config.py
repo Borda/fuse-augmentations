@@ -20,15 +20,32 @@ _SPLIT_SUM_TOL = 1e-6
 class Shape(str, Enum):
     """Drawable shape vocabulary (definition order is the class order).
 
-    ``RECTANGLE`` (non-square) plus per-shape rotation give oriented bounding boxes
-    real orientation variety; ``CIRCLE`` is rotation-invariant so its OBB collapses
-    to the axis-aligned box.
+    Two families share one vocabulary. The four *geometric* shapes are computed
+    analytically: ``RECTANGLE`` (non-square) plus per-shape rotation give oriented
+    bounding boxes real orientation variety, while ``CIRCLE`` is rotation-invariant so
+    its OBB collapses to the axis-aligned box. The eight *animal* shapes are fixed,
+    hand-authored side-profile silhouettes (see
+    :mod:`fuse_augmentations.data.animal_shapes`); each is asymmetric and belongs to a
+    distinct silhouette archetype, so they stay separable at a glance and every outline
+    point keeps an unambiguous identity under rotation.
+
+    Only the shapes listed in :attr:`SyntheticConfig.shapes` are drawn; that field
+    defaults to :data:`DEFAULT_SHAPES` (the four geometric shapes), so appending the
+    animals left every existing caller's seeded output unchanged.
 
     Attributes:
         SQUARE: Axis-aligned equal-sided quadrilateral.
         RECTANGLE: Non-square quadrilateral.
         TRIANGLE: Equilateral triangle.
         CIRCLE: Polygon-approximated circle.
+        DUCK: Compact duck silhouette with an S-curved neck and a beak.
+        SNAIL: Round snail silhouette with a spiral shell over a flat foot.
+        ELEPHANT: Bulky elephant silhouette with a trunk, a large ear, and thick legs.
+        GIRAFFE: Tall, thin giraffe silhouette with a very long neck and thin legs.
+        FISH: Streamlined fish silhouette with a forked tail fin.
+        TURTLE: Flat-bottomed turtle silhouette with a domed shell.
+        SNAKE: Elongated, legless snake silhouette following a wavy S-curve.
+        RABBIT: Compact rabbit silhouette with long upright ears.
 
     """
 
@@ -36,6 +53,19 @@ class Shape(str, Enum):
     RECTANGLE = "rectangle"
     TRIANGLE = "triangle"
     CIRCLE = "circle"
+    DUCK = "duck"
+    SNAIL = "snail"
+    ELEPHANT = "elephant"
+    GIRAFFE = "giraffe"
+    FISH = "fish"
+    TURTLE = "turtle"
+    SNAKE = "snake"
+    RABBIT = "rabbit"
+
+
+#: Shapes drawn when :attr:`SyntheticConfig.shapes` is not overridden — the four
+#: geometric shapes, i.e. the vocabulary that predates the animal silhouettes.
+DEFAULT_SHAPES: tuple[Shape, ...] = (Shape.SQUARE, Shape.RECTANGLE, Shape.TRIANGLE, Shape.CIRCLE)
 
 
 class Color(str, Enum):
@@ -136,6 +166,12 @@ class ClassMode(str, Enum):
 def class_names(class_mode: ClassMode) -> list[str]:
     """Return the ordered class-name vocabulary for a class mode.
 
+    The vocabulary always spans the **full** :class:`Shape` enum, independently of
+    :attr:`SyntheticConfig.shapes`. That keeps a class id meaning the same thing across every
+    configuration — a dataset restricted to ``(Shape.GIRAFFE,)`` uses giraffe's id from this list
+    rather than renumbering it to ``0`` — at the cost of declaring classes that a restricted run
+    never draws.
+
     Args:
         class_mode: The selected :class:`ClassMode`.
 
@@ -145,8 +181,10 @@ def class_names(class_mode: ClassMode) -> list[str]:
     Examples:
         ```pycon
         >>> from fuse_augmentations.data.config import ClassMode, class_names
-        >>> class_names(ClassMode.SHAPE)
+        >>> class_names(ClassMode.SHAPE)[:4]
         ['square', 'rectangle', 'triangle', 'circle']
+        >>> class_names(ClassMode.SHAPE)[4:]
+        ['duck', 'snail', 'elephant', 'giraffe', 'fish', 'turtle', 'snake', 'rabbit']
         >>> class_names(ClassMode.COLOR)
         ['red', 'green', 'blue']
         >>> class_names(ClassMode.SHAPE_COLOR)[:2]
@@ -256,16 +294,23 @@ class SyntheticConfig:
         background: RGB background fill.
         rotate: Apply a random rotation to each polygonal shape.
         class_mode: How classes are derived (see :class:`ClassMode`).
+        shapes: Shapes the generator may draw, sampled uniformly. Defaults to
+            :data:`DEFAULT_SHAPES`; pass e.g. ``(Shape.DUCK, Shape.GIRAFFE)`` to draw
+            animal silhouettes instead. Restricting this does **not** renumber classes:
+            class ids always index the full :class:`Shape` vocabulary.
 
     Raises:
         ValueError: On non-positive sizes, inverted min/max ranges, an ``overlap_iou`` or
-            ``boundary_tolerance`` outside ``[0, 1]``, or ``max_placement_attempts`` below 1.
+            ``boundary_tolerance`` outside ``[0, 1]``, ``max_placement_attempts`` below 1,
+            or a ``shapes`` tuple that is empty or holds a non-:class:`Shape` element.
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.data.config import SyntheticConfig
+        >>> from fuse_augmentations.data.config import Shape, SyntheticConfig
         >>> SyntheticConfig(img_size=128).img_size
         128
+        >>> SyntheticConfig(shapes=(Shape.DUCK, Shape.SNAIL)).shapes
+        (<Shape.DUCK: 'duck'>, <Shape.SNAIL: 'snail'>)
 
         ```
 
@@ -282,9 +327,10 @@ class SyntheticConfig:
     background: tuple[int, int, int] = (128, 128, 128)
     rotate: bool = True
     class_mode: ClassMode = ClassMode.SHAPE
+    shapes: tuple[Shape, ...] = DEFAULT_SHAPES
 
     def __post_init__(self) -> None:
-        """Validate size, object-count, ratio, and placement-knob ranges."""
+        """Validate size, object-count, ratio, placement-knob, and shape-vocabulary ranges."""
         if self.img_size <= 0:
             raise ValueError(f"img_size must be positive, got {self.img_size}")
         if not 1 <= self.min_objects <= self.max_objects:
@@ -299,3 +345,10 @@ class SyntheticConfig:
             raise ValueError(f"boundary_tolerance must be within [0, 1], got {self.boundary_tolerance}")
         if self.max_placement_attempts < 1:
             raise ValueError(f"max_placement_attempts must be >= 1, got {self.max_placement_attempts}")
+        if not self.shapes:
+            raise ValueError("shapes must name at least one Shape, got an empty sequence")
+        # ``Shape`` is a str-Enum, so a bare "duck" compares equal to Shape.DUCK yet is not an
+        # instance -- reject it here rather than let it surface as an opaque lookup failure.
+        invalid = [value for value in self.shapes if not isinstance(value, Shape)]
+        if invalid:
+            raise ValueError(f"shapes must contain only Shape members, got {invalid!r}")

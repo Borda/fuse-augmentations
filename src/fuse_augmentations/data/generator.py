@@ -98,9 +98,12 @@ class SyntheticGenerator:
         angle when rotation applies), so the caller controls the retry budget and the RNG consumption stays
         deterministic for a given seed.
 
+        The shape is drawn from ``cfg.shapes`` rather than the full :class:`Shape` vocabulary, so widening the enum
+        never changes what an existing seeded configuration produces.
+
         """
         cfg = self.config
-        shapes, colors = list(Shape), list(Color)
+        shapes, colors = cfg.shapes, list(Color)
         shape = shapes[int(rng.integers(len(shapes)))]
         color = colors[int(rng.integers(len(colors)))]
         size_px = float(rng.uniform(cfg.min_size_ratio, cfg.max_size_ratio)) * cfg.img_size

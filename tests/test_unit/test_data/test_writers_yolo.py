@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import yaml
 
-from fuse_augmentations.data.config import SyntheticConfig, Task, class_names
+from fuse_augmentations.data.config import Shape, SyntheticConfig, Task, class_names
 from fuse_augmentations.data.generator import SyntheticGenerator
 from fuse_augmentations.data.sample import Annotation, Sample
 from fuse_augmentations.data.writers import YoloWriter
@@ -87,6 +87,33 @@ def test_write_rejects_empty_splits(tmp_path):
     with pytest.raises(ValueError, match="at least one split"):
         YoloWriter(Task.DETECTION, names).write({}, tmp_path)
     assert list(tmp_path.iterdir()) == []  # guarded before any partial output is created
+
+
+@pytest.mark.parametrize(("task", "tokens"), [(Task.DETECTION, 5), (Task.SEGMENTATION, None), (Task.OBB, 9)])
+def test_animal_shape_rows_keep_their_task_format(tmp_path, task, tokens):
+    """A giraffe-only dataset emits well-formed, normalized YOLO rows for every task.
+
+    Animal outlines are concave and carry many more vertices than a square; this is the regression guard that the writer
+    stays purely format-agnostic and needed no special casing.
+
+    """
+    config = SyntheticConfig(img_size=192, min_objects=2, max_objects=3, shapes=(Shape.GIRAFFE,))
+    gen = SyntheticGenerator(config)
+    rng = np.random.default_rng(31)
+    names = class_names(config.class_mode)
+    YoloWriter(task, names).write({"train": [gen.sample(rng) for _ in range(3)]}, tmp_path)
+
+    rows = _rows(tmp_path)
+    assert rows
+    for row in rows:
+        parts = row.split()
+        assert int(parts[0]) == names.index(Shape.GIRAFFE.value)
+        assert all(0.0 <= float(v) <= 1.0 for v in parts[1:])
+        if tokens is None:  # segmentation: cls + the full outline, an even coord count
+            assert len(parts) - 1 >= 2 * 15
+            assert (len(parts) - 1) % 2 == 0
+        else:
+            assert len(parts) == tokens
 
 
 def test_detection_label_clamps_edge_crossing_box(tmp_path):

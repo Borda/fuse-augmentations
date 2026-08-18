@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from fuse_augmentations.data.config import ClassMode, Color, Shape, SyntheticConfig, class_names
+from fuse_augmentations.data.config import DEFAULT_SHAPES, ClassMode, Color, Shape, SyntheticConfig, class_names
 from fuse_augmentations.data.generator import SyntheticGenerator, _boundary_overlap
 from fuse_augmentations.data.shapes import bbox_iou
 
@@ -125,6 +125,94 @@ def test_sample_retry_is_reproducible_for_a_seed():
     first = [ann.bbox_xyxy for ann in gen.sample(np.random.default_rng(3)).annotations]
     second = [ann.bbox_xyxy for ann in gen.sample(np.random.default_rng(3)).annotations]
     assert first == second
+
+
+ANIMAL_SHAPES = tuple(s for s in Shape if s not in DEFAULT_SHAPES)
+
+
+def test_default_config_draws_only_the_original_four_shapes():
+    """A config that never mentions `shapes` still produces only the pre-animal vocabulary.
+
+    This is the compatibility guarantee behind appending to `Shape`: existing seeded callers must keep getting
+    square/rectangle/triangle/circle and nothing else.
+
+    """
+    config = SyntheticConfig(img_size=192, min_objects=12, max_objects=12, class_mode=ClassMode.SHAPE)
+    sample = SyntheticGenerator(config).sample(np.random.default_rng(0))
+    drawn = {ann.class_name for ann in sample.annotations}
+    assert drawn <= {s.value for s in DEFAULT_SHAPES}
+
+
+@pytest.mark.parametrize("shape", ANIMAL_SHAPES)
+def test_single_animal_shape_is_the_only_one_drawn(shape):
+    """Restricting `cfg.shapes` to one animal makes every annotation carry that class.
+
+    This is the documented opt-in for the animal family; a sampler still reading the full enum would leak geometric
+    shapes into a dataset the caller asked to be animals-only.
+
+    """
+    config = SyntheticConfig(img_size=160, min_objects=4, max_objects=6, shapes=(shape,))
+    sample = SyntheticGenerator(config).sample(np.random.default_rng(11))
+    assert {ann.class_name for ann in sample.annotations} == {shape.value}
+
+
+def test_animal_shapes_respect_boundary_tolerance():
+    """Animal placements obey the same off-canvas budget as the geometric shapes.
+
+    Animals are far less convex than a square, so this confirms the rejection test still works on a box derived from a
+    concave outline rather than only on well-behaved ones.
+
+    """
+    config = SyntheticConfig(img_size=192, min_objects=5, max_objects=8, shapes=ANIMAL_SHAPES)
+    sample = SyntheticGenerator(config).sample(np.random.default_rng(4))
+    for ann in sample.annotations:
+        assert _boundary_overlap(ann.bbox_xyxy, config.img_size) <= config.boundary_tolerance + 1e-9
+
+
+def test_animal_shapes_respect_overlap_threshold():
+    """Kept animal boxes stay under `overlap_iou` pairwise.
+
+    Elongated silhouettes (snake, fish) have large bounding boxes relative to their filled area, which is exactly the
+    case where a broken IoU guard would let objects pile up.
+
+    """
+    config = SyntheticConfig(img_size=192, min_objects=5, max_objects=8, shapes=ANIMAL_SHAPES)
+    sample = SyntheticGenerator(config).sample(np.random.default_rng(4))
+    boxes = [ann.bbox_xyxy for ann in sample.annotations]
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            assert bbox_iou(boxes[i], boxes[j]) <= config.overlap_iou + 1e-9
+
+
+def test_animal_shapes_are_seed_deterministic():
+    """Two runs of the same seed over the animal vocabulary agree pixel- and label-wise.
+
+    Animal outlines come from lookup tables rather than trigonometry, so this pins that the table path introduces no
+    ordering or floating-point nondeterminism of its own.
+
+    """
+    config = SyntheticConfig(img_size=128, min_objects=3, max_objects=5, shapes=ANIMAL_SHAPES)
+    gen = SyntheticGenerator(config)
+    first = gen.sample(np.random.default_rng(21))
+    second = gen.sample(np.random.default_rng(21))
+    assert np.array_equal(first.image, second.image)
+    assert [(a.class_name, a.bbox_xyxy, a.polygon) for a in first.annotations] == [
+        (b.class_name, b.bbox_xyxy, b.polygon) for b in second.annotations
+    ]
+
+
+def test_animal_annotations_carry_a_multi_vertex_polygon():
+    """An animal annotation exports its full outline, not a four-corner approximation.
+
+    Segmentation labels are taken straight from the drawn polygon, so an animal collapsing to its box would produce
+    masks that no longer match the rendered pixels.
+
+    """
+    config = SyntheticConfig(img_size=192, min_objects=3, max_objects=3, shapes=(Shape.ELEPHANT,))
+    sample = SyntheticGenerator(config).sample(np.random.default_rng(2))
+    for ann in sample.annotations:
+        assert len(ann.polygon) >= 2 * 15
+        assert len(ann.obb_corners) == 8
 
 
 def test_sample_raises_when_min_objects_unreachable():
