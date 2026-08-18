@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from fuse_augmentations.data.animal_shapes import ANIMAL_POLYGONS
+
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
@@ -30,13 +32,24 @@ CIRCLE_POINTS = 32
 #: Height-to-width ratio for the ``rectangle`` shape (non-square, so its OBB is oriented).
 RECT_ASPECT = 0.5
 
+#: Analytically computed shape names, in :class:`~fuse_augmentations.data.config.Shape` order.
+GEOMETRIC_SHAPES: tuple[str, ...] = ("square", "rectangle", "triangle", "circle")
+
 
 def _base_polygon(shape: str, size: float) -> NDArray[np.float64]:
     """Return an origin-centered polygon for ``shape`` spanning ``size`` pixels.
 
+    Geometric shapes are computed analytically; animal shapes are looked up in
+    :data:`~fuse_augmentations.data.animal_shapes.ANIMAL_POLYGONS`, whose tables share this
+    function's unit convention (vertex centroid at the origin, larger extent equal to ``1``)
+    and therefore need only a scale by ``size``.
+
     Args:
-        shape: One of ``"square"``, ``"rectangle"``, ``"triangle"``, ``"circle"``.
-        size: Bounding size (side / diameter) in pixels.
+        shape: A :class:`~fuse_augmentations.data.config.Shape` value — one of the four
+            geometric names (``"square"``, ``"rectangle"``, ``"triangle"``, ``"circle"``)
+            or one of the eight animal names (``"duck"``, ``"snail"``, ``"elephant"``,
+            ``"giraffe"``, ``"fish"``, ``"turtle"``, ``"snake"``, ``"rabbit"``).
+        size: Bounding size (side / diameter / larger extent) in pixels.
 
     Returns:
         ``(num_points, 2)`` float array centered at the origin.
@@ -57,7 +70,13 @@ def _base_polygon(shape: str, size: float) -> NDArray[np.float64]:
     if shape == "circle":
         angles = np.linspace(0.0, 2.0 * np.pi, CIRCLE_POINTS, endpoint=False)
         return np.stack([half * np.cos(angles), half * np.sin(angles)], axis=1).astype(np.float64)
-    raise ValueError(f"unknown shape {shape!r}; expected one of square, rectangle, triangle, circle")
+    animal = ANIMAL_POLYGONS.get(shape)
+    if animal is not None:
+        # One lookup rather than eight near-identical branches; the stored table is frozen,
+        # so multiplying returns a fresh writable array and never aliases the constant.
+        return animal * size
+    known = ", ".join((*GEOMETRIC_SHAPES, *ANIMAL_POLYGONS))
+    raise ValueError(f"unknown shape {shape!r}; expected one of {known}")
 
 
 def _rotation_matrix(angle: float) -> NDArray[np.float64]:

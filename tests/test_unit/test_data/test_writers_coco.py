@@ -7,7 +7,7 @@ import json
 import numpy as np
 import pytest
 
-from fuse_augmentations.data.config import SyntheticConfig, Task, class_names
+from fuse_augmentations.data.config import Shape, SyntheticConfig, Task, class_names
 from fuse_augmentations.data.generator import SyntheticGenerator
 from fuse_augmentations.data.writers import CocoWriter
 
@@ -77,3 +77,30 @@ def test_image_ids_match_files(tmp_path, task):
     doc, _, _ = _write(tmp_path, task)
     for image in doc["images"]:
         assert (tmp_path / "train" / image["file_name"]).exists()
+
+
+@pytest.mark.parametrize("task", list(Task))
+def test_animal_shape_dataset_round_trips(tmp_path, task):
+    """A giraffe-only dataset writes valid COCO JSON for every task without writer changes.
+
+    Animal outlines are concave and carry many more vertices than a square; this is the regression guard that the writer
+    stays purely format-agnostic and needed no special casing.
+
+    """
+    config = SyntheticConfig(img_size=192, min_objects=2, max_objects=3, shapes=(Shape.GIRAFFE,))
+    gen = SyntheticGenerator(config)
+    rng = np.random.default_rng(31)
+    samples = [gen.sample(rng) for _ in range(3)]
+    names = class_names(config.class_mode)
+    CocoWriter(task, names).write({"train": samples}, tmp_path)
+
+    doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
+    assert len(doc["annotations"]) == sum(len(s.annotations) for s in samples)
+    giraffe_id = names.index(Shape.GIRAFFE.value) + 1  # COCO category ids are 1-based
+    assert {ann["category_id"] for ann in doc["annotations"]} == {giraffe_id}
+    for ann in doc["annotations"]:
+        assert ann["area"] > 0
+        if task is Task.SEGMENTATION:
+            assert len(ann["segmentation"][0]) >= 2 * 15
+        elif task is Task.OBB:
+            assert len(ann["segmentation"][0]) == 8

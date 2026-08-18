@@ -50,15 +50,19 @@ Pass a real path instead of the temporary directory to keep the dataset. The sam
 
 ## Shapes, colors, and classes
 
-Four shapes (`square`, `rectangle`, `triangle`, `circle`) in three colors (`red`, `green`, `blue`) are drawn on a gray canvas at random positions and sizes. `class_mode` selects how object classes are derived:
+Shapes are drawn on a gray canvas at random positions, sizes, and rotations, in three colors (`red`, `green`, `blue`). The shape vocabulary has two families: four **geometric** shapes (`square`, `rectangle`, `triangle`, `circle`) and eight **animal** silhouettes (`duck`, `snail`, `elephant`, `giraffe`, `fish`, `turtle`, `snake`, `rabbit` — see [Animal shapes](#animal-shapes)). Only the geometric four are drawn unless you opt in.
+
+`class_mode` selects how object classes are derived:
 
 | `class_mode`  | Classes                                           |
 | ------------- | ------------------------------------------------- |
-| `shape`       | square, rectangle, triangle, circle               |
+| `shape`       | all 12 shape names, in vocabulary order           |
 | `color`       | red, green, blue                                  |
-| `shape_color` | Cartesian product, e.g. `red_square` (12 classes) |
+| `shape_color` | Cartesian product, e.g. `red_square` (36 classes) |
 
-`rectangle` (non-square) plus a random per-shape rotation give oriented boxes real orientation; a circle is rotation-invariant, so its OBB collapses to the axis-aligned box.
+The class vocabulary always spans the full shape enum, independently of which shapes a run actually draws. A class id therefore means the same thing in every dataset: a giraffes-only run still declares all 12 shape classes and uses giraffe's id rather than renumbering it to `0`.
+
+`rectangle` (non-square) plus a random per-shape rotation give oriented boxes real orientation; a circle is rotation-invariant, so its OBB collapses to the axis-aligned box. Every animal silhouette is asymmetric, so all eight carry orientation.
 
 ## Tasks
 

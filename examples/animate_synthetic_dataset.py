@@ -14,8 +14,17 @@ overlaid, so the three annotation representations can be compared directly.
 Frames are written as an animated WebP (smaller than GIF, matching the existing
 WebP assets); ``--image_format gif`` is available as a fallback.
 
+``--shapes`` picks which vocabulary is drawn: ``geometric`` (square, rectangle,
+triangle, circle) writes ``<task>.webp``, and ``animals`` (the eight side-profile
+silhouettes) writes ``animals-<task>.webp`` so both sets can live side by side in
+the docs. The animal scene uses fewer, larger objects, because a snake or a giraffe
+needs more pixels than a square to stay readable at preview size.
+
 Render every task (detection, segmentation, obb):
     python examples/animate_synthetic_dataset.py
+
+Render the animal-shape previews:
+    python examples/animate_synthetic_dataset.py --shapes animals
 
 Render one task:
     python examples/animate_synthetic_dataset.py --task obb --img_size 320 --num_images 6
@@ -29,9 +38,24 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
+from fuse_augmentations.data.config import DEFAULT_SHAPES, Shape
 from fuse_augmentations.data.sample import Annotation, Sample
 
 TASKS = ("detection", "segmentation", "obb")
+#: Drawable vocabulary per ``--shapes`` choice; ``animals`` is everything the enum gained
+#: on top of the original four, so a new animal is picked up without editing this script.
+SHAPE_SETS = {
+    "geometric": DEFAULT_SHAPES,
+    "animals": tuple(s for s in Shape if s not in DEFAULT_SHAPES),
+}
+#: Scene knobs per vocabulary. ``geometric`` reproduces the original clips byte-for-byte;
+#: ``animals`` trades object count for object size so each silhouette stays legible.
+SCENES = {
+    "geometric": {"min_objects": 5, "max_objects": 7, "min_size_ratio": 0.1, "max_size_ratio": 0.3},
+    "animals": {"min_objects": 3, "max_objects": 5, "min_size_ratio": 0.2, "max_size_ratio": 0.42},
+}
+#: Filename prefix per vocabulary, keeping the pre-existing asset names untouched.
+PREFIXES = {"geometric": "", "animals": "animals-"}
 _OVERLAY_RGB = (255, 255, 0)  # yellow annotation overlay, matching the static previews
 _SUPERSAMPLE = 2  # render overlays at 2x then downscale so diagonal edges read smooth
 _BARE_MS = 500  # hold the un-annotated image briefly before the label appears
@@ -94,10 +118,12 @@ def _save_animation(images: list[Image.Image], durations: list[int], output_path
     images[0].save(output_path, format=image_format.upper(), **save_kwargs)
 
 
-def render(samples: list[Sample], task: str, output_dir: Path, out_size: int, image_format: str) -> Path:
+def render(
+    samples: list[Sample], task: str, output_dir: Path, out_size: int, image_format: str, prefix: str = ""
+) -> Path:
     """Render one task's animation from a shared sample stream and return its path."""
     images, durations = _build_frames(samples, task, out_size)
-    output_path = output_dir / f"{task}.{image_format}"
+    output_path = output_dir / f"{prefix}{task}.{image_format}"
     _save_animation(images, durations, output_path, image_format)
     return output_path
 
@@ -109,6 +135,7 @@ def main(
     num_images: int = 6,
     seed: int = 0,
     image_format: str = "webp",
+    shapes: str = "geometric",
 ) -> None:
     """Generate looping preview animations for the synthetic-dataset annotation tasks.
 
@@ -119,6 +146,8 @@ def main(
         num_images: Number of distinct images cycled in each clip.
         seed: Seed for the shared sample stream (byte-identical output).
         image_format: Animation container, ``webp`` or ``gif``.
+        shapes: Drawable vocabulary, ``geometric`` or ``animals``; the latter writes
+            ``animals-<task>`` files so both preview sets can coexist.
 
     Examples:
         >>> callable(main)
@@ -126,16 +155,17 @@ def main(
 
     """
     assert image_format in ("webp", "gif"), f"--image_format must be 'webp' or 'gif', got {image_format!r}"
+    assert shapes in SHAPE_SETS, f"--shapes must be one of {tuple(SHAPE_SETS)}, got {shapes!r}"
     tasks = TASKS if task == "all" else (task,)
     assert all(t in TASKS for t in tasks), f"--task must be one of {TASKS} or 'all', got {task!r}"
 
     # One shared, seeded stream so every task clip shows the same shapes, only the overlay differs.
-    generator = SyntheticGenerator(SyntheticConfig(img_size=img_size, min_objects=5, max_objects=7, rotate=True))
-    samples = list(generator.generate(num_images, seed=seed))
+    config = SyntheticConfig(img_size=img_size, rotate=True, shapes=SHAPE_SETS[shapes], **SCENES[shapes])
+    samples = list(SyntheticGenerator(config).generate(num_images, seed=seed))
 
     out_dir = Path(output_dir)
     for a_task in tasks:
-        print(f"wrote {render(samples, a_task, out_dir, img_size, image_format)}")
+        print(f"wrote {render(samples, a_task, out_dir, img_size, image_format, PREFIXES[shapes])}")
 
 
 if __name__ == "__main__":

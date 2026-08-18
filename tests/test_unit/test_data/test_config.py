@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from fuse_augmentations.data.config import (
+    DEFAULT_SHAPES,
     ClassMode,
     Color,
     Shape,
@@ -87,3 +88,65 @@ def test_class_id_round_trips():
             for color in Color:
                 idx = class_id_of(shape, color, mode)
                 assert 0 <= idx < len(class_names(mode))
+
+
+def test_shapes_defaults_to_the_four_geometric_shapes():
+    """An untouched config still draws only square/rectangle/triangle/circle.
+
+    Appending the animals to `Shape` would otherwise change what every existing seeded caller generates; pinning the
+    default here is the guard that kept that upgrade non-breaking.
+
+    """
+    assert SyntheticConfig().shapes == (Shape.SQUARE, Shape.RECTANGLE, Shape.TRIANGLE, Shape.CIRCLE)
+    assert SyntheticConfig().shapes == DEFAULT_SHAPES
+
+
+def test_default_shapes_keeps_the_original_class_ids():
+    """The default vocabulary still occupies class ids 0-3 of the full `Shape` order.
+
+    Datasets generated before the animals landed carry those ids in their label files, so the enum had to grow by
+    appending rather than by re-ordering.
+
+    """
+    assert [class_id_of(shape, Color.RED, ClassMode.SHAPE) for shape in DEFAULT_SHAPES] == [0, 1, 2, 3]
+
+
+def test_shapes_accepts_an_animal_override():
+    """A custom tuple is stored verbatim and restricts the drawable vocabulary.
+
+    This is the opt-in path documented for animal shapes; the config must not silently widen or reorder what the caller
+    asked for.
+
+    """
+    config = SyntheticConfig(shapes=(Shape.GIRAFFE, Shape.DUCK))
+    assert config.shapes == (Shape.GIRAFFE, Shape.DUCK)
+
+
+def test_shapes_rejects_an_empty_tuple():
+    """An empty vocabulary is refused at construction rather than at draw time.
+
+    With no shape to sample the generator would fail deep inside the placement loop with an opaque index error, long
+    after the real mistake was made.
+
+    """
+    with pytest.raises(ValueError, match="at least one Shape"):
+        SyntheticConfig(shapes=())
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param(("duck",), id="bare-string"),
+        pytest.param((Shape.DUCK, "square"), id="mixed-string"),
+        pytest.param((Shape.DUCK, None), id="none"),
+    ],
+)
+def test_shapes_rejects_non_shape_elements(bad):
+    """Anything that is not a `Shape` member is refused, including an equal bare string.
+
+    `Shape` subclasses `str`, so `"duck" == Shape.DUCK` is True and a plain string would sail through a naive equality
+    check while breaking identity comparisons downstream.
+
+    """
+    with pytest.raises(ValueError, match="only Shape members"):
+        SyntheticConfig(shapes=bad)
