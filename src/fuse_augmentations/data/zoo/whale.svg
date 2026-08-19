@@ -4,7 +4,6 @@
   <g id="skeleton">
   <line x1="65" y1="472" x2="163" y2="481" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
   <line x1="150" y1="460" x2="163" y2="481" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
-  <line x1="173" y1="463" x2="163" y2="481" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
   <line x1="163" y1="481" x2="247" y2="484" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
   <line x1="247" y1="484" x2="351" y2="505" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
   <line x1="351" y1="505" x2="645" y2="479" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
@@ -17,7 +16,6 @@
   <g id="keypoints">
   <circle id="kp-mouth" zoo:name="mouth" cx="65" cy="472" r="8" fill="#e6194b" stroke="#ffffff" stroke-width="1.5" />
   <circle id="kp-eye" zoo:name="eye" cx="150" cy="460" r="8" fill="#ffe119" stroke="#ffffff" stroke-width="1.5" />
-  <circle id="kp-ear" zoo:name="ear" cx="173" cy="463" r="8" fill="#f58231" stroke="#ffffff" stroke-width="1.5" />
   <circle id="kp-head" zoo:name="head" cx="163" cy="481" r="8" fill="#911eb4" stroke="#ffffff" stroke-width="1.5" />
   <circle id="kp-neck" zoo:name="neck" cx="247" cy="484" r="8" fill="#4363d8" stroke="#ffffff" stroke-width="1.5" />
   <circle id="kp-body_top" zoo:name="body_top" cx="351" cy="505" r="8" fill="#42d4f4" stroke="#ffffff" stroke-width="1.5" />

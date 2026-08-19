@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,6 +24,7 @@ from fuse_augmentations.data.animals import (
     _normalized_pair,
     _parse_path_d,
     _read_keypoints,
+    _read_svg,
     _reject_transforms,
     _svg_tag,
     _zoo_attr,
@@ -32,6 +34,23 @@ from fuse_augmentations.data.geometry import GeomShape, polygon_to_bbox_xyxy, sh
 
 ZOO_ANIMAL_NAMES = ANIMAL_NAMES
 
+#: `AnimalShape`'s declaration order, pinned as a literal so a reordering of its members — which would
+#: silently renumber every class id — is a deliberate, reviewed edit rather than an unnoticed drift.
+PINNED_ANIMAL_ORDER = (
+    "duck",
+    "elephant",
+    "giraffe",
+    "fish",
+    "rabbit",
+    "camel",
+    "eagle",
+    "penguin",
+    "whale",
+    "kangaroo",
+    "flamingo",
+    "crocodile",
+)
+
 #: Per-animal set of landmark names this specific silhouette lacks (a NaN row in
 #: :data:`ANIMAL_KEYPOINTS`), pinned as a literal so a change here is a deliberate edit, not an
 #: incidental side effect of re-authoring an SVG.
@@ -39,12 +58,12 @@ ABSENT_KEYPOINTS = {
     "duck": frozenset(),
     "elephant": frozenset(),
     "giraffe": frozenset(),
-    "fish": frozenset({"hind_knee_left", "hind_knee_right", "hind_limb_left", "hind_limb_right"}),
+    "fish": frozenset({"ear", "hind_knee_left", "hind_knee_right", "hind_limb_left", "hind_limb_right"}),
     "rabbit": frozenset(),
     "camel": frozenset(),
     "eagle": frozenset(),
     "penguin": frozenset(),
-    "whale": frozenset({"hind_knee_left", "hind_knee_right", "hind_limb_left", "hind_limb_right"}),
+    "whale": frozenset({"ear", "hind_knee_left", "hind_knee_right", "hind_limb_left", "hind_limb_right"}),
     "kangaroo": frozenset(),
     "flamingo": frozenset(),
     "crocodile": frozenset(),
@@ -132,7 +151,21 @@ def _rasterize(name: str, size: float, canvas: int, angle: float = 0.0) -> np.nd
     return np.asarray(image) > 0
 
 
-def test_every_animal_member_has_a_table():
+def _rounded_pixel_is_filled(mask: np.ndarray, x: float, y: float) -> bool:
+    """Whether the rounded ``(x, y)`` lands on a filled pixel of ``mask``.
+
+    A coordinate that rounds outside the canvas counts as unfilled rather than being indexed directly:
+    a negative index would silently wrap to the opposite edge under NumPy's indexing rules, and an
+    index past the far edge would raise `IndexError` instead of failing the drift assertion cleanly.
+
+    """
+    row, col = round(float(y)), round(float(x))
+    if not (0 <= row < mask.shape[0] and 0 <= col < mask.shape[1]):
+        return False
+    return bool(mask[row, col])
+
+
+def test_every_animal_member_has_a_table() -> None:
     """`AnimalShape` and the loaded outline tables are the same set, in both directions.
 
     Guards the two halves of the vocabulary drifting apart: a member without a document would raise only at draw time,
@@ -143,7 +176,7 @@ def test_every_animal_member_has_a_table():
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_table_is_a_simple_polygon(name):
+def test_table_is_a_simple_polygon(name: str) -> None:
     """No two non-adjacent outline edges touch or cross.
 
     A self-intersecting outline renders as an unpredictable bow-tie under Pillow's fill and makes the segmentation mask
@@ -154,7 +187,7 @@ def test_table_is_a_simple_polygon(name):
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_table_has_no_repeated_vertex(name):
+def test_table_has_no_repeated_vertex(name: str) -> None:
     """Every outline vertex is distinct, so the polygon has no pinch point.
 
     A duplicated vertex is the degenerate case the intersection predicate cannot flag as a crossing yet still produces a
@@ -166,7 +199,7 @@ def test_table_has_no_repeated_vertex(name):
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_table_vertex_mean_is_the_origin(name):
+def test_table_vertex_mean_is_the_origin(name: str) -> None:
     """The outline is centred on its vertex mean, matching `_base_polygon`'s convention.
 
     `shape_polygon` translates the base outline by the requested centre without re-centring, so a table whose mean
@@ -177,7 +210,7 @@ def test_table_vertex_mean_is_the_origin(name):
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_table_larger_extent_is_unit(name):
+def test_table_larger_extent_is_unit(name: str) -> None:
     """The larger of the two extents is exactly 1, so a `size` argument bounds the shape.
 
     Placement rejection and the size-ratio knobs both assume `size` is the true bounding extent; a table scaled
@@ -191,7 +224,7 @@ def test_table_larger_extent_is_unit(name):
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_table_vertex_count_is_in_the_authoring_band(name):
+def test_table_vertex_count_is_in_the_authoring_band(name: str) -> None:
     """Each outline carries enough vertices to read as an animal without bloating labels.
 
     Segmentation labels emit every vertex, so an over-detailed table inflates label files while an under-detailed one
@@ -202,10 +235,10 @@ def test_table_vertex_count_is_in_the_authoring_band(name):
 
 
 @pytest.mark.parametrize(("name", "band"), sorted(ARCHETYPE_ASPECT_BANDS.items()))
-def test_table_matches_its_documented_archetype(name, band):
+def test_table_matches_its_documented_archetype(name: str, band: tuple[float, float]) -> None:
     """Each silhouette keeps the width-to-height ratio its archetype is documented with.
 
-    The eight animals are chosen to be mutually distinguishable by gross proportion; coordinate tuning that pushes one
+    The twelve animals are chosen to be mutually distinguishable by gross proportion; coordinate tuning that pushes one
     into another's band would erode that separability.
 
     """
@@ -215,8 +248,19 @@ def test_table_matches_its_documented_archetype(name, band):
     assert low <= width / height <= high
 
 
+def test_every_animal_has_an_archetype_band() -> None:
+    """Every roster member carries a documented aspect band, so a new animal cannot skip the check.
+
+    `test_table_matches_its_documented_archetype` above parametrizes over `ARCHETYPE_ASPECT_BANDS.items()`, not over
+    `ANIMAL_NAMES`, so an animal added without a matching band entry would silently generate zero test cases for it
+    rather than fail; this closes that gap by asserting the two sets are exactly the same.
+
+    """
+    assert set(ARCHETYPE_ASPECT_BANDS) == set(ANIMAL_NAMES)
+
+
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_table_is_frozen_against_mutation(name):
+def test_table_is_frozen_against_mutation(name: str) -> None:
     """The shared table rejects in-place writes.
 
     Tables are module-level constants handed to every caller; a consumer mutating one would corrupt every later sample
@@ -228,7 +272,7 @@ def test_table_is_frozen_against_mutation(name):
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_scaled_polygon_does_not_alias_the_table(name):
+def test_scaled_polygon_does_not_alias_the_table(name: str) -> None:
     """`shape_polygon` returns a fresh writable array rather than a view of the constant.
 
     Downstream code freely mutates the returned polygon (rotation, translation); aliasing the frozen table would either
@@ -241,7 +285,7 @@ def test_scaled_polygon_does_not_alias_the_table(name):
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_polygon_scales_and_translates_like_a_geometric_shape(name):
+def test_polygon_scales_and_translates_like_a_geometric_shape(name: str) -> None:
     """`shape_polygon` bounds an animal by `size` and centres it on the requested point.
 
     This is the contract the placement loop depends on: it derives the candidate box from the
@@ -255,7 +299,7 @@ def test_polygon_scales_and_translates_like_a_geometric_shape(name):
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_rasterized_fill_matches_the_analytic_area(name):
+def test_rasterized_fill_matches_the_analytic_area(name: str) -> None:
     """Pillow's filled pixel count agrees with the outline's shoelace area.
 
     A self-intersecting or degenerate outline fills to a different area than its signed area predicts, so this is an
@@ -270,7 +314,7 @@ def test_rasterized_fill_matches_the_analytic_area(name):
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_silhouette_survives_a_small_rotated_draw(name):
+def test_silhouette_survives_a_small_rotated_draw(name: str) -> None:
     """A rotated animal at the smallest realistic size still rasterizes to visible pixels.
 
     `min_size_ratio` defaults to 0.1, so on a 320 px canvas the generator routinely draws 32 px animals at arbitrary
@@ -283,7 +327,7 @@ def test_silhouette_survives_a_small_rotated_draw(name):
     assert int((np.asarray(image) > 0).sum()) > 0
 
 
-def test_normalized_rejects_a_degenerate_outline():
+def test_normalized_rejects_a_degenerate_outline() -> None:
     """Fewer than three points cannot describe an outline and is refused up front.
 
     The helper runs at import time, so a malformed table must fail loudly at module load rather than produce an unusable
@@ -294,7 +338,7 @@ def test_normalized_rejects_a_degenerate_outline():
         _normalized([(0.0, 0.0), (1.0, 1.0)])
 
 
-def test_normalized_rejects_a_zero_extent_outline():
+def test_normalized_rejects_a_zero_extent_outline() -> None:
     """An outline whose vertices coincide is refused instead of dividing by zero.
 
     Guards the scaling step: a zero extent would otherwise yield NaN coordinates that propagate
@@ -305,20 +349,24 @@ def test_normalized_rejects_a_zero_extent_outline():
         _normalized([(2.0, 2.0), (2.0, 2.0), (2.0, 2.0)])
 
 
-def test_normalized_centres_and_scales_a_raw_outline():
+def test_normalized_centres_and_scales_a_raw_outline() -> None:
     """A raw authoring-scale outline comes back centred with its larger extent equal to 1.
 
     This is the guarantee that lets the tables be tuned visually in convenient coordinates without any hand-maintained
-    normalization, which is where drift would otherwise creep in.
+    normalization, which is where drift would otherwise creep in. The ``(offset, extent)`` frame comes back alongside
+    the polygon so a caller mapping a second table into the same frame need not re-measure the outline; it is pinned
+    here because `_normalized_pair` maps every landmark through exactly these two numbers.
 
     """
-    poly = _normalized([(10.0, 10.0), (30.0, 10.0), (30.0, 20.0), (10.0, 20.0)])
+    poly, offset, extent = _normalized([(10.0, 10.0), (30.0, 10.0), (30.0, 20.0), (10.0, 20.0)])
     assert poly.mean(axis=0) == pytest.approx([0.0, 0.0])
     assert (poly.max(axis=0) - poly.min(axis=0)) == pytest.approx([1.0, 0.5])
+    assert offset == pytest.approx([20.0, 15.0])
+    assert extent == pytest.approx(20.0)
 
 
-def test_zoo_directory_holds_exactly_the_declared_animals():
-    """The packaged JSON files and the loader's animal list are the same set.
+def test_zoo_directory_holds_exactly_the_declared_animals() -> None:
+    """The packaged SVG files and the loader's animal list are the same set.
 
     The files are data, not code, so a rename or a missed addition would otherwise surface only when a generation run
     reached that animal; comparing the directory listing to the declared names catches it at test time.
@@ -328,18 +376,23 @@ def test_zoo_directory_holds_exactly_the_declared_animals():
     assert stems == set(ZOO_ANIMAL_NAMES)
 
 
-def test_zoo_animal_order_matches_the_enum():
-    """The loader lists animals in `AnimalShape` declaration order, not alphabetically.
+def test_zoo_animal_order_matches_the_enum() -> None:
+    """The packaged directory and `AnimalShape`'s own declaration order both match the enum, independently.
 
-    Class ids come from the enum, so keeping the zoo in that order is what lets a reader line the two up; an
-    alphabetical drift here would make every side-by-side table misleading.
+    `Traversable.iterdir()` makes no ordering guarantee, so the directory side is sorted before comparison — this is a
+    genuine round trip through the filesystem, not the prior self-comparison of `ANIMAL_NAMES` against its own alias,
+    which could never fail. Class ids come from the enum's declaration order, so that order is pinned separately as a
+    literal: an accidental reshuffling of `AnimalShape`'s members would silently renumber every category, and a set
+    comparison alone would not catch it.
 
     """
-    assert tuple(shape.value for shape in AnimalShape) == ZOO_ANIMAL_NAMES
+    stems = sorted(entry.name.removesuffix(".svg") for entry in _ZOO.iterdir() if entry.name.endswith(".svg"))
+    assert stems == sorted(shape.value for shape in AnimalShape)
+    assert tuple(shape.value for shape in AnimalShape) == PINNED_ANIMAL_ORDER
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_zoo_document_records_public_domain_provenance(name):
+def test_zoo_document_records_public_domain_provenance(name: str) -> None:
     """Every packaged silhouette carries a source URL and a public-domain license.
 
     The artwork is redistributed inside the wheel, so provenance is a licensing obligation rather than documentation
@@ -352,7 +405,7 @@ def test_zoo_document_records_public_domain_provenance(name):
     assert source["license"] in PUBLIC_DOMAIN_LICENSES
 
 
-def test_every_animal_has_a_keypoint_table():
+def test_every_animal_has_a_keypoint_table() -> None:
     """The outline and landmark vocabularies cover exactly the same animals.
 
     `Task.KEYPOINTS` looks a landmark table up by the shape it just drew, so an animal with an outline but no table
@@ -362,17 +415,7 @@ def test_every_animal_has_a_keypoint_table():
     assert sorted(ANIMAL_KEYPOINTS) == sorted(ANIMAL_POLYGONS)
 
 
-def test_keypoint_shapes_config_matches_the_tables():
-    """`config.tuple(AnimalShape)` names exactly the shapes that ship a landmark table.
-
-    That constant is what `SyntheticConfig` validates against, and it is hand-maintained so the configuration layer
-    stays free of NumPy; this is the check that keeps the two halves honest.
-
-    """
-    assert {shape.value for shape in tuple(AnimalShape)} == set(ANIMAL_KEYPOINTS)
-
-
-def test_keypoint_colors_are_consistent_across_every_document():
+def test_keypoint_colors_are_consistent_across_every_document() -> None:
     """One fill per landmark name, the same in all twelve documents, and never shared between names.
 
     The colors are a navigation aid: knowing that blue is always the neck only works if no document disagrees and no
@@ -383,21 +426,26 @@ def test_keypoint_colors_are_consistent_across_every_document():
     fills: dict[str, set[str]] = {}
     for name in ANIMAL_NAMES:
         root = ET.parse(str(_ZOO / f"{name}.svg")).getroot()  # noqa: S314 - our own packaged asset, not untrusted input
-        circles = root.find(_svg_tag("g[@id='keypoints']")).findall(_svg_tag("circle"))
+        circles_group = root.find(f"{_svg_tag('g')}[@id='keypoints']")
+        assert circles_group is not None
+        circles = circles_group.findall(_svg_tag("circle"))
         assert circles
         for circle in circles:
-            fills.setdefault(circle.get(_zoo_attr("name")), set()).add(circle.get("fill"))
+            kpt_name = circle.get(_zoo_attr("name"))
+            fill_color = circle.get("fill")
+            if kpt_name is not None and fill_color is not None:
+                fills.setdefault(kpt_name, set()).add(fill_color)
 
     inconsistent = {key: sorted(value) for key, value in fills.items() if len(value) != 1}
     assert inconsistent == {}
-    # fish and whale omit the four hind landmarks, so only the mandatory names are guaranteed present
+    # fish and whale omit the ear and the four hind landmarks, so only the mandatory names are guaranteed present
     assert set(fills) >= set(ANIMAL_KEYPOINT_NAMES) - _OPTIONAL_KEYPOINTS
     used = [next(iter(value)) for value in fills.values()]
     assert len(set(used)) == len(used)
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_keypoint_table_holds_sixteen_points(name):
+def test_keypoint_table_holds_sixteen_points(name: str) -> None:
     """Each animal carries exactly one `(x, y)` per schema name.
 
     YOLO's pose format declares a single dataset-wide `kpt_shape`, so a table of a different length cannot be
@@ -408,7 +456,7 @@ def test_keypoint_table_holds_sixteen_points(name):
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_keypoints_are_distinct_positions(name):
+def test_keypoints_are_distinct_positions(name: str) -> None:
     """No two *present* landmarks of an animal sit on the same point.
 
     Two coincident landmarks would train a model on contradictory targets for two different names; it is also the exact
@@ -424,7 +472,7 @@ def test_keypoints_are_distinct_positions(name):
 
 @pytest.mark.parametrize("angle", [0.0, 0.9])
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_keypoints_lie_inside_the_rasterized_silhouette(name, angle):
+def test_keypoints_lie_inside_the_rasterized_silhouette(name: str, angle: float) -> None:
     """Every landmark falls on a filled pixel of the animal it annotates, rotated or not.
 
     This is the load-bearing property of a hand-placed table: a landmark that drifts off the silhouette teaches a model
@@ -437,14 +485,14 @@ def test_keypoints_lie_inside_the_rasterized_silhouette(name, angle):
     points = animal_keypoints(AnimalShape(name), center=(canvas / 2.0, canvas / 2.0), size=size, angle=angle)
     outside = [
         key
-        for key, (x, y) in zip(ANIMAL_KEYPOINT_NAMES, points, strict=False)
-        if not np.isnan(x) and not mask[round(float(y)), round(float(x))]
+        for key, (x, y) in zip(ANIMAL_KEYPOINT_NAMES, points, strict=True)
+        if not np.isnan(x) and not _rounded_pixel_is_filled(mask, x, y)
     ]
     assert outside == []
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_keypoint_table_is_frozen_against_mutation(name):
+def test_keypoint_table_is_frozen_against_mutation(name: str) -> None:
     """The shared landmark table rejects in-place writes.
 
     Like the outlines, these tables are module-level constants handed to every caller; a consumer mutating one would
@@ -456,7 +504,7 @@ def test_keypoint_table_is_frozen_against_mutation(name):
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_placed_keypoints_do_not_alias_the_table(name):
+def test_placed_keypoints_do_not_alias_the_table(name: str) -> None:
     """`animal_keypoints` returns a fresh writable array rather than a view of the constant.
 
     Callers are free to translate or clip the returned points; aliasing the frozen table would either raise or silently
@@ -469,7 +517,7 @@ def test_placed_keypoints_do_not_alias_the_table(name):
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_placed_keypoints_stay_within_the_placed_polygon(name):
+def test_placed_keypoints_stay_within_the_placed_polygon(name: str) -> None:
     """Landmarks land inside the bounding box of the outline placed with the same arguments.
 
     The generator derives the annotation box from the polygon and the landmarks from the table; if the two pipelines
@@ -493,7 +541,7 @@ def test_placed_keypoints_stay_within_the_placed_polygon(name):
     assert np.all(present[:, 1] <= y2 + tol)
 
 
-def test_animal_keypoints_rejects_a_shape_without_a_table():
+def test_animal_keypoints_rejects_a_shape_without_a_table() -> None:
     """A geometric shape has no landmark table and is refused with a listing of the ones that do.
 
     A square is four-fold symmetric, so a fixed landmark on it carries no stable identity; failing loudly here is what
@@ -501,10 +549,10 @@ def test_animal_keypoints_rejects_a_shape_without_a_table():
 
     """
     with pytest.raises(ValueError, match="no keypoint table"):
-        animal_keypoints(GeomShape.SQUARE, center=(0.0, 0.0), size=10.0)  # type: ignore[arg-type]
+        animal_keypoints(GeomShape.SQUARE, center=(0.0, 0.0), size=10.0)
 
 
-def test_normalized_pair_rejects_a_wrong_sized_landmark_table():
+def test_normalized_pair_rejects_a_wrong_sized_landmark_table() -> None:
     """A document whose landmark table is not exactly sixteen points is refused at load time.
 
     The loader runs at import, so a malformed zoo file must fail loudly on import rather than produce an animal that
@@ -516,7 +564,7 @@ def test_normalized_pair_rejects_a_wrong_sized_landmark_table():
         _normalized_pair(outline, [(0.5, 0.5), (1.0, 0.5)])
 
 
-def test_normalized_pair_maps_landmarks_through_the_outline_frame():
+def test_normalized_pair_maps_landmarks_through_the_outline_frame() -> None:
     """Landmarks are centred and scaled by the *outline's* mean and extent, not their own.
 
     Normalizing the sixteen points independently would re-centre them on their own mean and detach them from the
@@ -531,7 +579,7 @@ def test_normalized_pair_maps_landmarks_through_the_outline_frame():
     assert landmarks[1:5] == pytest.approx(polygon)  # corners map onto the normalized corners
 
 
-def test_normalized_pair_rejects_a_half_nan_landmark_row():
+def test_normalized_pair_rejects_a_half_nan_landmark_row() -> None:
     """A landmark with exactly one NaN coordinate is refused rather than silently treated as absent.
 
     A real absence (no hind limbs on a whale) is NaN in *both* coordinates; a single NaN is a parser bug — reading only
@@ -544,7 +592,7 @@ def test_normalized_pair_rejects_a_half_nan_landmark_row():
         _normalized_pair(outline, landmarks)
 
 
-def test_absent_keypoints_match_the_pinned_matrix():
+def test_absent_keypoints_match_the_pinned_matrix() -> None:
     """Each animal's absent-landmark set matches a literal, hand-reviewed pin, not just "whatever came out".
 
     The absent-slot matrix is decided per animal when its SVG is authored — pinning it as a literal means an edit that
@@ -555,11 +603,11 @@ def test_absent_keypoints_match_the_pinned_matrix():
         table = ANIMAL_KEYPOINTS[name]
         absent = {ANIMAL_KEYPOINT_NAMES[i] for i in range(len(ANIMAL_KEYPOINT_NAMES)) if np.isnan(table[i, 0])}
         assert absent == ABSENT_KEYPOINTS[name]
-        assert absent <= _OPTIONAL_KEYPOINTS  # only the four hind-leg points may ever be absent
+        assert absent <= _OPTIONAL_KEYPOINTS  # only the ear and the four hind-leg points may ever be absent
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_zoo_svg_is_well_formed(name):
+def test_zoo_svg_is_well_formed(name: str) -> None:
     """Every packaged SVG parses without error and has the SVG root tag.
 
     A hand-edit in Inkscape (or a bug in the authoring script) that produces invalid XML must fail here rather than
@@ -571,7 +619,7 @@ def test_zoo_svg_is_well_formed(name):
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_zoo_svg_vertices_lie_inside_the_viewbox(name):
+def test_zoo_svg_vertices_lie_inside_the_viewbox(name: str) -> None:
     """Every outline vertex and every keypoint circle sits within the declared `0 0 1000 1000` viewBox.
 
     A vertex outside the viewBox would still parse and load fine but renders as a clipped or invisible artifact in any
@@ -585,13 +633,17 @@ def test_zoo_svg_vertices_lie_inside_the_viewbox(name):
         assert 0 <= x <= 1000
         assert 0 <= y <= 1000
     group = root.find(f"{_svg_tag('g')}[@id='keypoints']")
-    for circle in group.findall(_svg_tag("circle")):
-        assert 0 <= float(circle.get("cx")) <= 1000
-        assert 0 <= float(circle.get("cy")) <= 1000
+    if group is not None:
+        for circle in group.findall(_svg_tag("circle")):
+            cx = circle.get("cx")
+            cy = circle.get("cy")
+            if cx is not None and cy is not None:
+                assert 0 <= float(cx) <= 1000
+                assert 0 <= float(cy) <= 1000
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_zoo_svg_title_matches_zoo_title(name):
+def test_zoo_svg_title_matches_zoo_title(name: str) -> None:
     """The visible `<title>` element and the machine-read `zoo:title` attribute agree.
 
     Both carry the same provenance text by design (`<title>` for a human hovering in a viewer, `zoo:title` for the
@@ -604,7 +656,37 @@ def test_zoo_svg_title_matches_zoo_title(name):
     assert title_el.text == root.get(_zoo_attr("title"))
 
 
-def test_parse_path_d_rejects_a_curve_command():
+def test_read_svg_rejects_a_document_without_exactly_one_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A zoo document with zero `<path>` elements is refused, naming the count found.
+
+    `_read_svg` expects exactly one outline path per animal; an authoring mistake that drops the path (or,
+    symmetrically, duplicates it into a second `<path>`) must fail loudly at load time rather than surface as an empty
+    or ambiguous outline deep inside a generation run.
+
+    """
+    monkeypatch.setattr("fuse_augmentations.data.animals._ZOO", tmp_path)
+    (tmp_path / "test.svg").write_text(f'<svg xmlns="{_SVG_NS}"><g id="keypoints"></g></svg>', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"exactly one <path>, found 0"):
+        _read_svg("test")
+
+
+def test_read_svg_rejects_a_document_missing_provenance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A document with a valid closed path but no `zoo:` provenance attributes is refused, naming what's missing.
+
+    Provenance (`origin`/`title`/`license`/`note`) is a licensing obligation for redistributed public-domain art, not
+    documentation polish, so a document authored without it must fail at load time instead of shipping an animal with no
+    attribution trail.
+
+    """
+    monkeypatch.setattr("fuse_augmentations.data.animals._ZOO", tmp_path)
+    (tmp_path / "test.svg").write_text(
+        f'<svg xmlns="{_SVG_NS}"><path d="M 0 0 L 10 0 L 10 10 L 0 10 Z"/></svg>', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"missing the key\(s\)"):
+        _read_svg("test")
+
+
+def test_parse_path_d_rejects_a_curve_command() -> None:
     """A `C`/`S`/`Q`/`T`/`A` command is refused with the Inkscape-flatten hint.
 
     The authoring script and this loader only ever speak straight lines; a curve reaching the parser means someone drew
@@ -615,22 +697,70 @@ def test_parse_path_d_rejects_a_curve_command():
         _parse_path_d("M 0 0 C 1 1 2 2 3 3 Z", "test")
 
 
-def test_parse_path_d_rejects_a_second_subpath():
+def test_parse_path_d_rejects_a_second_subpath() -> None:
     """A second `M`/`m` mid-path (a second subpath) is refused; a zoo outline is exactly one closed path."""
     with pytest.raises(ValueError, match="second subpath"):
         _parse_path_d("M 0 0 L 1 1 Z M 5 5 L 6 6 Z", "test")
 
 
-def test_parse_path_d_rejects_an_unclosed_path():
+def test_parse_path_d_rejects_an_unclosed_path() -> None:
     """A path missing its trailing `Z`/`z` is refused rather than silently treated as closed."""
     with pytest.raises(ValueError, match="not closed"):
         _parse_path_d("M 0 0 L 1 1 L 2 2", "test")
 
 
-def test_parse_path_d_rejects_an_unsupported_command():
+def test_parse_path_d_rejects_an_unsupported_command() -> None:
     """A recognised-but-unsupported letter (not curve, not M/L/H/V/Z) is refused, not silently skipped."""
     with pytest.raises(ValueError, match="unsupported command"):
         _parse_path_d("M 0 0 L 1 1 B 2 2 Z", "test")
+
+
+def test_parse_path_d_rejects_coordinates_after_the_close() -> None:
+    """A coordinate pair trailing the closing `Z`/`z` is refused rather than absorbed as another vertex.
+
+    `Z` takes no arguments, so a trailing pair is malformed data an editor should never emit. Left unguarded it fell
+    through every branch of the coordinate dispatch to the relative-lineto default and grew the outline by a phantom
+    vertex — a silently reshaped silhouette rather than a load-time error.
+
+    """
+    with pytest.raises(ValueError, match="after the closing Z"):
+        _parse_path_d("M 0 0 L 1 1 Z 2 2", "test")
+
+
+def test_parse_path_d_rejects_a_moveto_without_a_coordinate_pair() -> None:
+    """A moveto immediately followed by another command letter is refused, not silently skipped.
+
+    Defense-in-depth against a hand-edited or third-party document: this package's own writer always pairs `M` with
+    coordinates. Unguarded, the argument-less moveto simply produced no vertex, so the outline came back one point
+    short — a quietly reshaped silhouette instead of a load-time error naming the offending token.
+
+    """
+    with pytest.raises(ValueError, match="moveto without a coordinate pair"):
+        _parse_path_d("M L 1 1 L 2 2 Z", "test")
+
+
+def test_parse_path_d_rejects_path_data_ending_mid_coordinate_pair() -> None:
+    """Path data stopping between the x and the y of a pair is refused by name, not by IndexError.
+
+    A truncated `d` attribute — a copy-paste that lost its tail, or an exporter that flushed short — used to index one
+    token past the end and surface as a bare `IndexError` naming no document, breaking the load-time contract every
+    sibling failure mode here honours.
+
+    """
+    with pytest.raises(ValueError, match="ends mid-coordinate-pair"):
+        _parse_path_d("M 0 0 L 1 1 L 2", "test")
+
+
+def test_parse_path_d_rejects_a_command_where_a_coordinate_belongs() -> None:
+    """A command letter standing in for the second half of a pair is refused by name, not by a bare float() error.
+
+    `M 0 0 L 1 1 L 2 Z` reads as a lineto whose y is the close command. Unguarded, `float("Z")` raised `could not
+    convert string to float: 'Z'` — a ValueError that names neither the document nor the offending construct, so the
+    animal that failed to load stayed anonymous.
+
+    """
+    with pytest.raises(ValueError, match="inside a coordinate pair"):
+        _parse_path_d("M 0 0 L 1 1 L 2 Z", "test")
 
 
 @pytest.mark.parametrize(
@@ -642,7 +772,7 @@ def test_parse_path_d_rejects_an_unsupported_command():
         pytest.param("M 10 10 20 10 20 20 10 20 Z", id="implicit-lineto"),
     ],
 )
-def test_parse_path_d_tolerant_forms_agree(d):
+def test_parse_path_d_tolerant_forms_agree(d: str) -> None:
     """Absolute, relative, H/V, and implicit-lineto forms of the same square parse to the same vertices.
 
     Inkscape's default save is relative with H/V shorthand; the authoring script always writes absolute M/L/Z. Both must
@@ -653,15 +783,15 @@ def test_parse_path_d_tolerant_forms_agree(d):
     assert _parse_path_d(d, "test") == expected
 
 
-def test_reject_transforms_flags_the_offending_element():
+def test_reject_transforms_flags_the_offending_element() -> None:
     """A `transform` attribute anywhere in the document is refused, naming the element and the Inkscape fix."""
     root = ET.fromstring(f'<svg xmlns="{_SVG_NS}"><path transform="translate(1,1)" d="M 0 0 Z"/></svg>')  # noqa: S314 - fixed literal XML or our own packaged asset, not untrusted input
     with pytest.raises(ValueError, match="transform"):
         _reject_transforms(root, "test")
 
 
-def test_read_keypoints_rejects_an_unknown_zoo_name():
-    """A `zoo:name` outside the nine-name schema is refused rather than silently ignored."""
+def test_read_keypoints_rejects_an_unknown_zoo_name() -> None:
+    """A `zoo:name` outside the sixteen-name schema is refused rather than silently ignored."""
     root = ET.fromstring(  # noqa: S314 - fixed literal XML, not untrusted input
         f'<svg xmlns="{_SVG_NS}" xmlns:zoo="{_ZOO_NS}">'
         f'<g id="keypoints"><circle zoo:name="wing" cx="1" cy="1"/></g></svg>'
@@ -670,7 +800,7 @@ def test_read_keypoints_rejects_an_unknown_zoo_name():
         _read_keypoints(root, "test")
 
 
-def test_read_keypoints_rejects_a_duplicate_zoo_name():
+def test_read_keypoints_rejects_a_duplicate_zoo_name() -> None:
     """Two circles claiming the same `zoo:name` are refused; only one landmark per name is meaningful."""
     root = ET.fromstring(  # noqa: S314 - fixed literal XML, not untrusted input
         f'<svg xmlns="{_SVG_NS}" xmlns:zoo="{_ZOO_NS}"><g id="keypoints">'
@@ -681,7 +811,7 @@ def test_read_keypoints_rejects_a_duplicate_zoo_name():
         _read_keypoints(root, "test")
 
 
-def test_read_keypoints_rejects_a_missing_mandatory_landmark():
+def test_read_keypoints_rejects_a_missing_mandatory_landmark() -> None:
     """A document missing a mandatory (non-optional) landmark is refused, listing what is missing."""
     root = ET.fromstring(  # noqa: S314 - fixed literal XML, not untrusted input
         f'<svg xmlns="{_SVG_NS}" xmlns:zoo="{_ZOO_NS}"><g id="keypoints">'
@@ -691,8 +821,28 @@ def test_read_keypoints_rejects_a_missing_mandatory_landmark():
         _read_keypoints(root, "test")
 
 
-def test_read_keypoints_allows_missing_hind_legs():
-    """A document with every mandatory landmark but no hind-leg points loads (the only optional names)."""
+@pytest.mark.parametrize(
+    ("kp_name", "attrs"),
+    [
+        pytest.param("mouth", 'cy="1"', id="mandatory-without-cx"),
+        pytest.param("mouth", 'cx="1"', id="mandatory-without-cy"),
+        pytest.param("mouth", "", id="mandatory-without-either"),
+        pytest.param("hind_knee_left", "", id="optional-without-either"),
+    ],
+)
+def test_read_keypoints_rejects_a_landmark_without_coordinates(kp_name: str, attrs: str) -> None:
+    """A circle carrying a `zoo:name` but no `cx`/`cy` is refused at parse time, optional names included."""
+    others = [name for name in ANIMAL_KEYPOINT_NAMES if name not in _OPTIONAL_KEYPOINTS and name != kp_name]
+    circles = "".join(f'<circle zoo:name="{other}" cx="1" cy="1"/>' for other in others)
+    circles += f'<circle zoo:name="{kp_name}" {attrs}/>'
+    root = ET.fromstring(f'<svg xmlns="{_SVG_NS}" xmlns:zoo="{_ZOO_NS}"><g id="keypoints">{circles}</g></svg>')  # noqa: S314 - fixed literal XML or our own packaged asset, not untrusted input
+    # The mandatory-landmark guard only tests key presence, so a NaN-defaulted circle passed it.
+    with pytest.raises(ValueError, match="missing cx/cy"):
+        _read_keypoints(root, "test")
+
+
+def test_read_keypoints_allows_missing_optional_landmarks() -> None:
+    """A document carrying every mandatory landmark but none of the optional ones (ear, hind legs) still loads."""
     mandatory = [name for name in ANIMAL_KEYPOINT_NAMES if name not in _OPTIONAL_KEYPOINTS]
     circles = "".join(f'<circle zoo:name="{name}" cx="1" cy="1"/>' for name in mandatory)
     root = ET.fromstring(f'<svg xmlns="{_SVG_NS}" xmlns:zoo="{_ZOO_NS}"><g id="keypoints">{circles}</g></svg>')  # noqa: S314 - fixed literal XML or our own packaged asset, not untrusted input

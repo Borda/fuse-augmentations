@@ -26,11 +26,12 @@ Landmarks are mapped through *their outline's* transform, so the two tables live
 landmark sits **inside or on** its silhouette and, unlike an outline table, is neither centred on the
 origin nor scaled to unit extent by itself.
 
-**Absent keypoints.** The four hind-leg names (``hind_knee_*``, ``hind_limb_*``) are the only ones
-an animal may omit (a whale's or a fish's silhouette shows pectoral fins/flippers as its front
-limbs but no hind legs): an omitted ``<circle>`` in the source SVG becomes a
-``NaN`` row — ``(nan, nan)`` — in the returned table rather than a faked point. Every other name is
-mandatory; a missing one is a load-time :class:`ValueError`, not a silent gap. The NaN encoding was
+**Absent keypoints.** ``ear`` and the four hind-leg names (``hind_knee_*``, ``hind_limb_*``) are the
+only ones an animal may omit — a whale's or a fish's silhouette shows pectoral fins/flippers as its
+front limbs but no hind legs, and neither taxon has an external ear to annotate at all: an omitted
+``<circle>`` in the source SVG becomes a ``NaN`` row — ``(nan, nan)`` — in the returned table rather
+than a faked point. Every other name is mandatory; a missing one is a load-time
+:class:`ValueError`, not a silent gap. The NaN encoding was
 chosen because the rest of the pipeline already handles it for free: a NaN coordinate compares
 ``False`` against every bound check downstream (canvas-visibility, placement clipping), so it falls
 through to "not labeled" exactly like a point clipped off-canvas — see
@@ -73,8 +74,10 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping
 from enum import Enum
 from importlib.resources import files
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -150,7 +153,7 @@ ANIMAL_NAMES: tuple[str, ...] = tuple(shape.value for shape in AnimalShape)
 #: limb is articulated in two points, proximal before distal: ``front_elbow_*`` (elbow, wing wrist,
 #: or flipper bend) then ``front_limb_*`` (the paw/wing tip/fin tip), and ``hind_knee_*`` (the
 #: knee/hock bend) then ``hind_limb_*`` (the foot) — a limb's bend is the most visible pose cue on a
-#: silhouette. All four hind points are optional — see :data:`_OPTIONAL_KEYPOINTS`.
+#: silhouette. ``ear`` and all four hind points are optional — see :data:`_OPTIONAL_KEYPOINTS`.
 ANIMAL_KEYPOINT_NAMES: tuple[str, ...] = (
     "mouth",
     "eye",
@@ -171,8 +174,11 @@ ANIMAL_KEYPOINT_NAMES: tuple[str, ...] = (
 )
 
 #: The only landmark names a document may omit; every other name in :data:`ANIMAL_KEYPOINT_NAMES` is
-#: mandatory and a missing one is a load-time :class:`ValueError`.
+#: mandatory and a missing one is a load-time :class:`ValueError`. ``ear`` earns its place next to the
+#: hind legs on the same anatomical ground: a fish and a whale have no external ear to point at, so the
+#: alternative is inventing a spot on the head and labelling it visible.
 _OPTIONAL_KEYPOINTS: frozenset[str] = frozenset({
+    "ear",
     "hind_knee_left",
     "hind_knee_right",
     "hind_limb_left",
@@ -183,8 +189,9 @@ _OPTIONAL_KEYPOINTS: frozenset[str] = frozenset({
 #: ``ear-head``, the ``head-neck-body_top-body_bottom-tail`` chain, a two-segment
 #: ``body_top-front_elbow-front_limb`` chain per front limb, and a two-segment
 #: ``body_bottom-hind_knee-hind_limb`` chain per hind leg. 15 edges over 16 nodes is a spanning tree
-#: whose optional hind points hang off the end of their own chain, so an absent hind leg drops
-#: exactly its own two edges and orphans nothing. Purely a visualization aid (COCO viewers connect
+#: whose optional points sit at the ends of their chains — ``ear`` is a leaf on ``head``, the hind
+#: points hang off ``body_bottom`` — so an absent ear drops exactly its one edge, an absent hind leg
+#: exactly its own two, and neither orphans anything. Purely a visualization aid (COCO viewers connect
 #: the dots with it); nothing in generation, writing, or validation depends on it.
 ANIMAL_KEYPOINT_SKELETON: tuple[tuple[int, int], ...] = (
     (0, 3),
@@ -253,7 +260,9 @@ def _frame(points: NDArray[np.float64]) -> tuple[NDArray[np.float64], float]:
     return offset, extent
 
 
-def _normalized(vertices: Sequence[tuple[float, float]]) -> NDArray[np.float64]:
+def _normalized(
+    vertices: Sequence[tuple[float, float]],
+) -> tuple[NDArray[np.float64], NDArray[np.float64], float]:
     """Center a raw outline on its vertex mean and scale its larger extent to ``1``.
 
     Args:
@@ -261,8 +270,11 @@ def _normalized(vertices: Sequence[tuple[float, float]]) -> NDArray[np.float64]:
             (winding direction is irrelevant).
 
     Returns:
-        Read-only ``(num_points, 2)`` float array with zero vertex mean and a maximum
-        extent of exactly ``1``. The array is frozen because it is shared by every caller;
+        The read-only ``(num_points, 2)`` float array with zero vertex mean and a maximum extent of
+        exactly ``1``, followed by the ``(offset, extent)`` frame it was normalized through. The
+        frame is handed back so a caller mapping a second table into the same frame — see
+        :func:`_normalized_pair` — reuses this measurement instead of calling :func:`_frame` on the
+        same outline a second time. The array is frozen because it is shared by every caller;
         consumers scale it into a fresh array rather than mutating the table.
 
     Raises:
@@ -275,7 +287,7 @@ def _normalized(vertices: Sequence[tuple[float, float]]) -> NDArray[np.float64]:
     offset, extent = _frame(points)
     scaled: NDArray[np.float64] = (points - offset) / extent
     scaled.setflags(write=False)
-    return scaled
+    return scaled, offset, extent
 
 
 def _normalized_pair(
@@ -306,7 +318,7 @@ def _normalized_pair(
             coordinate (a parser bug — a real absence is NaN in both).
 
     """
-    polygon = _normalized(outline)
+    polygon, offset, extent = _normalized(outline)
     points = np.asarray(landmarks, dtype=np.float64)
     if points.shape != (len(ANIMAL_KEYPOINT_NAMES), 2):
         raise ValueError(
@@ -318,7 +330,6 @@ def _normalized_pair(
     if half_nan.any():
         bad = [ANIMAL_KEYPOINT_NAMES[i] for i in np.nonzero(half_nan)[0]]
         raise ValueError(f"keypoint(s) {bad} have exactly one NaN coordinate; an absent landmark must be NaN in both")
-    offset, extent = _frame(np.asarray(outline, dtype=np.float64))
     mapped: NDArray[np.float64] = (points - offset) / extent
     mapped.setflags(write=False)
     return polygon, mapped
@@ -341,7 +352,9 @@ def _parse_path_d(d: str, name: str) -> list[tuple[float, float]]:
 
     Raises:
         ValueError: If the path uses a curve command, an unrecognised command, a second subpath
-            (a second ``M``/``m``), or is not closed with a trailing ``Z``/``z``.
+            (a second ``M``/``m``), a moveto without a coordinate pair, ends part-way through a
+            coordinate pair, puts a command letter where the second half of a pair belongs, carries
+            coordinates after its closing ``Z``/``z``, or is not closed with a trailing ``Z``/``z``.
 
     """
     raw_tokens = re.findall(r"[A-Za-z]|-?\d*\.?\d+(?:[eE][-+]?\d+)?", d)
@@ -354,11 +367,23 @@ def _parse_path_d(d: str, name: str) -> list[tuple[float, float]]:
     while i < len(raw_tokens):
         tok = raw_tokens[i]
         if tok[:1].isalpha():
+            # A moveto that consumed a pair leaves ``cmd`` as the implicit lineto it decays to, so
+            # ``cmd`` still being ``M``/``m`` here means the moveto never got its coordinates — the
+            # first vertex would otherwise be dropped without a word.
+            if cmd in {"M", "m"}:
+                raise ValueError(f"zoo document {name}.svg has a moveto without a coordinate pair")
             cmd, started, closed, i = _consume_command(tok, name, started, i)
             continue
         if cmd is None:
             raise ValueError(f"zoo document {name}.svg path data must start with a moveto command")
-        current, cmd, consumed = _consume_coordinate(cmd, raw_tokens, i, current)
+        if cmd in "Zz":
+            # ``Z``/``z`` takes no arguments, so a numeric token here is malformed path data. Without
+            # this guard it fell through every branch of _consume_coordinate to the relative-lineto
+            # default and was silently absorbed as a phantom vertex.
+            raise ValueError(
+                f"zoo document {name}.svg has coordinates after the closing Z; a close command takes no arguments"
+            )
+        current, cmd, consumed = _consume_coordinate(cmd, name, raw_tokens, i, current)
         points.append(current)
         i += consumed
     if not closed:
@@ -383,12 +408,30 @@ def _consume_command(tok: str, name: str, started: bool, i: int) -> tuple[str, b
 
 
 def _consume_coordinate(
-    cmd: str, tokens: list[str], i: int, current: tuple[float, float]
+    cmd: str, name: str, tokens: list[str], i: int, current: tuple[float, float]
 ) -> tuple[tuple[float, float], str, int]:
     """Apply one numeric argument (or coordinate pair) to ``current``; returns the new command.
 
     A bare coordinate pair following ``M``/``m`` is an implicit lineto for every pair after the first, per the SVG path
     grammar — the returned ``cmd`` reflects that so the next bare pair (if any) is interpreted correctly too.
+
+    ``name`` is threaded in for the same reason :func:`_consume_command` takes it: a two-token read has to be validated
+    before it happens, and the resulting error belongs to the named-``ValueError`` contract :func:`_parse_path_d`
+    documents — not to a raw ``IndexError`` off the end of the token list, nor to :func:`float`'s own message about a
+    command letter, neither of which names the document that failed to load.
+
+    Args:
+        cmd: The command in effect for this argument, absolute or relative.
+        name: Animal name, for error messages.
+        tokens: The whole token list, so a coordinate *pair* can be read (and bounds-checked) as one unit.
+        i: Index of the first argument token to consume.
+        current: The point the path is standing on, which relative commands offset from.
+
+    Returns:
+        The new current point, the command in effect for the next argument, and how many tokens were consumed.
+
+    Raises:
+        ValueError: If a pair is cut short by the end of the path data, or if its second half is a command letter.
 
     """
     if cmd in "Hh":
@@ -397,6 +440,16 @@ def _consume_coordinate(
     if cmd in "Vv":
         y = float(tokens[i])
         return (current[0], current[1] + y if cmd == "v" else y), cmd, 1
+    # Every command left takes an (x, y) pair, so the second token must exist and must be a number. The tokenizer emits
+    # only command letters and numerals, which is what makes a leading alpha the exact test for "this is not a
+    # coordinate".
+    if i + 1 >= len(tokens):
+        raise ValueError(f"zoo document {name}.svg path data ends mid-coordinate-pair after {tokens[i]!r}")
+    if tokens[i + 1][:1].isalpha():
+        raise ValueError(
+            f"zoo document {name}.svg has the command {tokens[i + 1]!r} inside a coordinate pair, "
+            f"where the second half of the pair opened by {tokens[i]!r} belongs"
+        )
     x, y = float(tokens[i]), float(tokens[i + 1])
     if cmd == "M":
         return (x, y), "L", 2
@@ -433,7 +486,13 @@ def _read_keypoints(root: ET.Element, name: str) -> dict[str, tuple[float, float
             )
         if kp_name in seen:
             raise ValueError(f"zoo document {name}.svg has a duplicate zoo:name {kp_name!r}")
-        seen[kp_name] = (float(circle.get("cx", "nan")), float(circle.get("cy", "nan")))
+        # A present-but-coordinate-less circle is malformed whether the landmark is mandatory or
+        # optional, so it is rejected here rather than defaulted to NaN: the mandatory-landmark
+        # guard below only tests key presence, so a NaN sentinel would sail straight through it.
+        cx, cy = circle.get("cx"), circle.get("cy")
+        if cx is None or cy is None:
+            raise ValueError(f"zoo document {name}.svg landmark {kp_name!r} is missing cx/cy")
+        seen[kp_name] = (float(cx), float(cy))
     missing = [key for key in ANIMAL_KEYPOINT_NAMES if key not in seen and key not in _OPTIONAL_KEYPOINTS]
     if missing:
         raise ValueError(f"zoo document {name}.svg is missing the landmark(s) {missing}")
@@ -453,12 +512,16 @@ def _read_svg(
 
     Raises:
         ValueError: If the document uses a curve or a transform, does not have exactly one closed
-            simple path, or is missing a mandatory landmark or provenance attribute. A malformed
-            document is rejected here, at import, rather than surfacing mid-generation as a lookup
-            failure.
+            simple path, or is missing a mandatory landmark, a landmark's coordinates, or a
+            provenance attribute. A malformed document is rejected here, at import, rather than
+            surfacing mid-generation as a lookup failure.
 
     """
-    root = ET.parse(str(_ZOO / f"{name}.svg")).getroot()  # noqa: S314 - see module-level noqa above
+    # ``str()`` on a Traversable is not guaranteed to yield an openable path (a zipimport or frozen
+    # loader has no real file behind it), so the document is read through the resource's own opener.
+    # Binary, not text: that leaves any XML declaration's encoding for ElementTree to honor.
+    with (_ZOO / f"{name}.svg").open("rb") as handle:
+        root = ET.parse(handle).getroot()  # noqa: S314 - packaged asset addressed by a fixed enum name, never untrusted input
     _reject_transforms(root, name)
     paths = root.findall(_svg_tag("path"))
     if len(paths) != 1:
@@ -496,18 +559,26 @@ def _load() -> tuple[
 _POLYGONS, _KEYPOINTS, _SOURCES = _load()
 
 #: Outline table per animal :class:`~fuse_augmentations.data.config.Shape` *value*.
-#: Every entry is unit-normalized and read-only; scale a copy rather than mutating it.
-ANIMAL_POLYGONS: dict[str, NDArray[np.float64]] = _POLYGONS
+#: Every entry is unit-normalized and read-only; scale a copy rather than mutating it. The table
+#: itself is a read-only view as well, so ``ANIMAL_POLYGONS["duck"] = other`` raises instead of
+#: silently repointing an outline every consumer in the process shares.
+ANIMAL_POLYGONS: Mapping[str, NDArray[np.float64]] = MappingProxyType(_POLYGONS)
 
 #: Landmark table per animal :class:`~fuse_augmentations.data.config.Shape` *value*, in
 #: ``config.KEYPOINT_NAMES`` order. Every entry is a read-only ``(16, 2)`` array in its outline's
 #: unit frame, so landmarks lie inside or on the silhouette; scale a copy rather than mutating it. A
-#: row is ``(nan, nan)`` for an animal that has no hind legs (all four hind rows).
-ANIMAL_KEYPOINTS: dict[str, NDArray[np.float64]] = _KEYPOINTS
+#: row is ``(nan, nan)`` for a landmark the animal does not have — the ``ear`` row and all four hind
+#: rows for a fish or a whale. Like :data:`ANIMAL_POLYGONS`, the table itself is a read-only view,
+#: not just the arrays in it.
+ANIMAL_KEYPOINTS: Mapping[str, NDArray[np.float64]] = MappingProxyType(_KEYPOINTS)
 
 #: Provenance per animal: ``origin`` (source page), ``title`` (what the art depicts), ``license``,
 #: ``attribution`` (credit, not required by CC0/PDM) and a ``note`` on how the art was processed.
-ANIMAL_SOURCES: dict[str, dict[str, str]] = _SOURCES
+#: Frozen at both levels — neither the animal-to-record mapping nor an individual record can be
+#: rewritten, because a licence field edited in place would misdescribe artwork already in the wheel.
+ANIMAL_SOURCES: Mapping[str, Mapping[str, str]] = MappingProxyType({
+    animal: MappingProxyType(source) for animal, source in _SOURCES.items()
+})
 
 
 def animal_shapes(count: int | None = None) -> tuple[AnimalShape, ...]:
@@ -570,8 +641,9 @@ def animal_keypoints(
     Returns:
         ``(16, 2)`` float array of landmark coordinates in image pixels, ordered by
         :data:`ANIMAL_KEYPOINT_NAMES`. Points may fall outside the canvas; clipping is the caller's
-        decision. A row is ``(nan, nan)`` for an animal with no hind legs; NaN propagates through
-        unchanged since scaling and translation are row-independent arithmetic.
+        decision. A row is ``(nan, nan)`` for a landmark the animal does not have (a fish's or a
+        whale's ear and hind legs); NaN propagates through unchanged since scaling and translation
+        are row-independent arithmetic.
 
     Raises:
         ValueError: If ``shape`` has no keypoint table.

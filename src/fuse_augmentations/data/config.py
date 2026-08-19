@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from functools import cache
 
 from fuse_augmentations.data.animals import AnimalShape
 from fuse_augmentations.data.geometry import GeomShape
@@ -140,11 +141,13 @@ class ClassMode(str, Enum):
 def class_names(class_mode: ClassMode) -> list[str]:
     """Return the ordered class-name vocabulary for a class mode.
 
-    The vocabulary always spans the **full** :class:`Shape` enum, independently of
-    :attr:`SyntheticConfig.shapes`. That keeps a class id meaning the same thing across every
-    configuration — a dataset restricted to ``(AnimalShape.GIRAFFE,)`` uses giraffe's id from this list
-    rather than renumbering it to ``0`` — at the cost of declaring classes that a restricted run
-    never draws.
+    The vocabulary always spans the full range for the selected ``class_mode``, independently of
+    :attr:`SyntheticConfig.shapes`. ``ClassMode.SHAPE`` spans the full **16**-member :class:`Shape`
+    enum; ``ClassMode.SHAPE_COLOR`` spans all 16 shapes times the 3 colors (48 combined classes); and
+    ``ClassMode.COLOR`` spans only the 3 colors, independently of the shape vocabulary entirely. That
+    keeps a class id meaning the same thing across every configuration — a dataset restricted to
+    ``(AnimalShape.GIRAFFE,)`` still uses giraffe's ``SHAPE`` id from this list rather than
+    renumbering it to ``0`` — at the cost of declaring classes that a restricted run never draws.
 
     Args:
         class_mode: The selected :class:`ClassMode`.
@@ -199,7 +202,19 @@ def class_id_of(shape: Shape, color: Color, class_mode: ClassMode) -> int:
         ```
 
     """
-    return class_names(class_mode).index(_class_key(shape, color, class_mode))
+    return _class_ids(class_mode)[_class_key(shape, color, class_mode)]
+
+
+@cache
+def _class_ids(class_mode: ClassMode) -> dict[str, int]:
+    """Return the cached ``class name -> class id`` map for a class mode.
+
+    :func:`class_id_of` runs once per placed object, so rebuilding the vocabulary and scanning it linearly there costs a
+    fresh 48-entry list plus a lookup per object; the map is built once per mode instead. Module-private and never
+    handed out — callers must not mutate it.
+
+    """
+    return {name: index for index, name in enumerate(class_names(class_mode))}
 
 
 def _class_key(shape: Shape, color: Color, class_mode: ClassMode) -> str:
@@ -289,7 +304,8 @@ class SyntheticConfig:
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.data.config import Shape, SyntheticConfig, Task
+        >>> from fuse_augmentations.data.animals import AnimalShape
+        >>> from fuse_augmentations.data.config import SyntheticConfig, Task
         >>> SyntheticConfig(img_size=128).img_size
         128
         >>> SyntheticConfig(shapes=(AnimalShape.DUCK, AnimalShape.CAMEL)).shapes
