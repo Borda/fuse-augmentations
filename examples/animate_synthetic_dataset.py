@@ -39,7 +39,8 @@ from typing import TypedDict
 from PIL import Image, ImageDraw
 
 from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
-from fuse_augmentations.data.config import DEFAULT_SHAPES, KEYPOINT_SKELETON, Task, animal_shapes
+from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_SKELETON, animal_shapes
+from fuse_augmentations.data.config import DEFAULT_SHAPES, Task
 from fuse_augmentations.data.sample import Annotation, Sample
 
 TASKS = ("detection", "segmentation", "obb", "keypoints")
@@ -92,7 +93,7 @@ def _draw_annotation(draw: ImageDraw.ImageDraw, ann: Annotation, task: str, scal
         visible = {
             index: (x * scale, y * scale) for index, (x, y, visibility) in enumerate(ann.keypoints) if visibility > 0
         }
-        for first, second in KEYPOINT_SKELETON:
+        for first, second in ANIMAL_KEYPOINT_SKELETON:
             if first in visible and second in visible:
                 draw.line((visible[first], visible[second]), fill=_OVERLAY_RGB, width=max(1, width // 2))
         # 16 points pack closely together on the same silhouette; a bit more radius than

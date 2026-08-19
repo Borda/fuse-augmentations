@@ -6,19 +6,29 @@ import numpy as np
 import pytest
 import yaml
 
-from fuse_augmentations.data.config import KEYPOINT_SHAPES, Shape, SyntheticConfig, Task, class_names
+from fuse_augmentations.data.animals import AnimalShape
+from fuse_augmentations.data.config import SyntheticConfig, Task, class_names
 from fuse_augmentations.data.generator import SyntheticGenerator
 from fuse_augmentations.data.sample import Annotation, Sample
 from fuse_augmentations.data.writers import YoloWriter
 
 
-def _write(tmp_path, task, splits=("train", "val")):
-    config = SyntheticConfig(img_size=96, min_objects=2, max_objects=4)
-    gen = SyntheticGenerator(config)
-    rng = np.random.default_rng(9)
-    data = {split: [gen.sample(rng) for _ in range(3)] for split in splits}
+def _write(tmp_path, writer_task, splits=("train", "val"), count=3, seed=9, **config_kwargs):
+    """Generate a seeded dataset, write it as YOLO, and return the samples per split plus the class names.
+
+    Every knob the individual tests vary — splits, sample count, seed, and any `SyntheticConfig` field such as `shapes`,
+    `img_size`, or `task` — is a keyword here, so a test states only what makes it different from the others. The
+    writer's task is positional and separate from the config's: the writer formats whatever the samples already carry,
+    so a detection-configured stream can still be written out as segmentation or OBB.
+
+    """
+    settings = {"img_size": 96, "min_objects": 2, "max_objects": 4, **config_kwargs}
+    config = SyntheticConfig(**settings)
+    generator = SyntheticGenerator(config)
+    rng = np.random.default_rng(seed)
+    data = {split: [generator.sample(rng) for _ in range(count)] for split in splits}
     names = class_names(config.class_mode)
-    YoloWriter(task, names).write(data, tmp_path)
+    YoloWriter(writer_task, names).write(data, tmp_path)
     return data, names
 
 
@@ -97,17 +107,15 @@ def test_animal_shape_rows_keep_their_task_format(tmp_path, task, tokens):
     stays purely format-agnostic and needed no special casing.
 
     """
-    config = SyntheticConfig(img_size=192, min_objects=2, max_objects=3, shapes=(Shape.GIRAFFE,))
-    gen = SyntheticGenerator(config)
-    rng = np.random.default_rng(31)
-    names = class_names(config.class_mode)
-    YoloWriter(task, names).write({"train": [gen.sample(rng) for _ in range(3)]}, tmp_path)
+    _, names = _write(
+        tmp_path, task, splits=("train",), seed=31, img_size=192, max_objects=3, shapes=(AnimalShape.GIRAFFE,)
+    )
 
     rows = _rows(tmp_path)
     assert rows
     for row in rows:
         parts = row.split()
-        assert int(parts[0]) == names.index(Shape.GIRAFFE.value)
+        assert int(parts[0]) == names.index(AnimalShape.GIRAFFE.value)
         assert all(0.0 <= float(v) <= 1.0 for v in parts[1:])
         if tokens is None:  # segmentation: cls + the full outline, an even coord count
             assert len(parts) - 1 >= 2 * 15
@@ -139,11 +147,17 @@ def test_keypoints_row_has_fifty_three_tokens(tmp_path):
     schema is dataset-wide and fixed-width, so a short row is never valid.
 
     """
-    config = SyntheticConfig(img_size=192, min_objects=2, max_objects=2, task=Task.KEYPOINTS, shapes=(Shape.WHALE,))
-    gen = SyntheticGenerator(config)
-    rng = np.random.default_rng(4)
-    names = class_names(config.class_mode)
-    YoloWriter(Task.KEYPOINTS, names).write({"train": [gen.sample(rng) for _ in range(2)]}, tmp_path)
+    _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        splits=("train",),
+        count=2,
+        seed=4,
+        img_size=192,
+        max_objects=2,
+        task=Task.KEYPOINTS,
+        shapes=(AnimalShape.WHALE,),
+    )
 
     rows = _rows(tmp_path)
     assert rows
@@ -153,11 +167,17 @@ def test_keypoints_row_has_fifty_three_tokens(tmp_path):
 
 def test_data_yaml_declares_kpt_shape_sixteen_three(tmp_path):
     """`data.yaml` declares `kpt_shape: [16, 3]` for the keypoints task, the shared dataset-wide schema."""
-    config = SyntheticConfig(img_size=192, min_objects=2, max_objects=2, task=Task.KEYPOINTS, shapes=KEYPOINT_SHAPES)
-    gen = SyntheticGenerator(config)
-    rng = np.random.default_rng(0)
-    names = class_names(config.class_mode)
-    YoloWriter(Task.KEYPOINTS, names).write({"train": [gen.sample(rng) for _ in range(2)]}, tmp_path)
+    _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        splits=("train",),
+        count=2,
+        seed=0,
+        img_size=192,
+        max_objects=2,
+        task=Task.KEYPOINTS,
+        shapes=tuple(AnimalShape),
+    )
 
     doc = yaml.safe_load((tmp_path / "data.yaml").read_text())
     assert doc["kpt_shape"] == [16, 3]

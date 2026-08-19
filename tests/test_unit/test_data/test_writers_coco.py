@@ -7,22 +7,28 @@ import json
 import numpy as np
 import pytest
 
-from fuse_augmentations.data.config import KEYPOINT_NAMES, KEYPOINT_SHAPES, Shape, SyntheticConfig, Task, class_names
+from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, AnimalShape
+from fuse_augmentations.data.config import SyntheticConfig, Task, class_names
 from fuse_augmentations.data.generator import SyntheticGenerator
 from fuse_augmentations.data.writers import CocoWriter
 
 
-def _samples(n=4):
-    config = SyntheticConfig(img_size=96, min_objects=2, max_objects=4)
-    gen = SyntheticGenerator(config)
-    rng = np.random.default_rng(5)
-    return [gen.sample(rng) for _ in range(n)], config
+def _write(tmp_path, writer_task, count=4, seed=5, **config_kwargs):
+    """Generate a seeded dataset, write it as COCO, and return its parsed JSON, samples, and class names.
 
+    Every knob the individual tests vary — sample count, seed, and any `SyntheticConfig` field such as `shapes`,
+    `img_size`, or `task` — is a keyword here, so a test states only what makes it different from the others. The
+    writer's `task` is positional and separate from the config's: the writer formats whatever the samples already carry,
+    so a detection-configured stream can still be written out as segmentation or OBB.
 
-def _write(tmp_path, task):
-    samples, config = _samples()
+    """
+    settings = {"img_size": 96, "min_objects": 2, "max_objects": 4, **config_kwargs}
+    config = SyntheticConfig(**settings)
+    generator = SyntheticGenerator(config)
+    rng = np.random.default_rng(seed)
+    samples = [generator.sample(rng) for _ in range(count)]
     names = class_names(config.class_mode)
-    CocoWriter(task, names).write({"train": samples}, tmp_path)
+    CocoWriter(writer_task, names).write({"train": samples}, tmp_path)
     doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
     return doc, samples, names
 
@@ -87,16 +93,11 @@ def test_animal_shape_dataset_round_trips(tmp_path, task):
     stays purely format-agnostic and needed no special casing.
 
     """
-    config = SyntheticConfig(img_size=192, min_objects=2, max_objects=3, shapes=(Shape.GIRAFFE,))
-    gen = SyntheticGenerator(config)
-    rng = np.random.default_rng(31)
-    samples = [gen.sample(rng) for _ in range(3)]
-    names = class_names(config.class_mode)
-    CocoWriter(task, names).write({"train": samples}, tmp_path)
-
-    doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
+    doc, samples, names = _write(
+        tmp_path, task, count=3, seed=31, img_size=192, max_objects=3, shapes=(AnimalShape.GIRAFFE,)
+    )
     assert len(doc["annotations"]) == sum(len(s.annotations) for s in samples)
-    giraffe_id = names.index(Shape.GIRAFFE.value) + 1  # COCO category ids are 1-based
+    giraffe_id = names.index(AnimalShape.GIRAFFE.value) + 1  # COCO category ids are 1-based
     assert {ann["category_id"] for ann in doc["annotations"]} == {giraffe_id}
     for ann in doc["annotations"]:
         assert ann["area"] > 0
@@ -113,16 +114,18 @@ def test_keypoints_task_declares_the_sixteen_point_schema_and_fifteen_edge_skele
     off-by-one wrong draws every edge one landmark short.
 
     """
-    config = SyntheticConfig(img_size=192, min_objects=2, max_objects=3, task=Task.KEYPOINTS, shapes=KEYPOINT_SHAPES)
-    gen = SyntheticGenerator(config)
-    rng = np.random.default_rng(11)
-    samples = [gen.sample(rng) for _ in range(3)]
-    names = class_names(config.class_mode)
-    CocoWriter(Task.KEYPOINTS, names).write({"train": samples}, tmp_path)
-
-    doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
+    doc, _samples, _names = _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        count=3,
+        seed=11,
+        img_size=192,
+        max_objects=3,
+        task=Task.KEYPOINTS,
+        shapes=tuple(AnimalShape),
+    )
     for category in doc["categories"]:
-        assert category["keypoints"] == list(KEYPOINT_NAMES)
+        assert category["keypoints"] == list(ANIMAL_KEYPOINT_NAMES)
         assert len(category["skeleton"]) == 15
         for i, j in category["skeleton"]:
             assert 1 <= i <= 16
@@ -137,14 +140,16 @@ def test_keypoints_num_keypoints_excludes_absent_landmarks(tmp_path):
     would expect a triple that never arrives.
 
     """
-    config = SyntheticConfig(img_size=192, min_objects=2, max_objects=2, task=Task.KEYPOINTS, shapes=(Shape.WHALE,))
-    gen = SyntheticGenerator(config)
-    rng = np.random.default_rng(3)
-    samples = [gen.sample(rng) for _ in range(2)]
-    names = class_names(config.class_mode)
-    CocoWriter(Task.KEYPOINTS, names).write({"train": samples}, tmp_path)
-
-    doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
+    doc, _samples, _names = _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        count=2,
+        seed=3,
+        img_size=192,
+        max_objects=2,
+        task=Task.KEYPOINTS,
+        shapes=(AnimalShape.WHALE,),
+    )
     for ann in doc["annotations"]:
         assert len(ann["keypoints"]) == 16 * 3
         assert ann["num_keypoints"] <= 12

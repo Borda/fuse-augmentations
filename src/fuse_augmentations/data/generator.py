@@ -35,15 +35,16 @@ from typing import TYPE_CHECKING
 import numpy as np
 from PIL import Image, ImageDraw
 
+from fuse_augmentations.data.animals import AnimalShape, animal_keypoints
 from fuse_augmentations.data.config import Color, Shape, Task, class_id_of, class_names
-from fuse_augmentations.data.sample import Annotation, Sample
-from fuse_augmentations.data.shapes import (
-    animal_keypoints,
+from fuse_augmentations.data.geometry import (
+    GeomShape,
     bbox_iou,
     polygon_to_bbox_xyxy,
     polygon_to_obb,
     shape_polygon,
 )
+from fuse_augmentations.data.sample import Annotation, Sample
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -55,7 +56,7 @@ _BBox = tuple[float, float, float, float]
 #: COCO visibility flags emitted for a landmark: ``2`` is "labeled and visible", ``0`` is
 #: "not labeled". The intermediate ``1`` ("labeled but not visible") never occurs here — the
 #: placement loop rejects overlapping objects, so only the canvas frame or an absent
-#: hind limb (a NaN row from :mod:`~fuse_augmentations.data.animal_shapes`) can hide a
+#: hind limb (a NaN row from :mod:`~fuse_augmentations.data.animals`) can hide a
 #: landmark.
 _KEYPOINT_VISIBLE = 2
 _KEYPOINT_HIDDEN = 0
@@ -152,14 +153,18 @@ class SyntheticGenerator:
         color = colors[int(rng.integers(len(colors)))]
         size_px = float(rng.uniform(cfg.min_size_ratio, cfg.max_size_ratio)) * cfg.img_size
         center = (float(rng.uniform(0, cfg.img_size)), float(rng.uniform(0, cfg.img_size)))
-        angle = float(rng.uniform(0, 2 * np.pi)) if cfg.rotate and shape is not Shape.CIRCLE else 0.0
+        angle = float(rng.uniform(0, 2 * np.pi)) if cfg.rotate and shape is not GeomShape.CIRCLE else 0.0
         poly = shape_polygon(shape.value, center, size_px, angle)
         bbox = polygon_to_bbox_xyxy(poly)
         if _boundary_overlap(bbox, cfg.img_size) > cfg.boundary_tolerance:
             return None
         if any(bbox_iou(bbox, other) > cfg.overlap_iou for other in kept):
             return None
-        keypoints = animal_keypoints(shape, center, size_px, angle) if cfg.task is Task.KEYPOINTS else None
+        # only an AnimalShape has a landmark table; the config validator already rejects any other
+        # shape under Task.KEYPOINTS, so this narrowing can never silently drop a labeled object
+        keypoints = None
+        if cfg.task is Task.KEYPOINTS and isinstance(shape, AnimalShape):
+            keypoints = animal_keypoints(shape, center, size_px, angle)
         return shape, color, poly, keypoints
 
     def sample(self, rng: np.random.Generator) -> Sample:

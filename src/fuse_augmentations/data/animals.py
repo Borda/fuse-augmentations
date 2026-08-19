@@ -10,14 +10,14 @@ attributes); the artwork can therefore be opened, inspected and corrected in any
 touching Python. This module is only the loader that turns those documents into NumPy tables.
 
 Each outline is a **simple** (non-self-intersecting) polygon in the unit space
-:func:`~fuse_augmentations.data.shapes._base_polygon` uses for the geometric shapes: vertex centroid
+:func:`~fuse_augmentations.data.geometry._base_polygon` uses for the geometric shapes: vertex centroid
 at the origin and the larger of the two extents scaled to ``1``, so multiplying by a pixel ``size``
 yields a shape bounded by ``size`` pixels. Coordinates are in screen orientation — ``+x`` right,
 ``+y`` **down** — matching Pillow's raster axes, so every animal renders upright and faces left.
 The stored values are already normalized; they are passed through :func:`_normalized` again at load
 time, which makes the invariant impossible to break by editing an SVG file.
 
-:data:`ANIMAL_KEYPOINTS` carries the sixteen landmarks in ``config.KEYPOINT_NAMES`` order — an
+:data:`ANIMAL_KEYPOINTS` carries the sixteen landmarks in :data:`ANIMAL_KEYPOINT_NAMES` order — an
 anatomical ``mouth``/``eye``/``ear``/``head``/``neck``/``body_top``/``body_bottom``/``tail`` chain
 plus two-segment front limbs (``front_elbow_*`` then ``front_limb_*``: paws, wings, or
 fins/flippers) and the optional two-segment hind legs (``hind_knee_*`` then ``hind_limb_*``) — that
@@ -43,13 +43,14 @@ Unlike the geometric shapes these outlines are asymmetric and each belongs to a 
 archetype, so the classes stay separable at a glance and every outline point keeps an unambiguous
 identity under rotation.
 
-Pure NumPy plus the stdlib XML parser — no Pillow, no torch, no import from
-:mod:`fuse_augmentations.data.config` (tables are keyed by the plain ``Shape`` *values*, keeping the
-geometry layer independent of the configuration layer).
+Pure NumPy plus the stdlib XML parser — no Pillow, no torch, and no import from
+:mod:`fuse_augmentations.data.config`: the configuration layer imports *this* module for the animal
+half of its shape vocabulary, never the other way round. Tables are keyed by the plain
+:class:`AnimalShape` *values*.
 
 Examples:
     ```pycon
-    >>> from fuse_augmentations.data.animal_shapes import ANIMAL_KEYPOINTS, ANIMAL_POLYGONS
+    >>> from fuse_augmentations.data.animals import ANIMAL_KEYPOINTS, ANIMAL_POLYGONS
     >>> len(ANIMAL_POLYGONS)
     12
     >>> sorted(ANIMAL_POLYGONS)[:6]
@@ -72,6 +73,7 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from enum import Enum
 from importlib.resources import files
 from typing import TYPE_CHECKING
 
@@ -83,27 +85,73 @@ if TYPE_CHECKING:
 
     from numpy.typing import NDArray
 
-#: Animal names, in :class:`~fuse_augmentations.data.config.Shape` declaration order. Each one has a
-#: ``<name>.svg`` document in the packaged ``zoo`` directory.
-ANIMAL_NAMES: tuple[str, ...] = (
-    "duck",
-    "elephant",
-    "giraffe",
-    "fish",
-    "rabbit",
-    "camel",
-    "eagle",
-    "penguin",
-    "whale",
-    "kangaroo",
-    "flamingo",
-    "crocodile",
-)
 
-#: Landmark order inside a zoo document, mirroring ``config.KEYPOINT_NAMES``. Duplicated as plain
-#: strings because this module deliberately does not import the configuration layer; a test pins the
-#: two together so the schemas cannot drift apart.
-_KEYPOINT_ORDER: tuple[str, ...] = (
+class AnimalShape(str, Enum):
+    """Animal silhouette vocabulary (definition order is the animal class order).
+
+    Twelve fixed side-profile silhouettes traced from public-domain reference art. Each is
+    asymmetric and belongs to a distinct silhouette archetype, so the classes stay separable at a
+    glance and every outline point keeps an unambiguous identity under rotation — the property a
+    landmark needs and a square or circle cannot offer. Every member has a ``<value>.svg`` document
+    in the packaged ``zoo`` directory and therefore a landmark table, which is what makes
+    :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS` well-defined for exactly this enum.
+
+    Attributes:
+        DUCK: Compact duck silhouette with an S-curved neck and a beak.
+        ELEPHANT: Bulky elephant silhouette with a trunk, a large ear, and thick legs.
+        GIRAFFE: Tall, thin giraffe silhouette with a very long neck and thin legs.
+        FISH: Streamlined fish silhouette with a forked tail fin.
+        RABBIT: Compact rabbit silhouette with long upright ears.
+        CAMEL: Humped camel silhouette on four long legs.
+        EAGLE: Perched eagle silhouette with a hooked beak and a long tail.
+        PENGUIN: Upright penguin silhouette with flippers and webbed feet.
+        WHALE: Streamlined whale silhouette with a pectoral flipper and a tail fluke.
+        KANGAROO: Hopping kangaroo silhouette with a heavy tail and one large hind foot.
+        FLAMINGO: Long-legged flamingo silhouette with an S-curved neck.
+        CROCODILE: Low, elongated crocodile silhouette with a long snout and sprawled legs.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.animals import AnimalShape
+        >>> len(AnimalShape)
+        12
+        >>> AnimalShape("duck")
+        <AnimalShape.DUCK: 'duck'>
+
+        ```
+
+    """
+
+    DUCK = "duck"
+    ELEPHANT = "elephant"
+    GIRAFFE = "giraffe"
+    FISH = "fish"
+    RABBIT = "rabbit"
+    CAMEL = "camel"
+    EAGLE = "eagle"
+    PENGUIN = "penguin"
+    WHALE = "whale"
+    KANGAROO = "kangaroo"
+    FLAMINGO = "flamingo"
+    CROCODILE = "crocodile"
+
+
+#: Animal names in :class:`AnimalShape` declaration order — the enum's values, kept as a plain tuple
+#: because the loader and its tables are keyed by name rather than by member.
+ANIMAL_NAMES: tuple[str, ...] = tuple(shape.value for shape in AnimalShape)
+
+#: Landmark names for :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS`, in the order every
+#: keypoint table, annotation, and label row uses — and the order landmarks are read out of a zoo
+#: document. One shared anatomical schema across all animals: Ultralytics' YOLO pose format carries
+#: a single dataset-wide ``kpt_shape``, so a per-class name list is not representable.
+#: The ``front_limb_*`` pair covers whatever the animal actually has at that slot — paws, wings, or
+#: flippers/fins; ``left`` is the limb nearer the viewer (fully visible), ``right`` the far one — a
+#: documented convention, since a side-profile silhouette cannot truly tell left from right. Every
+#: limb is articulated in two points, proximal before distal: ``front_elbow_*`` (elbow, wing wrist,
+#: or flipper bend) then ``front_limb_*`` (the paw/wing tip/fin tip), and ``hind_knee_*`` (the
+#: knee/hock bend) then ``hind_limb_*`` (the foot) — a limb's bend is the most visible pose cue on a
+#: silhouette. All four hind points are optional — see :data:`_OPTIONAL_KEYPOINTS`.
+ANIMAL_KEYPOINT_NAMES: tuple[str, ...] = (
     "mouth",
     "eye",
     "ear",
@@ -122,7 +170,7 @@ _KEYPOINT_ORDER: tuple[str, ...] = (
     "hind_limb_right",
 )
 
-#: The only landmark names a document may omit; every other name in :data:`_KEYPOINT_ORDER` is
+#: The only landmark names a document may omit; every other name in :data:`ANIMAL_KEYPOINT_NAMES` is
 #: mandatory and a missing one is a load-time :class:`ValueError`.
 _OPTIONAL_KEYPOINTS: frozenset[str] = frozenset({
     "hind_knee_left",
@@ -130,6 +178,31 @@ _OPTIONAL_KEYPOINTS: frozenset[str] = frozenset({
     "hind_limb_left",
     "hind_limb_right",
 })
+
+#: Skeleton edges as index pairs into :data:`ANIMAL_KEYPOINT_NAMES`: ``mouth-head``, ``eye-head``,
+#: ``ear-head``, the ``head-neck-body_top-body_bottom-tail`` chain, a two-segment
+#: ``body_top-front_elbow-front_limb`` chain per front limb, and a two-segment
+#: ``body_bottom-hind_knee-hind_limb`` chain per hind leg. 15 edges over 16 nodes is a spanning tree
+#: whose optional hind points hang off the end of their own chain, so an absent hind leg drops
+#: exactly its own two edges and orphans nothing. Purely a visualization aid (COCO viewers connect
+#: the dots with it); nothing in generation, writing, or validation depends on it.
+ANIMAL_KEYPOINT_SKELETON: tuple[tuple[int, int], ...] = (
+    (0, 3),
+    (1, 3),
+    (2, 3),
+    (3, 4),
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (5, 8),
+    (5, 9),
+    (8, 10),
+    (9, 11),
+    (6, 12),
+    (6, 13),
+    (12, 14),
+    (13, 15),
+)
 
 #: Provenance attributes every document must carry (as ``zoo:``-namespaced root attributes).
 #: ``attribution`` is deliberately excluded — CC0/PDM art carries no attribution obligation.
@@ -217,7 +290,7 @@ def _normalized_pair(
 
     Args:
         outline: ``(x, y)`` outline points; see :func:`_normalized`.
-        landmarks: The sixteen ``(x, y)`` landmarks in :data:`_KEYPOINT_ORDER` order, in the same
+        landmarks: The sixteen ``(x, y)`` landmarks in :data:`ANIMAL_KEYPOINT_NAMES` order, in the same
             coordinates as ``outline``. An absent optional landmark is ``(nan, nan)``.
 
     Returns:
@@ -229,20 +302,21 @@ def _normalized_pair(
 
     Raises:
         ValueError: If the outline is degenerate (see :func:`_normalized`), the landmark table does
-            not hold exactly ``len(_KEYPOINT_ORDER)`` ``(x, y)`` points, or a row has exactly one NaN
+            not hold exactly ``len(ANIMAL_KEYPOINT_NAMES)`` ``(x, y)`` points, or a row has exactly one NaN
             coordinate (a parser bug — a real absence is NaN in both).
 
     """
     polygon = _normalized(outline)
     points = np.asarray(landmarks, dtype=np.float64)
-    if points.shape != (len(_KEYPOINT_ORDER), 2):
+    if points.shape != (len(ANIMAL_KEYPOINT_NAMES), 2):
         raise ValueError(
-            f"a keypoint table needs exactly {len(_KEYPOINT_ORDER)} (x, y) landmarks, got array of shape {points.shape}"
+            f"a keypoint table needs exactly {len(ANIMAL_KEYPOINT_NAMES)} (x, y) landmarks, "
+            f"got array of shape {points.shape}"
         )
     nan_mask = np.isnan(points)
     half_nan = nan_mask.any(axis=1) & ~nan_mask.all(axis=1)
     if half_nan.any():
-        bad = [_KEYPOINT_ORDER[i] for i in np.nonzero(half_nan)[0]]
+        bad = [ANIMAL_KEYPOINT_NAMES[i] for i in np.nonzero(half_nan)[0]]
         raise ValueError(f"keypoint(s) {bad} have exactly one NaN coordinate; an absent landmark must be NaN in both")
     offset, extent = _frame(np.asarray(outline, dtype=np.float64))
     mapped: NDArray[np.float64] = (points - offset) / extent
@@ -352,15 +426,15 @@ def _read_keypoints(root: ET.Element, name: str) -> dict[str, tuple[float, float
     seen: dict[str, tuple[float, float]] = {}
     for circle in group.findall(_svg_tag("circle")):
         kp_name = circle.get(_zoo_attr("name"))
-        if kp_name not in _KEYPOINT_ORDER:
+        if kp_name not in ANIMAL_KEYPOINT_NAMES:
             raise ValueError(
                 f"zoo document {name}.svg has an unknown or missing zoo:name {kp_name!r}; "
-                f"expected one of {_KEYPOINT_ORDER}"
+                f"expected one of {ANIMAL_KEYPOINT_NAMES}"
             )
         if kp_name in seen:
             raise ValueError(f"zoo document {name}.svg has a duplicate zoo:name {kp_name!r}")
         seen[kp_name] = (float(circle.get("cx", "nan")), float(circle.get("cy", "nan")))
-    missing = [key for key in _KEYPOINT_ORDER if key not in seen and key not in _OPTIONAL_KEYPOINTS]
+    missing = [key for key in ANIMAL_KEYPOINT_NAMES if key not in seen and key not in _OPTIONAL_KEYPOINTS]
     if missing:
         raise ValueError(f"zoo document {name}.svg is missing the landmark(s) {missing}")
     return seen
@@ -413,7 +487,7 @@ def _load() -> tuple[
     sources: dict[str, dict[str, str]] = {}
     for name in ANIMAL_NAMES:
         outline, present, source = _read_svg(name)
-        table = [present.get(key, (np.nan, np.nan)) for key in _KEYPOINT_ORDER]
+        table = [present.get(key, (np.nan, np.nan)) for key in ANIMAL_KEYPOINT_NAMES]
         polygons[name], keypoints[name] = _normalized_pair(outline, table)
         sources[name] = source
     return polygons, keypoints, sources
@@ -434,3 +508,90 @@ ANIMAL_KEYPOINTS: dict[str, NDArray[np.float64]] = _KEYPOINTS
 #: Provenance per animal: ``origin`` (source page), ``title`` (what the art depicts), ``license``,
 #: ``attribution`` (credit, not required by CC0/PDM) and a ``note`` on how the art was processed.
 ANIMAL_SOURCES: dict[str, dict[str, str]] = _SOURCES
+
+
+def animal_shapes(count: int | None = None) -> tuple[AnimalShape, ...]:
+    """Return the animal silhouettes, optionally just the first ``count`` of them.
+
+    A convenience selector for :attr:`~fuse_augmentations.data.config.SyntheticConfig.shapes`, which
+    still takes (and stores) a plain tuple — naming members explicitly stays equally valid. "First
+    ``count``" means :class:`AnimalShape` declaration order, the same order the class-id vocabulary
+    uses, so ``animal_shapes(3)`` names the same three animals on every call and across releases;
+    appending a thirteenth animal can only extend the tail of that list.
+
+    Args:
+        count: How many animals to take, from the start of :class:`AnimalShape`. ``None`` (the
+            default) returns every animal.
+
+    Returns:
+        The selected :class:`AnimalShape` members, in declaration order.
+
+    Raises:
+        ValueError: If ``count`` is negative or exceeds the number of animals.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.animals import animal_shapes
+        >>> animal_shapes(3)
+        (<AnimalShape.DUCK: 'duck'>, <AnimalShape.ELEPHANT: 'elephant'>, <AnimalShape.GIRAFFE: 'giraffe'>)
+        >>> len(animal_shapes())
+        12
+
+        ```
+
+    """
+    every = tuple(AnimalShape)
+    if count is None:
+        return every
+    if not 0 <= count <= len(every):
+        raise ValueError(f"count must be within [0, {len(every)}], got {count}")
+    return every[:count]
+
+
+def animal_keypoints(
+    shape: AnimalShape, center: tuple[float, float], size: float, angle: float = 0.0
+) -> NDArray[np.float64]:
+    """Place one animal's landmark table into image coordinates.
+
+    The table is looked up in :data:`ANIMAL_KEYPOINTS`, scaled, rotated, and translated exactly as
+    :func:`~fuse_augmentations.data.geometry.shape_polygon` treats the matching outline, so passing
+    the same ``center``, ``size``, and ``angle`` to both puts every landmark on the silhouette that
+    was drawn. No randomness is involved: the result is a pure function of the placement the
+    generator already sampled.
+
+    Args:
+        shape: An :class:`AnimalShape` member. The geometric shapes have no landmark table at all
+            (a square's 4-fold symmetry gives a fixed landmark no stable identity), which is why
+            this signature names the animal enum rather than the shape union.
+        center: Target center ``(x, y)`` in pixels — the same value passed to ``shape_polygon``.
+        size: Bounding size in pixels — the same value passed to ``shape_polygon``.
+        angle: Rotation in radians about the shape center — likewise.
+
+    Returns:
+        ``(16, 2)`` float array of landmark coordinates in image pixels, ordered by
+        :data:`ANIMAL_KEYPOINT_NAMES`. Points may fall outside the canvas; clipping is the caller's
+        decision. A row is ``(nan, nan)`` for an animal with no hind legs; NaN propagates through
+        unchanged since scaling and translation are row-independent arithmetic.
+
+    Raises:
+        ValueError: If ``shape`` has no keypoint table.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.animals import AnimalShape, animal_keypoints
+        >>> points = animal_keypoints(AnimalShape.DUCK, center=(50.0, 50.0), size=20.0)
+        >>> points.shape
+        (16, 2)
+
+        ```
+
+    """
+    # deferred: geometry imports this module's tables, so a module-level import here would cycle
+    from fuse_augmentations.data.geometry import _placed
+
+    table = ANIMAL_KEYPOINTS.get(shape.value)
+    if table is None:
+        known = ", ".join(ANIMAL_KEYPOINTS)
+        raise ValueError(f"shape {shape.value!r} has no keypoint table; expected one of {known}")
+    # The stored table is frozen, so multiplying returns a fresh writable array, never an alias.
+    return _placed(table * size, center, angle)

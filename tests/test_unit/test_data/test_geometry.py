@@ -5,8 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from fuse_augmentations.data.config import Shape
-from fuse_augmentations.data.shapes import (
+from fuse_augmentations.data.animals import AnimalShape
+from fuse_augmentations.data.geometry import (
+    GeomShape,
     bbox_iou,
     polygon_to_bbox_xyxy,
     polygon_to_obb,
@@ -25,7 +26,7 @@ def _rect_area(box: tuple[float, float, float, float]) -> float:
     return (x2 - x1) * (y2 - y1)
 
 
-@pytest.mark.parametrize("shape", [s.value for s in Shape])
+@pytest.mark.parametrize("shape", [s.value for s in (*GeomShape, *AnimalShape)])
 def test_shape_polygon_is_centered(shape):
     poly = shape_polygon(shape, center=(50.0, 50.0), size=20.0)
     assert poly.ndim == 2
