@@ -5,7 +5,16 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from fuse_augmentations.data.config import DEFAULT_SHAPES, ClassMode, Color, Shape, SyntheticConfig, class_names
+from fuse_augmentations.data.config import (
+    DEFAULT_SHAPES,
+    KEYPOINT_NAMES,
+    ClassMode,
+    Color,
+    Shape,
+    SyntheticConfig,
+    Task,
+    class_names,
+)
 from fuse_augmentations.data.generator import SyntheticGenerator, _boundary_overlap
 from fuse_augmentations.data.shapes import bbox_iou
 
@@ -172,8 +181,8 @@ def test_animal_shapes_respect_boundary_tolerance():
 def test_animal_shapes_respect_overlap_threshold():
     """Kept animal boxes stay under `overlap_iou` pairwise.
 
-    Elongated silhouettes (snake, fish) have large bounding boxes relative to their filled area, which is exactly the
-    case where a broken IoU guard would let objects pile up.
+    Elongated silhouettes (whale, crocodile) have large bounding boxes relative to their filled area, which is exactly
+    the case where a broken IoU guard would let objects pile up.
 
     """
     config = SyntheticConfig(img_size=192, min_objects=5, max_objects=8, shapes=ANIMAL_SHAPES)
@@ -231,3 +240,30 @@ def test_sample_raises_when_min_objects_unreachable():
     gen = SyntheticGenerator(config)
     with pytest.raises(RuntimeError, match="min_objects"):
         gen.sample(np.random.default_rng(0))
+
+
+def test_absent_limb_keypoints_get_zero_visibility_even_fully_inside_canvas():
+    """A whale's absent hind limbs are v=0 even when the whole object is on-canvas.
+
+    Visibility ``0`` normally means "clipped off the canvas frame" — the one case `animal_shapes.animal_keypoints`
+    cannot fake a coordinate for is a landmark the animal never had at all (no NaN-vs-clipped special case in
+    `_visible_keypoints`: both fall to the same `else` branch because ``0.0 <= nan`` is `False`, per the generator's own
+    docstring).
+
+    """
+    config = SyntheticConfig(
+        img_size=256,
+        min_objects=1,
+        max_objects=1,
+        min_size_ratio=0.2,
+        max_size_ratio=0.2,
+        task=Task.KEYPOINTS,
+        shapes=(Shape.WHALE,),
+    )
+    sample = SyntheticGenerator(config).sample(np.random.default_rng(0))
+    (ann,) = sample.annotations
+    triples = dict(zip(KEYPOINT_NAMES, ann.keypoints, strict=True))
+    for name in ("hind_knee_left", "hind_knee_right", "hind_limb_left", "hind_limb_right"):
+        assert triples[name] == (0.0, 0.0, 0)
+    for name in ("mouth", "head", "body_top", "tail", "front_elbow_left", "front_limb_left"):
+        assert triples[name][2] == 2

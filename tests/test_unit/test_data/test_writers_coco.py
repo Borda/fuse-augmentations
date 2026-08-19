@@ -7,7 +7,7 @@ import json
 import numpy as np
 import pytest
 
-from fuse_augmentations.data.config import Shape, SyntheticConfig, Task, class_names
+from fuse_augmentations.data.config import KEYPOINT_NAMES, KEYPOINT_SHAPES, Shape, SyntheticConfig, Task, class_names
 from fuse_augmentations.data.generator import SyntheticGenerator
 from fuse_augmentations.data.writers import CocoWriter
 
@@ -104,3 +104,47 @@ def test_animal_shape_dataset_round_trips(tmp_path, task):
             assert len(ann["segmentation"][0]) >= 2 * 15
         elif task is Task.OBB:
             assert len(ann["segmentation"][0]) == 8
+
+
+def test_keypoints_task_declares_the_sixteen_point_schema_and_fifteen_edge_skeleton(tmp_path):
+    """The category schema carries all 16 landmark names and the 15-edge skeleton, 1-based.
+
+    COCO viewers connect the dots via `skeleton`, which indexes into `keypoints` starting at 1 (not 0); getting that
+    off-by-one wrong draws every edge one landmark short.
+
+    """
+    config = SyntheticConfig(img_size=192, min_objects=2, max_objects=3, task=Task.KEYPOINTS, shapes=KEYPOINT_SHAPES)
+    gen = SyntheticGenerator(config)
+    rng = np.random.default_rng(11)
+    samples = [gen.sample(rng) for _ in range(3)]
+    names = class_names(config.class_mode)
+    CocoWriter(Task.KEYPOINTS, names).write({"train": samples}, tmp_path)
+
+    doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
+    for category in doc["categories"]:
+        assert category["keypoints"] == list(KEYPOINT_NAMES)
+        assert len(category["skeleton"]) == 15
+        for i, j in category["skeleton"]:
+            assert 1 <= i <= 16
+            assert 1 <= j <= 16
+
+
+def test_keypoints_num_keypoints_excludes_absent_landmarks(tmp_path):
+    """`num_keypoints` counts only `v>0` triples, so a whale's absent hind-leg points are excluded.
+
+    A whale's silhouette shows pectoral flippers but no hind legs, so it carries 12 present landmarks (16 minus the four
+    `hind_knee_*`/`hind_limb_*` points); `num_keypoints` must reflect that, not the full schema length, or a consumer
+    would expect a triple that never arrives.
+
+    """
+    config = SyntheticConfig(img_size=192, min_objects=2, max_objects=2, task=Task.KEYPOINTS, shapes=(Shape.WHALE,))
+    gen = SyntheticGenerator(config)
+    rng = np.random.default_rng(3)
+    samples = [gen.sample(rng) for _ in range(2)]
+    names = class_names(config.class_mode)
+    CocoWriter(Task.KEYPOINTS, names).write({"train": samples}, tmp_path)
+
+    doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
+    for ann in doc["annotations"]:
+        assert len(ann["keypoints"]) == 16 * 3
+        assert ann["num_keypoints"] <= 12

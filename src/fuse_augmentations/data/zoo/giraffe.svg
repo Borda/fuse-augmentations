@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:zoo="https://github.com/Borda/fuse-augmentations/ns/zoo" viewBox="0 0 1000 1000" width="1000" height="1000" zoo:archetype="tall-thin" zoo:title="Giraffa" zoo:origin="https://www.phylopic.org/images/bbce74cf-4df3-4b7d-8b1d-f5b24dd3264a" zoo:license="https://creativecommons.org/publicdomain/zero/1.0/" zoo:attribution="An Ignorant Atheist" zoo:note="PhyloPic vector silhouette; outer path simplified to 264 vertices, normalized to unit space. Landmarks hand-placed, not part of the source art. Save as Plain SVG, never Optimized SVG (it strips the zoo: namespace).">
+  <title>Giraffa</title>
+  <path id="outline" fill="#000000" d="M 240 85 L 234 90 L 227 95 L 220 100 L 213 105 L 206 110 L 199 116 L 189 126 L 179 138 L 170 150 L 163 161 L 157 173 L 157 181 L 168 183 L 186 180 L 205 178 L 227 175 L 250 173 L 271 177 L 289 194 L 303 219 L 317 245 L 331 274 L 343 304 L 358 333 L 378 359 L 401 382 L 422 406 L 440 428 L 457 450 L 467 470 L 467 480 L 465 490 L 462 499 L 459 509 L 455 518 L 453 528 L 455 541 L 458 554 L 462 568 L 466 582 L 469 597 L 470 613 L 467 635 L 460 658 L 452 681 L 444 705 L 435 730 L 427 754 L 422 778 L 418 802 L 414 825 L 410 847 L 406 869 L 401 888 L 395 901 L 388 912 L 382 923 L 377 932 L 373 940 L 373 946 L 376 949 L 382 950 L 388 950 L 394 950 L 401 949 L 407 947 L 411 945 L 414 942 L 417 939 L 420 935 L 423 930 L 426 924 L 432 905 L 437 880 L 443 855 L 449 828 L 455 800 L 462 773 L 470 749 L 480 726 L 490 705 L 499 688 L 509 674 L 518 668 L 529 685 L 539 722 L 547 760 L 554 803 L 559 849 L 560 886 L 557 900 L 553 911 L 550 922 L 547 931 L 545 939 L 545 945 L 549 948 L 555 949 L 562 950 L 569 950 L 576 949 L 582 946 L 586 942 L 589 937 L 591 931 L 593 924 L 594 917 L 594 907 L 588 867 L 578 812 L 569 759 L 562 708 L 557 658 L 563 628 L 574 625 L 589 627 L 604 631 L 620 636 L 636 641 L 650 643 L 658 640 L 664 634 L 670 629 L 676 625 L 681 621 L 686 620 L 693 628 L 699 642 L 704 658 L 709 677 L 712 697 L 715 716 L 718 731 L 721 746 L 723 761 L 725 776 L 725 791 L 726 806 L 726 823 L 726 839 L 725 856 L 723 872 L 721 888 L 717 902 L 712 911 L 705 919 L 699 927 L 694 934 L 689 940 L 688 945 L 691 948 L 697 950 L 703 951 L 710 952 L 717 951 L 723 950 L 728 948 L 732 946 L 736 943 L 740 939 L 743 934 L 746 928 L 751 904 L 755 871 L 758 839 L 760 810 L 763 783 L 766 770 L 770 777 L 775 795 L 780 813 L 785 835 L 789 859 L 791 881 L 791 895 L 789 907 L 788 919 L 787 929 L 787 939 L 789 946 L 793 949 L 798 950 L 803 951 L 808 951 L 813 950 L 817 948 L 820 945 L 823 940 L 825 935 L 827 929 L 828 923 L 828 915 L 827 892 L 824 863 L 820 834 L 816 806 L 811 778 L 809 756 L 809 750 L 809 744 L 810 740 L 811 737 L 812 733 L 813 732 L 816 736 L 821 746 L 825 756 L 830 766 L 834 776 L 838 780 L 840 778 L 841 772 L 842 766 L 843 758 L 843 748 L 843 737 L 841 706 L 838 667 L 832 629 L 824 590 L 815 551 L 804 520 L 798 508 L 791 499 L 783 490 L 775 482 L 765 474 L 755 467 L 740 458 L 724 450 L 707 441 L 689 432 L 670 423 L 650 412 L 618 393 L 584 371 L 550 347 L 515 322 L 481 296 L 449 269 L 422 240 L 397 210 L 373 181 L 351 154 L 331 128 L 313 109 L 306 103 L 299 100 L 293 96 L 287 93 L 282 89 L 278 85 L 276 79 L 275 71 L 274 64 L 273 58 L 273 53 L 271 50 L 267 52 L 263 57 L 258 63 L 252 70 L 246 78 Z" />
+  <g id="skeleton">
+  <line x1="183" y1="163" x2="252" y2="125" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="220" y1="118" x2="252" y2="125" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="259" y1="85" x2="252" y2="125" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="252" y1="125" x2="413" y2="318" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="413" y1="318" x2="544" y2="473" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="544" y1="473" x2="762" y2="566" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="762" y1="566" x2="836" y2="765" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="544" y1="473" x2="439" y2="767" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="544" y1="473" x2="561" y2="761" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="439" y1="767" x2="403" y2="904" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="561" y1="761" x2="580" y2="914" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="762" y1="566" x2="783" y2="743" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="762" y1="566" x2="735" y2="739" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="783" y1="743" x2="808" y2="918" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="735" y1="739" x2="731" y2="918" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  </g>
+  <g id="keypoints">
+  <circle id="kp-mouth" zoo:name="mouth" cx="183" cy="163" r="8" fill="#e6194b" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-eye" zoo:name="eye" cx="220" cy="118" r="8" fill="#ffe119" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-ear" zoo:name="ear" cx="259" cy="85" r="8" fill="#f58231" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-head" zoo:name="head" cx="252" cy="125" r="8" fill="#911eb4" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-neck" zoo:name="neck" cx="413" cy="318" r="8" fill="#4363d8" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-body_top" zoo:name="body_top" cx="544" cy="473" r="8" fill="#42d4f4" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-body_bottom" zoo:name="body_bottom" cx="762" cy="566" r="8" fill="#3cb44b" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-tail" zoo:name="tail" cx="836" cy="765" r="8" fill="#f032e6" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-front_elbow_left" zoo:name="front_elbow_left" cx="439" cy="767" r="8" fill="#bfef45" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-front_elbow_right" zoo:name="front_elbow_right" cx="561" cy="761" r="8" fill="#ffd8b1" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-front_limb_left" zoo:name="front_limb_left" cx="403" cy="904" r="8" fill="#9a6324" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-front_limb_right" zoo:name="front_limb_right" cx="580" cy="914" r="8" fill="#fabed4" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-hind_knee_left" zoo:name="hind_knee_left" cx="783" cy="743" r="8" fill="#808000" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-hind_knee_right" zoo:name="hind_knee_right" cx="735" cy="739" r="8" fill="#aaffc3" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-hind_limb_left" zoo:name="hind_limb_left" cx="808" cy="918" r="8" fill="#469990" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-hind_limb_right" zoo:name="hind_limb_right" cx="731" cy="918" r="8" fill="#dcbeff" stroke="#ffffff" stroke-width="1.5" />
+  </g>
+  </svg>

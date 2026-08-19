@@ -53,8 +53,9 @@ def _base_polygon(shape: str, size: float) -> NDArray[np.float64]:
     Args:
         shape: A :class:`~fuse_augmentations.data.config.Shape` value — one of the four
             geometric names (``"square"``, ``"rectangle"``, ``"triangle"``, ``"circle"``)
-            or one of the eight animal names (``"duck"``, ``"snail"``, ``"elephant"``,
-            ``"giraffe"``, ``"fish"``, ``"turtle"``, ``"snake"``, ``"rabbit"``).
+            or one of the twelve animal names (``"duck"``, ``"elephant"``, ``"giraffe"``,
+            ``"fish"``, ``"rabbit"``, ``"camel"``, ``"eagle"``, ``"penguin"``, ``"whale"``,
+            ``"kangaroo"``, ``"flamingo"``, ``"crocodile"``).
         size: Bounding size (side / diameter / larger extent) in pixels.
 
     Returns:
@@ -184,9 +185,12 @@ def animal_keypoints(shape: Shape, center: tuple[float, float], size: float, ang
         angle: Rotation in radians about the shape center — likewise.
 
     Returns:
-        ``(5, 2)`` float array of landmark coordinates in image pixels, ordered by
+        ``(16, 2)`` float array of landmark coordinates in image pixels, ordered by
         :data:`~fuse_augmentations.data.config.KEYPOINT_NAMES`. Points may fall outside the canvas;
-        clipping is the caller's decision.
+        clipping is the caller's decision. A row is ``(nan, nan)`` for an animal with no
+        hind legs (see
+        :mod:`fuse_augmentations.data.animal_shapes`); NaN propagates through unchanged since scaling
+        and translation are row-independent arithmetic.
 
     Raises:
         ValueError: If ``shape`` has no keypoint table.
@@ -197,7 +201,7 @@ def animal_keypoints(shape: Shape, center: tuple[float, float], size: float, ang
         >>> from fuse_augmentations.data.shapes import animal_keypoints
         >>> points = animal_keypoints(Shape.DUCK, center=(50.0, 50.0), size=20.0)
         >>> points.shape
-        (5, 2)
+        (16, 2)
 
         ```
 

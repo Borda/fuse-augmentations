@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:zoo="https://github.com/Borda/fuse-augmentations/ns/zoo" viewBox="0 0 1000 1000" width="1000" height="1000" zoo:archetype="upright-bird" zoo:title="Dendrocygna viduata (white-faced whistling duck)" zoo:origin="https://www.phylopic.org/images/76e7ec55-7205-49ef-85f7-fd842350306c" zoo:license="https://creativecommons.org/publicdomain/zero/1.0/" zoo:attribution="Kai Caspar" zoo:note="PhyloPic vector silhouette; outer path simplified to 264 vertices, mirrored to face left, normalized to unit space. Landmarks hand-placed, not part of the source art. Save as Plain SVG, never Optimized SVG (it strips the zoo: namespace).">
+  <title>Dendrocygna viduata (white-faced whistling duck)</title>
+  <path id="outline" fill="#000000" d="M 379 50 L 386 51 L 392 53 L 398 56 L 403 59 L 408 63 L 412 68 L 416 75 L 419 82 L 421 90 L 423 99 L 424 108 L 425 119 L 423 139 L 420 162 L 416 185 L 412 209 L 408 233 L 406 256 L 407 276 L 409 295 L 412 314 L 416 331 L 421 347 L 426 360 L 429 365 L 433 369 L 437 372 L 441 375 L 446 378 L 452 380 L 467 384 L 486 387 L 506 391 L 527 395 L 548 399 L 568 404 L 582 409 L 595 415 L 607 422 L 619 429 L 631 438 L 643 447 L 660 461 L 677 477 L 693 494 L 708 511 L 722 530 L 733 547 L 737 559 L 740 570 L 742 581 L 744 592 L 746 603 L 749 614 L 755 627 L 764 640 L 772 652 L 780 664 L 788 675 L 794 685 L 796 689 L 798 693 L 799 697 L 800 701 L 801 705 L 801 709 L 800 715 L 798 721 L 796 727 L 794 733 L 791 739 L 790 746 L 791 754 L 793 762 L 795 769 L 796 775 L 798 781 L 797 784 L 790 781 L 778 771 L 766 761 L 751 749 L 736 737 L 718 727 L 695 721 L 670 718 L 645 718 L 622 720 L 600 724 L 584 730 L 579 735 L 576 741 L 574 747 L 572 754 L 571 761 L 570 769 L 569 783 L 569 798 L 568 813 L 568 828 L 567 843 L 566 857 L 564 865 L 562 873 L 559 880 L 556 887 L 552 893 L 549 898 L 547 901 L 545 903 L 543 905 L 541 907 L 538 908 L 535 910 L 521 917 L 502 925 L 483 933 L 464 940 L 444 946 L 430 950 L 426 950 L 424 950 L 421 950 L 419 949 L 416 948 L 414 947 L 411 944 L 409 939 L 407 935 L 405 930 L 402 925 L 399 920 L 394 917 L 389 914 L 384 911 L 379 908 L 375 906 L 372 903 L 371 902 L 371 900 L 371 899 L 371 897 L 371 896 L 372 894 L 381 888 L 397 881 L 412 873 L 427 865 L 441 857 L 448 850 L 444 846 L 437 843 L 429 839 L 421 835 L 413 832 L 409 827 L 410 820 L 416 811 L 422 803 L 430 795 L 439 788 L 450 783 L 463 783 L 478 785 L 492 788 L 505 790 L 518 793 L 528 791 L 533 785 L 535 777 L 536 768 L 536 758 L 534 748 L 529 738 L 512 721 L 488 703 L 463 686 L 436 669 L 408 652 L 384 636 L 373 626 L 364 617 L 355 607 L 347 598 L 340 588 L 333 579 L 327 570 L 321 562 L 316 553 L 311 544 L 307 536 L 304 527 L 302 520 L 300 513 L 299 506 L 298 498 L 297 491 L 297 482 L 296 468 L 296 451 L 296 435 L 297 418 L 298 400 L 300 381 L 305 355 L 311 327 L 317 299 L 323 273 L 329 247 L 334 226 L 336 217 L 337 209 L 338 202 L 338 196 L 338 189 L 336 184 L 332 179 L 326 175 L 319 172 L 312 169 L 304 167 L 295 165 L 279 165 L 261 167 L 243 169 L 227 170 L 211 172 L 201 170 L 199 168 L 198 164 L 197 161 L 197 157 L 197 154 L 199 150 L 206 144 L 217 139 L 228 133 L 240 127 L 252 121 L 261 115 L 264 110 L 266 104 L 268 99 L 270 94 L 271 89 L 273 84 L 275 80 L 277 77 L 280 74 L 283 71 L 286 68 L 289 66 L 293 63 L 298 61 L 303 59 L 308 57 L 313 56 L 319 55 L 328 53 L 339 51 L 349 50 L 359 49 L 370 49 Z" />
+  <g id="skeleton">
+  <line x1="214" y1="155" x2="371" y2="117" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="294" y1="92" x2="371" y2="117" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="354" y1="86" x2="371" y2="117" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="371" y1="117" x2="371" y2="228" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="371" y1="228" x2="377" y2="488" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="377" y1="488" x2="581" y2="657" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="581" y1="657" x2="778" y2="760" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="377" y1="488" x2="518" y2="472" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="377" y1="488" x2="522" y2="493" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="518" y1="472" x2="653" y2="525" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="522" y1="493" x2="648" y2="542" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="581" y1="657" x2="545" y2="771" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="581" y1="657" x2="552" y2="790" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="545" y1="771" x2="465" y2="824" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="552" y1="790" x2="442" y2="907" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  </g>
+  <g id="keypoints">
+  <circle id="kp-mouth" zoo:name="mouth" cx="214" cy="155" r="8" fill="#e6194b" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-eye" zoo:name="eye" cx="294" cy="92" r="8" fill="#ffe119" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-ear" zoo:name="ear" cx="354" cy="86" r="8" fill="#f58231" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-head" zoo:name="head" cx="371" cy="117" r="8" fill="#911eb4" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-neck" zoo:name="neck" cx="371" cy="228" r="8" fill="#4363d8" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-body_top" zoo:name="body_top" cx="377" cy="488" r="8" fill="#42d4f4" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-body_bottom" zoo:name="body_bottom" cx="581" cy="657" r="8" fill="#3cb44b" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-tail" zoo:name="tail" cx="778" cy="760" r="8" fill="#f032e6" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-front_elbow_left" zoo:name="front_elbow_left" cx="518" cy="472" r="8" fill="#bfef45" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-front_elbow_right" zoo:name="front_elbow_right" cx="522" cy="493" r="8" fill="#ffd8b1" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-front_limb_left" zoo:name="front_limb_left" cx="653" cy="525" r="8" fill="#9a6324" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-front_limb_right" zoo:name="front_limb_right" cx="648" cy="542" r="8" fill="#fabed4" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-hind_knee_left" zoo:name="hind_knee_left" cx="545" cy="771" r="8" fill="#808000" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-hind_knee_right" zoo:name="hind_knee_right" cx="552" cy="790" r="8" fill="#aaffc3" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-hind_limb_left" zoo:name="hind_limb_left" cx="465" cy="824" r="8" fill="#469990" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-hind_limb_right" zoo:name="hind_limb_right" cx="442" cy="907" r="8" fill="#dcbeff" stroke="#ffffff" stroke-width="1.5" />
+  </g>
+  </svg>

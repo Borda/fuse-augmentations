@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:zoo="https://github.com/Borda/fuse-augmentations/ns/zoo" viewBox="0 0 1000 1000" width="1000" height="1000" zoo:archetype="streamlined-aquatic-large" zoo:title="Cetacea (whale/dolphin)" zoo:origin="https://www.phylopic.org/images/e68270c1-3091-4aee-92ae-51341a40e94a" zoo:license="https://creativecommons.org/publicdomain/zero/1.0/" zoo:attribution="Scott Hartman" zoo:note="PhyloPic vector silhouette (order-level generic cetacean, mirrored to face left per repo convention); potrace curves flattened and simplified to 262 vertices, normalized to unit space. Landmarks hand-placed, not part of the source art. Save as Plain SVG, never Optimized SVG (it strips the zoo: namespace).">
+  <title>Cetacea (whale/dolphin)</title>
+  <path id="outline" fill="#000000" d="M 632 403 L 633 403 L 634 404 L 635 404 L 636 404 L 638 405 L 639 406 L 639 409 L 639 412 L 638 416 L 638 420 L 637 424 L 639 428 L 651 435 L 670 440 L 691 444 L 715 448 L 739 451 L 763 454 L 781 457 L 798 461 L 814 463 L 830 465 L 845 466 L 859 465 L 868 463 L 876 461 L 884 458 L 892 455 L 899 452 L 906 450 L 911 449 L 916 449 L 921 449 L 925 449 L 929 449 L 932 450 L 933 450 L 934 451 L 934 452 L 933 453 L 931 453 L 929 454 L 926 455 L 923 456 L 921 458 L 919 461 L 918 464 L 916 468 L 914 472 L 913 475 L 911 478 L 909 479 L 908 480 L 906 481 L 905 482 L 903 483 L 903 484 L 904 485 L 905 485 L 906 486 L 908 487 L 910 488 L 912 489 L 914 492 L 916 495 L 918 499 L 920 503 L 923 507 L 926 511 L 931 514 L 936 517 L 941 520 L 945 522 L 949 524 L 950 526 L 947 527 L 941 528 L 935 529 L 927 529 L 919 529 L 912 528 L 908 527 L 904 526 L 901 524 L 897 523 L 894 521 L 890 519 L 887 516 L 883 513 L 880 510 L 876 507 L 872 504 L 866 502 L 847 500 L 821 500 L 794 502 L 765 505 L 735 508 L 705 513 L 678 518 L 652 523 L 626 529 L 600 535 L 574 541 L 548 545 L 520 547 L 491 548 L 465 549 L 444 551 L 424 553 L 413 557 L 413 560 L 415 563 L 417 566 L 419 569 L 422 572 L 424 575 L 425 578 L 426 580 L 427 583 L 427 585 L 428 588 L 427 590 L 425 592 L 422 594 L 418 595 L 414 596 L 409 596 L 405 597 L 401 598 L 397 599 L 393 599 L 389 599 L 386 599 L 382 598 L 378 597 L 375 596 L 371 594 L 367 592 L 364 590 L 360 588 L 355 583 L 349 578 L 344 572 L 338 566 L 333 561 L 327 557 L 322 555 L 316 555 L 311 554 L 305 554 L 300 554 L 294 553 L 286 550 L 278 547 L 270 543 L 261 539 L 253 535 L 243 531 L 230 528 L 216 526 L 202 524 L 188 522 L 174 520 L 160 517 L 147 513 L 134 509 L 121 505 L 109 501 L 98 496 L 87 493 L 80 492 L 74 491 L 68 490 L 63 489 L 59 488 L 55 487 L 54 486 L 53 486 L 52 485 L 51 484 L 50 483 L 50 482 L 50 481 L 51 480 L 51 479 L 52 478 L 52 476 L 53 475 L 54 473 L 56 470 L 57 468 L 58 466 L 58 463 L 58 461 L 57 460 L 55 460 L 54 459 L 53 458 L 51 458 L 50 457 L 50 456 L 50 455 L 50 454 L 50 453 L 51 452 L 53 451 L 57 450 L 61 449 L 66 448 L 71 447 L 76 447 L 84 447 L 94 447 L 103 447 L 113 447 L 122 447 L 131 446 L 137 444 L 142 442 L 147 440 L 152 438 L 158 436 L 163 434 L 169 433 L 174 433 L 180 433 L 186 433 L 192 433 L 200 432 L 221 429 L 246 425 L 272 420 L 300 415 L 328 410 L 354 407 L 373 406 L 390 405 L 407 405 L 424 405 L 440 405 L 457 406 L 475 408 L 494 410 L 512 412 L 529 414 L 547 415 L 562 415 L 571 414 L 580 411 L 588 409 L 595 407 L 602 405 L 609 403 L 614 402 L 618 402 L 622 402 L 625 402 L 629 402 L 631 402 L 632 402 Z" />
+  <g id="skeleton">
+  <line x1="65" y1="472" x2="163" y2="481" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="150" y1="460" x2="163" y2="481" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="173" y1="463" x2="163" y2="481" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="163" y1="481" x2="247" y2="484" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="247" y1="484" x2="351" y2="505" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="351" y1="505" x2="645" y2="479" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="645" y1="479" x2="891" y2="484" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="351" y1="505" x2="371" y2="554" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="351" y1="505" x2="358" y2="555" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="371" y1="554" x2="417" y2="582" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="358" y1="555" x2="392" y2="582" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  </g>
+  <g id="keypoints">
+  <circle id="kp-mouth" zoo:name="mouth" cx="65" cy="472" r="8" fill="#e6194b" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-eye" zoo:name="eye" cx="150" cy="460" r="8" fill="#ffe119" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-ear" zoo:name="ear" cx="173" cy="463" r="8" fill="#f58231" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-head" zoo:name="head" cx="163" cy="481" r="8" fill="#911eb4" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-neck" zoo:name="neck" cx="247" cy="484" r="8" fill="#4363d8" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-body_top" zoo:name="body_top" cx="351" cy="505" r="8" fill="#42d4f4" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-body_bottom" zoo:name="body_bottom" cx="645" cy="479" r="8" fill="#3cb44b" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-tail" zoo:name="tail" cx="891" cy="484" r="8" fill="#f032e6" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-front_elbow_left" zoo:name="front_elbow_left" cx="371" cy="554" r="8" fill="#bfef45" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-front_elbow_right" zoo:name="front_elbow_right" cx="358" cy="555" r="8" fill="#ffd8b1" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-front_limb_left" zoo:name="front_limb_left" cx="417" cy="582" r="8" fill="#9a6324" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-front_limb_right" zoo:name="front_limb_right" cx="392" cy="582" r="8" fill="#fabed4" stroke="#ffffff" stroke-width="1.5" />
+  </g>
+  </svg>

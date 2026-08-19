@@ -54,7 +54,9 @@ _BBox = tuple[float, float, float, float]
 
 #: COCO visibility flags emitted for a landmark: ``2`` is "labeled and visible", ``0`` is
 #: "not labeled". The intermediate ``1`` ("labeled but not visible") never occurs here — the
-#: placement loop rejects overlapping objects, so only the canvas frame can hide a landmark.
+#: placement loop rejects overlapping objects, so only the canvas frame or an absent
+#: hind limb (a NaN row from :mod:`~fuse_augmentations.data.animal_shapes`) can hide a
+#: landmark.
 _KEYPOINT_VISIBLE = 2
 _KEYPOINT_HIDDEN = 0
 
@@ -70,7 +72,9 @@ def _visible_keypoints(points: NDArray[np.float64], img_size: int) -> tuple[tupl
         One ``(x, y, visibility)`` triple per landmark, in input order: the real coordinates with
         :data:`_KEYPOINT_VISIBLE` while the point lies inside ``[0, img_size)`` on both axes, and
         ``(0.0, 0.0)`` with :data:`_KEYPOINT_HIDDEN` otherwise. Zeroing a clipped point (rather than
-        keeping its off-canvas coordinates) is COCO's "not labeled" convention.
+        keeping its off-canvas coordinates) is COCO's "not labeled" convention. An absent
+        hind limb lands here as ``(nan, nan)``; both comparisons in
+        ``0.0 <= nan < img_size`` are false, so it falls to the hidden branch with no special-casing.
 
     """
     triples: list[tuple[float, float, int]] = []

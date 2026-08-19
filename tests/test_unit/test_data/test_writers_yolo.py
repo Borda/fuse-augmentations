@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import yaml
 
-from fuse_augmentations.data.config import Shape, SyntheticConfig, Task, class_names
+from fuse_augmentations.data.config import KEYPOINT_SHAPES, Shape, SyntheticConfig, Task, class_names
 from fuse_augmentations.data.generator import SyntheticGenerator
 from fuse_augmentations.data.sample import Annotation, Sample
 from fuse_augmentations.data.writers import YoloWriter
@@ -130,3 +130,34 @@ def test_detection_label_clamps_edge_crossing_box(tmp_path):
     cx, cy, w, h = (float(v) for v in (tmp_path / "labels" / "train" / "img_000000.txt").read_text().split()[1:])
     # Clipped box is (0, 10, 40, 50): cx=0.2, cy=0.3, w=0.4, h=0.4 — not the unclipped cx=0.1, w=0.6.
     assert (cx, cy, w, h) == pytest.approx((0.2, 0.3, 0.4, 0.4))
+
+
+def test_keypoints_row_has_fifty_three_tokens(tmp_path):
+    """A pose row is `cls cx cy w h` (5) plus 16 `x y v` triples (48) = 53 tokens, always.
+
+    Even a whale's absent hind-leg points still emit their zeroed `0.000000 0.000000 0` triples — the
+    schema is dataset-wide and fixed-width, so a short row is never valid.
+
+    """
+    config = SyntheticConfig(img_size=192, min_objects=2, max_objects=2, task=Task.KEYPOINTS, shapes=(Shape.WHALE,))
+    gen = SyntheticGenerator(config)
+    rng = np.random.default_rng(4)
+    names = class_names(config.class_mode)
+    YoloWriter(Task.KEYPOINTS, names).write({"train": [gen.sample(rng) for _ in range(2)]}, tmp_path)
+
+    rows = _rows(tmp_path)
+    assert rows
+    for row in rows:
+        assert len(row.split()) == 53
+
+
+def test_data_yaml_declares_kpt_shape_sixteen_three(tmp_path):
+    """`data.yaml` declares `kpt_shape: [16, 3]` for the keypoints task, the shared dataset-wide schema."""
+    config = SyntheticConfig(img_size=192, min_objects=2, max_objects=2, task=Task.KEYPOINTS, shapes=KEYPOINT_SHAPES)
+    gen = SyntheticGenerator(config)
+    rng = np.random.default_rng(0)
+    names = class_names(config.class_mode)
+    YoloWriter(Task.KEYPOINTS, names).write({"train": [gen.sample(rng) for _ in range(2)]}, tmp_path)
+
+    doc = yaml.safe_load((tmp_path / "data.yaml").read_text())
+    assert doc["kpt_shape"] == [16, 3]
