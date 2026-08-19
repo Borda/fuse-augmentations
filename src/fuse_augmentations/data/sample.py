@@ -30,7 +30,7 @@ class Annotation:
         bbox_xyxy: Axis-aligned box ``(x_min, y_min, x_max, y_max)`` in pixels.
         obb_corners: Oriented box as four corners, flat ``[x1, y1, x2, y2, x3, y3, x4, y4]``.
         keypoints: Landmarks as ``(x, y, visibility)`` triples in
-            :data:`~fuse_augmentations.data.config.KEYPOINT_NAMES` order, or ``None`` for any task
+            :data:`~fuse_augmentations.data.animals.ANIMAL_KEYPOINT_NAMES` order, or ``None`` for any task
             other than :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS`. Visibility follows
             COCO: ``2`` for a point inside the canvas, ``0`` for one clipped away by the frame — a
             ``0`` point carries ``(0.0, 0.0)`` rather than its off-canvas coordinates.

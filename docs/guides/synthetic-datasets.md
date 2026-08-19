@@ -88,16 +88,19 @@ Pass `shapes=` (or the CLI's `--shapes animals`) to draw the twelve animal silho
 Name the members explicitly, or take the first `N` of them with `animal_shapes()`:
 
 ```python
-from fuse_augmentations.data.config import Shape, SyntheticConfig, Task, animal_shapes
+from fuse_augmentations.data.animals import AnimalShape, animal_shapes
+from fuse_augmentations.data.config import SyntheticConfig, Task
 
-SyntheticConfig(task=Task.KEYPOINTS, shapes=(Shape.DUCK, Shape.GIRAFFE))  # explicit
+SyntheticConfig(
+    task=Task.KEYPOINTS, shapes=(AnimalShape.DUCK, AnimalShape.GIRAFFE)
+)  # explicit
 SyntheticConfig(
     task=Task.KEYPOINTS, shapes=animal_shapes(4)
 )  # duck, elephant, giraffe, fish
 SyntheticConfig(task=Task.KEYPOINTS, shapes=animal_shapes())  # all twelve
 ```
 
-`animal_shapes(n)` is a prefix of the `Shape` declaration order, so the same `n` names the same species on every call — a thirteenth animal could only extend the tail of that list. `shapes` itself stays a plain `tuple[Shape, ...]`; the helper only builds one. A count outside `[0, 12]` raises `ValueError` rather than clamping.
+`animal_shapes(n)` is a prefix of the `AnimalShape` declaration order, so the same `n` names the same species on every call — a thirteenth animal could only extend the tail of that list. `shapes` itself stays a plain `tuple[Shape, ...]` — where `Shape` is the `GeomShape | AnimalShape` union — and the helper only builds one. A count outside `[0, 12]` raises `ValueError` rather than clamping.
 
 All four tasks work on animal shapes; `keypoints` is animal-only (the geometric shapes have no keypoint tables):
 

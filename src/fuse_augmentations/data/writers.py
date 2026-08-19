@@ -37,7 +37,8 @@ from typing import TYPE_CHECKING, Any
 
 from PIL import Image
 
-from fuse_augmentations.data.config import KEYPOINT_NAMES, KEYPOINT_SKELETON, OutputFormat, Task
+from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, ANIMAL_KEYPOINT_SKELETON
+from fuse_augmentations.data.config import OutputFormat, Task
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -68,7 +69,7 @@ def _keypoint_triples(ann: Annotation, img_w: float, img_h: float) -> list[tuple
         img_h: Image height in pixels.
 
     Returns:
-        One triple per name in :data:`~fuse_augmentations.data.config.KEYPOINT_NAMES`, in that
+        One triple per name in :data:`~fuse_augmentations.data.animals.ANIMAL_KEYPOINT_NAMES`, in that
         order. A visible point is clamped to the image extent like every other coordinate field; an
         invisible one keeps the zeroed placeholder coordinates rather than being clamped into a
         spurious corner position. An annotation without landmarks yields the all-zero, "not
@@ -76,7 +77,7 @@ def _keypoint_triples(ann: Annotation, img_w: float, img_h: float) -> list[tuple
 
     """
     if ann.keypoints is None:
-        return [(0.0, 0.0, 0)] * len(KEYPOINT_NAMES)
+        return [(0.0, 0.0, 0)] * len(ANIMAL_KEYPOINT_NAMES)
     return [
         (_clamp(x, 0.0, img_w), _clamp(y, 0.0, img_h), visibility) if visibility > 0 else (0.0, 0.0, visibility)
         for x, y, visibility in ann.keypoints
@@ -159,9 +160,9 @@ class CocoWriter(DatasetWriter):
         ]
         if self.task is Task.KEYPOINTS:
             for category in categories:
-                category["keypoints"] = list(KEYPOINT_NAMES)
+                category["keypoints"] = list(ANIMAL_KEYPOINT_NAMES)
                 # COCO skeleton edges are 1-based indices into the category's own keypoint list.
-                category["skeleton"] = [[i + 1, j + 1] for i, j in KEYPOINT_SKELETON]
+                category["skeleton"] = [[i + 1, j + 1] for i, j in ANIMAL_KEYPOINT_SKELETON]
         return categories
 
     def _coco_doc(self, images: list[dict[str, Any]], annotations: list[dict[str, Any]]) -> dict[str, Any]:
@@ -285,7 +286,7 @@ class YoloWriter(DatasetWriter):
         if self.task is Task.KEYPOINTS:
             # Ultralytics carries one dataset-wide (num_keypoints, dims) shape, hence one shared
             # landmark schema for every class; dims is 3 because each point ships its visibility.
-            lines.append(f"kpt_shape: [{len(KEYPOINT_NAMES)}, 3]")
+            lines.append(f"kpt_shape: [{len(ANIMAL_KEYPOINT_NAMES)}, 3]")
         lines.append("names:")
         lines.extend(f"  {i}: {name}" for i, name in enumerate(self.class_names))
         return "\n".join(lines) + "\n"

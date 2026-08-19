@@ -4,7 +4,7 @@ Each `<animal>.svg` in this directory carries **both** a silhouette outline and 
 
 ## The 16-point anatomical topology
 
-Fixed and shared across every animal in this package — one dataset-wide `kpt_shape` for YOLO, one `KEYPOINT_NAMES`/`KEYPOINT_SKELETON` pair for COCO. Defined once in `fuse_augmentations.data.config`; this file only explains how to *place* points against it, it does not redefine it. One schema covers quadrupeds, birds, and swimmers alike: a front limb is whatever the animal actually has at that slot — a paw, a wing, or a fin/flipper.
+Fixed and shared across every animal in this package — one dataset-wide `kpt_shape` for YOLO, one `ANIMAL_KEYPOINT_NAMES`/`ANIMAL_KEYPOINT_SKELETON` pair for COCO. Defined once in `fuse_augmentations.data.animals`, alongside the `AnimalShape` roster and the loader that reads these files; this file only explains how to *place* points against it, it does not redefine it. One schema covers quadrupeds, birds, and swimmers alike: a front limb is whatever the animal actually has at that slot — a paw, a wing, or a fin/flipper.
 
 ```text
 mouth   eye   ear
@@ -45,7 +45,7 @@ Every limb is articulated in **two** points, proximal before distal — its bend
 | 14  | `hind_limb_left`    | `#469990` teal     | *optional* — tip of the near hind limb (foot/hoof)                                        |
 | 15  | `hind_limb_right`   | `#dcbeff` lavender | *optional* — tip of the far hind limb — see the pairing rule below                        |
 
-The colors are **fixed per name and identical across all twelve animals**, so once you know that blue is always the neck and magenta always the tail, you can read any file at a glance. They are defined once, in `fuse_augmentations.data.config._KEYPOINT_COLORS`, and a test pins them against the `fill` of every packaged `<circle>`; the editor writes from that same constant, so a hand-edited file and a freshly saved one cannot disagree.
+The colors are **fixed per name and identical across all twelve animals**, so once you know that blue is always the neck and magenta always the tail, you can read any file at a glance. The library itself never reads a fill, so the palette lives with the tool that writes it — `PALETTE` in `examples/edit_zoo_keypoints.py`. A test instead checks these documents agree with themselves: one color per landmark name across all twelve files, and no two names sharing one.
 
 15 skeleton edges over 16 nodes is a spanning tree whose optional hind points hang off the end of their own chain, so an absent hind leg drops exactly its own two edges and orphans nothing.
 
@@ -80,7 +80,7 @@ The four hind-leg points (`hind_knee_left`/`hind_knee_right`, `hind_limb_left`/`
 ```
 
 - `viewBox="0 0 1000 1000"`, integer-ish coordinates — an authoring canvas only. The loader re-normalizes every outline (subtracts the vertex mean, divides by the larger extent), so no authored coordinate survives into the package's in-memory arrays; the 1000-unit canvas exists purely so the file is editable in a real vector tool.
-- `<path id="outline">` — straight-line-only (`M`/`L`/`Z`, absolute or relative, `H`/`V` accepted). No curves, no `transform` on any element — see `fuse_augmentations.data.animal_shapes` for the exact parser contract and rejection messages.
+- `<path id="outline">` — straight-line-only (`M`/`L`/`Z`, absolute or relative, `H`/`V` accepted). No curves, no `transform` on any element — see `fuse_augmentations.data.animals` for the exact parser contract and rejection messages.
 - `<g id="skeleton">` is a **pure visualization aid** — the line endpoints are redundant with the keypoint coordinates below them. Nothing in generation, writing, or validation reads it; it exists only so a human opening the file sees the topology, not just a dot cloud. Regenerate it (or ignore it) freely when hand-editing keypoints — it is not a source of truth.
 - `<g id="keypoints">` — one `<circle zoo:name="...">` per present keypoint, keyed on the `zoo:name` attribute (never on `id`, which editors rewrite on duplicate/paste).
 
@@ -92,7 +92,7 @@ The full process for an animal, from nothing to a packaged asset:
 2. **Trace the outline**: convert to a straight-line-only polygon (Inkscape: import, Path ▸ Trace Bitmap, then Path ▸ Flatten to kill curves; or trace by hand). Keep enough vertices for the silhouette to render smooth — the packaged animals carry roughly 180–270, and a unit test pins the band at 150–300; too few and the shape reads faceted at preview size, too many and segmentation labels bloat. Map onto the `0 0 1000 1000` canvas with some margin.
 3. **Place the 16 keypoints by hand** against the table above — there is no algorithm for this step; the topology is a fixed rule applied by eye. The fastest way is the interactive editor: `python examples/edit_zoo_keypoints.py <name>` renders the silhouette with draggable colored dots and saves back into the SVG on demand. Keep every point a few canvas units **inside** the outline — a point on the very edge can fall off the silhouette once rasterized at dataset scale; the unit-test suite checks this at two rotations.
 4. **Provenance**: set `zoo:origin` (source URL), `zoo:license`, `zoo:attribution`, and `zoo:title` (the source species' scientific name) as namespaced attributes on the root `<svg>` — the loader validates their presence.
-5. **Register + verify**: add the animal to the `Shape` enum and `KEYPOINT_SHAPES` in `config.py` and to `ANIMAL_NAMES` in `animal_shapes.py`, pin its absent-keypoint set in `tests/test_unit/test_data/test_animal_shapes.py` (`ABSENT_KEYPOINTS`), then run `pytest tests/test_unit/test_data` — the suite checks the SVG parses, the provenance is present, every keypoint lies inside the rasterized silhouette (rotated and not), no two present points coincide, and the absent set matches the pin.
+5. **Register + verify**: add one member to the `AnimalShape` enum in `animals.py` — the roster, the keypoint-capable shape list, and `ANIMAL_NAMES` all derive from it — then pin its absent-keypoint set in `tests/test_unit/test_data/test_animals.py` (`ABSENT_KEYPOINTS`), then run `pytest tests/test_unit/test_data` — the suite checks the SVG parses, the provenance is present, every keypoint lies inside the rasterized silhouette (rotated and not), no two present points coincide, and the absent set matches the pin.
 
 ## Editing keypoints by hand
 
@@ -105,4 +105,4 @@ Keep `zoo:name` values exactly matching the table (typos are rejected at load, n
 
 ## Provenance
 
-Every file's root `<svg>` carries `zoo:origin` (source URL), `zoo:license`, `zoo:attribution`, and `zoo:title` (the source species' scientific name) as namespaced attributes — see `fuse_augmentations.data.animal_shapes` for the parser that validates these are present.
+Every file's root `<svg>` carries `zoo:origin` (source URL), `zoo:license`, `zoo:attribution`, and `zoo:title` (the source species' scientific name) as namespaced attributes — see `fuse_augmentations.data.animals` for the parser that validates these are present.

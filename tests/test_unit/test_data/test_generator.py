@@ -5,18 +5,17 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, AnimalShape
 from fuse_augmentations.data.config import (
     DEFAULT_SHAPES,
-    KEYPOINT_NAMES,
     ClassMode,
     Color,
-    Shape,
     SyntheticConfig,
     Task,
     class_names,
 )
 from fuse_augmentations.data.generator import SyntheticGenerator, _boundary_overlap
-from fuse_augmentations.data.shapes import bbox_iou
+from fuse_augmentations.data.geometry import GeomShape, bbox_iou
 
 
 def _generate(**kwargs):
@@ -101,9 +100,9 @@ def test_generate_same_seed_is_deterministic():
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        (ClassMode.SHAPE, {s.value for s in Shape}),
+        (ClassMode.SHAPE, {s.value for s in (*GeomShape, *AnimalShape)}),
         (ClassMode.COLOR, {c.value for c in Color}),
-        (ClassMode.SHAPE_COLOR, {f"{c.value}_{s.value}" for s in Shape for c in Color}),
+        (ClassMode.SHAPE_COLOR, {f"{c.value}_{s.value}" for s in (*GeomShape, *AnimalShape) for c in Color}),
     ],
 )
 def test_class_names_belong_to_mode(mode, expected):
@@ -136,7 +135,7 @@ def test_sample_retry_is_reproducible_for_a_seed():
     assert first == second
 
 
-ANIMAL_SHAPES = tuple(s for s in Shape if s not in DEFAULT_SHAPES)
+ANIMAL_SHAPES = tuple(s for s in (*GeomShape, *AnimalShape) if s not in DEFAULT_SHAPES)
 
 
 def test_default_config_draws_only_the_original_four_shapes():
@@ -217,7 +216,7 @@ def test_animal_annotations_carry_a_multi_vertex_polygon():
     masks that no longer match the rendered pixels.
 
     """
-    config = SyntheticConfig(img_size=192, min_objects=3, max_objects=3, shapes=(Shape.ELEPHANT,))
+    config = SyntheticConfig(img_size=192, min_objects=3, max_objects=3, shapes=(AnimalShape.ELEPHANT,))
     sample = SyntheticGenerator(config).sample(np.random.default_rng(2))
     for ann in sample.annotations:
         assert len(ann.polygon) >= 2 * 15
@@ -258,11 +257,11 @@ def test_absent_limb_keypoints_get_zero_visibility_even_fully_inside_canvas():
         min_size_ratio=0.2,
         max_size_ratio=0.2,
         task=Task.KEYPOINTS,
-        shapes=(Shape.WHALE,),
+        shapes=(AnimalShape.WHALE,),
     )
     sample = SyntheticGenerator(config).sample(np.random.default_rng(0))
     (ann,) = sample.annotations
-    triples = dict(zip(KEYPOINT_NAMES, ann.keypoints, strict=True))
+    triples = dict(zip(ANIMAL_KEYPOINT_NAMES, ann.keypoints, strict=True))
     for name in ("hind_knee_left", "hind_knee_right", "hind_limb_left", "hind_limb_right"):
         assert triples[name] == (0.0, 0.0, 0)
     for name in ("mouth", "head", "body_top", "tail", "front_elbow_left", "front_limb_left"):

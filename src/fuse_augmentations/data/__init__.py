@@ -23,9 +23,13 @@ from __future__ import annotations
 import itertools
 from typing import TYPE_CHECKING, Any
 
+from fuse_augmentations.data.animals import (
+    ANIMAL_KEYPOINT_NAMES,
+    ANIMAL_KEYPOINT_SKELETON,
+    AnimalShape,
+    animal_shapes,
+)
 from fuse_augmentations.data.config import (
-    KEYPOINT_NAMES,
-    KEYPOINT_SKELETON,
     ClassMode,
     Color,
     OutputFormat,
@@ -38,6 +42,7 @@ from fuse_augmentations.data.config import (
 )
 from fuse_augmentations.data.datasets import SyntheticIterableDataset
 from fuse_augmentations.data.generator import SyntheticGenerator
+from fuse_augmentations.data.geometry import GeomShape
 from fuse_augmentations.data.sample import Annotation, Sample
 from fuse_augmentations.data.writers import CocoWriter, DatasetWriter, YoloWriter, get_writer
 
@@ -46,12 +51,14 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 __all__ = [
-    "KEYPOINT_NAMES",
-    "KEYPOINT_SKELETON",
+    "ANIMAL_KEYPOINT_NAMES",
+    "ANIMAL_KEYPOINT_SKELETON",
+    "AnimalShape",
     "Annotation",
     "ClassMode",
     "CocoWriter",
     "Color",
+    "GeomShape",
     "OutputFormat",
     "Sample",
     "Shape",
@@ -61,6 +68,7 @@ __all__ = [
     "SyntheticIterableDataset",
     "Task",
     "YoloWriter",
+    "animal_shapes",
     "class_id_of",
     "class_names",
     "generate_dataset",

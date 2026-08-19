@@ -8,16 +8,17 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
-from fuse_augmentations.data.animal_shapes import (
-    _KEYPOINT_ORDER,
+from fuse_augmentations.data.animals import (
     _OPTIONAL_KEYPOINTS,
     _SVG_NS,
     _ZOO,
     _ZOO_NS,
+    ANIMAL_KEYPOINT_NAMES,
     ANIMAL_KEYPOINTS,
     ANIMAL_NAMES,
     ANIMAL_POLYGONS,
     ANIMAL_SOURCES,
+    AnimalShape,
     _normalized,
     _normalized_pair,
     _parse_path_d,
@@ -25,15 +26,9 @@ from fuse_augmentations.data.animal_shapes import (
     _reject_transforms,
     _svg_tag,
     _zoo_attr,
+    animal_keypoints,
 )
-from fuse_augmentations.data.config import (
-    _KEYPOINT_COLORS,
-    DEFAULT_SHAPES,
-    KEYPOINT_NAMES,
-    KEYPOINT_SHAPES,
-    Shape,
-)
-from fuse_augmentations.data.shapes import animal_keypoints, polygon_to_bbox_xyxy, shape_polygon
+from fuse_augmentations.data.geometry import GeomShape, polygon_to_bbox_xyxy, shape_polygon
 
 ZOO_ANIMAL_NAMES = ANIMAL_NAMES
 
@@ -137,15 +132,14 @@ def _rasterize(name: str, size: float, canvas: int, angle: float = 0.0) -> np.nd
     return np.asarray(image) > 0
 
 
-def test_every_non_default_shape_has_a_table():
-    """The eight animal enum members and the eight outline tables are the same set.
+def test_every_animal_member_has_a_table():
+    """`AnimalShape` and the loaded outline tables are the same set, in both directions.
 
-    Guards the two halves of the vocabulary drifting apart: adding a `Shape` member without a
-    table would raise only at draw time, deep inside a generation run.
+    Guards the two halves of the vocabulary drifting apart: a member without a document would raise only at draw time,
+    deep inside a generation run, and a document without a member would ship dead weight in the wheel.
 
     """
-    animal_members = {shape.value for shape in Shape if shape not in DEFAULT_SHAPES}
-    assert animal_members == set(ANIMAL_POLYGONS)
+    assert {shape.value for shape in AnimalShape} == set(ANIMAL_POLYGONS)
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
@@ -334,14 +328,14 @@ def test_zoo_directory_holds_exactly_the_declared_animals():
     assert stems == set(ZOO_ANIMAL_NAMES)
 
 
-def test_zoo_animal_order_matches_the_shape_enum():
-    """The loader lists animals in `Shape` declaration order, not alphabetically.
+def test_zoo_animal_order_matches_the_enum():
+    """The loader lists animals in `AnimalShape` declaration order, not alphabetically.
 
     Class ids come from the enum, so keeping the zoo in that order is what lets a reader line the two up; an
     alphabetical drift here would make every side-by-side table misleading.
 
     """
-    assert tuple(shape.value for shape in Shape if shape not in DEFAULT_SHAPES) == ZOO_ANIMAL_NAMES
+    assert tuple(shape.value for shape in AnimalShape) == ZOO_ANIMAL_NAMES
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
@@ -369,49 +363,37 @@ def test_every_animal_has_a_keypoint_table():
 
 
 def test_keypoint_shapes_config_matches_the_tables():
-    """`config.KEYPOINT_SHAPES` names exactly the shapes that ship a landmark table.
+    """`config.tuple(AnimalShape)` names exactly the shapes that ship a landmark table.
 
     That constant is what `SyntheticConfig` validates against, and it is hand-maintained so the configuration layer
     stays free of NumPy; this is the check that keeps the two halves honest.
 
     """
-    assert {shape.value for shape in KEYPOINT_SHAPES} == set(ANIMAL_KEYPOINTS)
+    assert {shape.value for shape in tuple(AnimalShape)} == set(ANIMAL_KEYPOINTS)
 
 
-def test_keypoint_order_matches_the_published_schema():
-    """The loader's landmark order is the order `config.KEYPOINT_NAMES` publishes.
+def test_keypoint_colors_are_consistent_across_every_document():
+    """One fill per landmark name, the same in all twelve documents, and never shared between names.
 
-    Landmarks are written positionally into COCO and YOLO records, so a divergence here would silently relabel every
-    exported point rather than raise.
-
-    """
-    assert _KEYPOINT_ORDER == KEYPOINT_NAMES
-
-
-def test_keypoint_colors_cover_the_schema_with_distinct_values():
-    """Every landmark name has a color and no two names share one.
-
-    The palette is a navigation aid — a shared hex would make two landmarks indistinguishable in an SVG viewer and in
-    the editor, defeating the point of fixing colors per name at all.
+    The colors are a navigation aid: knowing that blue is always the neck only works if no document disagrees and no
+    two landmarks look alike. Derived from the packaged assets rather than pinned against a constant, because the
+    library itself never reads a fill — only the authoring editor does.
 
     """
-    assert tuple(_KEYPOINT_COLORS) == KEYPOINT_NAMES
-    assert len(set(_KEYPOINT_COLORS.values())) == len(KEYPOINT_NAMES)
+    fills: dict[str, set[str]] = {}
+    for name in ANIMAL_NAMES:
+        root = ET.parse(str(_ZOO / f"{name}.svg")).getroot()  # noqa: S314 - our own packaged asset, not untrusted input
+        circles = root.find(_svg_tag("g[@id='keypoints']")).findall(_svg_tag("circle"))
+        assert circles
+        for circle in circles:
+            fills.setdefault(circle.get(_zoo_attr("name")), set()).add(circle.get("fill"))
 
-
-@pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_keypoint_colors_match_the_packaged_documents(name):
-    """Each packaged `<circle>` is filled with its landmark's declared color.
-
-    `config._KEYPOINT_COLORS` is the single definition the editor writes from; if a document's fill drifted from it, the
-    constant would be decorative rather than authoritative and hand-edited assets would disagree with fresh ones.
-
-    """
-    root = ET.parse(str(_ZOO / f"{name}.svg")).getroot()  # noqa: S314 - our own packaged asset, not untrusted input
-    circles = root.find(_svg_tag("g[@id='keypoints']")).findall(_svg_tag("circle"))
-    assert circles
-    for circle in circles:
-        assert circle.get("fill") == _KEYPOINT_COLORS[circle.get(_zoo_attr("name"))]
+    inconsistent = {key: sorted(value) for key, value in fills.items() if len(value) != 1}
+    assert inconsistent == {}
+    # fish and whale omit the four hind landmarks, so only the mandatory names are guaranteed present
+    assert set(fills) >= set(ANIMAL_KEYPOINT_NAMES) - _OPTIONAL_KEYPOINTS
+    used = [next(iter(value)) for value in fills.values()]
+    assert len(set(used)) == len(used)
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
@@ -422,7 +404,7 @@ def test_keypoint_table_holds_sixteen_points(name):
     represented at all — it has to be caught here.
 
     """
-    assert ANIMAL_KEYPOINTS[name].shape == (len(KEYPOINT_NAMES), 2)
+    assert ANIMAL_KEYPOINTS[name].shape == (len(ANIMAL_KEYPOINT_NAMES), 2)
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
@@ -452,10 +434,10 @@ def test_keypoints_lie_inside_the_rasterized_silhouette(name, angle):
     """
     size, canvas = 240.0, 320
     mask = _rasterize(name, size, canvas, angle=angle)
-    points = animal_keypoints(Shape(name), center=(canvas / 2.0, canvas / 2.0), size=size, angle=angle)
+    points = animal_keypoints(AnimalShape(name), center=(canvas / 2.0, canvas / 2.0), size=size, angle=angle)
     outside = [
         key
-        for key, (x, y) in zip(KEYPOINT_NAMES, points, strict=False)
+        for key, (x, y) in zip(ANIMAL_KEYPOINT_NAMES, points, strict=False)
         if not np.isnan(x) and not mask[round(float(y)), round(float(x))]
     ]
     assert outside == []
@@ -481,7 +463,7 @@ def test_placed_keypoints_do_not_alias_the_table(name):
     corrupt the vocabulary for the rest of the process.
 
     """
-    points = animal_keypoints(Shape(name), center=(0.0, 0.0), size=10.0)
+    points = animal_keypoints(AnimalShape(name), center=(0.0, 0.0), size=10.0)
     points[0, 0] += 1.0  # must not raise
     assert points.base is not ANIMAL_KEYPOINTS[name]
 
@@ -496,7 +478,7 @@ def test_placed_keypoints_stay_within_the_placed_polygon(name):
     """
     center, size, angle = (120.0, 80.0), 40.0, 0.9
     poly = shape_polygon(name, center=center, size=size, angle=angle)
-    points = animal_keypoints(Shape(name), center=center, size=size, angle=angle)
+    points = animal_keypoints(AnimalShape(name), center=center, size=size, angle=angle)
     x1, y1, x2, y2 = polygon_to_bbox_xyxy(poly)
     present = points[~np.isnan(points[:, 0])]
     # A hand-placed extremity landmark (`nose`, `tail`, either limb) sits close to the silhouette
@@ -519,7 +501,7 @@ def test_animal_keypoints_rejects_a_shape_without_a_table():
 
     """
     with pytest.raises(ValueError, match="no keypoint table"):
-        animal_keypoints(Shape.SQUARE, center=(0.0, 0.0), size=10.0)
+        animal_keypoints(GeomShape.SQUARE, center=(0.0, 0.0), size=10.0)  # type: ignore[arg-type]
 
 
 def test_normalized_pair_rejects_a_wrong_sized_landmark_table():
@@ -571,7 +553,7 @@ def test_absent_keypoints_match_the_pinned_matrix():
     """
     for name in ANIMAL_NAMES:
         table = ANIMAL_KEYPOINTS[name]
-        absent = {KEYPOINT_NAMES[i] for i in range(len(KEYPOINT_NAMES)) if np.isnan(table[i, 0])}
+        absent = {ANIMAL_KEYPOINT_NAMES[i] for i in range(len(ANIMAL_KEYPOINT_NAMES)) if np.isnan(table[i, 0])}
         assert absent == ABSENT_KEYPOINTS[name]
         assert absent <= _OPTIONAL_KEYPOINTS  # only the four hind-leg points may ever be absent
 
@@ -711,7 +693,7 @@ def test_read_keypoints_rejects_a_missing_mandatory_landmark():
 
 def test_read_keypoints_allows_missing_hind_legs():
     """A document with every mandatory landmark but no hind-leg points loads (the only optional names)."""
-    mandatory = [name for name in _KEYPOINT_ORDER if name not in _OPTIONAL_KEYPOINTS]
+    mandatory = [name for name in ANIMAL_KEYPOINT_NAMES if name not in _OPTIONAL_KEYPOINTS]
     circles = "".join(f'<circle zoo:name="{name}" cx="1" cy="1"/>' for name in mandatory)
     root = ET.fromstring(f'<svg xmlns="{_SVG_NS}" xmlns:zoo="{_ZOO_NS}"><g id="keypoints">{circles}</g></svg>')  # noqa: S314 - fixed literal XML or our own packaged asset, not untrusted input
     present = _read_keypoints(root, "test")

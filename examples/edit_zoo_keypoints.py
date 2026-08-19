@@ -33,7 +33,30 @@ from matplotlib.patches import Polygon as MplPolygon
 os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
 
 # the schema lives in the package, not here — one definition for the loader, the writers and this editor
-from fuse_augmentations.data.config import _KEYPOINT_COLORS, KEYPOINT_NAMES, KEYPOINT_SKELETON
+from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, ANIMAL_KEYPOINT_SKELETON
+
+#: Fill color per landmark, written into every ``<circle>`` this editor saves. Lives here rather
+#: than in the package because nothing in the library reads a fill — only this authoring tool does.
+#: A test checks the packaged documents agree with themselves (one color per name across all twelve,
+#: none shared), so a drift shows up without the library having to declare the palette.
+PALETTE = {
+    "mouth": "#e6194b",
+    "eye": "#ffe119",
+    "ear": "#f58231",
+    "head": "#911eb4",
+    "neck": "#4363d8",
+    "body_top": "#42d4f4",
+    "body_bottom": "#3cb44b",
+    "tail": "#f032e6",
+    "front_elbow_left": "#bfef45",
+    "front_elbow_right": "#ffd8b1",
+    "front_limb_left": "#9a6324",
+    "front_limb_right": "#fabed4",
+    "hind_knee_left": "#808000",
+    "hind_knee_right": "#aaffc3",
+    "hind_limb_left": "#469990",
+    "hind_limb_right": "#dcbeff",
+}
 
 ZOO_DIR = Path(__file__).resolve().parents[1] / "src" / "fuse_augmentations" / "data" / "zoo"
 SVG_NS = "http://www.w3.org/2000/svg"
@@ -76,8 +99,8 @@ ax.set_title(
 )
 
 skeleton_lines = []
-for a, b in KEYPOINT_SKELETON:
-    na, nb = KEYPOINT_NAMES[a], KEYPOINT_NAMES[b]
+for a, b in ANIMAL_KEYPOINT_SKELETON:
+    na, nb = ANIMAL_KEYPOINT_NAMES[a], ANIMAL_KEYPOINT_NAMES[b]
     if na in points and nb in points:
         (line,) = ax.plot(
             [points[na][0], points[nb][0]],
@@ -95,7 +118,7 @@ for name, (x, y) in points.items():
         y,
         "o",
         markersize=11,
-        markerfacecolor=_KEYPOINT_COLORS[name],
+        markerfacecolor=PALETTE[name],
         markeredgecolor="white",
         zorder=3,
         label=name,
@@ -116,6 +139,7 @@ dragging: list[str] = []
 
 
 def refresh() -> None:
+    """Redraw every dot and skeleton line from the current ``points`` positions."""
     for line, na, nb in skeleton_lines:
         line.set_data([points[na][0], points[nb][0]], [points[na][1], points[nb][1]])
     for name, dot in dots.items():
@@ -124,6 +148,12 @@ def refresh() -> None:
 
 
 def on_press(event) -> None:
+    """Latch the landmark nearest the click, if one is within 20 canvas units of it.
+
+    Args:
+        event: Matplotlib ``button_press_event``; ``xdata``/``ydata`` are ``None`` outside the axes.
+
+    """
     dragging.clear()
     if event.xdata is None:
         return
@@ -137,6 +167,12 @@ def on_press(event) -> None:
 
 
 def on_drag(event) -> None:
+    """Move the latched landmark to the cursor while the left button stays down.
+
+    Args:
+        event: Matplotlib ``motion_notify_event``; ``button`` is ``None`` for a plain hover.
+
+    """
     # true drag-and-drop: the dot follows only while the mouse button is held down
     if dragging and event.button == 1 and event.xdata is not None:
         points[dragging[0]][:] = [event.xdata, event.ydata]
@@ -144,10 +180,25 @@ def on_drag(event) -> None:
 
 
 def on_release(_event) -> None:
+    """Drop the latched landmark, so the dot stops following the cursor.
+
+    Args:
+        _event: Matplotlib ``button_release_event``, unused — any release ends the drag.
+
+    """
     dragging.clear()
 
 
 def on_key(event) -> None:
+    """Handle ``q`` (close the window) and ``s`` (rewrite both groups into the animal's own SVG).
+
+    Saving always overwrites the file in place and regenerates the skeleton lines from the new
+    positions, so the derived group can never drift from the landmarks it draws.
+
+    Args:
+        event: Matplotlib ``key_press_event``; every other key is ignored.
+
+    """
     if event.key == "q":
         plt.close(fig)
     if event.key != "s":
@@ -157,8 +208,8 @@ def on_key(event) -> None:
         if group is not None:
             root.remove(group)
     skeleton = ET.Element(f"{{{SVG_NS}}}g", {"id": "skeleton"})
-    for a, b in KEYPOINT_SKELETON:
-        na, nb = KEYPOINT_NAMES[a], KEYPOINT_NAMES[b]
+    for a, b in ANIMAL_KEYPOINT_SKELETON:
+        na, nb = ANIMAL_KEYPOINT_NAMES[a], ANIMAL_KEYPOINT_NAMES[b]
         if na in points and nb in points:
             (x1, y1), (x2, y2) = points[na], points[nb]
             ET.SubElement(
@@ -176,7 +227,7 @@ def on_key(event) -> None:
             )
     root.append(skeleton)
     group = ET.Element(f"{{{SVG_NS}}}g", {"id": "keypoints"})
-    for name in KEYPOINT_NAMES:
+    for name in ANIMAL_KEYPOINT_NAMES:
         if name not in points:
             continue
         x, y = points[name]
@@ -189,7 +240,7 @@ def on_key(event) -> None:
                 "cx": f"{x:.0f}",
                 "cy": f"{y:.0f}",
                 "r": "8",
-                "fill": _KEYPOINT_COLORS[name],
+                "fill": PALETTE[name],
                 "stroke": "#ffffff",
                 "stroke-width": "1.5",
             },

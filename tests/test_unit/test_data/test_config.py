@@ -4,19 +4,18 @@ from __future__ import annotations
 
 import pytest
 
+from fuse_augmentations.data.animals import AnimalShape, animal_shapes
 from fuse_augmentations.data.config import (
     DEFAULT_SHAPES,
-    KEYPOINT_SHAPES,
     ClassMode,
     Color,
-    Shape,
     SplitRatios,
     SyntheticConfig,
     Task,
-    animal_shapes,
     class_id_of,
     class_names,
 )
+from fuse_augmentations.data.geometry import GeomShape
 
 
 def test_split_ratios_default_sums_to_one():
@@ -73,7 +72,7 @@ def test_synthetic_config_accepts_boundary_values(value):
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        (ClassMode.SHAPE, [s.value for s in Shape]),
+        (ClassMode.SHAPE, [s.value for s in (*GeomShape, *AnimalShape)]),
         (ClassMode.COLOR, [c.value for c in Color]),
     ],
 )
@@ -81,13 +80,41 @@ def test_class_names(mode, expected):
     assert class_names(mode) == expected
 
 
+def test_shape_class_vocabulary_is_pinned_in_order():
+    """The 16 shape class names, pinned as a literal in their exact class-id order.
+
+    A class id is this list's index, and seeded runs are documented as byte-identical across releases, so reordering or
+    renaming a member silently relabels every previously exported dataset. Derived assertions cannot catch that — only a
+    literal can.
+
+    """
+    assert class_names(ClassMode.SHAPE) == [
+        "square",
+        "rectangle",
+        "triangle",
+        "circle",
+        "duck",
+        "elephant",
+        "giraffe",
+        "fish",
+        "rabbit",
+        "camel",
+        "eagle",
+        "penguin",
+        "whale",
+        "kangaroo",
+        "flamingo",
+        "crocodile",
+    ]
+
+
 def test_class_names_shape_color_product_size():
-    assert len(class_names(ClassMode.SHAPE_COLOR)) == len(Shape) * len(Color)
+    assert len(class_names(ClassMode.SHAPE_COLOR)) == (len(GeomShape) + len(AnimalShape)) * len(Color)
 
 
 def test_class_id_round_trips():
     for mode in ClassMode:
-        for shape in Shape:
+        for shape in (*GeomShape, *AnimalShape):
             for color in Color:
                 idx = class_id_of(shape, color, mode)
                 assert 0 <= idx < len(class_names(mode))
@@ -100,7 +127,7 @@ def test_shapes_defaults_to_the_four_geometric_shapes():
     default here is the guard that kept that upgrade non-breaking.
 
     """
-    assert SyntheticConfig().shapes == (Shape.SQUARE, Shape.RECTANGLE, Shape.TRIANGLE, Shape.CIRCLE)
+    assert SyntheticConfig().shapes == (GeomShape.SQUARE, GeomShape.RECTANGLE, GeomShape.TRIANGLE, GeomShape.CIRCLE)
     assert SyntheticConfig().shapes == DEFAULT_SHAPES
 
 
@@ -121,18 +148,18 @@ def test_shapes_accepts_an_animal_override():
     asked for.
 
     """
-    config = SyntheticConfig(shapes=(Shape.GIRAFFE, Shape.DUCK))
-    assert config.shapes == (Shape.GIRAFFE, Shape.DUCK)
+    config = SyntheticConfig(shapes=(AnimalShape.GIRAFFE, AnimalShape.DUCK))
+    assert config.shapes == (AnimalShape.GIRAFFE, AnimalShape.DUCK)
 
 
 def test_animal_shapes_returns_every_animal_by_default():
-    """`animal_shapes()` is the whole roster, which is exactly `KEYPOINT_SHAPES`.
+    """`animal_shapes()` is the whole roster, which is exactly `tuple(AnimalShape)`.
 
     The helper exists so callers can ask for "the animals" without importing and re-listing the roster; if it ever
     returned a different set than the keypoint-capable one, `Task.KEYPOINTS` would start rejecting its own default.
 
     """
-    assert animal_shapes() == KEYPOINT_SHAPES
+    assert animal_shapes() == tuple(AnimalShape)
     assert len(animal_shapes()) == 12
     assert not set(animal_shapes()) & set(DEFAULT_SHAPES)
 
@@ -147,7 +174,7 @@ def test_animal_shapes_by_count_is_a_declaration_order_prefix(count):
     """
     selected = animal_shapes(count)
     assert len(selected) == count
-    assert selected == KEYPOINT_SHAPES[:count]
+    assert selected == tuple(AnimalShape)[:count]
 
 
 def test_animal_shapes_by_count_feeds_a_keypoints_config():
@@ -158,7 +185,13 @@ def test_animal_shapes_by_count_feeds_a_keypoints_config():
 
     """
     config = SyntheticConfig(task=Task.KEYPOINTS, shapes=animal_shapes(5))
-    assert config.shapes == (Shape.DUCK, Shape.ELEPHANT, Shape.GIRAFFE, Shape.FISH, Shape.RABBIT)
+    assert config.shapes == (
+        AnimalShape.DUCK,
+        AnimalShape.ELEPHANT,
+        AnimalShape.GIRAFFE,
+        AnimalShape.FISH,
+        AnimalShape.RABBIT,
+    )
 
 
 @pytest.mark.parametrize("count", [-1, 13, 99])
@@ -188,15 +221,15 @@ def test_shapes_rejects_an_empty_tuple():
     "bad",
     [
         pytest.param(("duck",), id="bare-string"),
-        pytest.param((Shape.DUCK, "square"), id="mixed-string"),
-        pytest.param((Shape.DUCK, None), id="none"),
+        pytest.param((AnimalShape.DUCK, "square"), id="mixed-string"),
+        pytest.param((AnimalShape.DUCK, None), id="none"),
     ],
 )
 def test_shapes_rejects_non_shape_elements(bad):
     """Anything that is not a `Shape` member is refused, including an equal bare string.
 
-    `Shape` subclasses `str`, so `"duck" == Shape.DUCK` is True and a plain string would sail through a naive equality
-    check while breaking identity comparisons downstream.
+    Both members subclass `str`, so `"duck" == AnimalShape.DUCK` is True and a plain string would sail through a naive
+    equality check while breaking identity comparisons downstream.
 
     """
     with pytest.raises(ValueError, match="only Shape members"):

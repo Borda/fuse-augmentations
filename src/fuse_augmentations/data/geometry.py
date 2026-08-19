@@ -8,7 +8,7 @@ animal's landmark table through the very same scale/rotate/translate pipeline as
 
 Examples:
     ```pycon
-    >>> from fuse_augmentations.data.shapes import shape_polygon, polygon_to_bbox_xyxy
+    >>> from fuse_augmentations.data.geometry import shape_polygon, polygon_to_bbox_xyxy
     >>> poly = shape_polygon("square", center=(5.0, 5.0), size=4.0)
     >>> polygon_to_bbox_xyxy(poly)
     (3.0, 3.0, 7.0, 7.0)
@@ -19,18 +19,15 @@ Examples:
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from fuse_augmentations.data.animal_shapes import ANIMAL_KEYPOINTS, ANIMAL_POLYGONS
+from fuse_augmentations.data.animals import ANIMAL_POLYGONS
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
-
-    # Type-only: at runtime this module reads a shape's ``.value`` and never imports the
-    # configuration layer, keeping the geometry layer free of that dependency.
-    from fuse_augmentations.data.config import Shape
 
 #: Number of vertices used to approximate a circle outline.
 CIRCLE_POINTS = 32
@@ -38,15 +35,47 @@ CIRCLE_POINTS = 32
 #: Height-to-width ratio for the ``rectangle`` shape (non-square, so its OBB is oriented).
 RECT_ASPECT = 0.5
 
-#: Analytically computed shape names, in :class:`~fuse_augmentations.data.config.Shape` order.
-GEOMETRIC_SHAPES: tuple[str, ...] = ("square", "rectangle", "triangle", "circle")
+
+class GeomShape(str, Enum):
+    """Analytically computed shape vocabulary (definition order is the geometric class order).
+
+    Computed from ``size`` rather than looked up in a table. ``RECTANGLE`` is deliberately
+    non-square and every shape but ``CIRCLE`` takes a per-shape rotation, so oriented bounding
+    boxes carry real orientation variety; ``CIRCLE`` is rotation-invariant, so its OBB collapses to
+    the axis-aligned box. None of them carries a landmark table: a square is 4-fold symmetric and a
+    circle rotation-invariant, so a fixed landmark on them has no identity a model could learn.
+
+    Attributes:
+        SQUARE: Axis-aligned equal-sided quadrilateral.
+        RECTANGLE: Non-square quadrilateral.
+        TRIANGLE: Equilateral triangle.
+        CIRCLE: Polygon-approximated circle.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.geometry import GeomShape
+        >>> [shape.value for shape in GeomShape]
+        ['square', 'rectangle', 'triangle', 'circle']
+
+        ```
+
+    """
+
+    SQUARE = "square"
+    RECTANGLE = "rectangle"
+    TRIANGLE = "triangle"
+    CIRCLE = "circle"
+
+
+#: Analytically computed shape names, in :class:`GeomShape` declaration order.
+GEOMETRIC_SHAPES: tuple[str, ...] = tuple(shape.value for shape in GeomShape)
 
 
 def _base_polygon(shape: str, size: float) -> NDArray[np.float64]:
     """Return an origin-centered polygon for ``shape`` spanning ``size`` pixels.
 
     Geometric shapes are computed analytically; animal shapes are looked up in
-    :data:`~fuse_augmentations.data.animal_shapes.ANIMAL_POLYGONS`, whose tables share this
+    :data:`~fuse_augmentations.data.animals.ANIMAL_POLYGONS`, whose tables share this
     function's unit convention (vertex centroid at the origin, larger extent equal to ``1``)
     and therefore need only a scale by ``size``.
 
@@ -108,7 +137,7 @@ def rotate_polygon(
     Examples:
         ```pycon
         >>> import numpy as np
-        >>> from fuse_augmentations.data.shapes import rotate_polygon
+        >>> from fuse_augmentations.data.geometry import rotate_polygon
         >>> pts = np.array([[1.0, 0.0]])
         >>> out = rotate_polygon(pts, np.pi / 2)
         >>> bool(np.allclose(out, [[0.0, 1.0]]))
@@ -156,7 +185,7 @@ def shape_polygon(shape: str, center: tuple[float, float], size: float, angle: f
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.data.shapes import shape_polygon
+        >>> from fuse_augmentations.data.geometry import shape_polygon
         >>> poly = shape_polygon("triangle", center=(10.0, 10.0), size=6.0)
         >>> poly.shape
         (3, 2)
@@ -165,53 +194,6 @@ def shape_polygon(shape: str, center: tuple[float, float], size: float, angle: f
 
     """
     return _placed(_base_polygon(shape, size), center, angle)
-
-
-def animal_keypoints(shape: Shape, center: tuple[float, float], size: float, angle: float = 0.0) -> NDArray[np.float64]:
-    """Place one animal's landmark table into image coordinates.
-
-    The table is looked up in :data:`~fuse_augmentations.data.animal_shapes.ANIMAL_KEYPOINTS`,
-    scaled, rotated, and translated exactly as :func:`shape_polygon` treats the matching outline,
-    so passing the same ``center``, ``size``, and ``angle`` to both puts every landmark on the
-    silhouette that was drawn. No randomness is involved: the result is a pure function of the
-    placement the generator already sampled.
-
-    Args:
-        shape: An animal :class:`~fuse_augmentations.data.config.Shape` member; the geometric
-            shapes have no landmark table (a square's 4-fold symmetry gives a fixed landmark no
-            stable identity).
-        center: Target center ``(x, y)`` in pixels — the same value passed to :func:`shape_polygon`.
-        size: Bounding size in pixels — the same value passed to :func:`shape_polygon`.
-        angle: Rotation in radians about the shape center — likewise.
-
-    Returns:
-        ``(16, 2)`` float array of landmark coordinates in image pixels, ordered by
-        :data:`~fuse_augmentations.data.config.KEYPOINT_NAMES`. Points may fall outside the canvas;
-        clipping is the caller's decision. A row is ``(nan, nan)`` for an animal with no
-        hind legs (see
-        :mod:`fuse_augmentations.data.animal_shapes`); NaN propagates through unchanged since scaling
-        and translation are row-independent arithmetic.
-
-    Raises:
-        ValueError: If ``shape`` has no keypoint table.
-
-    Examples:
-        ```pycon
-        >>> from fuse_augmentations.data.config import Shape
-        >>> from fuse_augmentations.data.shapes import animal_keypoints
-        >>> points = animal_keypoints(Shape.DUCK, center=(50.0, 50.0), size=20.0)
-        >>> points.shape
-        (16, 2)
-
-        ```
-
-    """
-    table = ANIMAL_KEYPOINTS.get(shape.value)
-    if table is None:
-        known = ", ".join(ANIMAL_KEYPOINTS)
-        raise ValueError(f"shape {shape.value!r} has no keypoint table; expected one of {known}")
-    # The stored table is frozen, so multiplying returns a fresh writable array, never an alias.
-    return _placed(table * size, center, angle)
 
 
 def polygon_to_bbox_xyxy(points: NDArray[np.float64]) -> tuple[float, float, float, float]:
@@ -226,7 +208,7 @@ def polygon_to_bbox_xyxy(points: NDArray[np.float64]) -> tuple[float, float, flo
     Examples:
         ```pycon
         >>> import numpy as np
-        >>> from fuse_augmentations.data.shapes import polygon_to_bbox_xyxy
+        >>> from fuse_augmentations.data.geometry import polygon_to_bbox_xyxy
         >>> polygon_to_bbox_xyxy(np.array([[1.0, 2.0], [3.0, 5.0], [0.0, 4.0]]))
         (0.0, 2.0, 3.0, 5.0)
 
@@ -286,7 +268,7 @@ def polygon_to_obb(points: NDArray[np.float64]) -> NDArray[np.float64]:
     Examples:
         ```pycon
         >>> import numpy as np
-        >>> from fuse_augmentations.data.shapes import polygon_to_obb
+        >>> from fuse_augmentations.data.geometry import polygon_to_obb
         >>> corners = polygon_to_obb(np.array([[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]]))
         >>> corners.shape
         (4, 2)
@@ -336,7 +318,7 @@ def bbox_iou(box_a: tuple[float, float, float, float], box_b: tuple[float, float
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.data.shapes import bbox_iou
+        >>> from fuse_augmentations.data.geometry import bbox_iou
         >>> bbox_iou((0, 0, 2, 2), (1, 1, 3, 3))
         0.14285714285714285
 
