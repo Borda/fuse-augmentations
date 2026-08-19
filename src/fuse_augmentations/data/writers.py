@@ -21,10 +21,11 @@ stored as a 4-point ``segmentation`` polygon alongside the axis-aligned ``bbox``
 
 For :attr:`Task.KEYPOINTS` both writers emit the landmark block in addition to the box: COCO gains
 per-category ``keypoints``/``skeleton`` plus per-annotation ``keypoints``/``num_keypoints``, and
-YOLO appends ``x y v`` triples to the detection row and declares ``kpt_shape`` in ``data.yaml``. An
-annotation that carries no landmarks — one generated for a different task and then handed to a
-keypoint writer — is written as an all-zero, visibility-``0`` ("not labeled") table rather than a
-short record, so every row and record still matches the schema the task declares.
+YOLO appends ``x y v`` triples to the detection row and declares ``kpt_shape`` plus a
+horizontal-flip mapping ``flip_idx`` in ``data.yaml``. An annotation that carries no landmarks — one
+generated for a different task and then handed to a keypoint writer — is written as an all-zero,
+visibility-``0`` ("not labeled") table rather than a short record, so every row and record still
+matches the schema the task declares.
 
 """
 
@@ -39,6 +40,7 @@ from PIL import Image
 
 from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, ANIMAL_KEYPOINT_SKELETON
 from fuse_augmentations.data.config import OutputFormat, Task
+from fuse_augmentations.data.geometry import GeomShape
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -48,6 +50,31 @@ if TYPE_CHECKING:
     from fuse_augmentations.data.sample import Annotation, Sample
 
 _IMAGE_STEM = "img_{index:06d}"
+
+#: Values of :class:`~fuse_augmentations.data.geometry.GeomShape`, the shape family that has no
+#: keypoint table. ``class_names`` (see :func:`~fuse_augmentations.data.config.class_names`) spans the
+#: full shape vocabulary under ``ClassMode.SHAPE``/``ClassMode.SHAPE_COLOR`` naming, geometric shapes
+#: included, independently of the task -- so this set is what :meth:`CocoWriter._categories` uses to
+#: tell the categories that :meth:`SyntheticConfig._validate_vocabulary` rejects under
+#: :attr:`Task.KEYPOINTS` from the ones that task can actually draw.
+_GEOMETRIC_SHAPE_VALUES = frozenset(shape.value for shape in GeomShape)
+
+
+def _is_geometric_category(name: str) -> bool:
+    """Return whether a class name names a geometric shape, under any :class:`ClassMode` naming.
+
+    ``SHAPE`` names are a bare shape value (``"square"``); ``SHAPE_COLOR`` prefixes it with a color (``"red_square"``);
+    ``COLOR`` names are a bare color (``"red"``). Neither color nor shape values contain ``"_"``, so splitting on the
+    last one and checking the tail against :data:`_GEOMETRIC_SHAPE_VALUES` classifies all three namings.
+
+    Asking whether a category is *geometric* -- rather than whether it is an animal -- is what makes the ``COLOR``
+    naming come out right. A bare color is not an animal value either, so an animal-side test answers "no" for every
+    ``COLOR`` category and strips the keypoint schema off a pose dataset that is entirely made of animals. A color is
+    genuinely not a geometric shape, so it falls through here as keypoint-eligible, which it is: under ``COLOR`` the
+    category is drawn as whichever animal the run was restricted to.
+
+    """
+    return name.rsplit("_", 1)[-1] in _GEOMETRIC_SHAPE_VALUES
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -154,12 +181,29 @@ class CocoWriter(DatasetWriter):
         return record
 
     def _categories(self) -> list[dict[str, Any]]:
-        """Build the category records, adding the keypoint schema for the pose task."""
+        """Build the category records, adding the keypoint schema to every keypoint-eligible category.
+
+        Under ``ClassMode.SHAPE`` or ``ClassMode.SHAPE_COLOR`` naming, ``class_names`` (see
+        :func:`~fuse_augmentations.data.config.class_names`) spans the full shape vocabulary
+        (``ClassMode.COLOR`` naming spans only the bare colors instead), so under
+        :attr:`Task.KEYPOINTS` it still includes the geometric-shape categories that
+        :meth:`SyntheticConfig._validate_vocabulary` rejects as undrawable for that task. Decorating
+        those with a keypoint schema they can never produce a matching annotation for would misdescribe
+        the dataset to any COCO consumer, so the geometric categories (see
+        :func:`_is_geometric_category`) are the ones skipped.
+
+        Excluding the geometric names, rather than including only the animal ones, is what keeps
+        :attr:`ClassMode.COLOR` correct: its categories are bare colors, which name no shape family at
+        all, yet every annotation under them carries a full landmark table.
+
+        """
         categories: list[dict[str, Any]] = [
             {"id": i + 1, "name": name, "supercategory": "none"} for i, name in enumerate(self.class_names)
         ]
         if self.task is Task.KEYPOINTS:
             for category in categories:
+                if _is_geometric_category(category["name"]):
+                    continue
                 category["keypoints"] = list(ANIMAL_KEYPOINT_NAMES)
                 # COCO skeleton edges are 1-based indices into the category's own keypoint list.
                 category["skeleton"] = [[i + 1, j + 1] for i, j in ANIMAL_KEYPOINT_SKELETON]
@@ -287,6 +331,13 @@ class YoloWriter(DatasetWriter):
             # Ultralytics carries one dataset-wide (num_keypoints, dims) shape, hence one shared
             # landmark schema for every class; dims is 3 because each point ships its visibility.
             lines.append(f"kpt_shape: [{len(ANIMAL_KEYPOINT_NAMES)}, 3]")
+            # ``flip_idx`` names the landmark each one becomes under a horizontal flip. This
+            # schema's ``left``/``right`` are *viewer-relative* — ``left`` is the limb nearer the
+            # viewer, not the animal's anatomical left — so mirroring a side profile never turns a
+            # near limb into a far one: every landmark maps to itself. The identity permutation is
+            # therefore the correct mapping, and writing it out is what says "flip is a no-op here"
+            # rather than leaving a reader to guess at a key that is simply absent.
+            lines.append(f"flip_idx: {list(range(len(ANIMAL_KEYPOINT_NAMES)))}")
         lines.append("names:")
         lines.extend(f"  {i}: {name}" for i, name in enumerate(self.class_names))
         return "\n".join(lines) + "\n"

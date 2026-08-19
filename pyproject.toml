@@ -198,6 +198,7 @@ ini_options.norecursedirs = [
   "build",
   "dist",
   "docs",
+  "examples",
   "experiments",
 ]
 ini_options.addopts = [
@@ -223,6 +224,11 @@ ini_options.filterwarnings = [
   # separately from script so neither pattern shadows the other.
   "ignore:`torch.jit.script_method`.*:DeprecationWarning",
   "ignore:`torch.jit.script`.*:DeprecationWarning",
+  # The fuse_augmentations.data.shapes compatibility shim warns at import time by design, and
+  # collecting src/ imports every module there — without this the shim would abort collection
+  # under error::DeprecationWarning. Its own test asserts the warning through pytest.warns,
+  # which overrides the ini filters, so the deprecation stays covered rather than silenced.
+  "ignore:fuse_augmentations.data.shapes is deprecated:DeprecationWarning",
 ]
 ini_options.junit_duration_report = "call"
 

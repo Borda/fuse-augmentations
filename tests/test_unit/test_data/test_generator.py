@@ -14,16 +14,16 @@ from fuse_augmentations.data.config import (
     Task,
     class_names,
 )
-from fuse_augmentations.data.generator import SyntheticGenerator, _boundary_overlap
+from fuse_augmentations.data.generator import SyntheticGenerator, _boundary_overlap, _visible_keypoints
 from fuse_augmentations.data.geometry import GeomShape, bbox_iou
 
 
-def _generate(**kwargs):
+def _generate(**kwargs: object) -> tuple:  # type: ignore[type-arg]
     config = SyntheticConfig(**kwargs)
     return SyntheticGenerator(config).sample(np.random.default_rng(123)), config
 
 
-def test_image_shape_and_dtype():
+def test_image_shape_and_dtype() -> None:
     sample, _config = _generate(img_size=96)
     assert sample.image.shape == (96, 96, 3)
     assert sample.image.dtype == np.uint8
@@ -31,12 +31,12 @@ def test_image_shape_and_dtype():
     assert sample.height == 96
 
 
-def test_object_count_within_range():
+def test_object_count_within_range() -> None:
     sample, _ = _generate(img_size=128, min_objects=2, max_objects=5)
     assert 2 <= len(sample.annotations) <= 5
 
 
-def test_same_seed_is_identical():
+def test_same_seed_is_identical() -> None:
     config = SyntheticConfig(img_size=64)
     gen = SyntheticGenerator(config)
     a = gen.sample(np.random.default_rng(7))
@@ -45,7 +45,7 @@ def test_same_seed_is_identical():
     assert [ann.bbox_xyxy for ann in a.annotations] == [ann.bbox_xyxy for ann in b.annotations]
 
 
-def test_different_seed_differs():
+def test_different_seed_differs() -> None:
     config = SyntheticConfig(img_size=64)
     gen = SyntheticGenerator(config)
     a = gen.sample(np.random.default_rng(1))
@@ -53,13 +53,13 @@ def test_different_seed_differs():
     assert not np.array_equal(a.image, b.image)
 
 
-def test_placement_respects_boundary_tolerance():
+def test_placement_respects_boundary_tolerance() -> None:
     sample, config = _generate(img_size=128, min_objects=5, max_objects=10)
     for ann in sample.annotations:
         assert _boundary_overlap(ann.bbox_xyxy, config.img_size) <= config.boundary_tolerance + 1e-9
 
 
-def test_kept_boxes_respect_overlap_threshold():
+def test_kept_boxes_respect_overlap_threshold() -> None:
     sample, config = _generate(img_size=128, min_objects=5, max_objects=10)
     boxes = [ann.bbox_xyxy for ann in sample.annotations]
     for i in range(len(boxes)):
@@ -67,7 +67,7 @@ def test_kept_boxes_respect_overlap_threshold():
             assert bbox_iou(boxes[i], boxes[j]) <= config.overlap_iou + 1e-9
 
 
-def test_annotation_fields_are_consistent():
+def test_annotation_fields_are_consistent() -> None:
     sample, _ = _generate(img_size=96, min_objects=3, max_objects=3)
     for ann in sample.annotations:
         assert len(ann.obb_corners) == 8
@@ -77,7 +77,7 @@ def test_annotation_fields_are_consistent():
         assert y2 > y1
 
 
-def test_generate_yields_lazily():
+def test_generate_yields_lazily() -> None:
     import types
 
     gen = SyntheticGenerator(SyntheticConfig(img_size=32))
@@ -85,12 +85,12 @@ def test_generate_yields_lazily():
     assert isinstance(stream, types.GeneratorType)
 
 
-def test_generate_yields_exact_count():
+def test_generate_yields_exact_count() -> None:
     gen = SyntheticGenerator(SyntheticConfig(img_size=32))
     assert len(list(gen.generate(5, seed=0))) == 5
 
 
-def test_generate_same_seed_is_deterministic():
+def test_generate_same_seed_is_deterministic() -> None:
     gen = SyntheticGenerator(SyntheticConfig(img_size=32))
     first = [ann.bbox_xyxy for s in gen.generate(3, seed=7) for ann in s.annotations]
     second = [ann.bbox_xyxy for s in gen.generate(3, seed=7) for ann in s.annotations]
@@ -105,7 +105,7 @@ def test_generate_same_seed_is_deterministic():
         (ClassMode.SHAPE_COLOR, {f"{c.value}_{s.value}" for s in (*GeomShape, *AnimalShape) for c in Color}),
     ],
 )
-def test_class_names_belong_to_mode(mode, expected):
+def test_class_names_belong_to_mode(mode: ClassMode, expected: set[str]) -> None:
     config = SyntheticConfig(img_size=128, min_objects=8, max_objects=10, class_mode=mode)
     sample = SyntheticGenerator(config).sample(np.random.default_rng(0))
     vocab = set(class_names(mode))
@@ -115,7 +115,7 @@ def test_class_names_belong_to_mode(mode, expected):
         assert class_names(mode)[ann.class_id] == ann.class_name
 
 
-def test_sample_reaches_requested_count_under_pressure():
+def test_sample_reaches_requested_count_under_pressure() -> None:
     # min==max fixes num_objects; a tight-but-feasible scene forces retries yet must still
     # place every object rather than silently dropping any.
     config = SyntheticConfig(
@@ -125,7 +125,7 @@ def test_sample_reaches_requested_count_under_pressure():
     assert len(sample.annotations) == 8
 
 
-def test_sample_retry_is_reproducible_for_a_seed():
+def test_sample_retry_is_reproducible_for_a_seed() -> None:
     config = SyntheticConfig(
         img_size=96, min_objects=8, max_objects=8, min_size_ratio=0.16, max_size_ratio=0.26, overlap_iou=0.05
     )
@@ -138,7 +138,7 @@ def test_sample_retry_is_reproducible_for_a_seed():
 ANIMAL_SHAPES = tuple(s for s in (*GeomShape, *AnimalShape) if s not in DEFAULT_SHAPES)
 
 
-def test_default_config_draws_only_the_original_four_shapes():
+def test_default_config_draws_only_the_original_four_shapes() -> None:
     """A config that never mentions `shapes` still produces only the pre-animal vocabulary.
 
     This is the compatibility guarantee behind appending to `Shape`: existing seeded callers must keep getting
@@ -152,7 +152,7 @@ def test_default_config_draws_only_the_original_four_shapes():
 
 
 @pytest.mark.parametrize("shape", ANIMAL_SHAPES)
-def test_single_animal_shape_is_the_only_one_drawn(shape):
+def test_single_animal_shape_is_the_only_one_drawn(shape: AnimalShape | GeomShape) -> None:
     """Restricting `cfg.shapes` to one animal makes every annotation carry that class.
 
     This is the documented opt-in for the animal family; a sampler still reading the full enum would leak geometric
@@ -164,7 +164,7 @@ def test_single_animal_shape_is_the_only_one_drawn(shape):
     assert {ann.class_name for ann in sample.annotations} == {shape.value}
 
 
-def test_animal_shapes_respect_boundary_tolerance():
+def test_animal_shapes_respect_boundary_tolerance() -> None:
     """Animal placements obey the same off-canvas budget as the geometric shapes.
 
     Animals are far less convex than a square, so this confirms the rejection test still works on a box derived from a
@@ -177,7 +177,7 @@ def test_animal_shapes_respect_boundary_tolerance():
         assert _boundary_overlap(ann.bbox_xyxy, config.img_size) <= config.boundary_tolerance + 1e-9
 
 
-def test_animal_shapes_respect_overlap_threshold():
+def test_animal_shapes_respect_overlap_threshold() -> None:
     """Kept animal boxes stay under `overlap_iou` pairwise.
 
     Elongated silhouettes (whale, crocodile) have large bounding boxes relative to their filled area, which is exactly
@@ -192,7 +192,7 @@ def test_animal_shapes_respect_overlap_threshold():
             assert bbox_iou(boxes[i], boxes[j]) <= config.overlap_iou + 1e-9
 
 
-def test_animal_shapes_are_seed_deterministic():
+def test_animal_shapes_are_seed_deterministic() -> None:
     """Two runs of the same seed over the animal vocabulary agree pixel- and label-wise.
 
     Animal outlines come from lookup tables rather than trigonometry, so this pins that the table path introduces no
@@ -209,7 +209,7 @@ def test_animal_shapes_are_seed_deterministic():
     ]
 
 
-def test_animal_annotations_carry_a_multi_vertex_polygon():
+def test_animal_annotations_carry_a_multi_vertex_polygon() -> None:
     """An animal annotation exports its full outline, not a four-corner approximation.
 
     Segmentation labels are taken straight from the drawn polygon, so an animal collapsing to its box would produce
@@ -223,7 +223,7 @@ def test_animal_annotations_carry_a_multi_vertex_polygon():
         assert len(ann.obb_corners) == 8
 
 
-def test_sample_raises_when_min_objects_unreachable():
+def test_sample_raises_when_min_objects_unreachable() -> None:
     # Near-full shapes with zero tolerated overlap and full-containment cannot fit min_objects.
     config = SyntheticConfig(
         img_size=32,
@@ -241,7 +241,7 @@ def test_sample_raises_when_min_objects_unreachable():
         gen.sample(np.random.default_rng(0))
 
 
-def test_absent_limb_keypoints_get_zero_visibility_even_fully_inside_canvas():
+def test_absent_limb_keypoints_get_zero_visibility_even_fully_inside_canvas() -> None:
     """A whale's absent hind limbs are v=0 even when the whole object is on-canvas.
 
     Visibility ``0`` normally means "clipped off the canvas frame" — the one case `animal_shapes.animal_keypoints`
@@ -266,3 +266,57 @@ def test_absent_limb_keypoints_get_zero_visibility_even_fully_inside_canvas():
         assert triples[name] == (0.0, 0.0, 0)
     for name in ("mouth", "head", "body_top", "tail", "front_elbow_left", "front_limb_left"):
         assert triples[name][2] == 2
+
+
+def test_visible_keypoints_clips_off_canvas_points_and_zeroes_nan() -> None:
+    """`_visible_keypoints` zeroes every point outside `[0, img_size)` on either axis, and any NaN point.
+
+    This is the function's primary documented contract, exercised directly rather than only incidentally through a
+    fully-on-canvas placement: an in-bounds point, negative-x, y-beyond, x-beyond, a point exactly at the `img_size`
+    boundary (pinning the half-open `x < img_size` semantics — the boundary itself is *not* visible), and a NaN point.
+
+    """
+    img_size = 100
+    points = np.array([
+        [50.0, 50.0],  # clearly inside
+        [-5.0, 50.0],  # negative x
+        [50.0, 150.0],  # y beyond img_size
+        [150.0, 50.0],  # x beyond img_size
+        [100.0, 50.0],  # exactly at the img_size boundary — half-open, so not visible
+        [np.nan, np.nan],  # absent landmark
+    ])
+
+    triples = _visible_keypoints(points, img_size)
+
+    assert triples[0] == (50.0, 50.0, 2)
+    for triple in triples[1:]:
+        assert triple == (0.0, 0.0, 0)
+
+
+def test_task_choice_does_not_perturb_the_seeded_scene() -> None:
+    """Switching the config `task` between DETECTION and KEYPOINTS draws the identical scene for a fixed seed.
+
+    The module docstring and `_attempt_placement` both promise that landmarks are a pure function of the placement
+    already sampled and consume no extra randomness, so a seed must reproduce byte-identical pixels and boxes whatever
+    the configured task — only whether each annotation additionally carries keypoints should differ.
+
+    """
+    common = {
+        "img_size": 128,
+        "min_objects": 3,
+        "max_objects": 3,
+        "shapes": (AnimalShape.DUCK, AnimalShape.ELEPHANT, AnimalShape.GIRAFFE),
+    }
+    detection_config = SyntheticConfig(task=Task.DETECTION, **common)
+    keypoints_config = SyntheticConfig(task=Task.KEYPOINTS, **common)
+    detection_sample = SyntheticGenerator(detection_config).sample(np.random.default_rng(17))
+    keypoints_sample = SyntheticGenerator(keypoints_config).sample(np.random.default_rng(17))
+
+    assert np.array_equal(detection_sample.image, keypoints_sample.image)
+    assert [ann.bbox_xyxy for ann in detection_sample.annotations] == [
+        ann.bbox_xyxy for ann in keypoints_sample.annotations
+    ]
+    for ann in detection_sample.annotations:
+        assert ann.keypoints is None
+    for ann in keypoints_sample.annotations:
+        assert len(ann.keypoints) == 16

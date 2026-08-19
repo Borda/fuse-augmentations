@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, AnimalShape
-from fuse_augmentations.data.config import SyntheticConfig, Task, class_names
+from fuse_augmentations.data.config import ClassMode, Color, SyntheticConfig, Task, class_names
 from fuse_augmentations.data.generator import SyntheticGenerator
 from fuse_augmentations.data.writers import CocoWriter
 
 
-def _write(tmp_path, writer_task, count=4, seed=5, **config_kwargs):
+def _write(tmp_path: Path, writer_task: Task, count: int = 4, seed: int = 5, **config_kwargs: object) -> tuple:  # type: ignore[type-arg]
     """Generate a seeded dataset, write it as COCO, and return its parsed JSON, samples, and class names.
 
     Every knob the individual tests vary — sample count, seed, and any `SyntheticConfig` field such as `shapes`,
@@ -33,60 +34,70 @@ def _write(tmp_path, writer_task, count=4, seed=5, **config_kwargs):
     return doc, samples, names
 
 
-def test_json_is_parseable_and_complete(tmp_path):
-    doc, samples, names = _write(tmp_path, Task.DETECTION)
+@pytest.mark.parametrize("task", [Task.DETECTION, Task.SEGMENTATION, Task.OBB])
+def test_json_is_parseable_and_complete(tmp_path: Path, task: Task) -> None:
+    doc, samples, names = _write(tmp_path, task)
     assert len(doc["images"]) == len(samples)
     assert len(doc["annotations"]) == sum(len(s.annotations) for s in samples)
     assert len(doc["categories"]) == len(names)
+    # A stray per-category `keypoints` schema on a non-pose dataset would go unnoticed otherwise.
+    assert all("keypoints" not in category for category in doc["categories"])
 
 
-def test_category_ids_are_one_based(tmp_path):
+def test_category_ids_are_one_based(tmp_path: Path) -> None:
+    """COCO category IDs are one-based."""
     doc, _, names = _write(tmp_path, Task.DETECTION)
     assert [c["id"] for c in doc["categories"]] == list(range(1, len(names) + 1))
     for ann in doc["annotations"]:
         assert 1 <= ann["category_id"] <= len(names)
 
 
-def test_bbox_area_positive(tmp_path):
+def test_bbox_area_positive(tmp_path: Path) -> None:
+    """Bounding box areas are positive."""
     doc, _, _ = _write(tmp_path, Task.DETECTION)
     for ann in doc["annotations"]:
         assert ann["area"] > 0
         assert len(ann["bbox"]) == 4
 
 
-def test_detection_has_no_segmentation(tmp_path):
+def test_detection_has_no_segmentation(tmp_path: Path) -> None:
+    """Detection task does not include segmentation."""
     doc, _, _ = _write(tmp_path, Task.DETECTION)
     assert all("segmentation" not in ann for ann in doc["annotations"])
 
 
-def test_segmentation_polygon_present(tmp_path):
+def test_segmentation_polygon_present(tmp_path: Path) -> None:
+    """Segmentation task includes polygon."""
     doc, _, _ = _write(tmp_path, Task.SEGMENTATION)
     for ann in doc["annotations"]:
         assert "segmentation" in ann
         assert len(ann["segmentation"][0]) >= 6
 
 
-def test_obb_stores_four_corner_polygon(tmp_path):
+def test_obb_stores_four_corner_polygon(tmp_path: Path) -> None:
+    """OBB task stores four corner polygon."""
     doc, _, _ = _write(tmp_path, Task.OBB)
     for ann in doc["annotations"]:
         assert len(ann["segmentation"][0]) == 8
 
 
-def test_images_written_to_disk(tmp_path):
+def test_images_written_to_disk(tmp_path: Path) -> None:
+    """Generated images are written to disk."""
     _write(tmp_path, Task.DETECTION)
     jpgs = sorted((tmp_path / "train").glob("*.jpg"))
     assert len(jpgs) == 4
 
 
 @pytest.mark.parametrize("task", list(Task))
-def test_image_ids_match_files(tmp_path, task):
+def test_image_ids_match_files(tmp_path: Path, task: Task) -> None:
+    """Image IDs in JSON match files on disk."""
     doc, _, _ = _write(tmp_path, task)
     for image in doc["images"]:
         assert (tmp_path / "train" / image["file_name"]).exists()
 
 
 @pytest.mark.parametrize("task", list(Task))
-def test_animal_shape_dataset_round_trips(tmp_path, task):
+def test_animal_shape_dataset_round_trips(tmp_path: Path, task: Task) -> None:
     """A giraffe-only dataset writes valid COCO JSON for every task without writer changes.
 
     Animal outlines are concave and carry many more vertices than a square; this is the regression guard that the writer
@@ -107,14 +118,14 @@ def test_animal_shape_dataset_round_trips(tmp_path, task):
             assert len(ann["segmentation"][0]) == 8
 
 
-def test_keypoints_task_declares_the_sixteen_point_schema_and_fifteen_edge_skeleton(tmp_path):
-    """The category schema carries all 16 landmark names and the 15-edge skeleton, 1-based.
+def test_keypoints_task_declares_the_sixteen_point_schema_and_fifteen_edge_skeleton(tmp_path: Path) -> None:
+    """Animal categories carry all 16 landmark names and the 15-edge skeleton, 1-based.
 
     COCO viewers connect the dots via `skeleton`, which indexes into `keypoints` starting at 1 (not 0); getting that
     off-by-one wrong draws every edge one landmark short.
 
     """
-    doc, _samples, _names = _write(
+    doc, _samples, names = _write(
         tmp_path,
         Task.KEYPOINTS,
         count=3,
@@ -124,7 +135,10 @@ def test_keypoints_task_declares_the_sixteen_point_schema_and_fifteen_edge_skele
         task=Task.KEYPOINTS,
         shapes=tuple(AnimalShape),
     )
-    for category in doc["categories"]:
+    animal_values = {shape.value for shape in AnimalShape}
+    animal_categories = [c for c, name in zip(doc["categories"], names, strict=True) if name in animal_values]
+    assert animal_categories
+    for category in animal_categories:
         assert category["keypoints"] == list(ANIMAL_KEYPOINT_NAMES)
         assert len(category["skeleton"]) == 15
         for i, j in category["skeleton"]:
@@ -132,12 +146,69 @@ def test_keypoints_task_declares_the_sixteen_point_schema_and_fifteen_edge_skele
             assert 1 <= j <= 16
 
 
-def test_keypoints_num_keypoints_excludes_absent_landmarks(tmp_path):
-    """`num_keypoints` counts only `v>0` triples, so a whale's absent hind-leg points are excluded.
+def test_keypoints_task_leaves_geometric_categories_without_a_keypoint_schema(tmp_path: Path) -> None:
+    """The four geometric-shape categories stay undecorated even though `class_names` still lists them.
 
-    A whale's silhouette shows pectoral flippers but no hind legs, so it carries 12 present landmarks (16 minus the four
-    `hind_knee_*`/`hind_limb_*` points); `num_keypoints` must reflect that, not the full schema length, or a consumer
-    would expect a triple that never arrives.
+    `class_names` always spans the full shape vocabulary (geometric shapes plus animals), independently of the `shapes`
+    a run actually draws; a `Task.KEYPOINTS` writer restricted to animal shapes still emits those geometric categories,
+    but only the animal-silhouette schema applies to them, and a category the writer never draws a matching annotation
+    for must not claim a landmark schema it can't back.
+
+    """
+    doc, _samples, names = _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        count=3,
+        seed=11,
+        img_size=192,
+        max_objects=3,
+        task=Task.KEYPOINTS,
+        shapes=tuple(AnimalShape),
+    )
+    animal_values = {shape.value for shape in AnimalShape}
+    geometric_categories = [c for c, name in zip(doc["categories"], names, strict=True) if name not in animal_values]
+    assert geometric_categories
+    for category in geometric_categories:
+        assert "keypoints" not in category
+        assert "skeleton" not in category
+
+
+def test_keypoints_color_class_mode_categories_carry_the_keypoint_schema(tmp_path: Path) -> None:
+    """Under `ClassMode.COLOR` the categories are bare colors, and each one still declares the landmark schema.
+
+    A color names no shape family, so a predicate asking "is this an animal?" answers no for `red`/`green`/`blue` and
+    strips the schema off a dataset made entirely of animals: every annotation would ship a 16-landmark `keypoints`
+    array while no category declared what those landmarks are, leaving a COCO consumer nothing to name them by. Asking
+    "is this a geometric shape?" instead keeps the schema attached, which is the case this guards.
+
+    """
+    doc, _samples, names = _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        count=3,
+        seed=11,
+        img_size=192,
+        max_objects=3,
+        task=Task.KEYPOINTS,
+        class_mode=ClassMode.COLOR,
+        shapes=(AnimalShape.DUCK, AnimalShape.GIRAFFE),
+    )
+    assert names == [color.value for color in Color]
+    for category in doc["categories"]:
+        assert category["keypoints"] == list(ANIMAL_KEYPOINT_NAMES)
+        assert len(category["skeleton"]) == 15
+    # Every emitted annotation must land in a category that declares the schema its triples follow.
+    decorated = {category["id"] for category in doc["categories"] if "keypoints" in category}
+    assert doc["annotations"]
+    assert {ann["category_id"] for ann in doc["annotations"]} <= decorated
+
+
+def test_keypoints_num_keypoints_excludes_absent_landmarks(tmp_path: Path) -> None:
+    """`num_keypoints` counts only `v>0` triples, so a whale's absent ear and hind-leg points are excluded.
+
+    A whale's silhouette shows pectoral flippers but no hind legs, and a whale has no external ear, so it carries 11
+    present landmarks (16 minus `ear` and the four `hind_knee_*`/`hind_limb_*` points); `num_keypoints` must reflect
+    that, not the full schema length, or a consumer would expect a triple that never arrives.
 
     """
     doc, _samples, _names = _write(
@@ -150,6 +221,32 @@ def test_keypoints_num_keypoints_excludes_absent_landmarks(tmp_path):
         task=Task.KEYPOINTS,
         shapes=(AnimalShape.WHALE,),
     )
+    absent_names = {"ear", "hind_knee_left", "hind_knee_right", "hind_limb_left", "hind_limb_right"}
     for ann in doc["annotations"]:
         assert len(ann["keypoints"]) == 16 * 3
-        assert ann["num_keypoints"] <= 12
+        assert ann["num_keypoints"] == 11
+        flat = ann["keypoints"]
+        triples = {name: flat[3 * i : 3 * i + 3] for i, name in enumerate(ANIMAL_KEYPOINT_NAMES)}
+        for name in absent_names:
+            assert triples[name] == [0.0, 0.0, 0]
+        for name, triple in triples.items():
+            if name in absent_names:
+                continue
+            assert triple[2] == 2
+
+
+def test_keypoints_writer_task_with_non_keypoints_config_emits_the_all_zero_table(tmp_path: Path) -> None:
+    """A KEYPOINTS-task writer over a plain detection-configured stream emits the zeroed placeholder table.
+
+    The writer's `task` and the config's `task` are independent knobs (see `_write`'s docstring): the config here stays
+    at the default `Task.DETECTION` with the four geometric shapes, so `SyntheticGenerator` never computes a landmark
+    table and every `ann.keypoints` is `None`. `_keypoint_triples`' `ann.keypoints is None` fallback is what has to
+    produce a well-formed all-zero, "not labeled" table here instead of raising or emitting a short list.
+
+    """
+    doc, samples, _names = _write(tmp_path, Task.KEYPOINTS)
+    assert doc["annotations"]
+    assert all(ann.keypoints is None for sample in samples for ann in sample.annotations)
+    for ann in doc["annotations"]:
+        assert ann["keypoints"] == [0.0, 0.0, 0] * 16
+        assert ann["num_keypoints"] == 0

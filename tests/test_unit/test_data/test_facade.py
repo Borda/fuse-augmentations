@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+from pathlib import Path
 
 import pytest
 
@@ -13,36 +14,42 @@ _TASKS = ["detection", "segmentation", "obb"]
 
 
 @pytest.mark.parametrize(("fmt", "task"), list(itertools.product(_FORMATS, _TASKS)))
-def test_generate_all_combos(tmp_path, fmt, task):
+def test_generate_all_combos(tmp_path: Path, fmt: str, task: str) -> None:
+    """Dataset generation works for all format and task combinations."""
     out = tmp_path / f"{fmt}_{task}"
     counts = generate_dataset(out, num_images=10, fmt=fmt, task=task, img_size=64, seed=0)
     assert sum(counts.values()) == 10
     assert out.exists()
 
 
-def test_split_counts_follow_ratios(tmp_path):
+def test_split_counts_follow_ratios(tmp_path: Path) -> None:
+    """Generated dataset split counts match default ratios."""
     counts = generate_dataset(tmp_path, num_images=10, fmt="coco", seed=0)
     assert counts == {"train": 7, "val": 2, "test": 1}
 
 
-def test_custom_split_ratios(tmp_path):
+def test_custom_split_ratios(tmp_path: Path) -> None:
+    """Custom split ratios are respected in dataset generation."""
     counts = generate_dataset(tmp_path, num_images=10, fmt="yolo", split_ratios=SplitRatios(0.5, 0.5, 0.0), seed=0)
     assert counts == {"train": 5, "val": 5}
 
 
-def test_coco_file_counts_match(tmp_path):
+def test_coco_file_counts_match(tmp_path: Path) -> None:
+    """COCO format file counts match metadata."""
     counts = generate_dataset(tmp_path, num_images=10, fmt="coco", seed=1)
     for split, count in counts.items():
         assert len(list((tmp_path / split).glob("*.jpg"))) == count
 
 
-def test_yolo_file_counts_match(tmp_path):
+def test_yolo_file_counts_match(tmp_path: Path) -> None:
+    """YOLO format file counts match metadata."""
     counts = generate_dataset(tmp_path, num_images=10, fmt="yolo", seed=1)
     for split, count in counts.items():
         assert len(list((tmp_path / "images" / split).glob("*.jpg"))) == count
 
 
-def test_deterministic_labels(tmp_path):
+def test_deterministic_labels(tmp_path: Path) -> None:
+    """Dataset generation is deterministic with fixed seed."""
     a = tmp_path / "a"
     b = tmp_path / "b"
     generate_dataset(a, num_images=6, fmt="yolo", task="obb", img_size=64, seed=99)
@@ -52,7 +59,8 @@ def test_deterministic_labels(tmp_path):
     assert label_a == label_b
 
 
-def test_enum_and_string_args_equivalent(tmp_path):
+def test_enum_and_string_args_equivalent(tmp_path: Path) -> None:
+    """Enum and string arguments produce equivalent results."""
     import json
 
     from fuse_augmentations.data import ClassMode, OutputFormat, Task
@@ -74,12 +82,14 @@ def test_enum_and_string_args_equivalent(tmp_path):
 
 
 @pytest.mark.parametrize("bad", [0, -1, -10])
-def test_rejects_non_positive_num_images(tmp_path, bad):
+def test_rejects_non_positive_num_images(tmp_path: Path, bad: int) -> None:
+    """Non-positive num_images raises ValueError."""
     with pytest.raises(ValueError, match="num_images"):
         generate_dataset(tmp_path, num_images=bad, fmt="coco", seed=0)
 
 
-def test_supplied_config_ignores_invalid_class_mode(tmp_path):
+def test_supplied_config_ignores_invalid_class_mode(tmp_path: Path) -> None:
+    """Invalid class_mode is ignored when config is supplied."""
     import json
 
     from fuse_augmentations.data import ClassMode, SyntheticConfig
@@ -90,3 +100,57 @@ def test_supplied_config_ignores_invalid_class_mode(tmp_path):
     assert sum(counts.values()) == 5
     doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
     assert len(doc["categories"]) == 3  # config's COLOR vocabulary, not the ignored class_mode
+
+
+def test_task_reaches_the_generator_not_only_the_writer(tmp_path: Path) -> None:
+    """A facade `task=` configures the generator too, so the landmark block holds real points."""
+    import json
+
+    from fuse_augmentations.data import ANIMAL_KEYPOINT_NAMES, AnimalShape
+
+    counts = generate_dataset(
+        tmp_path, num_images=4, fmt="coco", task="keypoints", shapes=(AnimalShape.DUCK,), img_size=64, seed=0
+    )
+    assert sum(counts.values()) == 4
+    doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
+    # While the task reached the writer only, the generator computed no landmarks and every
+    # annotation carried a full-length but all-zero, visibility-0 block instead of real points.
+    assert all(len(ann["keypoints"]) == 3 * len(ANIMAL_KEYPOINT_NAMES) for ann in doc["annotations"])
+    assert any(ann["num_keypoints"] > 0 for ann in doc["annotations"])
+
+
+def test_rejects_a_task_conflicting_with_the_supplied_config(tmp_path: Path) -> None:
+    """A `task=` disagreeing with config's own task is refused."""
+    from fuse_augmentations.data import AnimalShape, SyntheticConfig, Task
+
+    config = SyntheticConfig(img_size=64, task=Task.KEYPOINTS, shapes=(AnimalShape.DUCK,))
+    with pytest.raises(ValueError, match=r"conflicts with config\.task"):
+        generate_dataset(tmp_path, num_images=5, fmt="coco", task="detection", config=config, seed=0)
+
+
+def test_omitted_task_adopts_the_supplied_config_task(tmp_path: Path) -> None:
+    """Omitted `task=` adopts the config's task instead of clashing with the default.
+
+    A caller who sets `task=Task.KEYPOINTS` on the config and omits the facade argument used to hit the conflict error
+    above -- raised against a default they never passed, and telling them to do exactly what they had already done.
+    Omission must instead defer to the config.
+
+    """
+    import json
+
+    from fuse_augmentations.data import ANIMAL_KEYPOINT_NAMES, AnimalShape, SyntheticConfig, Task
+
+    config = SyntheticConfig(img_size=64, task=Task.KEYPOINTS, shapes=(AnimalShape.DUCK,))
+    counts = generate_dataset(tmp_path, num_images=4, fmt="coco", config=config, seed=0)
+    assert sum(counts.values()) == 4
+    doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
+    # The keypoints writer ran (there is a landmark block at all) and the generator agreed with it
+    # (the block holds real, visible points rather than the all-zero filler of a detection config).
+    assert all(len(ann["keypoints"]) == 3 * len(ANIMAL_KEYPOINT_NAMES) for ann in doc["annotations"])
+    assert any(ann["num_keypoints"] > 0 for ann in doc["annotations"])
+
+
+def test_keypoints_task_rejects_the_default_geometric_shapes(tmp_path: Path) -> None:
+    """The keypoints task refuses the default shapes, which have no landmark table."""
+    with pytest.raises(ValueError, match="keypoint table"):
+        generate_dataset(tmp_path, num_images=5, fmt="coco", task="keypoints", img_size=64, seed=0)

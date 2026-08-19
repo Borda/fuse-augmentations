@@ -26,28 +26,28 @@ mouth   eye   ear
 
 Every limb is articulated in **two** points, proximal before distal — its bend is the most visible pose cue on a side-profile silhouette, so both `body_top → front_elbow_* → front_limb_*` and `body_bottom → hind_knee_* → hind_limb_*` are two-segment chains.
 
-| #   | name                | color              | placement rule                                                                            |
-| --- | ------------------- | ------------------ | ----------------------------------------------------------------------------------------- |
-| 0   | `mouth`             | `#e6194b` red      | mouth — tip of the snout/beak/trunk, the forward-most point of the face                   |
-| 1   | `eye`               | `#ffe119` yellow   | roughly the eye position; a silhouette carries no eye, so this is judgement, not geometry |
-| 2   | `ear`               | `#f58231` orange   | ear tip where prominent (rabbit, kangaroo), else the ear position on the head             |
-| 3   | `head`              | `#911eb4` purple   | centre of the skull                                                                       |
-| 4   | `neck`              | `#4363d8` blue     | **middle** of the neck, halfway between head and shoulders (matters on giraffe/flamingo)  |
-| 5   | `body_top`          | `#42d4f4` cyan     | shoulder/chest — the front-limb attachment region of the torso                            |
-| 6   | `body_bottom`       | `#3cb44b` green    | hip/pelvis — the hind-limb attachment region of the torso                                 |
-| 7   | `tail`              | `#f032e6` magenta  | tip of the tail (tail fluke tip for a whale, tail-feather tip for a bird)                 |
-| 8   | `front_elbow_left`  | `#bfef45` lime     | near front-limb bend: elbow, wing wrist, or flipper bend                                  |
-| 9   | `front_elbow_right` | `#ffd8b1` apricot  | far front-limb bend — see the pairing rule below                                          |
-| 10  | `front_limb_left`   | `#9a6324` brown    | tip of the **near** front limb: paw/hoof, wing tip, or fin/flipper tip                    |
-| 11  | `front_limb_right`  | `#fabed4` pink     | tip of the **far** front limb — see the pairing rule below                                |
-| 12  | `hind_knee_left`    | `#808000` olive    | *optional* — near hind knee/hock, the visible bend of the leg                             |
-| 13  | `hind_knee_right`   | `#aaffc3` mint     | *optional* — far hind knee/hock                                                           |
-| 14  | `hind_limb_left`    | `#469990` teal     | *optional* — tip of the near hind limb (foot/hoof)                                        |
-| 15  | `hind_limb_right`   | `#dcbeff` lavender | *optional* — tip of the far hind limb — see the pairing rule below                        |
+| #   | name                | color              | placement rule                                                                             |
+| --- | ------------------- | ------------------ | ------------------------------------------------------------------------------------------ |
+| 0   | `mouth`             | `#e6194b` red      | mouth — tip of the snout/beak/trunk, the forward-most point of the face                    |
+| 1   | `eye`               | `#ffe119` yellow   | roughly the eye position; a silhouette carries no eye, so this is judgement, not geometry  |
+| 2   | `ear`               | `#f58231` orange   | *optional* — ear tip where prominent (rabbit, kangaroo), else the ear position on the head |
+| 3   | `head`              | `#911eb4` purple   | centre of the skull                                                                        |
+| 4   | `neck`              | `#4363d8` blue     | **middle** of the neck, halfway between head and shoulders (matters on giraffe/flamingo)   |
+| 5   | `body_top`          | `#42d4f4` cyan     | shoulder/chest — the front-limb attachment region of the torso                             |
+| 6   | `body_bottom`       | `#3cb44b` green    | hip/pelvis — the hind-limb attachment region of the torso                                  |
+| 7   | `tail`              | `#f032e6` magenta  | tip of the tail (tail fluke tip for a whale, tail-feather tip for a bird)                  |
+| 8   | `front_elbow_left`  | `#bfef45` lime     | near front-limb bend: elbow, wing wrist, or flipper bend                                   |
+| 9   | `front_elbow_right` | `#ffd8b1` apricot  | far front-limb bend — see the pairing rule below                                           |
+| 10  | `front_limb_left`   | `#9a6324` brown    | tip of the **near** front limb: paw/hoof, wing tip, or fin/flipper tip                     |
+| 11  | `front_limb_right`  | `#fabed4` pink     | tip of the **far** front limb — see the pairing rule below                                 |
+| 12  | `hind_knee_left`    | `#808000` olive    | *optional* — near hind knee/hock, the visible bend of the leg                              |
+| 13  | `hind_knee_right`   | `#aaffc3` mint     | *optional* — far hind knee/hock                                                            |
+| 14  | `hind_limb_left`    | `#469990` teal     | *optional* — tip of the near hind limb (foot/hoof)                                         |
+| 15  | `hind_limb_right`   | `#dcbeff` lavender | *optional* — tip of the far hind limb — see the pairing rule below                         |
 
 The colors are **fixed per name and identical across all twelve animals**, so once you know that blue is always the neck and magenta always the tail, you can read any file at a glance. The library itself never reads a fill, so the palette lives with the tool that writes it — `PALETTE` in `examples/edit_zoo_keypoints.py`. A test instead checks these documents agree with themselves: one color per landmark name across all twelve files, and no two names sharing one.
 
-15 skeleton edges over 16 nodes is a spanning tree whose optional hind points hang off the end of their own chain, so an absent hind leg drops exactly its own two edges and orphans nothing.
+15 skeleton edges over 16 nodes is a spanning tree whose optional points sit at the ends of their chains — `ear` is a leaf on `head`, the hind points hang off `body_bottom` — so an absent ear drops exactly its one edge, an absent hind leg exactly its own two, and neither orphans anything.
 
 ### Left/right convention
 
@@ -62,7 +62,7 @@ Every animal carries **both** limbs of each pair, even when the silhouette only 
 
 ### Absent keypoints
 
-The four hind-leg points (`hind_knee_left`/`hind_knee_right`, `hind_limb_left`/`hind_limb_right`) are the only ones allowed to be missing — omit all four `<circle>` elements when an animal has no hind legs at all (**fish** and **whale** only); a hind leg is never half-annotated. Front limbs are never absent, elbow included: a fish's pectoral fins and a whale's flippers fill those slots, with `front_elbow_*` at the fin/flipper base. Any other missing landmark is a bug: the loader raises loudly on it rather than silently producing a NaN row for a point that should exist.
+`ear` and the four hind-leg points (`hind_knee_left`/`hind_knee_right`, `hind_limb_left`/`hind_limb_right`) are the only ones allowed to be missing — omit all four hind `<circle>` elements when an animal has no hind legs at all (**fish** and **whale** only), and omit the `ear` circle when the taxon has no external ear to point at (again **fish** and **whale**); a hind leg is never half-annotated. A landmark the animal does not have is left out, never placed on an invented spot: a fabricated point exported as "labeled and visible" (`v=2`) is a wrong training target, whereas an omitted one loads as a NaN row and is exported as "not labeled". Front limbs are never absent, elbow included: a fish's pectoral fins and a whale's flippers fill those slots, with `front_elbow_*` at the fin/flipper base. Any other missing landmark is a bug: the loader raises loudly on it rather than silently producing a NaN row for a point that should exist.
 
 ## File layout
 

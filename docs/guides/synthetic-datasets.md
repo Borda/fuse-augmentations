@@ -91,13 +91,23 @@ Name the members explicitly, or take the first `N` of them with `animal_shapes()
 from fuse_augmentations.data.animals import AnimalShape, animal_shapes
 from fuse_augmentations.data.config import SyntheticConfig, Task
 
-SyntheticConfig(
+explicit = SyntheticConfig(
     task=Task.KEYPOINTS, shapes=(AnimalShape.DUCK, AnimalShape.GIRAFFE)
 )  # explicit
-SyntheticConfig(
+assert explicit.shapes == (AnimalShape.DUCK, AnimalShape.GIRAFFE)
+
+first_four = SyntheticConfig(
     task=Task.KEYPOINTS, shapes=animal_shapes(4)
 )  # duck, elephant, giraffe, fish
-SyntheticConfig(task=Task.KEYPOINTS, shapes=animal_shapes())  # all twelve
+assert first_four.shapes == (
+    AnimalShape.DUCK,
+    AnimalShape.ELEPHANT,
+    AnimalShape.GIRAFFE,
+    AnimalShape.FISH,
+)  # same 4 species every call, per the declaration-order guarantee below
+
+all_animals = SyntheticConfig(task=Task.KEYPOINTS, shapes=animal_shapes())  # all twelve
+assert len(all_animals.shapes) == 12
 ```
 
 `animal_shapes(n)` is a prefix of the `AnimalShape` declaration order, so the same `n` names the same species on every call — a thirteenth animal could only extend the tail of that list. `shapes` itself stays a plain `tuple[Shape, ...]` — where `Shape` is the `GeomShape | AnimalShape` union — and the helper only builds one. A count outside `[0, 12]` raises `ValueError` rather than clamping.
@@ -154,36 +164,40 @@ Regenerate these clips with `python examples/animate_synthetic_dataset.py`.
 
 ## Keypoints / pose
 
-The `keypoints` task is available for the twelve animal silhouettes and uses one fixed, dataset-wide 16-point anatomical schema — a single set of names covers quadrupeds, birds, and swimmers, because the `front_limb_*` pair is whatever the animal actually has at that slot (paws, wings, or fins/flippers). `left` is the limb nearer the viewer, `right` the far one — a documented convention, since a side profile cannot truly tell left from right:
+The `keypoints` task is available for the twelve animal silhouettes and uses one fixed, dataset-wide 16-point anatomical schema — a single set of names covers quadrupeds, birds, and swimmers, because the `front_limb_*` pair is whatever the animal actually has at that slot (paws, wings, or fins/flippers). `left` is the limb nearer the viewer, `right` the far one — a documented convention, since a side profile cannot truly tell left from right. Because the far point sits only slightly offset from the near one (0.8–4.1px apart at shipped instance-size defaults), left/right-paired landmarks are visually indistinguishable at default rendering sizes — worth knowing before writing a custom evaluator or training on this data.
 
-| Index | Name                | Meaning                                                                |
-| ----- | ------------------- | ---------------------------------------------------------------------- |
-| 1     | `mouth`             | Mouth — snout/beak/trunk tip                                           |
-| 2     | `eye`               | Eye landmark (hand-placed — a silhouette carries no eye)               |
-| 3     | `ear`               | Ear (tip where prominent, else the ear position on the head)           |
-| 4     | `head`              | Skull centre                                                           |
-| 5     | `neck`              | Middle of the neck, halfway between head and shoulders                 |
-| 6     | `body_top`          | Shoulder/chest — the front-limb attachment region                      |
-| 7     | `body_bottom`       | Hip/pelvis — the hind-limb attachment region                           |
-| 8     | `tail`              | Tail tip                                                               |
-| 9     | `front_elbow_left`  | Near front-limb bend: elbow, wing wrist, or flipper bend               |
-| 10    | `front_elbow_right` | Far front-limb bend; overlaps the near one when not separately visible |
-| 11    | `front_limb_left`   | Near front-limb tip: paw/hoof, wing tip, or fin/flipper tip            |
-| 12    | `front_limb_right`  | Far front limb; overlaps the near one when not separately visible      |
-| 13    | `hind_knee_left`    | Near hind knee/hock bend; **optional**, see below                      |
-| 14    | `hind_knee_right`   | Far hind knee/hock bend; **optional**, see below                       |
-| 15    | `hind_limb_left`    | Near hind-limb tip (foot/hoof); **optional**, see below                |
-| 16    | `hind_limb_right`   | Far hind limb; **optional**, see below                                 |
+| Index | Name                | Meaning                                                                               |
+| ----- | ------------------- | ------------------------------------------------------------------------------------- |
+| 1     | `mouth`             | Mouth — snout/beak/trunk tip                                                          |
+| 2     | `eye`               | Eye landmark (hand-placed — a silhouette carries no eye)                              |
+| 3     | `ear`               | Ear (tip where prominent, else the ear position on the head); **optional**, see below |
+| 4     | `head`              | Skull centre                                                                          |
+| 5     | `neck`              | Middle of the neck, halfway between head and shoulders                                |
+| 6     | `body_top`          | Shoulder/chest — the front-limb attachment region                                     |
+| 7     | `body_bottom`       | Hip/pelvis — the hind-limb attachment region                                          |
+| 8     | `tail`              | Tail tip                                                                              |
+| 9     | `front_elbow_left`  | Near front-limb bend: elbow, wing wrist, or flipper bend                              |
+| 10    | `front_elbow_right` | Far front-limb bend; overlaps the near one when not separately visible                |
+| 11    | `front_limb_left`   | Near front-limb tip: paw/hoof, wing tip, or fin/flipper tip                           |
+| 12    | `front_limb_right`  | Far front limb; overlaps the near one when not separately visible                     |
+| 13    | `hind_knee_left`    | Near hind knee/hock bend; **optional**, see below                                     |
+| 14    | `hind_knee_right`   | Far hind knee/hock bend; **optional**, see below                                      |
+| 15    | `hind_limb_left`    | Near hind-limb tip (foot/hoof); **optional**, see below                               |
+| 16    | `hind_limb_right`   | Far hind limb; **optional**, see below                                                |
 
-The skeleton connects `mouth`–`head`, `eye`–`head`, `ear`–`head`, the `head`–`neck`–`body_top`–`body_bottom`–`tail` chain, a two-segment `body_top`–`front_elbow`–`front_limb` chain per front limb, and a two-segment `body_bottom`–`hind_knee`–`hind_limb` chain per hind leg — 15 edges over 16 nodes, so an absent hind leg drops exactly its own two edges and orphans nothing. Every limb is articulated in two points because a limb's bend is the most visible pose cue on a silhouette.
+The skeleton connects `mouth`–`head`, `eye`–`head`, `ear`–`head`, the `head`–`neck`–`body_top`–`body_bottom`–`tail` chain, a two-segment `body_top`–`front_elbow`–`front_limb` chain per front limb, and a two-segment `body_bottom`–`hind_knee`–`hind_limb` chain per hind leg — 15 edges over 16 nodes, so an absent ear drops exactly its one edge and an absent hind leg exactly its own two, orphaning nothing. Every limb is articulated in two points because a limb's bend is the most visible pose cue on a silhouette.
 
-Visibility follows COCO: `v=2` means the point is labeled and visible inside the canvas; `v=0` means it is not labeled, either because it fell outside the canvas or because the animal has no hind legs (see "Absent landmarks" below). A `v=0` point's coordinates are zeroed. Partial occlusion is not modeled.
+Visibility follows COCO: `v=2` means the point is labeled and visible inside the canvas; `v=0` means it is not labeled, either because it fell outside the canvas or because the animal does not have that landmark at all (see "Absent landmarks" below). A `v=0` point's coordinates are zeroed. Partial occlusion is not modeled.
+
+Every landmark is a pure rigid transform (translate/scale/rotate) of its packaged template position — zero articulation, zero intra-class deformation — so a model trained on this data learns template identity plus a similarity-transform regression, not articulated pose; the dataset exercises the COCO/YOLO pose formats end-to-end, it is not a substitute for articulated-pose training data.
 
 ### Absent landmarks
 
-The four hind-leg points (`hind_knee_*`, `hind_limb_*`) are the only landmarks an animal may lack — a whale's silhouette shows pectoral flippers (its front limbs) but no hind legs, and the same holds for the fish. The packaged table carries a `(nan, nan)` row for an absent landmark rather than a faked point; every writer already treats a NaN coordinate the same way it treats a canvas-clipped one (`0.0 <= nan` is `False`), so it is emitted as `(0.0, 0.0, v=0)` with no special-casing. `fish` and `whale` lack all four (12 of 16 landmarks present); the other ten animals have all 16.
+`ear` and the four hind-leg points (`hind_knee_*`, `hind_limb_*`) are the only landmarks an animal may lack — a whale's silhouette shows pectoral flippers (its front limbs) but no hind legs, and neither a whale nor a fish has an external ear to annotate. The packaged table carries a `(nan, nan)` row for an absent landmark rather than a faked point, always paired with `v=0`; every writer branches on that visibility flag, not on the coordinates, so an absent landmark is emitted as the documented `(0.0, 0.0, v=0)` placeholder with no special-casing for NaN. `fish` and `whale` lack all five (11 of 16 landmarks present); the other ten animals have all 16.
 
-COCO adds the keypoint schema and skeleton to each category, then stores one flat triple per point on each annotation:
+An absent landmark and a canvas-clipped landmark both serialize identically as `v=0` (matching COCO's own "not labeled" convention). A custom-eval author computing per-keypoint recall or OKS naively — treating every `v=0` as a detector miss — will see a systematic bias on `fish` and `whale`, whose four hind-leg points are structurally absent rather than missed.
+
+All 16 classes are still emitted as COCO categories, but the keypoint schema and skeleton are attached only to the animal categories — the four geometric-shape categories (`square`, `rectangle`, `triangle`, `circle`) carry no `keypoints`/`skeleton` fields, since they have no landmark table to draw from. Each animal category stores one flat triple per point on each of its annotations:
 
 ```json
 {
@@ -204,17 +218,20 @@ COCO adds the keypoint schema and skeleton to each category, then stores one fla
 }
 ```
 
-`num_keypoints` counts only `v>0` triples, so a whale's absent hind legs drop it to 12.
+`num_keypoints` counts only `v>0` triples, so a whale's absent ear and hind legs drop it to 11.
 
-YOLO pose labels extend the detection row with the same ordered triples, and `data.yaml` declares the shared shape:
+YOLO pose labels extend the detection row with the same ordered triples, and `data.yaml` declares the shared shape plus its horizontal-flip mapping:
 
 ```yaml
 path: .
 kpt_shape: [16, 3]
+flip_idx: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 names:
   0: square
   4: duck
 ```
+
+`flip_idx` is the identity permutation on purpose: `left`/`right` are viewer-relative here — `left` is the limb nearer the viewer, not the animal's anatomical left — so mirroring a side profile never turns a near limb into a far one and no landmark changes index under a horizontal flip.
 
 Each pose row is `cls cx cy w h x1 y1 v1 ... x16 y16 v16` — 53 tokens, fixed-width even for a whale whose absent hind legs still emit their zeroed `0.000000 0.000000 0` triples. Each animal ships as an editable SVG asset under `fuse_augmentations/data/zoo/<animal>.svg`, carrying its outline, its keypoints (with a visible skeleton overlay), and its CC0/Public Domain Mark provenance as `zoo:`-namespaced attributes; the placement rules and hand-editing instructions live in `fuse_augmentations/data/zoo/README.md`.
 
