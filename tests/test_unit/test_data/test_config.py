@@ -6,11 +6,14 @@ import pytest
 
 from fuse_augmentations.data.config import (
     DEFAULT_SHAPES,
+    KEYPOINT_SHAPES,
     ClassMode,
     Color,
     Shape,
     SplitRatios,
     SyntheticConfig,
+    Task,
+    animal_shapes,
     class_id_of,
     class_names,
 )
@@ -120,6 +123,54 @@ def test_shapes_accepts_an_animal_override():
     """
     config = SyntheticConfig(shapes=(Shape.GIRAFFE, Shape.DUCK))
     assert config.shapes == (Shape.GIRAFFE, Shape.DUCK)
+
+
+def test_animal_shapes_returns_every_animal_by_default():
+    """`animal_shapes()` is the whole roster, which is exactly `KEYPOINT_SHAPES`.
+
+    The helper exists so callers can ask for "the animals" without importing and re-listing the roster; if it ever
+    returned a different set than the keypoint-capable one, `Task.KEYPOINTS` would start rejecting its own default.
+
+    """
+    assert animal_shapes() == KEYPOINT_SHAPES
+    assert len(animal_shapes()) == 12
+    assert not set(animal_shapes()) & set(DEFAULT_SHAPES)
+
+
+@pytest.mark.parametrize("count", range(13))
+def test_animal_shapes_by_count_is_a_declaration_order_prefix(count):
+    """`animal_shapes(n)` takes the first `n` animals in `Shape` declaration order.
+
+    "First n" has to mean a stable prefix, not an arbitrary subset: a dataset regenerated with the same `n` after a
+    thirteenth animal is appended must still contain the same species, or its class ids stop meaning one thing.
+
+    """
+    selected = animal_shapes(count)
+    assert len(selected) == count
+    assert selected == KEYPOINT_SHAPES[:count]
+
+
+def test_animal_shapes_by_count_feeds_a_keypoints_config():
+    """A count-selected tuple is accepted verbatim by the field it exists to fill.
+
+    The helper is a convenience constructor for `SyntheticConfig.shapes`, so the round trip through the dataclass —
+    including its `Task.KEYPOINTS` vocabulary check — is the behaviour worth pinning, not the tuple in isolation.
+
+    """
+    config = SyntheticConfig(task=Task.KEYPOINTS, shapes=animal_shapes(5))
+    assert config.shapes == (Shape.DUCK, Shape.ELEPHANT, Shape.GIRAFFE, Shape.FISH, Shape.RABBIT)
+
+
+@pytest.mark.parametrize("count", [-1, 13, 99])
+def test_animal_shapes_rejects_a_count_outside_the_roster(count):
+    """An out-of-range count raises instead of silently clamping to the roster length.
+
+    Asking for 13 of 12 animals is a caller bug — quietly returning 12 would hide it until the dataset came out one
+    class short of what the caller believed it had requested.
+
+    """
+    with pytest.raises(ValueError, match="count must be within"):
+        animal_shapes(count)
 
 
 def test_shapes_rejects_an_empty_tuple():

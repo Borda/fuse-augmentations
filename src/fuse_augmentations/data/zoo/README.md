@@ -1,0 +1,108 @@
+# Zoo assets
+
+Each `<animal>.svg` in this directory carries **both** a silhouette outline and its 16-point keypoint annotation, so opening the file in any SVG viewer (browser, Inkscape, Quick Look) shows exactly what the loader sees: shape, colored keypoint dots, and the skeleton connecting them.
+
+## The 16-point anatomical topology
+
+Fixed and shared across every animal in this package — one dataset-wide `kpt_shape` for YOLO, one `KEYPOINT_NAMES`/`KEYPOINT_SKELETON` pair for COCO. Defined once in `fuse_augmentations.data.config`; this file only explains how to *place* points against it, it does not redefine it. One schema covers quadrupeds, birds, and swimmers alike: a front limb is whatever the animal actually has at that slot — a paw, a wing, or a fin/flipper.
+
+```text
+mouth   eye   ear
+    \    |    /
+       head
+        |
+       neck                                       (middle of the neck)
+        |
+    body_top ---- front_elbow_left/right          (elbow / wing wrist / flipper bend)
+        |              |
+        |         front_limb_left/right           (paws / wing tips / fin tips)
+        |
+   body_bottom -- hind_knee_left/right            (knee / hock bend, optional)
+        |              |
+        |         hind_limb_left/right            (feet, optional)
+        |
+       tail
+```
+
+Every limb is articulated in **two** points, proximal before distal — its bend is the most visible pose cue on a side-profile silhouette, so both `body_top → front_elbow_* → front_limb_*` and `body_bottom → hind_knee_* → hind_limb_*` are two-segment chains.
+
+| #   | name                | color              | placement rule                                                                            |
+| --- | ------------------- | ------------------ | ----------------------------------------------------------------------------------------- |
+| 0   | `mouth`             | `#e6194b` red      | mouth — tip of the snout/beak/trunk, the forward-most point of the face                   |
+| 1   | `eye`               | `#ffe119` yellow   | roughly the eye position; a silhouette carries no eye, so this is judgement, not geometry |
+| 2   | `ear`               | `#f58231` orange   | ear tip where prominent (rabbit, kangaroo), else the ear position on the head             |
+| 3   | `head`              | `#911eb4` purple   | centre of the skull                                                                       |
+| 4   | `neck`              | `#4363d8` blue     | **middle** of the neck, halfway between head and shoulders (matters on giraffe/flamingo)  |
+| 5   | `body_top`          | `#42d4f4` cyan     | shoulder/chest — the front-limb attachment region of the torso                            |
+| 6   | `body_bottom`       | `#3cb44b` green    | hip/pelvis — the hind-limb attachment region of the torso                                 |
+| 7   | `tail`              | `#f032e6` magenta  | tip of the tail (tail fluke tip for a whale, tail-feather tip for a bird)                 |
+| 8   | `front_elbow_left`  | `#bfef45` lime     | near front-limb bend: elbow, wing wrist, or flipper bend                                  |
+| 9   | `front_elbow_right` | `#ffd8b1` apricot  | far front-limb bend — see the pairing rule below                                          |
+| 10  | `front_limb_left`   | `#9a6324` brown    | tip of the **near** front limb: paw/hoof, wing tip, or fin/flipper tip                    |
+| 11  | `front_limb_right`  | `#fabed4` pink     | tip of the **far** front limb — see the pairing rule below                                |
+| 12  | `hind_knee_left`    | `#808000` olive    | *optional* — near hind knee/hock, the visible bend of the leg                             |
+| 13  | `hind_knee_right`   | `#aaffc3` mint     | *optional* — far hind knee/hock                                                           |
+| 14  | `hind_limb_left`    | `#469990` teal     | *optional* — tip of the near hind limb (foot/hoof)                                        |
+| 15  | `hind_limb_right`   | `#dcbeff` lavender | *optional* — tip of the far hind limb — see the pairing rule below                        |
+
+The colors are **fixed per name and identical across all twelve animals**, so once you know that blue is always the neck and magenta always the tail, you can read any file at a glance. They are defined once, in `fuse_augmentations.data.config._KEYPOINT_COLORS`, and a test pins them against the `fill` of every packaged `<circle>`; the editor writes from that same constant, so a hand-edited file and a freshly saved one cannot disagree.
+
+15 skeleton edges over 16 nodes is a spanning tree whose optional hind points hang off the end of their own chain, so an absent hind leg drops exactly its own two edges and orphans nothing.
+
+### Left/right convention
+
+A side-profile silhouette cannot truly tell an animal's left from its right. The convention here: **`left` = the limb nearer the viewer** (the fully visible one), `right` = the far limb. It is a labeling convention, not an anatomical claim.
+
+### Limb pairing rule
+
+Every animal carries **both** limbs of each pair, even when the silhouette only shows one:
+
+- When the silhouette shows two separate legs (giraffe, camel, elephant front/hind pairs, penguin's two flippers and two feet), each point goes on its own leg.
+- When the far limb hides behind the near one (a duck's second foot, folded wings), the far point sits **slightly offset** from the near one — overlapping is expected and fine; the two must merely not be the exact same coordinate.
+
+### Absent keypoints
+
+The four hind-leg points (`hind_knee_left`/`hind_knee_right`, `hind_limb_left`/`hind_limb_right`) are the only ones allowed to be missing — omit all four `<circle>` elements when an animal has no hind legs at all (**fish** and **whale** only); a hind leg is never half-annotated. Front limbs are never absent, elbow included: a fish's pectoral fins and a whale's flippers fill those slots, with `front_elbow_*` at the fin/flipper base. Any other missing landmark is a bug: the loader raises loudly on it rather than silently producing a NaN row for a point that should exist.
+
+## File layout
+
+```xml
+<svg viewBox="0 0 1000 1000" ...>
+  <path id="outline" fill="#000000" d="M ... Z" />
+  <g id="skeleton">
+    <line x1="…" y1="…" x2="…" y2="…" .../>   <!-- one per topology edge -->
+  </g>
+  <g id="keypoints">
+    <circle id="kp-mouth" zoo:name="mouth" cx="…" cy="…" r="8" fill="#e6194b" />
+    ...
+  </g>
+</svg>
+```
+
+- `viewBox="0 0 1000 1000"`, integer-ish coordinates — an authoring canvas only. The loader re-normalizes every outline (subtracts the vertex mean, divides by the larger extent), so no authored coordinate survives into the package's in-memory arrays; the 1000-unit canvas exists purely so the file is editable in a real vector tool.
+- `<path id="outline">` — straight-line-only (`M`/`L`/`Z`, absolute or relative, `H`/`V` accepted). No curves, no `transform` on any element — see `fuse_augmentations.data.animal_shapes` for the exact parser contract and rejection messages.
+- `<g id="skeleton">` is a **pure visualization aid** — the line endpoints are redundant with the keypoint coordinates below them. Nothing in generation, writing, or validation reads it; it exists only so a human opening the file sees the topology, not just a dot cloud. Regenerate it (or ignore it) freely when hand-editing keypoints — it is not a source of truth.
+- `<g id="keypoints">` — one `<circle zoo:name="...">` per present keypoint, keyed on the `zoo:name` attribute (never on `id`, which editors rewrite on duplicate/paste).
+
+## How these files were made, and how to recreate one
+
+The full process for an animal, from nothing to a packaged asset:
+
+1. **Source art**: pick a CC0 or Public Domain Mark side-profile silhouette (PhyloPic is the usual source — animals face **left**; flip the art if needed). Record the source URL, license, and artist for the provenance attributes.
+2. **Trace the outline**: convert to a straight-line-only polygon (Inkscape: import, Path ▸ Trace Bitmap, then Path ▸ Flatten to kill curves; or trace by hand). Keep enough vertices for the silhouette to render smooth — the packaged animals carry roughly 180–270, and a unit test pins the band at 150–300; too few and the shape reads faceted at preview size, too many and segmentation labels bloat. Map onto the `0 0 1000 1000` canvas with some margin.
+3. **Place the 16 keypoints by hand** against the table above — there is no algorithm for this step; the topology is a fixed rule applied by eye. The fastest way is the interactive editor: `python examples/edit_zoo_keypoints.py <name>` renders the silhouette with draggable colored dots and saves back into the SVG on demand. Keep every point a few canvas units **inside** the outline — a point on the very edge can fall off the silhouette once rasterized at dataset scale; the unit-test suite checks this at two rotations.
+4. **Provenance**: set `zoo:origin` (source URL), `zoo:license`, `zoo:attribution`, and `zoo:title` (the source species' scientific name) as namespaced attributes on the root `<svg>` — the loader validates their presence.
+5. **Register + verify**: add the animal to the `Shape` enum and `KEYPOINT_SHAPES` in `config.py` and to `ANIMAL_NAMES` in `animal_shapes.py`, pin its absent-keypoint set in `tests/test_unit/test_data/test_animal_shapes.py` (`ABSENT_KEYPOINTS`), then run `pytest tests/test_unit/test_data` — the suite checks the SVG parses, the provenance is present, every keypoint lies inside the rasterized silhouette (rotated and not), no two present points coincide, and the absent set matches the pin.
+
+## Editing keypoints by hand
+
+Two ways, both fine:
+
+- **Interactive editor** (fastest): `python examples/edit_zoo_keypoints.py <animal>` — press and hold a colored dot to drag it, release to drop, press `s` to save back into the SVG (skeleton lines are regenerated automatically), `q` to quit. A color/name legend sits beside the canvas; running it without an animal name lists the packaged ones.
+- **Any SVG/text editor**: move the `<circle>` elements' `cx`/`cy` directly. The skeleton `<line>` endpoints will look stale until you update them or simply delete the whole `<g id="skeleton">` block — it is derived, not authoritative; the editor script or the next hand-redraw recreates it.
+
+Keep `zoo:name` values exactly matching the table (typos are rejected at load, not silently dropped). If you use Inkscape: **Save as Plain SVG**, never Optimized SVG — the optimizer strips the `zoo:` namespace, silently destroying the provenance attributes, which is a CC0 attribution courtesy and a traceability obligation, not just metadata.
+
+## Provenance
+
+Every file's root `<svg>` carries `zoo:origin` (source URL), `zoo:license`, `zoo:attribution`, and `zoo:title` (the source species' scientific name) as namespaced attributes — see `fuse_augmentations.data.animal_shapes` for the parser that validates these are present.

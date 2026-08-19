@@ -15,10 +15,10 @@ Frames are written as an animated WebP (smaller than GIF, matching the existing
 WebP assets); ``--image_format gif`` is available as a fallback.
 
 ``--shapes`` picks which vocabulary is drawn: ``geometric`` (square, rectangle,
-triangle, circle) writes ``<task>.webp``, and ``animals`` (the eight side-profile
+triangle, circle) writes ``<task>.webp``, and ``animals`` (the twelve side-profile
 silhouettes) writes ``animals-<task>.webp`` so both sets can live side by side in
-the docs. The animal scene uses fewer, larger objects, because a snake or a giraffe
-needs more pixels than a square to stay readable at preview size.
+the docs. The animal scene uses fewer, larger objects, because a crocodile or a
+giraffe needs more pixels than a square to stay readable at preview size.
 
 Render every task (detection, segmentation, obb; keypoints when using animals):
     python examples/animate_synthetic_dataset.py
@@ -39,7 +39,7 @@ from typing import TypedDict
 from PIL import Image, ImageDraw
 
 from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
-from fuse_augmentations.data.config import DEFAULT_SHAPES, KEYPOINT_SKELETON, Shape, Task
+from fuse_augmentations.data.config import DEFAULT_SHAPES, KEYPOINT_SKELETON, Task, animal_shapes
 from fuse_augmentations.data.sample import Annotation, Sample
 
 TASKS = ("detection", "segmentation", "obb", "keypoints")
@@ -54,11 +54,11 @@ class _Scene(TypedDict):
     max_size_ratio: float
 
 
-#: Drawable vocabulary per ``--shapes`` choice; ``animals`` is everything the enum gained
-#: on top of the original four, so a new animal is picked up without editing this script.
+#: Drawable vocabulary per ``--shapes`` choice; ``animals`` asks for the whole animal roster, so a
+#: new animal is picked up without editing this script.
 SHAPE_SETS = {
     "geometric": DEFAULT_SHAPES,
-    "animals": tuple(s for s in Shape if s not in DEFAULT_SHAPES),
+    "animals": animal_shapes(),
 }
 #: Scene knobs per vocabulary. ``geometric`` reproduces the original clips byte-for-byte;
 #: ``animals`` trades object count for object size so each silhouette stays legible.
@@ -95,7 +95,9 @@ def _draw_annotation(draw: ImageDraw.ImageDraw, ann: Annotation, task: str, scal
         for first, second in KEYPOINT_SKELETON:
             if first in visible and second in visible:
                 draw.line((visible[first], visible[second]), fill=_OVERLAY_RGB, width=max(1, width // 2))
-        radius = max(2, width // 2)
+        # 16 points pack closely together on the same silhouette; a bit more radius than
+        # width // 2 keeps each dot legible instead of thinning into the skeleton lines.
+        radius = max(3, width)
         for _index, (x, y, visibility) in enumerate(ann.keypoints):
             if visibility <= 0:
                 continue
