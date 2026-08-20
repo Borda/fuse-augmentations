@@ -20,9 +20,10 @@ COCO has no native oriented-box field, so for :attr:`Task.OBB` the four corners 
 stored as a 4-point ``segmentation`` polygon alongside the axis-aligned ``bbox``.
 
 For :attr:`Task.KEYPOINTS` both writers emit the landmark block in addition to the box: COCO gains
-per-category ``keypoints``/``skeleton`` plus per-annotation ``keypoints``/``num_keypoints``, and
-YOLO appends ``x y v`` triples to the detection row and declares ``kpt_shape`` plus a
-horizontal-flip mapping ``flip_idx`` in ``data.yaml``. An annotation that carries no landmarks — one
+a ``segmentation`` polygon (as for :attr:`Task.SEGMENTATION`) plus per-category ``keypoints``/``skeleton``
+and per-annotation ``keypoints``/``num_keypoints``, and YOLO appends ``x y v`` triples to the detection
+row and declares ``kpt_shape`` plus a horizontal-flip mapping ``flip_idx`` in ``data.yaml``. An
+annotation that carries no landmarks — one
 generated for a different task and then handed to a keypoint writer — is written as an all-zero,
 visibility-``0`` ("not labeled") table rather than a short record, so every row and record still
 matches the schema the task declares.
@@ -175,6 +176,7 @@ class CocoWriter(DatasetWriter):
         elif self.task is Task.OBB:
             record["segmentation"] = [_clamp_flat(ann.obb_corners, img_w, img_h)]
         elif self.task is Task.KEYPOINTS:
+            record["segmentation"] = [_clamp_flat(ann.polygon, img_w, img_h)]
             triples = _keypoint_triples(ann, img_w, img_h)
             record["keypoints"] = [value for triple in triples for value in triple]
             record["num_keypoints"] = sum(1 for *_, visibility in triples if visibility > 0)
