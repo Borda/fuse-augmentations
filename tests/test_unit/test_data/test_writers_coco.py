@@ -81,6 +81,21 @@ def test_obb_stores_four_corner_polygon(tmp_path: Path) -> None:
         assert len(ann["segmentation"][0]) == 8
 
 
+def test_keypoints_includes_segmentation_polygon(tmp_path: Path) -> None:
+    """KEYPOINTS task includes the same outline polygon as SEGMENTATION.
+
+    Real COCO person-keypoint annotations carry both `keypoints` and `segmentation`; a COCO consumer that gates instance
+    retention on a parseable `segmentation` ring (as lit-YOLOs' `CocoDetectionDataset` does per its crowd/RLE-exclusion
+    policy) would silently drop every keypoint annotation without this.
+
+    """
+    doc, _, _ = _write(tmp_path, Task.KEYPOINTS, task=Task.KEYPOINTS, shapes=tuple(AnimalShape))
+    assert doc["annotations"]
+    for ann in doc["annotations"]:
+        assert "segmentation" in ann
+        assert len(ann["segmentation"][0]) >= 6
+
+
 def test_images_written_to_disk(tmp_path: Path) -> None:
     """Generated images are written to disk."""
     _write(tmp_path, Task.DETECTION)
@@ -116,6 +131,8 @@ def test_animal_shape_dataset_round_trips(tmp_path: Path, task: Task) -> None:
             assert len(ann["segmentation"][0]) >= 2 * 15
         elif task is Task.OBB:
             assert len(ann["segmentation"][0]) == 8
+        elif task is Task.KEYPOINTS:
+            assert len(ann["segmentation"][0]) >= 2 * 15
 
 
 def test_keypoints_task_declares_the_sixteen_point_schema_and_fifteen_edge_skeleton(tmp_path: Path) -> None:

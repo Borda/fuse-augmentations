@@ -197,6 +197,6 @@ def generate_dataset(
         split: itertools.islice(sample_stream, count) for split, count in counts.items()
     }
 
-    writer: DatasetWriter = get_writer(fmt, task, class_names(config.class_mode))
+    writer: DatasetWriter = get_writer(fmt, task, class_names(config.class_mode, shapes=config.shapes))
     writer.write(splits, output_dir)
     return counts

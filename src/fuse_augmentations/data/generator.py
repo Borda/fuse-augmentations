@@ -140,15 +140,16 @@ class SyntheticGenerator:
         angle when rotation applies), so the caller controls the retry budget and the RNG consumption stays
         deterministic for a given seed.
 
-        The shape is drawn from ``cfg.shapes`` rather than the full :class:`Shape` vocabulary, so widening the enum
-        never changes what an existing seeded configuration produces.
+        The shape is drawn from ``cfg.shapes`` and the color from ``cfg.colors`` rather than the full :class:`Shape` and
+        :class:`Color` vocabularies, so widening either enum never changes what an existing seeded configuration
+        produces.
 
         Landmarks (last tuple element, ``None`` off the keypoints task) are a pure function of the placement that was
         just sampled, so computing them consumes no further randomness and leaves every seeded stream unchanged.
 
         """
         cfg = self.config
-        shapes, colors = cfg.shapes, list(Color)
+        shapes, colors = cfg.shapes, cfg.colors
         shape = shapes[int(rng.integers(len(shapes)))]
         color = colors[int(rng.integers(len(colors)))]
         size_px = float(rng.uniform(cfg.min_size_ratio, cfg.max_size_ratio)) * cfg.img_size

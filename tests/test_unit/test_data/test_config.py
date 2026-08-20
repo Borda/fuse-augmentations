@@ -6,6 +6,7 @@ import pytest
 
 from fuse_augmentations.data.animals import AnimalShape, animal_shapes
 from fuse_augmentations.data.config import (
+    DEFAULT_COLORS,
     DEFAULT_SHAPES,
     ClassMode,
     Color,
@@ -146,6 +147,47 @@ def test_class_names_shape_color_pins_shape_major_color_minor_order() -> None:
     ]
 
 
+def test_class_names_shapes_param_narrows_shape_mode_to_the_given_family() -> None:
+    """Passing `shapes=DEFAULT_SHAPES` under `ClassMode.SHAPE` returns just the 4 geometric names.
+
+    Golden fixtures that pin a category count (e.g. a frozen detection-task output) need a vocabulary that stays a
+    stable 4 regardless of how many animal shapes later get added to the full `Shape` union; the opt-in `shapes`
+    parameter is how they ask for that without touching `class_id_of`'s full-vocabulary behavior.
+
+    """
+    assert class_names(ClassMode.SHAPE, shapes=DEFAULT_SHAPES) == ["square", "rectangle", "triangle", "circle"]
+
+
+def test_class_names_shapes_param_narrows_shape_color_mode() -> None:
+    """Passing `shapes` under `ClassMode.SHAPE_COLOR` restricts the product to that shape family.
+
+    Mirrors the `ClassMode.SHAPE` narrowing but exercises the shape-major/color-minor product path, which builds its
+    class names from the same `universe` rather than the module-level `(*GeomShape, *AnimalShape)` tuple.
+
+    """
+    assert class_names(ClassMode.SHAPE_COLOR, shapes=(AnimalShape.DUCK,)) == ["red_duck", "green_duck", "blue_duck"]
+
+
+def test_class_names_shapes_param_ignored_under_color_mode() -> None:
+    """`ClassMode.COLOR` returns the same 3 colors whether or not `shapes` is passed.
+
+    `ClassMode.COLOR` never depends on the shape vocabulary, so a caller narrowing `shapes` for a `SHAPE`-mode fixture
+    and reusing the same argument for a `COLOR`-mode one must not see it silently drop colors.
+
+    """
+    assert class_names(ClassMode.COLOR, shapes=DEFAULT_SHAPES) == class_names(ClassMode.COLOR)
+
+
+def test_class_names_shapes_param_defaults_to_full_vocabulary() -> None:
+    """Omitting `shapes` still returns the full 16-member vocabulary, unchanged from before the parameter existed.
+
+    The parameter is opt-in: existing callers (the generator, the writers, `_class_ids`) call `class_names` with no
+    `shapes` argument and must keep seeing the full span.
+
+    """
+    assert class_names(ClassMode.SHAPE) == class_names(ClassMode.SHAPE, shapes=None)
+
+
 def test_class_id_round_trips() -> None:
     """Class ID round-trips work for all modes, shapes, and colors."""
     for mode in ClassMode:
@@ -269,6 +311,58 @@ def test_shapes_rejects_non_shape_elements(bad: tuple[object, ...]) -> None:
     """
     with pytest.raises(ValueError, match="only Shape members"):
         SyntheticConfig(shapes=bad)
+
+
+def test_colors_defaults_to_every_color() -> None:
+    """An untouched config still draws from all three colors.
+
+    Mirrors `test_shapes_defaults_to_the_four_geometric_shapes`: adding the `colors` field must not change what an
+    existing seeded caller generates.
+
+    """
+    assert SyntheticConfig().colors == (Color.RED, Color.GREEN, Color.BLUE)
+    assert SyntheticConfig().colors == DEFAULT_COLORS
+
+
+def test_colors_accepts_a_restricted_override() -> None:
+    """A custom tuple is stored verbatim and restricts the drawable color palette.
+
+    Mirrors `test_shapes_accepts_an_animal_override`: the config must not silently widen or reorder what the caller
+    asked for.
+
+    """
+    config = SyntheticConfig(colors=(Color.BLUE, Color.RED))
+    assert config.colors == (Color.BLUE, Color.RED)
+
+
+def test_colors_rejects_an_empty_tuple() -> None:
+    """An empty color palette is refused at construction rather than at draw time.
+
+    Mirrors `test_shapes_rejects_an_empty_tuple`: with no color to sample the generator would otherwise fail deep inside
+    the placement loop with an opaque index error.
+
+    """
+    with pytest.raises(ValueError, match="at least one Color"):
+        SyntheticConfig(colors=())
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param(("red",), id="bare-string"),
+        pytest.param((Color.RED, "blue"), id="mixed-string"),
+        pytest.param((Color.RED, None), id="none"),
+    ],
+)
+def test_colors_rejects_non_color_elements(bad: tuple[object, ...]) -> None:
+    """Anything that is not a `Color` member is refused, including an equal bare string.
+
+    Mirrors `test_shapes_rejects_non_shape_elements`: `Color` subclasses `str`, so `"red" == Color.RED` is True and a
+    plain string would sail through a naive equality check while breaking identity comparisons downstream.
+
+    """
+    with pytest.raises(ValueError, match="only Color members"):
+        SyntheticConfig(colors=bad)
 
 
 @pytest.mark.parametrize(

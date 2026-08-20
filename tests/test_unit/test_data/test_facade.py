@@ -41,6 +41,20 @@ def test_coco_file_counts_match(tmp_path: Path) -> None:
         assert len(list((tmp_path / split).glob("*.jpg"))) == count
 
 
+def test_configured_shapes_scope_coco_categories(tmp_path: Path) -> None:
+    """COCO categories use the shape family configured through the facade."""
+    import json
+
+    from fuse_augmentations.data import DEFAULT_SHAPES
+
+    generate_dataset(tmp_path, num_images=1, fmt="coco", shapes=DEFAULT_SHAPES, img_size=32, seed=0)
+    doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
+
+    assert [(category["id"], category["name"]) for category in doc["categories"]] == [
+        (index, shape.value) for index, shape in enumerate(DEFAULT_SHAPES, start=1)
+    ]
+
+
 def test_yolo_file_counts_match(tmp_path: Path) -> None:
     """YOLO format file counts match metadata."""
     counts = generate_dataset(tmp_path, num_images=10, fmt="yolo", seed=1)

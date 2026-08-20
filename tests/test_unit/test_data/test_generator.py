@@ -164,6 +164,33 @@ def test_single_animal_shape_is_the_only_one_drawn(shape: AnimalShape | GeomShap
     assert {ann.class_name for ann in sample.annotations} == {shape.value}
 
 
+def test_default_config_draws_from_all_three_colors() -> None:
+    """A config that never mentions `colors` can still produce all three colors.
+
+    Compatibility guarantee for the `colors` field, mirroring `test_default_config_draws_only_the_original_four_shapes`
+    for `shapes`: an untouched config keeps sampling from the full `Color` vocabulary.
+
+    """
+    config = SyntheticConfig(img_size=192, min_objects=12, max_objects=12, class_mode=ClassMode.COLOR)
+    sample = SyntheticGenerator(config).sample(np.random.default_rng(0))
+    drawn = {ann.class_name for ann in sample.annotations}
+    assert drawn == {c.value for c in Color}
+
+
+def test_single_color_override_is_the_only_one_drawn() -> None:
+    """Restricting `cfg.colors` to one color makes every annotation carry that color's class.
+
+    Mirrors `test_single_animal_shape_is_the_only_one_drawn` for `shapes`: a sampler still reading the full `Color` enum
+    would leak the other two colors into a dataset the caller asked to be single-color-only.
+
+    """
+    config = SyntheticConfig(
+        img_size=160, min_objects=4, max_objects=6, class_mode=ClassMode.COLOR, colors=(Color.BLUE,)
+    )
+    sample = SyntheticGenerator(config).sample(np.random.default_rng(11))
+    assert {ann.class_name for ann in sample.annotations} == {Color.BLUE.value}
+
+
 def test_animal_shapes_respect_boundary_tolerance() -> None:
     """Animal placements obey the same off-canvas budget as the geometric shapes.
 

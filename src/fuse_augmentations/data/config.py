@@ -12,6 +12,7 @@ parses the packaged zoo documents at import time (NumPy plus the stdlib XML pars
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from functools import cache
@@ -65,6 +66,11 @@ class Color(str, Enum):
             Color.GREEN: (0, 128, 0),
             Color.BLUE: (0, 0, 255),
         }[self]
+
+
+#: Colors drawn when :attr:`SyntheticConfig.colors` is not overridden — the full :class:`Color`
+#: vocabulary, i.e. the behavior that predated the field existing.
+DEFAULT_COLORS: tuple[Color, ...] = tuple(Color)
 
 
 class Task(str, Enum):
@@ -138,26 +144,35 @@ class ClassMode(str, Enum):
     SHAPE_COLOR = "shape_color"
 
 
-def class_names(class_mode: ClassMode) -> list[str]:
+def class_names(class_mode: ClassMode, shapes: Iterable[Shape] | None = None) -> list[str]:
     """Return the ordered class-name vocabulary for a class mode.
 
-    The vocabulary always spans the full range for the selected ``class_mode``, independently of
-    :attr:`SyntheticConfig.shapes`. ``ClassMode.SHAPE`` spans the full **16**-member :class:`Shape`
-    enum; ``ClassMode.SHAPE_COLOR`` spans all 16 shapes times the 3 colors (48 combined classes); and
-    ``ClassMode.COLOR`` spans only the 3 colors, independently of the shape vocabulary entirely. That
-    keeps a class id meaning the same thing across every configuration — a dataset restricted to
-    ``(AnimalShape.GIRAFFE,)`` still uses giraffe's ``SHAPE`` id from this list rather than
-    renumbering it to ``0`` — at the cost of declaring classes that a restricted run never draws.
+    By default (``shapes=None``) the vocabulary always spans the full range for the selected
+    ``class_mode``, independently of :attr:`SyntheticConfig.shapes`. ``ClassMode.SHAPE`` spans the
+    full **16**-member :class:`Shape` enum; ``ClassMode.SHAPE_COLOR`` spans all 16 shapes times the 3
+    colors (48 combined classes); and ``ClassMode.COLOR`` spans only the 3 colors, independently of
+    the shape vocabulary entirely. That keeps a class id meaning the same thing across every
+    configuration — a dataset restricted to ``(AnimalShape.GIRAFFE,)`` still uses giraffe's ``SHAPE``
+    id from this list rather than renumbering it to ``0`` — at the cost of declaring classes that a
+    restricted run never draws. This is what :func:`class_id_of` relies on, so it never passes
+    ``shapes``.
+
+    Pass ``shapes`` to narrow ``ClassMode.SHAPE``/``ClassMode.SHAPE_COLOR`` to a specific shape
+    family instead — e.g. a golden-fixture assertion that wants a stable 4-category list for
+    :data:`DEFAULT_SHAPES` regardless of how many animal shapes the full vocabulary later grows to.
+    ``ClassMode.COLOR`` ignores ``shapes`` since it never depends on the shape vocabulary.
 
     Args:
         class_mode: The selected :class:`ClassMode`.
+        shapes: Shape family to narrow the vocabulary to, in the given order. ``None`` (the default)
+            keeps the full-vocabulary behavior described above.
 
     Returns:
-        Class names in a stable order; list index is the class id.
+        Class names in a stable order; list index is the class id when ``shapes`` is ``None``.
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.data.config import ClassMode, class_names
+        >>> from fuse_augmentations.data.config import ClassMode, DEFAULT_SHAPES, class_names
         >>> class_names(ClassMode.SHAPE)[:4]
         ['square', 'rectangle', 'triangle', 'circle']
         >>> class_names(ClassMode.SHAPE)[4:8]
@@ -168,15 +183,18 @@ def class_names(class_mode: ClassMode) -> list[str]:
         ['red', 'green', 'blue']
         >>> class_names(ClassMode.SHAPE_COLOR)[:2]
         ['red_square', 'green_square']
+        >>> class_names(ClassMode.SHAPE, shapes=DEFAULT_SHAPES)
+        ['square', 'rectangle', 'triangle', 'circle']
 
         ```
 
     """
+    universe = (*GeomShape, *AnimalShape) if shapes is None else tuple(shapes)
     if class_mode is ClassMode.SHAPE:
-        return [shape.value for shape in (*GeomShape, *AnimalShape)]
+        return [shape.value for shape in universe]
     if class_mode is ClassMode.COLOR:
         return [color.value for color in Color]
-    return [f"{color.value}_{shape.value}" for shape in (*GeomShape, *AnimalShape) for color in Color]
+    return [f"{color.value}_{shape.value}" for shape in universe for color in Color]
 
 
 def class_id_of(shape: Shape, color: Color, class_mode: ClassMode) -> int:
@@ -288,8 +306,13 @@ class SyntheticConfig:
         class_mode: How classes are derived (see :class:`ClassMode`).
         shapes: Shapes the generator may draw, sampled uniformly. Defaults to
             :data:`DEFAULT_SHAPES`; pass e.g. ``(AnimalShape.DUCK, AnimalShape.GIRAFFE)`` to draw
-            animal silhouettes instead. Restricting this does **not** renumber classes:
-            class ids always index the full :class:`Shape` vocabulary.
+            animal silhouettes instead, ``tuple(AnimalShape)`` for every animal, or
+            ``(*GeomShape, *AnimalShape)`` for the full mixed vocabulary. Restricting this does
+            **not** renumber classes: class ids always index the full :class:`Shape` vocabulary.
+        colors: Fill colors the generator may draw, sampled uniformly. Defaults to
+            :data:`DEFAULT_COLORS` (all three); pass e.g. ``(Color.RED,)`` to draw only red
+            objects. Restricting this does **not** renumber classes either, for the same reason
+            as ``shapes``.
         task: Annotation task the generated samples target. Only :attr:`Task.KEYPOINTS`
             changes what the generator computes (it adds the landmark table); the other
             tasks all read the same polygon/box fields, so they differ at write time only.
@@ -297,21 +320,24 @@ class SyntheticConfig:
     Raises:
         ValueError: On non-positive sizes, inverted min/max ranges, an ``overlap_iou`` or
             ``boundary_tolerance`` outside ``[0, 1]``, ``max_placement_attempts`` below 1,
-            a ``shapes`` tuple that is empty or holds a non-:class:`Shape` element, a ``task``
-            that is not a :class:`Task` member, or a :attr:`Task.KEYPOINTS` task combined with
-            a shape that has no keypoint table (anything but an
+            a ``shapes`` tuple that is empty or holds a non-:class:`Shape` element, a ``colors``
+            tuple that is empty or holds a non-:class:`Color` element, a ``task`` that is not a
+            :class:`Task` member, or a :attr:`Task.KEYPOINTS` task combined with a shape that has
+            no keypoint table (anything but an
                 :class:`~fuse_augmentations.data.animals.AnimalShape`).
 
     Examples:
         ```pycon
         >>> from fuse_augmentations.data.animals import AnimalShape
-        >>> from fuse_augmentations.data.config import SyntheticConfig, Task
+        >>> from fuse_augmentations.data.config import Color, SyntheticConfig, Task
         >>> SyntheticConfig(img_size=128).img_size
         128
         >>> SyntheticConfig(shapes=(AnimalShape.DUCK, AnimalShape.CAMEL)).shapes
         (<AnimalShape.DUCK: 'duck'>, <AnimalShape.CAMEL: 'camel'>)
         >>> SyntheticConfig(task=Task.KEYPOINTS, shapes=(AnimalShape.DUCK,)).task
         <Task.KEYPOINTS: 'keypoints'>
+        >>> SyntheticConfig(colors=(Color.RED,)).colors
+        (<Color.RED: 'red'>,)
 
         ```
 
@@ -329,6 +355,7 @@ class SyntheticConfig:
     rotate: bool = True
     class_mode: ClassMode = ClassMode.SHAPE
     shapes: tuple[Shape, ...] = DEFAULT_SHAPES
+    colors: tuple[Color, ...] = DEFAULT_COLORS
     task: Task = Task.DETECTION
 
     def __post_init__(self) -> None:
@@ -350,15 +377,15 @@ class SyntheticConfig:
         self._validate_vocabulary()
 
     def _validate_vocabulary(self) -> None:
-        """Reject an unusable shape tuple, a non-:class:`Task` task, or an unannotatable pairing.
+        """Reject an unusable shape/color tuple, a non-:class:`Task` task, or an unannotatable pairing.
 
         Split out of :meth:`__post_init__` so neither routine outgrows the project's complexity
         budget; it carries every check that reads the enum-valued fields rather than the numbers.
 
         Raises:
-            ValueError: If ``shapes`` is empty or holds a non-:class:`Shape` element, ``task`` is
-                not a :class:`Task` member, or a :attr:`Task.KEYPOINTS` task is paired with a shape
-                that has no keypoint table.
+            ValueError: If ``shapes`` is empty or holds a non-:class:`Shape` element, ``colors`` is
+                empty or holds a non-:class:`Color` element, ``task`` is not a :class:`Task` member,
+                or a :attr:`Task.KEYPOINTS` task is paired with a shape that has no keypoint table.
 
         """
         if not self.shapes:
@@ -368,6 +395,13 @@ class SyntheticConfig:
         invalid = [value for value in self.shapes if not isinstance(value, Shape)]
         if invalid:
             raise ValueError(f"shapes must contain only Shape members, got {invalid!r}")
+        if not self.colors:
+            raise ValueError("colors must name at least one Color, got an empty sequence")
+        # Same "equal but not an instance" trap as `shapes` above -- a bare "red" would otherwise
+        # reach the generator's `color.rgb` lookup and fail there instead of at construction.
+        invalid_colors = [value for value in self.colors if not isinstance(value, Color)]
+        if invalid_colors:
+            raise ValueError(f"colors must contain only Color members, got {invalid_colors!r}")
         # Same trap for the task: a bare "keypoints" equals Task.KEYPOINTS but fails every identity
         # test downstream, which would silently emit a detection dataset instead of raising.
         if not isinstance(self.task, Task):
