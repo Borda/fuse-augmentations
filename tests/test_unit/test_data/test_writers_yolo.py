@@ -8,10 +8,11 @@ import numpy as np
 import pytest
 import yaml
 
-from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, AnimalShape
-from fuse_augmentations.data.config import SyntheticConfig, Task, class_names
+from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, ANIMAL_KEYPOINT_SCHEMA, AnimalShape
+from fuse_augmentations.data.config import SyntheticConfig, Task, class_vocabulary
+from fuse_augmentations.data.families import keypoint_schema_for
 from fuse_augmentations.data.generator import SyntheticGenerator
-from fuse_augmentations.data.landmarks import KeypointSchema
+from fuse_augmentations.data.keypoints import KeypointSchema
 from fuse_augmentations.data.letters import LETTER_KEYPOINT_SCHEMA, LetterShape
 from fuse_augmentations.data.sample import Annotation, Sample
 from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_SCHEMA, SymbolShape
@@ -33,7 +34,7 @@ def _write(
     `img_size`, or `task` — is a keyword here, so a test states only what makes it different from the others. The
     writer's task is positional and separate from the config's: the writer formats whatever the samples already carry,
     so a detection-configured stream can still be written out as segmentation or OBB. `keypoint_schema` is only relevant
-    to `Task.KEYPOINTS` runs and defaults to `YoloWriter`'s own default (the animal schema) when omitted.
+    to `Task.KEYPOINTS` runs and defaults to whichever family the config's own `shapes` name.
 
     """
     settings = {"img_size": 96, "min_objects": 2, "max_objects": 4, **config_kwargs}
@@ -41,9 +42,19 @@ def _write(
     generator = SyntheticGenerator(config)
     rng = np.random.default_rng(seed)
     data = {split: [generator.sample(rng) for _ in range(count)] for split in splits}
-    names = class_names(config.class_mode, shapes=config.shapes)
-    writer_kwargs = {} if keypoint_schema is None else {"keypoint_schema": keypoint_schema}
-    YoloWriter(writer_task, names, **writer_kwargs).write(data, tmp_path)
+    vocabulary = class_vocabulary(config.class_mode, config.shapes)
+    names = vocabulary.names
+    # A keypoints writer has no default schema any more, so fall back to the one the config's own
+    # shapes name rather than to whichever family happens to be first.
+    # A keypoints *writer* over a non-keypoints *config* is a case several tests here exercise on
+    # purpose. The config's own shapes then name no schema, so the family has to be stated — which
+    # is exactly what removing the writer's implicit animal default forces, and why the choice is
+    # visible here instead of hidden in the writer.
+    schema = keypoint_schema if keypoint_schema is not None else keypoint_schema_for(config.shapes)
+    if schema is None and writer_task is Task.KEYPOINTS:
+        schema = ANIMAL_KEYPOINT_SCHEMA
+    writer_kwargs = {} if schema is None else {"keypoint_schema": schema}
+    YoloWriter(writer_task, vocabulary, **writer_kwargs).write(data, tmp_path)
     return data, names
 
 
@@ -119,9 +130,10 @@ def test_image_label_parity(tmp_path: Path) -> None:
 
 def test_write_rejects_empty_splits(tmp_path: Path) -> None:
     """Empty splits dict is rejected."""
-    names = class_names(SyntheticConfig().class_mode)
     with pytest.raises(ValueError, match="at least one split"):
-        YoloWriter(Task.DETECTION, names).write({}, tmp_path)
+        YoloWriter(Task.DETECTION, class_vocabulary(SyntheticConfig().class_mode, SyntheticConfig().shapes)).write(
+            {}, tmp_path
+        )
     assert list(tmp_path.iterdir()) == []  # guarded before any partial output is created
 
 
@@ -158,10 +170,11 @@ def test_detection_label_clamps_edge_crossing_box(tmp_path: Path) -> None:
         class_name="square",
         polygon=[-20.0, 10.0, 40.0, 10.0, 40.0, 50.0, -20.0, 50.0],
         bbox_xyxy=(-20.0, 10.0, 40.0, 50.0),
-        obb_corners=[-20.0, 10.0, 40.0, 10.0, 40.0, 50.0, -20.0, 50.0],
     )
     sample = Sample(image=np.zeros((100, 100, 3), dtype=np.uint8), annotations=[ann], width=100, height=100)
-    YoloWriter(Task.DETECTION, class_names(SyntheticConfig().class_mode)).write({"train": [sample]}, tmp_path)
+    YoloWriter(Task.DETECTION, class_vocabulary(SyntheticConfig().class_mode, SyntheticConfig().shapes)).write(
+        {"train": [sample]}, tmp_path
+    )
     cx, cy, w, h = (float(v) for v in (tmp_path / "labels" / "train" / "img_000000.txt").read_text().split()[1:])
     # Clipped box is (0, 10, 40, 50): cx=0.2, cy=0.3, w=0.4, h=0.4 — not the unclipped cx=0.1, w=0.6.
     assert (cx, cy, w, h) == pytest.approx((0.2, 0.3, 0.4, 0.4))

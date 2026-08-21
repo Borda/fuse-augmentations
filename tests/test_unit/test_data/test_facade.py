@@ -158,21 +158,25 @@ def test_rejects_non_positive_num_images(tmp_path: Path, bad: int) -> None:
         generate_dataset(tmp_path, num_images=bad, fmt="coco", seed=0)
 
 
-def test_supplied_config_ignores_invalid_class_mode(tmp_path: Path) -> None:
-    """Invalid class_mode is ignored when config is supplied."""
+def test_supplied_config_rejects_competing_field_keywords(tmp_path: Path) -> None:
+    """Passing a config *and* config fields is refused rather than silently letting one win.
+
+    A `class_mode=` alongside a config used to be accepted and ignored, so a caller who set it expecting it to apply got
+    the config's mode with no indication their argument went nowhere — the same "two owners, one silently loses" shape
+    the `task` argument had. There is one owner now, and naming both is an error.
+
+    """
     from fuse_augmentations.data import ClassMode, SyntheticConfig
 
     config = SyntheticConfig(img_size=64, class_mode=ClassMode.COLOR)
-    # An invalid class_mode string must be ignored (not normalized) when a config is supplied.
-    counts = generate_dataset(tmp_path, num_images=5, fmt="coco", class_mode="not-a-real-mode", config=config, seed=0)
-    assert sum(counts.values()) == 5
-    doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
-    assert len(doc["categories"]) == 3  # config's COLOR vocabulary, not the ignored class_mode
+
+    with pytest.raises(ValueError, match="either a config or its fields"):
+        generate_dataset(tmp_path, num_images=5, fmt="coco", class_mode="shape", config=config, seed=0)
 
 
 def test_task_reaches_the_generator_not_only_the_writer(tmp_path: Path) -> None:
     """A facade `task=` configures the generator too, so the landmark block holds real points."""
-    from fuse_augmentations.data import ANIMAL_KEYPOINT_NAMES, AnimalShape
+    from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, AnimalShape
 
     counts = generate_dataset(
         tmp_path, num_images=4, fmt="coco", task="keypoints", shapes=(AnimalShape.DUCK,), img_size=64, seed=0
@@ -185,24 +189,33 @@ def test_task_reaches_the_generator_not_only_the_writer(tmp_path: Path) -> None:
     assert any(ann["num_keypoints"] > 0 for ann in doc["annotations"])
 
 
-def test_rejects_a_task_conflicting_with_the_supplied_config(tmp_path: Path) -> None:
-    """A `task=` disagreeing with config's own task is refused."""
-    from fuse_augmentations.data import AnimalShape, SyntheticConfig, Task
+def test_a_task_keyword_cannot_compete_with_a_supplied_config(tmp_path: Path) -> None:
+    """`task=` alongside a config is refused as a competing field, not reconciled against it.
+
+    The task used to have two owners — the generator read the config's, the writer read the argument — so the facade had
+    to cross-check them and explain which won. With `SyntheticConfig` the sole owner there is nothing to reconcile: the
+    keyword is simply a config field, and naming a field twice is an error like any other.
+
+    """
+    from fuse_augmentations.data import SyntheticConfig, Task
+    from fuse_augmentations.data.animals import AnimalShape
 
     config = SyntheticConfig(img_size=64, task=Task.KEYPOINTS, shapes=(AnimalShape.DUCK,))
-    with pytest.raises(ValueError, match=r"conflicts with config\.task"):
+
+    with pytest.raises(ValueError, match="either a config or its fields"):
         generate_dataset(tmp_path, num_images=5, fmt="coco", task="detection", config=config, seed=0)
 
 
 def test_omitted_task_adopts_the_supplied_config_task(tmp_path: Path) -> None:
     """Omitted `task=` adopts the config's task instead of clashing with the default.
 
-    A caller who sets `task=Task.KEYPOINTS` on the config and omits the facade argument used to hit the conflict error
-    above -- raised against a default they never passed, and telling them to do exactly what they had already done.
-    Omission must instead defer to the config.
+    A caller who sets `task=Task.KEYPOINTS` on the config and omits the facade argument used to hit a conflict error
+    raised against a default they never passed, telling them to do exactly what they had already done. The facade takes
+    no task argument at all now, so the config is simply read.
 
     """
-    from fuse_augmentations.data import ANIMAL_KEYPOINT_NAMES, AnimalShape, SyntheticConfig, Task
+    from fuse_augmentations.data import SyntheticConfig, Task
+    from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, AnimalShape
 
     config = SyntheticConfig(img_size=64, task=Task.KEYPOINTS, shapes=(AnimalShape.DUCK,))
     counts = generate_dataset(tmp_path, num_images=4, fmt="coco", config=config, seed=0)

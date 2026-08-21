@@ -17,7 +17,7 @@ generator's random in-plane rotation. An eighth symbol must keep this invariant 
 Vertices are authored directly as unit-space literals (raw coordinates in a nominal
 ``[-1.3, 1.3]`` box, screen orientation — ``+x`` right, ``+y`` **down**, matching
 :mod:`~fuse_augmentations.data.animals`) and pushed through
-:func:`~fuse_augmentations.data.landmarks._normalized_pair` at import time, so the same unit-space
+:func:`~fuse_augmentations.data.keypoints._normalized_pair` at import time, so the same unit-space
 invariant the zoo loader enforces on traced art (center of mass at the origin, larger extent
 scaled to ``1``) is enforced here too rather than merely assumed of the hand-picked numbers.
 
@@ -53,7 +53,7 @@ same property :data:`~fuse_augmentations.data.animals.ANIMAL_KEYPOINT_SKELETON` 
 
 Pure NumPy, no image-library dependency, and no import from
 :mod:`~fuse_augmentations.data.animals`: the two families are siblings under
-:mod:`~fuse_augmentations.data.landmarks`, neither importing the other. Tables are keyed by the
+:mod:`~fuse_augmentations.data.keypoints`, neither importing the other. Tables are keyed by the
 plain :class:`SymbolShape` *values*.
 
 Examples:
@@ -77,15 +77,16 @@ Examples:
 
 from __future__ import annotations
 
-import json
-from enum import Enum
 from importlib.resources import files
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from fuse_augmentations.data.landmarks import KeypointSchema, _normalized_pair
+from fuse_augmentations.data.geometry import place_points
+from fuse_augmentations.data.keypoints import KeypointSchema, _normalized_pair
+from fuse_augmentations.data.shape_enum import ShapeEnum
+from fuse_augmentations.data.svgio import read_outline_document
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -98,14 +99,14 @@ _NAN = float("nan")
 _ABSENT: tuple[float, float] = (_NAN, _NAN)
 
 
-class SymbolShape(str, Enum):
+class SymbolShape(ShapeEnum):
     """Analytic symbol vocabulary (definition order is the symbol class order).
 
     Seven straight-edge 2D symbols, each mirror-symmetric about its own vertical axis and belonging
     to a distinct silhouette archetype, so — like :class:`~fuse_augmentations.data.animals.AnimalShape`
     — every outline point keeps an unambiguous identity under rotation. There is no plain
     ``TRIANGLE``/``ISOSCELES_TRIANGLE`` member here: an isosceles (and, being acute, tied) triangle
-    doubled up on both the naming collision with :attr:`~fuse_augmentations.data.geometry.GeomShape.TRIANGLE`
+    doubled up on both the naming collision with :attr:`~fuse_augmentations.data.primitives.PrimitiveShape.TRIANGLE`
     and the "minimum-area OBB has no unique answer" problem that motivated redesigning that
     geometric shape (see its docstring) — not worth solving twice for a shape this family does not
     need to keep.
@@ -194,44 +195,40 @@ SYMBOL_KEYPOINT_SCHEMA = KeypointSchema(
 #: are the one exception to the three-quarters rule: they are the centroid of each barb's own
 #: triangle (tip, barb tip, notch), because the straight path from ``center`` to a barb tip crosses
 #: the concave notch and exits the polygon.
-_ASSET: Traversable = files("fuse_augmentations.data") / "symbols.json"
+#: Directory holding the packaged symbol documents, resolved through :mod:`importlib.resources` so
+#: it works from a source checkout and from an installed wheel alike. Symbols moved from a single
+#: ``symbols.json`` literal to one SVG per shape so they share the animals' asset schema — and with
+#: it ``examples/edit_shape_keypoints.py``, which can now drag a symbol's landmarks the same way it
+#: drags a duck's. The two families store the same thing (an outline plus landmarks annotating it),
+#: so storing them two different ways bought nothing.
+_ASSET: Traversable = files("fuse_augmentations.data") / "symbols"
+
+#: Every symbol landmark is optional: a symbol uses the slots its geometry has and leaves the rest
+#: NaN — ``kite`` has no ``corner_*`` pair, ``trapezoid`` no ``tip``. See the per-shape table above.
+_REQUIRED_KEYPOINTS: tuple[str, ...] = ()
 
 
-def _read_raw() -> dict[str, tuple[list[tuple[float, float]], list[tuple[float, float]]]]:
-    """Load and validate :data:`_ASSET` into the raw ``(outline, landmarks)`` literal per symbol.
+def _read_svg(name: str) -> tuple[list[tuple[float, float]], dict[str, tuple[float, float]], dict[str, str]]:
+    """Read one packaged symbol document through the shared reader.
 
-    Raises:
-        ValueError: If the asset is missing a registered :class:`SymbolShape`'s entry, or a
-            ``landmarks`` list does not hold exactly ``len(SYMBOL_KEYPOINT_NAMES)`` entries.
+    Args:
+        name: Symbol name, i.e. the ``<name>.svg`` stem in the packaged ``symbols`` directory.
+
+    Returns:
+        The outline vertices, the present landmarks (by name), and the provenance attributes.
 
     """
-    with _ASSET.open("rb") as handle:
-        payload = json.load(handle)
-    raw: dict[str, tuple[list[tuple[float, float]], list[tuple[float, float]]]] = {}
-    for name in SYMBOL_NAMES:
-        entry = payload.get(name)
-        if entry is None:
-            raise ValueError(f"symbols.json is missing the shape {name!r}")
-        landmarks = entry["landmarks"]
-        if len(landmarks) != len(SYMBOL_KEYPOINT_NAMES):
-            raise ValueError(
-                f"symbols.json shape {name!r} needs exactly {len(SYMBOL_KEYPOINT_NAMES)} landmarks, "
-                f"got {len(landmarks)}"
-            )
-        outline = [tuple(point) for point in entry["outline"]]
-        points = [_ABSENT if point is None else tuple(point) for point in landmarks]
-        raw[name] = (outline, points)
-    return raw
+    return read_outline_document(_ASSET, name, SYMBOL_KEYPOINT_NAMES, _REQUIRED_KEYPOINTS)
 
 
 def _load() -> tuple[dict[str, NDArray[np.float64]], dict[str, NDArray[np.float64]]]:
-    """Normalize every raw ``(outline, landmarks)`` literal into the unit-space table pair."""
-    raw = _read_raw()
+    """Normalize every packaged symbol document into the unit-space table pair."""
     polygons: dict[str, NDArray[np.float64]] = {}
     keypoints: dict[str, NDArray[np.float64]] = {}
     for name in SYMBOL_NAMES:
-        outline, landmarks = raw[name]
-        polygons[name], keypoints[name] = _normalized_pair(outline, landmarks, SYMBOL_KEYPOINT_NAMES)
+        outline, present, _provenance = _read_svg(name)
+        table = [present.get(key, _ABSENT) for key in SYMBOL_KEYPOINT_NAMES]
+        polygons[name], keypoints[name] = _normalized_pair(outline, table, SYMBOL_KEYPOINT_NAMES)
     return polygons, keypoints
 
 
@@ -249,57 +246,20 @@ SYMBOL_POLYGONS: Mapping[str, NDArray[np.float64]] = MappingProxyType(_POLYGONS)
 SYMBOL_KEYPOINTS: Mapping[str, NDArray[np.float64]] = MappingProxyType(_KEYPOINTS)
 
 
-def symbol_shapes(count: int | None = None) -> tuple[SymbolShape, ...]:
-    """Return the symbol shapes, optionally just the first ``count`` of them.
-
-    A convenience selector for :attr:`~fuse_augmentations.data.config.SyntheticConfig.shapes`,
-    mirroring :func:`~fuse_augmentations.data.animals.animal_shapes`. "First ``count``" means
-    :class:`SymbolShape` declaration order, the same order the class-id vocabulary uses, so
-    ``symbol_shapes(3)`` names the same three symbols on every call and across releases.
-
-    Args:
-        count: How many symbols to take, from the start of :class:`SymbolShape`. ``None`` (the
-            default) returns every symbol.
-
-    Returns:
-        The selected :class:`SymbolShape` members, in declaration order.
-
-    Raises:
-        ValueError: If ``count`` is negative or exceeds the number of symbols.
-
-    Examples:
-        ```pycon
-        >>> from fuse_augmentations.data.symbols import symbol_shapes
-        >>> symbol_shapes(2)
-        (<SymbolShape.KITE: 'kite'>, <SymbolShape.TRAPEZOID: 'trapezoid'>)
-        >>> len(symbol_shapes())
-        7
-
-        ```
-
-    """
-    every = tuple(SymbolShape)
-    if count is None:
-        return every
-    if not 0 <= count <= len(every):
-        raise ValueError(f"count must be within [0, {len(every)}], got {count}")
-    return every[:count]
-
-
 def symbol_keypoints(
     shape: SymbolShape, center: tuple[float, float], size: float, angle: float = 0.0, skew: float = 0.0
 ) -> NDArray[np.float64]:
     """Place one symbol's landmark table into image coordinates.
 
     The table is looked up in :data:`SYMBOL_KEYPOINTS`, scaled, skewed, rotated, and translated
-    exactly as :func:`~fuse_augmentations.data.geometry.shape_polygon` treats the matching outline,
+    exactly as :func:`~fuse_augmentations.data.families.shape_outline` treats the matching outline,
     so passing the same ``center``, ``size``, ``angle``, and ``skew`` to both puts every landmark on
     the silhouette that was drawn — mirroring :func:`~fuse_augmentations.data.animals.animal_keypoints`.
 
     Args:
         shape: A :class:`SymbolShape` member.
-        center: Target center ``(x, y)`` in pixels — the same value passed to ``shape_polygon``.
-        size: Bounding size in pixels — the same value passed to ``shape_polygon``.
+        center: Target center ``(x, y)`` in pixels — the same value passed to ``shape_outline``.
+        size: Bounding size in pixels — the same value passed to ``shape_outline``.
         angle: Rotation in radians about the shape center — likewise.
         skew: Signed fraction narrowing one pre-rotation half — likewise; see
             :attr:`~fuse_augmentations.data.config.SyntheticConfig.asymmetry_jitter`.
@@ -322,12 +282,9 @@ def symbol_keypoints(
         ```
 
     """
-    # deferred: geometry imports this module's tables, so a module-level import here would cycle
-    from fuse_augmentations.data.geometry import _placed
-
     table = SYMBOL_KEYPOINTS.get(shape.value)
     if table is None:
         known = ", ".join(SYMBOL_KEYPOINTS)
         raise ValueError(f"shape {shape.value!r} has no keypoint table; expected one of {known}")
     # The stored table is frozen, so multiplying returns a fresh writable array, never an alias.
-    return _placed(table * size, center, angle, skew)
+    return place_points(table * size, center, angle, skew)

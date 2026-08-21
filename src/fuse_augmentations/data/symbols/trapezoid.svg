@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:zoo="https://github.com/Borda/fuse-augmentations/ns/zoo" viewBox="0 0 1000 1000" width="1000" height="1000" zoo:archetype="analytic-symbol" zoo:title="trapezoid" zoo:origin="hand-authored" zoo:license="https://creativecommons.org/publicdomain/zero/1.0/" zoo:note="Analytic outline, hand-authored (no source artwork to attribute). Converted from the former symbols.json literal; coordinates are the JSON values scaled by 400 about a 1000x1000 centre. Save as Plain SVG, never Optimized SVG (it strips the zoo: namespace).">
+  <title>trapezoid</title>
+  <path id="outline" fill="#000000" d="M 300.000 180.000 L 700.000 180.000 L 900.000 820.000 L 100.000 820.000 Z" />
+  <g id="keypoints">
+  <circle id="kp-center" zoo:name="center" cx="500.000" cy="535.556" r="8" fill="#e6194b" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-flank_left" zoo:name="flank_left" cx="350.000" cy="268.888" r="8" fill="#911eb4" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-flank_right" zoo:name="flank_right" cx="650.000" cy="268.888" r="8" fill="#4363d8" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-base_left" zoo:name="base_left" cx="200.000" cy="748.888" r="8" fill="#42d4f4" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-base_right" zoo:name="base_right" cx="800.000" cy="748.888" r="8" fill="#3cb44b" stroke="#ffffff" stroke-width="1.5" />
+  </g>
+</svg>

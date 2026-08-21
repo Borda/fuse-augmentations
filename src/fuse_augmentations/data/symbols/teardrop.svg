@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:zoo="https://github.com/Borda/fuse-augmentations/ns/zoo" viewBox="0 0 1000 1000" width="1000" height="1000" zoo:archetype="analytic-symbol" zoo:title="teardrop" zoo:origin="hand-authored" zoo:license="https://creativecommons.org/publicdomain/zero/1.0/" zoo:note="Analytic outline, hand-authored (no source artwork to attribute). Converted from the former symbols.json literal; coordinates are the JSON values scaled by 400 about a 1000x1000 centre. Save as Plain SVG, never Optimized SVG (it strips the zoo: namespace).">
+  <title>teardrop</title>
+  <path id="outline" fill="#000000" d="M 360.000 160.000 L 500.000 120.000 L 640.000 160.000 L 720.000 280.000 L 700.000 440.000 L 500.000 860.000 L 300.000 440.000 L 280.000 280.000 Z" />
+  <g id="keypoints">
+  <circle id="kp-center" zoo:name="center" cx="500.000" cy="416.720" r="8" fill="#e6194b" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-apex" zoo:name="apex" cx="500.000" cy="194.180" r="8" fill="#ffe119" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-tail" zoo:name="tail" cx="500.000" cy="749.180" r="8" fill="#f58231" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-flank_left" zoo:name="flank_left" cx="350.000" cy="434.180" r="8" fill="#911eb4" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-flank_right" zoo:name="flank_right" cx="650.000" cy="434.180" r="8" fill="#4363d8" stroke="#ffffff" stroke-width="1.5" />
+  </g>
+</svg>

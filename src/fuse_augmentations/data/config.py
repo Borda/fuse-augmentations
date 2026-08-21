@@ -1,88 +1,53 @@
 """Configuration primitives for synthetic dataset generation.
 
-Defines the task/format/class-mode enums, the class-name vocabulary derived from
-shapes and colors, the train/val/test split ratios, and the :class:`SyntheticConfig`
-knob bundle consumed by :class:`~fuse_augmentations.data.generator.SyntheticGenerator`.
+Defines the task/format/class-mode enums, the class vocabulary derived from shapes and colors, the
+split ratios, and the :class:`SyntheticConfig` knob bundle consumed by
+:class:`~fuse_augmentations.data.generator.SyntheticGenerator`.
 
-No torch and no Pillow: this module imports with only the base dependencies installed. It does
-import :mod:`fuse_augmentations.data.animals` for the animal half of the shape vocabulary, which
-parses the packaged zoo documents at import time (NumPy plus the stdlib XML parser).
+Which shape families exist is **not** decided here — that is
+:mod:`~fuse_augmentations.data.families`, which this module reads. Everything below is about how a
+run is configured and how its classes are numbered, never about what a duck looks like.
+
+No torch and no Pillow: this module imports with only the base dependencies installed. It does pull
+in the shape families transitively, which parse the packaged assets at import time (NumPy plus the
+stdlib XML parser).
 
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
-from functools import cache
+from functools import lru_cache
 
-from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_SCHEMA, AnimalShape
-from fuse_augmentations.data.geometry import GeomShape
-from fuse_augmentations.data.landmarks import KeypointSchema
-from fuse_augmentations.data.letters import LETTER_KEYPOINT_SCHEMA, LetterShape
-from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_SCHEMA, SymbolShape
+from fuse_augmentations.data.families import (
+    DEFAULT_SHAPES,
+    Shape,
+    describe_keypoint_mismatch,
+    keypoint_schema_for,
+)
 
 _SPLIT_SUM_TOL = 1e-6
 
-
-#: The drawable-shape vocabulary: the analytic geometric shapes, the animal silhouettes, the
-#: analytic symbols, and the capital-letter stroke figures, kept as a union rather than one blended
-#: enum so each family owns its own definition (and so a family-only API such as
-#: :func:`~fuse_augmentations.data.animals.animal_keypoints` can say so in its signature). It is a
-#: real runtime union: ``isinstance(value, Shape)`` accepts any member type and still rejects a bare
-#: ``"duck"`` string, which is what :meth:`SyntheticConfig._validate_vocabulary` relies on. It is
-#: not iterable — build a full vocabulary as ``[*GeomShape, *AnimalShape, *SymbolShape, *LetterShape]``.
-Shape = GeomShape | AnimalShape | SymbolShape | LetterShape
-
-#: Shapes drawn when :attr:`SyntheticConfig.shapes` is not overridden — the four geometric shapes,
-#: i.e. the vocabulary that predates the animal silhouettes, the symbols, and the letters.
-DEFAULT_SHAPES: tuple[GeomShape, ...] = tuple(GeomShape)
-
-#: Keypoint schema per shape-family type, keyed by the concrete :class:`Shape` member class. Every
-#: member of a keyed family shares one schema, which is what makes a "one keypoint family per
-#: ``Task.KEYPOINTS`` run" rule checkable from ``type(shape)`` alone. :class:`GeomShape` is
-#: deliberately absent: none of its members carry a landmark table (see
-#: :class:`~fuse_augmentations.data.geometry.GeomShape`), so it names no keypoint family at all.
-_KEYPOINT_SCHEMAS: dict[type, KeypointSchema] = {
-    AnimalShape: ANIMAL_KEYPOINT_SCHEMA,
-    SymbolShape: SYMBOL_KEYPOINT_SCHEMA,
-    LetterShape: LETTER_KEYPOINT_SCHEMA,
-}
-
-
-def keypoint_schema_for(shapes: Iterable[Shape]) -> KeypointSchema | None:
-    """Return the single keypoint-bearing family's schema that ``shapes`` all belong to.
-
-    Args:
-        shapes: The shapes a run draws from — typically :attr:`SyntheticConfig.shapes`.
-
-    Returns:
-        The :class:`~fuse_augmentations.data.landmarks.KeypointSchema` shared by every shape in
-        ``shapes``, or ``None`` when ``shapes`` spans no single keypoint-bearing family (e.g. it is
-        empty, holds only :class:`~fuse_augmentations.data.geometry.GeomShape` members, or mixes
-        more than one keypoint-bearing family).
-
-    Examples:
-        ```pycon
-        >>> from fuse_augmentations.data.animals import AnimalShape
-        >>> from fuse_augmentations.data.config import keypoint_schema_for
-        >>> keypoint_schema_for((AnimalShape.DUCK, AnimalShape.CAMEL)).kpt_shape
-        16
-        >>> keypoint_schema_for((GeomShape.SQUARE,)) is None
-        True
-
-        ```
-
-    """
-    families = {type(shape) for shape in shapes}
-    if len(families) != 1:
-        return None
-    return _KEYPOINT_SCHEMAS.get(families.pop())
+#: Bound on the per-(mode, shapes) vocabulary and id-map caches. Real programs use a handful of
+#: combinations; a bound keeps a program that builds shape tuples programmatically from retaining
+#: one map per distinct tuple for the life of the process.
+_VOCABULARY_CACHE_SIZE = 64
 
 
 class Color(str, Enum):
-    """Fill-color vocabulary; :attr:`rgb` yields the 8-bit RGB tuple.
+    """The named fill vocabulary; each member carries its own 8-bit RGB payload.
+
+    A closed set of three, which is what :attr:`ClassMode.COLOR` numbers its classes from. A run is
+    not limited to them: a fill may equally be a raw ``(r, g, b)`` triple, so a yellow object needs
+    no change here. Both spellings normalize to a :class:`Fill` at the boundary, and that is the
+    single type everything downstream holds. The asymmetry that used to sit here (``background``
+    took any RGB while object fills took only these three) is gone.
+
+    The RGB triple is stored on the member itself, through ``__new__``, rather than looked up in a
+    table rebuilt on every access. Members stay ordinary strings either way: ``Color.RED == "red"``
+    holds, ``Color("red")`` parses, and JSON serializes a member as its value.
 
     Attributes:
         RED: ``(255, 0, 0)``.
@@ -94,28 +59,145 @@ class Color(str, Enum):
         >>> from fuse_augmentations.data.config import Color
         >>> Color.GREEN.rgb
         (0, 128, 0)
+        >>> Color("red") is Color.RED
+        True
 
         ```
 
     """
 
-    RED = "red"
-    GREEN = "green"
-    BLUE = "blue"
+    #: The member's RGB payload, set by ``__new__``; read through :attr:`rgb`.
+    _rgb: tuple[int, int, int]
+
+    RED = "red", (255, 0, 0)
+    GREEN = "green", (0, 128, 0)
+    BLUE = "blue", (0, 0, 255)
+
+    # PYI034 wants ``Self`` here, which needs ``typing_extensions`` on Python 3.10 -- an
+    # undeclared dependency for one annotation. ``Color`` is exact anyway: the class is final in
+    # practice, since an Enum with members cannot be subclassed.
+    def __new__(cls, value: str, rgb: tuple[int, int, int]) -> Color:  # noqa: PYI034
+        """Build a member that *is* its own value string and carries its RGB payload alongside."""
+        color = str.__new__(cls, value)
+        color._value_ = value
+        color._rgb = rgb
+        return color
 
     @property
     def rgb(self) -> tuple[int, int, int]:
         """Return the 8-bit RGB fill tuple for this color."""
-        return {
-            Color.RED: (255, 0, 0),
-            Color.GREEN: (0, 128, 0),
-            Color.BLUE: (0, 0, 255),
-        }[self]
+        return self._rgb
 
 
-#: Colors drawn when :attr:`SyntheticConfig.colors` is not overridden — the full :class:`Color`
-#: vocabulary, i.e. the behavior that predated the field existing.
-DEFAULT_COLORS: tuple[Color, ...] = tuple(Color)
+@dataclass(frozen=True)
+class Fill:
+    """One object fill: the RGB triple to draw with, plus the name it came from when it had one.
+
+    The single fill type everything past the config boundary holds. ``colors`` used to be a
+    ``tuple[Color, ...]``, so a yellow object had no path at all while ``background`` took any RGB —
+    an asymmetry with no defensible reason, since both end up as one Pillow fill. Widening the field
+    to accept raw triples could have been done with a ``Color | tuple[int, int, int]`` union, at the
+    cost of every signature spelling it out and every consumer taking it apart again for an RGB or a
+    label. Normalizing to one type instead keeps both as plain attributes.
+
+    Args:
+        rgb: The ``(r, g, b)`` triple to draw with; three integers in ``[0, 255]``.
+        name: The :class:`Color` name this fill came from, or ``None`` for a raw triple. Only
+            :attr:`label` reads it.
+
+    Raises:
+        ValueError: If ``rgb`` is not a tuple of three integers in ``[0, 255]``.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.config import Color, Fill
+        >>> Fill.parse(Color.BLUE).rgb
+        (0, 0, 255)
+        >>> Fill.parse((255, 215, 0)).label
+        'ffd700'
+
+        ```
+
+    """
+
+    rgb: tuple[int, int, int]
+    name: str | None = None
+
+    def __post_init__(self) -> None:
+        """Reject anything that is not three 8-bit channels."""
+        if (
+            not isinstance(self.rgb, tuple)
+            or len(self.rgb) != 3
+            or not all(isinstance(channel, int) and 0 <= channel <= 255 for channel in self.rgb)
+        ):
+            raise ValueError(f"fill must be a Color member or an (r, g, b) tuple of 0-255 integers, got {self.rgb!r}")
+
+    @property
+    def label(self) -> str:
+        """Return the class-name label this fill contributes.
+
+        A named fill labels itself; a raw triple has no name, so it is labelled by its hex value —
+        ``(255, 215, 0)`` becomes ``"ffd700"``. That keeps :attr:`ClassMode.COLOR` and
+        :attr:`ClassMode.SHAPE_COLOR` well defined for custom fills without inventing color names.
+
+        Examples:
+            ```pycon
+            >>> from fuse_augmentations.data.config import Color, Fill
+            >>> Fill.parse(Color.RED).label, Fill.parse((255, 215, 0)).label
+            ('red', 'ffd700')
+
+            ```
+
+        """
+        if self.name is not None:
+            return self.name
+        red, green, blue = self.rgb
+        return f"{red:02x}{green:02x}{blue:02x}"
+
+    @classmethod
+    def parse(cls, color: ColorLike) -> Fill:
+        """Normalize any accepted spelling of a fill into a :class:`Fill`.
+
+        The one boundary where the :data:`ColorLike` union is unpacked. Every signature that takes a
+        caller-supplied fill runs it through here once and holds the result.
+
+        Args:
+            color: A :class:`Color` member, an ``(r, g, b)`` tuple, or an existing :class:`Fill`.
+
+        Returns:
+            The normalized fill — ``color`` itself when it already is one.
+
+        Raises:
+            ValueError: If ``color`` is neither a :class:`Color` nor a valid RGB triple. A bare
+                ``"red"`` string lands here: it compares equal to :attr:`Color.RED` under the
+                :class:`str` mixin, so nothing earlier would have caught it.
+
+        Examples:
+            ```pycon
+            >>> from fuse_augmentations.data.config import Color, Fill
+            >>> Fill.parse(Color.BLUE)
+            Fill(rgb=(0, 0, 255), name='blue')
+            >>> Fill.parse((255, 215, 0))
+            Fill(rgb=(255, 215, 0), name=None)
+
+            ```
+
+        """
+        if isinstance(color, Fill):
+            return color
+        if isinstance(color, Color):
+            return cls(rgb=color.rgb, name=color.value)
+        return cls(rgb=color)
+
+
+#: A fill as a *caller* may spell it: a named :class:`Color`, a raw 8-bit ``(r, g, b)`` triple, or
+#: an already-normalized :class:`Fill`. Only :meth:`Fill.parse` and the public signatures that feed
+#: it accept the union — everything past that boundary holds a :class:`Fill`.
+ColorLike = Color | tuple[int, int, int] | Fill
+
+#: Fills drawn when :attr:`SyntheticConfig.colors` is not overridden — the full :class:`Color`
+#: vocabulary, normalized, i.e. the behavior that predated the field existing.
+DEFAULT_COLORS: tuple[Fill, ...] = tuple(Fill.parse(color) for color in Color)
 
 
 class Task(str, Enum):
@@ -125,22 +207,19 @@ class Task(str, Enum):
         DETECTION: Axis-aligned bounding boxes only.
         SEGMENTATION: Bounding boxes plus filled polygon masks.
         OBB: Oriented (rotated) bounding boxes as four corner points.
-        KEYPOINTS: Bounding boxes plus the sixteen named landmarks of
-            :data:`~fuse_augmentations.data.animals.ANIMAL_KEYPOINT_NAMES`; restricted to
-            :class:`~fuse_augmentations.data.animals.AnimalShape`, the only shapes with a landmark
-            table. Points an animal does not have (e.g. a whale's hind limbs) are absent rather
-            than faked — see :mod:`fuse_augmentations.data.animals` for the NaN-row contract.
-
-    The canonical ``OBB`` value is ``"oriented_bounding_boxes"``; the short alias
-    ``"obb"`` is also accepted (case-insensitive).
+        KEYPOINTS: Bounding boxes plus the named landmarks of whichever keypoint-bearing family
+            the run draws from — animals (16 anatomical points), symbols (7), or letters (15 grid
+            nodes). A run must stay within one such family, since a dataset declares one landmark
+            schema; :func:`~fuse_augmentations.data.families.keypoint_schema_for` is what resolves
+            it. Points a shape does not have (a whale's hind limbs, a grid slot a letter never
+            touches) are absent rather than faked — see each family's module for the NaN-row
+            contract.
 
     Examples:
         ```pycon
         >>> from fuse_augmentations.data.config import Task
-        >>> Task("obb") is Task.OBB
-        True
-        >>> Task("oriented_bounding_boxes") is Task.OBB
-        True
+        >>> Task.OBB.value
+        'obb'
         >>> Task("keypoints") is Task.KEYPOINTS
         True
 
@@ -150,15 +229,8 @@ class Task(str, Enum):
 
     DETECTION = "detection"
     SEGMENTATION = "segmentation"
-    OBB = "oriented_bounding_boxes"
+    OBB = "obb"
     KEYPOINTS = "keypoints"
-
-    @classmethod
-    def _missing_(cls, value: object) -> Task | None:
-        """Accept the short ``"obb"`` alias (case-insensitive) for :attr:`OBB`."""
-        if isinstance(value, str) and value.lower() in {"obb", "oriented_bounding_box"}:
-            return cls.OBB
-        return None
 
 
 class OutputFormat(str, Enum):
@@ -178,9 +250,10 @@ class ClassMode(str, Enum):
     """How object classes are derived from shape and color.
 
     Attributes:
-        SHAPE: One class per shape (square, rectangle, triangle, circle).
-        COLOR: One class per color (red, green, blue).
-        SHAPE_COLOR: Cartesian product, named ``"<color>_<shape>"``.
+        SHAPE: One class per shape in the run's own ``shapes`` vocabulary — the four primitives
+            by default, up to all 49 across every family.
+        COLOR: One class per fill in the run's own ``colors``, named by :attr:`Fill.label`.
+        SHAPE_COLOR: Cartesian product of the two, named ``"<color>_<shape>"``.
 
     """
 
@@ -189,85 +262,228 @@ class ClassMode(str, Enum):
     SHAPE_COLOR = "shape_color"
 
 
-def class_names(class_mode: ClassMode, shapes: Iterable[Shape] | None = None) -> list[str]:
-    """Return the ordered class-name vocabulary for a class mode.
+@dataclass(frozen=True)
+class ClassEntry:
+    """One class in a run's vocabulary, with the shape and color it was derived from kept intact.
 
-    By default (``shapes=None``) the vocabulary spans the full range for the selected
-    ``class_mode``: ``ClassMode.SHAPE`` spans the full **49**-member :class:`Shape` enum;
-    ``ClassMode.SHAPE_COLOR`` spans all 49 shapes times the 3 colors (147 combined classes); and
-    ``ClassMode.COLOR`` spans only the 3 colors, independently of the shape vocabulary entirely.
-
-    Pass ``shapes`` to narrow ``ClassMode.SHAPE``/``ClassMode.SHAPE_COLOR`` to a specific shape
-    family instead — a dataset restricted to ``(AnimalShape.GIRAFFE,)`` then declares one category
-    and numbers it ``0`` rather than carrying 48 categories it never draws. ``ClassMode.COLOR``
-    ignores ``shapes`` since it never depends on the shape vocabulary.
-
-    **The ids follow the narrowing.** A generated dataset's ids are local to its own vocabulary:
-    :func:`class_id_of` takes the same ``shapes`` argument and indexes into the same list, and
-    :class:`~fuse_augmentations.data.generator.SyntheticGenerator` passes its config's ``shapes`` to
-    both. That is what keeps a written dataset internally consistent — every annotation's id
-    resolves against the very ``categories``/``names`` block written beside it — at the cost of an
-    id meaning different things in a narrowed run and a full-vocabulary one. Compare two runs by
-    class *name*, never by raw id.
+    The point of this type is that the writers never have to reconstruct structure from a class
+    *name*. A ``ClassMode.SHAPE_COLOR`` name is built by concatenation (``"red_duck"``), and the
+    writers used to recover the shape half by splitting on the first underscore — which is correct
+    only for as long as no shape value and no color value contains an underscore. Carrying the pair
+    through instead makes that whole class of bug impossible.
 
     Args:
-        class_mode: The selected :class:`ClassMode`.
-        shapes: Shape family to narrow the vocabulary to, in the given order. ``None`` (the default)
-            keeps the full-vocabulary behavior described above.
-
-    Returns:
-        Class names in a stable order; list index is the class id for the same ``shapes``.
+        index: The class id — this entry's position in its vocabulary.
+        name: The rendered class name, as it appears in a COCO ``categories`` block or a YOLO
+            ``names`` list.
+        shape: The shape this class was derived from, or ``None`` under
+            :attr:`ClassMode.COLOR`, whose classes name no specific shape.
+        color: The color this class was derived from, or ``None`` under :attr:`ClassMode.SHAPE`,
+            whose classes name no specific color.
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.data.config import ClassMode, DEFAULT_SHAPES, class_names
-        >>> class_names(ClassMode.SHAPE)[:4]
+        >>> from fuse_augmentations.data.config import ClassMode, class_vocabulary
+        >>> from fuse_augmentations.data.primitives import PrimitiveShape
+        >>> entry = class_vocabulary(ClassMode.SHAPE, (PrimitiveShape.SQUARE,)).entries[0]
+        >>> entry.index, entry.name, entry.color is None
+        (0, 'square', True)
+
+        ```
+
+    """
+
+    index: int
+    name: str
+    shape: Shape | None
+    color: Fill | None
+
+
+@dataclass(frozen=True)
+class ClassVocabulary:
+    """The ordered classes one run declares, and the ``(shape, color) -> id`` map over them.
+
+    A dataset's ids are local to its own vocabulary: :class:`SyntheticConfig` narrows ``shapes``,
+    and both the ``categories``/``names`` block a writer emits and the ids the generator stamps come
+    from this one object. That is what keeps a written dataset internally consistent — at the cost
+    of an id meaning different things in a narrowed run and a full-vocabulary one. **Compare two
+    runs by class name, never by raw id.**
+
+    Args:
+        class_mode: The naming rule these entries were built under.
+        entries: The classes, in id order.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.config import ClassMode, Color, class_vocabulary
+        >>> from fuse_augmentations.data.animals import AnimalShape
+        >>> vocab = class_vocabulary(ClassMode.SHAPE, (AnimalShape.DUCK, AnimalShape.CAMEL))
+        >>> vocab.names
+        ['duck', 'camel']
+        >>> vocab.id_of(AnimalShape.CAMEL, Color.RED)
+        1
+
+        ```
+
+    """
+
+    class_mode: ClassMode
+    entries: tuple[ClassEntry, ...]
+
+    @property
+    def names(self) -> list[str]:
+        """Return the class names in id order — the list a writer declares verbatim."""
+        return [entry.name for entry in self.entries]
+
+    def id_of(self, shape: Shape, color: ColorLike) -> int:
+        """Return the class id for a (shape, color) pair under this vocabulary's naming rule.
+
+        Args:
+            shape: The :data:`~fuse_augmentations.data.families.Shape` member drawn.
+            color: The fill drawn — a :class:`Color` member or a raw ``(r, g, b)`` triple.
+
+        Returns:
+            The zero-based class id, indexing into :attr:`entries`.
+
+        Raises:
+            KeyError: If the pair names no class in this vocabulary — under a shape-naming mode,
+                that means ``shape`` was not among the shapes the vocabulary was built from.
+
+        """
+        return _id_map(self)[_class_key(shape, Fill.parse(color), self.class_mode)]
+
+
+@lru_cache(maxsize=_VOCABULARY_CACHE_SIZE)
+def _id_map(vocabulary: ClassVocabulary) -> dict[str, int]:
+    """Return the cached ``class name -> id`` map for one vocabulary.
+
+    :meth:`ClassVocabulary.id_of` runs once per placed object, so scanning the entries linearly there would cost a pass
+    per object. Bounded rather than unbounded: a program that builds vocabularies programmatically would otherwise
+    retain one map per distinct shape tuple forever. Module-private and never handed out — callers must not mutate it.
+
+    """
+    return {entry.name: entry.index for entry in vocabulary.entries}
+
+
+def class_vocabulary(
+    class_mode: ClassMode, shapes: Iterable[Shape], colors: Iterable[ColorLike] = DEFAULT_COLORS
+) -> ClassVocabulary:
+    """Build the ordered class vocabulary for a class mode over a specific shape vocabulary.
+
+    ``shapes`` is required rather than defaulted. It used to default to the full 49-shape
+    vocabulary while :class:`SyntheticConfig` defaulted to the four primitives, so the obvious call
+    for a default config returned a vocabulary twelve times too large — and silently, since the ids
+    still resolved. Requiring the argument removes the mismatch instead of documenting it; pass
+    :data:`~fuse_augmentations.data.families.ALL_SHAPES` for the full vocabulary.
+
+    Args:
+        class_mode: The selected :class:`ClassMode`.
+        shapes: The shapes a run draws from, in the order they should be numbered.
+        colors: The fills a run draws from, in the order they are numbered. Defaults to the
+            three named :class:`Color` members. Only the color-naming modes read it.
+            :attr:`ClassMode.COLOR` ignores them, since its classes never depend on the shape
+            vocabulary.
+        colors: The fills a run draws from, in the order they are numbered. Defaults to the
+            three named :class:`Color` members. Only the color-naming modes read it.
+
+    Returns:
+        The :class:`ClassVocabulary` for that combination.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.config import ClassMode, class_vocabulary
+        >>> from fuse_augmentations.data.families import ALL_SHAPES, DEFAULT_SHAPES
+        >>> class_vocabulary(ClassMode.SHAPE, DEFAULT_SHAPES).names
         ['square', 'rectangle', 'triangle', 'circle']
-        >>> class_names(ClassMode.SHAPE)[4:8]
-        ['duck', 'elephant', 'giraffe', 'fish']
-        >>> class_names(ClassMode.SHAPE)[8:16]
-        ['rabbit', 'camel', 'eagle', 'penguin', 'whale', 'kangaroo', 'flamingo', 'crocodile']
-        >>> class_names(ClassMode.SHAPE)[16:23]
-        ['kite', 'trapezoid', 'house', 'arrow', 'cross', 'teardrop', 'anchor']
-        >>> class_names(ClassMode.SHAPE)[23:27]
-        ['a', 'b', 'c', 'd']
-        >>> len(class_names(ClassMode.SHAPE))
+        >>> len(class_vocabulary(ClassMode.SHAPE, ALL_SHAPES).entries)
         49
-        >>> class_names(ClassMode.COLOR)
+        >>> class_vocabulary(ClassMode.COLOR, DEFAULT_SHAPES).names
         ['red', 'green', 'blue']
-        >>> class_names(ClassMode.SHAPE_COLOR)[:2]
+        >>> class_vocabulary(ClassMode.SHAPE_COLOR, DEFAULT_SHAPES).names[:2]
         ['red_square', 'green_square']
-        >>> class_names(ClassMode.SHAPE, shapes=DEFAULT_SHAPES)
-        ['square', 'rectangle', 'triangle', 'circle']
 
         ```
 
     """
     # ``ClassMode`` is a str-Enum, so a bare ``"shape"`` compares and hashes equal to the member yet
     # fails every ``is`` test below -- silently selecting the wrong naming rather than raising.
-    class_mode = ClassMode(class_mode)
-    universe = (*GeomShape, *AnimalShape, *SymbolShape, *LetterShape) if shapes is None else tuple(shapes)
-    if class_mode is ClassMode.SHAPE:
-        return [shape.value for shape in universe]
+    return _build_vocabulary(ClassMode(class_mode), tuple(shapes), tuple(Fill.parse(color) for color in colors))
+
+
+@lru_cache(maxsize=_VOCABULARY_CACHE_SIZE)
+def _build_vocabulary(class_mode: ClassMode, shapes: tuple[Shape, ...], colors: tuple[Fill, ...]) -> ClassVocabulary:
+    """Return the vocabulary for an already-normalized mode and shape tuple.
+
+    Split from :func:`class_vocabulary` purely so the result can be cached on a hashable key:
+    :meth:`ClassVocabulary.id_of` runs once per placed object, so rebuilding the entry list per call would cost a full
+    pass over the vocabulary for every shape drawn.
+
+    """
     if class_mode is ClassMode.COLOR:
-        return [color.value for color in Color]
-    return [f"{color.value}_{shape.value}" for shape in universe for color in Color]
+        pairs: list[tuple[Shape | None, Fill | None]] = [(None, color) for color in colors]
+    elif class_mode is ClassMode.SHAPE:
+        pairs = [(shape, None) for shape in shapes]
+    else:
+        pairs = [(shape, color) for shape in shapes for color in colors]
+    entries = tuple(
+        ClassEntry(index=index, name=_render_name(shape, color, class_mode), shape=shape, color=color)
+        for index, (shape, color) in enumerate(pairs)
+    )
+    return ClassVocabulary(class_mode=class_mode, entries=entries)
 
 
-def class_id_of(shape: Shape, color: Color, class_mode: ClassMode, shapes: tuple[Shape, ...] | None = None) -> int:
-    """Return the class id for a (shape, color) pair under a class mode.
+def class_names(
+    class_mode: ClassMode, shapes: Iterable[Shape], colors: Iterable[ColorLike] = DEFAULT_COLORS
+) -> list[str]:
+    """Return the ordered class-name vocabulary for a class mode and shape vocabulary.
 
-    ``shapes`` selects which vocabulary the id indexes into, exactly as it does for
-    :func:`class_names` — pass the run's own :attr:`SyntheticConfig.shapes` to get an id local to
-    that run (what every writer's ``categories``/``names`` block declares), or leave it ``None`` for
-    an id into the full 49-shape vocabulary.
+    Thin convenience over :func:`class_vocabulary` for callers that only want the names — the list
+    index is the class id, for the same ``shapes``.
 
     Args:
-        shape: The :class:`Shape` member.
+        class_mode: The selected :class:`ClassMode`.
+        shapes: The shapes a run draws from, in the order they should be numbered.
+        colors: The fills a run draws from, in the order they are numbered. Defaults to the
+            three named :class:`Color` members. Only the color-naming modes read it.
+
+    Returns:
+        Class names in id order.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.config import ClassMode, class_names
+        >>> from fuse_augmentations.data.families import ALL_SHAPES, DEFAULT_SHAPES
+        >>> class_names(ClassMode.SHAPE, DEFAULT_SHAPES)
+        ['square', 'rectangle', 'triangle', 'circle']
+        >>> class_names(ClassMode.SHAPE, ALL_SHAPES)[4:8]
+        ['duck', 'elephant', 'giraffe', 'fish']
+        >>> class_names(ClassMode.SHAPE, ALL_SHAPES)[23:27]
+        ['a', 'b', 'c', 'd']
+        >>> len(class_names(ClassMode.SHAPE, ALL_SHAPES))
+        49
+
+        ```
+
+    """
+    return class_vocabulary(class_mode, shapes, colors).names
+
+
+def class_id(
+    shape: Shape,
+    color: ColorLike,
+    class_mode: ClassMode,
+    shapes: Iterable[Shape],
+    colors: Iterable[ColorLike] = DEFAULT_COLORS,
+) -> int:
+    """Return the class id for a (shape, color) pair under a class mode and shape vocabulary.
+
+    Args:
+        shape: The :data:`~fuse_augmentations.data.families.Shape` member.
         color: The :class:`Color` member.
         class_mode: The selected :class:`ClassMode`.
-        shapes: The narrowed shape vocabulary to index into, in order — must be a tuple, so the
-            per-vocabulary id map can be cached. ``None`` (the default) uses the full vocabulary.
+        shapes: The shape vocabulary to index into, in order.
+        colors: The fills a run draws from, in the order they are numbered. Defaults to the
+            three named :class:`Color` members. Only the color-naming modes read it.
 
     Returns:
         Zero-based class id indexing into ``class_names(class_mode, shapes)``.
@@ -277,53 +493,53 @@ def class_id_of(shape: Shape, color: Color, class_mode: ClassMode, shapes: tuple
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.data.config import ClassMode, Color, class_id_of
-        >>> from fuse_augmentations.data.geometry import GeomShape
+        >>> from fuse_augmentations.data.config import ClassMode, Color, class_id
+        >>> from fuse_augmentations.data.families import ALL_SHAPES
+        >>> from fuse_augmentations.data.primitives import PrimitiveShape
         >>> from fuse_augmentations.data.symbols import SymbolShape
-        >>> class_id_of(GeomShape.TRIANGLE, Color.RED, ClassMode.SHAPE)
+        >>> class_id(PrimitiveShape.TRIANGLE, Color.RED, ClassMode.SHAPE, ALL_SHAPES)
         2
-        >>> class_id_of(GeomShape.TRIANGLE, Color.RED, ClassMode.COLOR)
+        >>> class_id(PrimitiveShape.TRIANGLE, Color.RED, ClassMode.COLOR, ALL_SHAPES)
         0
-        >>> class_id_of(SymbolShape.KITE, Color.RED, ClassMode.SHAPE)
+        >>> class_id(SymbolShape.KITE, Color.RED, ClassMode.SHAPE, ALL_SHAPES)
         16
-        >>> class_id_of(SymbolShape.KITE, Color.RED, ClassMode.SHAPE, shapes=(SymbolShape.KITE,))
+        >>> class_id(SymbolShape.KITE, Color.RED, ClassMode.SHAPE, (SymbolShape.KITE,))
         0
 
         ```
 
     """
-    # Coerced before it reaches the cache: a bare ``"shape"`` hashes equal to ``ClassMode.SHAPE``, so
-    # an uncoerced call would hit whichever of the two populated ``_class_ids`` first and then look
-    # that map up with the *other* naming's key -- an order-dependent `KeyError`, or worse, silence.
-    class_mode = ClassMode(class_mode)
-    return _class_ids(class_mode, shapes)[_class_key(shape, color, class_mode)]
+    return class_vocabulary(class_mode, shapes, colors).id_of(shape, color)
 
 
-@cache
-def _class_ids(class_mode: ClassMode, shapes: tuple[Shape, ...] | None) -> dict[str, int]:
-    """Return the cached ``class name -> class id`` map for a class mode and shape vocabulary.
+def _render_name(shape: Shape | None, color: Fill | None, class_mode: ClassMode) -> str:
+    """Return the displayed class name for one (shape, color) pair under a class mode.
 
-    :func:`class_id_of` runs once per placed object, so rebuilding the vocabulary and scanning it linearly there costs a
-    fresh 49-entry list plus a lookup per object; the map is built once per ``(mode, shapes)`` pair instead — hence the
-    tuple-typed ``shapes``, which a :class:`SyntheticConfig` already carries. Module-private and never handed out —
-    callers must not mutate it.
+    Exactly one of ``shape`` and ``color`` may be ``None``, and only for the mode that ignores it:
+    :attr:`ClassMode.SHAPE` names no color, :attr:`ClassMode.COLOR` names no shape.
 
     """
-    return {name: index for index, name in enumerate(class_names(class_mode, shapes))}
-
-
-def _class_key(shape: Shape, color: Color, class_mode: ClassMode) -> str:
-    """Return the class-name key for a (shape, color) pair under a class mode."""
     if class_mode is ClassMode.SHAPE:
-        return str(shape.value)
+        return str(shape.value) if shape is not None else ""
     if class_mode is ClassMode.COLOR:
-        return color.value
-    return f"{color.value}_{shape.value}"
+        return color.label if color is not None else ""
+    return f"{color.label}_{shape.value}" if shape is not None and color is not None else ""
+
+
+def _class_key(shape: Shape, color: Fill, class_mode: ClassMode) -> str:
+    """Return the lookup key for a drawn (shape, color) pair — the name its class was rendered under."""
+    return _render_name(shape, color, class_mode)
 
 
 @dataclass(frozen=True)
 class SplitRatios:
-    """Train/validation/test fractions; must be non-negative and sum to ~1.
+    """Dataset split fractions; must be non-negative and sum to ~1.
+
+    The three standard splits are the constructor's arguments because they are what almost every
+    caller wants. They are not a *limit*: :meth:`custom` takes any names at all, so a fourth
+    calibration split or a bare train/test pair needs no change here. The class used to hardcode
+    exactly ``train``/``val``/``test``, which meant "train and test only" had to be spelled as
+    ``val=0.0`` and a fourth split was simply impossible.
 
     Args:
         train: Training fraction.
@@ -331,7 +547,7 @@ class SplitRatios:
         test: Test fraction.
 
     Raises:
-        ValueError: If any fraction is negative or the three do not sum to 1.
+        ValueError: If any fraction is negative or they do not sum to 1.
 
     Examples:
         ```pycon
@@ -340,6 +556,8 @@ class SplitRatios:
         {'train': 0.7, 'val': 0.2, 'test': 0.1}
         >>> SplitRatios(0.8, 0.2, 0.0).to_dict()
         {'train': 0.8, 'val': 0.2}
+        >>> SplitRatios.custom({"train": 0.6, "calib": 0.2, "test": 0.2}).to_dict()
+        {'train': 0.6, 'calib': 0.2, 'test': 0.2}
 
         ```
 
@@ -348,21 +566,55 @@ class SplitRatios:
     train: float = 0.7
     val: float = 0.2
     test: float = 0.1
+    #: Set by :meth:`custom` to override the three named fields entirely. ``None`` (the default)
+    #: means the fields above are the splits, which is what every ordinary construction wants.
+    named: Mapping[str, float] | None = None
 
     def __post_init__(self) -> None:
-        """Validate non-negativity and unit sum."""
-        for name, value in (("train", self.train), ("val", self.val), ("test", self.test)):
+        """Validate non-negativity and unit sum across whichever splits are in play."""
+        for name, value in self._items():
             if value < 0:
                 raise ValueError(f"split ratio {name!r} must be non-negative, got {value}")
-        total = self.train + self.val + self.test
+        total = sum(value for _, value in self._items())
         if abs(total - 1.0) > _SPLIT_SUM_TOL:
             raise ValueError(f"split ratios must sum to 1.0, got {total}")
 
+    @classmethod
+    def custom(cls, splits: Mapping[str, float]) -> SplitRatios:
+        """Build split ratios over arbitrary split names.
+
+        Args:
+            splits: ``name -> fraction``, in the order the splits should be written. Fractions must
+                be non-negative and sum to 1, exactly as for the standard three.
+
+        Returns:
+            The :class:`SplitRatios` carrying those splits.
+
+        Raises:
+            ValueError: If ``splits`` is empty, or its fractions are negative or do not sum to 1.
+
+        Examples:
+            ```pycon
+            >>> from fuse_augmentations.data.config import SplitRatios
+            >>> SplitRatios.custom({"train": 0.9, "holdout": 0.1}).to_dict()
+            {'train': 0.9, 'holdout': 0.1}
+
+            ```
+
+        """
+        if not splits:
+            raise ValueError("splits must name at least one split, got an empty mapping")
+        return cls(named=dict(splits))
+
+    def _items(self) -> tuple[tuple[str, float], ...]:
+        """Return the ``(name, fraction)`` pairs in play, custom ones taking precedence."""
+        if self.named is not None:
+            return tuple(self.named.items())
+        return (("train", self.train), ("val", self.val), ("test", self.test))
+
     def to_dict(self) -> dict[str, float]:
         """Return the non-zero splits as an ordered ``name -> fraction`` mapping."""
-        return {
-            name: value for name, value in (("train", self.train), ("val", self.val), ("test", self.test)) if value > 0
-        }
+        return {name: value for name, value in self._items() if value > 0}
 
 
 @dataclass(frozen=True)
@@ -384,7 +636,7 @@ class SyntheticConfig:
             shape — left or right of its own local vertical axis, before rotation — is narrowed,
             drawn independently per placed object. ``0.0`` (the default) disables it and leaves
             every existing seeded configuration's output unchanged. Every shape this package draws
-            except :attr:`~fuse_augmentations.data.geometry.GeomShape.CIRCLE` is mirror-symmetric
+            except :attr:`~fuse_augmentations.data.primitives.PrimitiveShape.CIRCLE` is mirror-symmetric
             about that axis in its canonical orientation, so its oriented bounding box would
             otherwise always show identical left/right margins; a nonzero value breaks that with
             per-instance variety instead — real oriented objects (vehicles, ships) are rarely that
@@ -397,28 +649,36 @@ class SyntheticConfig:
             :data:`DEFAULT_SHAPES`; pass e.g. ``(AnimalShape.DUCK, AnimalShape.GIRAFFE)`` to draw
             animal silhouettes instead, ``tuple(AnimalShape)`` for every animal, ``tuple(SymbolShape)``
             for every symbol, ``tuple(LetterShape)`` for every letter, or
-            ``(*GeomShape, *AnimalShape, *SymbolShape, *LetterShape)`` for the full mixed vocabulary.
+            ``(*PrimitiveShape, *AnimalShape, *SymbolShape, *LetterShape)`` for the full mixed vocabulary.
             Restricting this **does** renumber classes: the vocabulary a run declares and the ids
             it stamps both narrow to exactly these shapes, in this order (see :func:`class_names`),
             so a symbols-only run numbers its symbols from ``0`` rather than from their offset into
             the full :class:`Shape` enum. Compare runs by class name, not by raw id.
-        colors: Fill colors the generator may draw, sampled uniformly. Defaults to
-            :data:`DEFAULT_COLORS` (all three); pass e.g. ``(Color.RED,)`` to draw only red
-            objects. Restricting this does **not** renumber classes: no naming mode narrows its
-            color axis, so the three colors keep their ids in every run.
-        task: Annotation task the generated samples target. Only :attr:`Task.KEYPOINTS`
-            changes what the generator computes (it adds the landmark table); the other
-            tasks all read the same polygon/box fields, so they differ at write time only.
+        colors: Fills the generator may draw, sampled uniformly. Each may be spelled as a
+            :class:`Color` member, a raw ``(r, g, b)`` triple, or a :class:`Fill`; all three are
+            normalized to :class:`Fill` at construction, so ``config.colors`` reads back as
+            ``Fill`` objects whichever spelling went in. Defaults to :data:`DEFAULT_COLORS` (all
+            three named colors); pass e.g. ``(Color.RED,)`` to draw only red objects, or
+            ``((255, 215, 0),)`` for a custom yellow. Restricting this does **not** renumber
+            classes: no naming mode narrows its color axis, so the three colors keep their ids in
+            every run.
+        task: Annotation task the generated samples target, as a :class:`Task` or its string value
+            (``"detection"``, ``"segmentation"``, ``"obb"``, ``"keypoints"``). This is the **only**
+            place a run's task is set — :func:`~fuse_augmentations.data.generate_dataset` reads it
+            from here rather than taking its own argument, so the generator and the writer can never
+            disagree about it. Only :attr:`Task.KEYPOINTS` changes what the generator computes (it
+            adds the landmark table); the other tasks all read the same polygon/box fields, so they
+            differ at write time only.
 
     Raises:
         ValueError: On non-positive sizes, inverted min/max ranges, an ``overlap_iou`` or
             ``boundary_tolerance`` outside ``[0, 1]``, ``max_placement_attempts`` below 1, an
             ``asymmetry_jitter`` outside ``[0, 0.5)``,
             a ``shapes`` tuple that is empty or holds a non-:class:`Shape` element, a ``colors``
-            tuple that is empty or holds a non-:class:`Color` element, a ``task`` that is not a
-            :class:`Task` member, or a :attr:`Task.KEYPOINTS` task combined with a ``shapes`` tuple
+            tuple that is empty or holds an element that is no valid fill, a ``task`` naming no
+            :class:`Task`, or a :attr:`Task.KEYPOINTS` task combined with a ``shapes`` tuple
             that does not belong entirely to one keypoint-bearing family (see
-            :func:`keypoint_schema_for`) — a :class:`~fuse_augmentations.data.geometry.GeomShape`
+            :func:`keypoint_schema_for`) — a :class:`~fuse_augmentations.data.primitives.PrimitiveShape`
             mixed in, or two of :class:`~fuse_augmentations.data.animals.AnimalShape`,
             :class:`~fuse_augmentations.data.symbols.SymbolShape`, and
             :class:`~fuse_augmentations.data.letters.LetterShape` mixed together, since only one
@@ -435,7 +695,9 @@ class SyntheticConfig:
         >>> SyntheticConfig(task=Task.KEYPOINTS, shapes=(AnimalShape.DUCK,)).task
         <Task.KEYPOINTS: 'keypoints'>
         >>> SyntheticConfig(colors=(Color.RED,)).colors
-        (<Color.RED: 'red'>,)
+        (Fill(rgb=(255, 0, 0), name='red'),)
+        >>> SyntheticConfig(colors=((255, 215, 0),)).colors[0].label
+        'ffd700'
 
         ```
 
@@ -454,11 +716,11 @@ class SyntheticConfig:
     asymmetry_jitter: float = 0.0
     class_mode: ClassMode = ClassMode.SHAPE
     shapes: tuple[Shape, ...] = DEFAULT_SHAPES
-    colors: tuple[Color, ...] = DEFAULT_COLORS
+    colors: tuple[Fill, ...] = DEFAULT_COLORS
     task: Task = Task.DETECTION
 
     def __post_init__(self) -> None:
-        """Normalize ``class_mode``, then validate the numeric knobs and the vocabulary."""
+        """Normalize the scalar enums, then validate the numeric knobs and the vocabulary."""
         # ``SyntheticIterableDataset`` forwards ``**config_kwargs`` verbatim, so a documented
         # ``class_mode="shape"`` arrives here as a bare string. ``ClassMode`` is a str-Enum, so that
         # string compares *and hashes* equal to the member while failing every ``is`` identity test
@@ -466,6 +728,12 @@ class SyntheticConfig:
         # rejects outright for `shapes`/`colors`/`task`. Rejecting is not an option here (the string
         # form is public API), so coerce once, at the only boundary that sees the raw value.
         object.__setattr__(self, "class_mode", ClassMode(self.class_mode))
+        # ``task`` needs the same treatment for the same reason, and now more than ever: it used to
+        # be normalized by ``generate_dataset`` before ever reaching here, so this class could
+        # afford to reject a bare string. With the config the task's sole owner, ``task="keypoints"``
+        # arrives here raw and is the documented spelling -- coerce it rather than reject it.
+        object.__setattr__(self, "task", Task(self.task))
+        self._normalize_colors()
         if self.img_size <= 0:
             raise ValueError(f"img_size must be positive, got {self.img_size}")
         if not 1 <= self.min_objects <= self.max_objects:
@@ -483,6 +751,25 @@ class SyntheticConfig:
         if not 0.0 <= self.asymmetry_jitter < 0.5:
             raise ValueError(f"asymmetry_jitter must be within [0, 0.5), got {self.asymmetry_jitter}")
         self._validate_vocabulary()
+
+    def _normalize_colors(self) -> None:
+        """Replace :attr:`colors` with the normalized :class:`Fill` tuple it stands for.
+
+        Same reasoning as the ``class_mode`` and ``task`` coercions above, applied to a sequence:
+        a fill is public API in three spellings, so the union is unpacked once here rather than at
+        every point that later needs an RGB triple or a class-name label. A bare ``"red"`` string is
+        rejected rather than coerced — unlike ``class_mode="shape"`` it is not a documented
+        spelling, and under the :class:`str` mixin it would otherwise pass equality checks all the
+        way down to a fill lookup in the generator.
+
+        Raises:
+            ValueError: If ``colors`` is empty, or holds anything that is not a :class:`Color`, a
+                :class:`Fill`, or a valid ``(r, g, b)`` triple.
+
+        """
+        if not self.colors:
+            raise ValueError("colors must name at least one Color, got an empty sequence")
+        object.__setattr__(self, "colors", tuple(Fill.parse(value) for value in self.colors))
 
     def _validate_vocabulary(self) -> None:
         """Reject an unusable shape/color tuple, a non-:class:`Task` task, or an unannotatable pairing.
@@ -504,31 +791,9 @@ class SyntheticConfig:
         invalid = [value for value in self.shapes if not isinstance(value, Shape)]
         if invalid:
             raise ValueError(f"shapes must contain only Shape members, got {invalid!r}")
-        if not self.colors:
-            raise ValueError("colors must name at least one Color, got an empty sequence")
-        # Same "equal but not an instance" trap as `shapes` above -- a bare "red" would otherwise
-        # reach the generator's `color.rgb` lookup and fail there instead of at construction.
-        invalid_colors = [value for value in self.colors if not isinstance(value, Color)]
-        if invalid_colors:
-            raise ValueError(f"colors must contain only Color members, got {invalid_colors!r}")
-        # Same trap for the task: a bare "keypoints" equals Task.KEYPOINTS but fails every identity
-        # test downstream, which would silently emit a detection dataset instead of raising.
-        if not isinstance(self.task, Task):
-            raise ValueError(f"task must be a Task member, got {self.task!r}; pass e.g. Task.KEYPOINTS")
         if self.task is Task.KEYPOINTS and keypoint_schema_for(self.shapes) is None:
-            # Any shape with no keypoint table at all (every GeomShape, alone or mixed with a
-            # keypoint-bearing family) is the primary failure and gets this message; only a *pure*
-            # mix of two keypoint-bearing families (no GeomShape present) falls through to the one
-            # below.
-            unsupported = [shape.value for shape in self.shapes if type(shape) not in _KEYPOINT_SCHEMAS]
-            if unsupported:
-                supported = ", ".join(shape.value for shape in (*AnimalShape, *SymbolShape, *LetterShape))
-                raise ValueError(
-                    f"task {Task.KEYPOINTS.value!r} needs a keypoint table for every drawable shape, but "
-                    f"{unsupported} have none; restrict shapes to a keypoint-bearing family: {supported}"
-                )
-            families = sorted({type(shape).__name__ for shape in self.shapes})
-            raise ValueError(
-                f"task {Task.KEYPOINTS.value!r} needs every shape to belong to the same keypoint-bearing family, "
-                f"but shapes mix {families}; a dataset carries only one landmark schema"
-            )
+            # ``keypoint_schema_for`` collapses "no landmark table at all", "two families mixed",
+            # and "empty" into one ``None``; the registry knows which it was, so the reason is asked
+            # for rather than re-derived here.
+            reason = describe_keypoint_mismatch(self.shapes)
+            raise ValueError(f"task {Task.KEYPOINTS.value!r} needs one keypoint schema, but {reason}")

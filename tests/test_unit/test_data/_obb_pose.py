@@ -2,7 +2,7 @@
 
 An OBB annotation claims to say where an object is, how big it is, and how it is turned. The way to check that claim is
 to act on it: take the shape's own upright reference outline, turn and scale and place it by nothing but the four
-corners, and see whether it lands back on the object. Both `test_geometry.py` (against `shape_polygon`'s own output) and
+corners, and see whether it lands back on the object. Both `test_geometry.py` (against `shape_outline`'s own output) and
 `test_generator.py` (against what the generator actually exports) make that check, so the rebuild itself lives here
 rather than in either.
 
@@ -15,7 +15,8 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-from fuse_augmentations.data.geometry import polygon_to_obb, rotate_polygon, shape_polygon
+from fuse_augmentations.data.families import shape_outline
+from fuse_augmentations.data.geometry import polygon_to_obb, rotate_polygon
 
 
 def box_heading(corners: NDArray[np.float64]) -> float:
@@ -43,7 +44,7 @@ def rebuild_error(shape: str, corners: NDArray[np.float64], drawn: NDArray[np.fl
     only the true pose lands anywhere near the object.
 
     Args:
-        shape: Shape name, as `shape_polygon` accepts it.
+        shape: Shape name, as `shape_outline` accepts it.
         corners: The object's OBB as a ``(4, 2)`` array of corners.
         drawn: The object's own outline as an ``(num_points, 2)`` array, in the same pixel frame.
 
@@ -51,7 +52,7 @@ def rebuild_error(shape: str, corners: NDArray[np.float64], drawn: NDArray[np.fl
         The smallest achievable maximum vertex displacement, in the same units as `drawn`.
 
     """
-    reference = shape_polygon(shape, center=(0.0, 0.0), size=1.0)
+    reference = shape_outline(shape, center=(0.0, 0.0), size=1.0)
     reference_box = polygon_to_obb(reference)
     scale = np.sqrt(box_area(corners) / box_area(reference_box))
     heading = box_heading(corners) - box_heading(reference_box)

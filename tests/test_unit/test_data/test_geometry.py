@@ -6,22 +6,17 @@ import numpy as np
 import pytest
 
 from fuse_augmentations.data.animals import AnimalShape
-from fuse_augmentations.data.geometry import (
-    GeomShape,
-    bbox_iou,
-    polygon_to_bbox_xyxy,
-    polygon_to_obb,
-    rotate_polygon,
-    shape_polygon,
-)
+from fuse_augmentations.data.families import shape_outline
+from fuse_augmentations.data.geometry import bbox_iou, polygon_to_bbox_xyxy, polygon_to_obb, rotate_polygon
 from fuse_augmentations.data.letters import LetterShape
+from fuse_augmentations.data.primitives import PrimitiveShape
 from fuse_augmentations.data.symbols import SymbolShape
 
 from ._obb_pose import rebuild_error
 
 #: Every drawable shape across all four families — the OBB contract is family-agnostic, so the
 #: box-derivation tests below sweep the whole vocabulary rather than one family's roster.
-ALL_SHAPE_VALUES = [s.value for s in (*GeomShape, *AnimalShape, *SymbolShape, *LetterShape)]
+ALL_SHAPE_VALUES = [s.value for s in (*PrimitiveShape, *AnimalShape, *SymbolShape, *LetterShape)]
 
 
 def _polygon_area(points: np.ndarray) -> float:
@@ -78,8 +73,8 @@ def _self_intersections(points: np.ndarray) -> list[tuple[int, int]]:
     return [(i, j) for i, j in pairs if _segments_intersect(*edges[i], *edges[j])]
 
 
-@pytest.mark.parametrize("shape", [s.value for s in (*GeomShape, *AnimalShape, *SymbolShape)])
-def test_shape_polygon_is_centered(shape: str) -> None:
+@pytest.mark.parametrize("shape", [s.value for s in (*PrimitiveShape, *AnimalShape, *SymbolShape)])
+def test_shape_outline_is_centered(shape: str) -> None:
     """Polygon shapes are centered at the specified point, by area centroid (not vertex mean).
 
     A traced or hand-authored outline can have vertices bunched unevenly along its edges (an arrow's barbs, an animal's
@@ -87,7 +82,7 @@ def test_shape_polygon_is_centered(shape: str) -> None:
     (center of mass) is guaranteed to.
 
     """
-    poly = shape_polygon(shape, center=(50.0, 50.0), size=20.0)
+    poly = shape_outline(shape, center=(50.0, 50.0), size=20.0)
     assert poly.ndim == 2
     assert poly.shape[1] == 2
     centroid = _area_centroid(poly)
@@ -96,13 +91,13 @@ def test_shape_polygon_is_centered(shape: str) -> None:
 
 def test_square_bbox_exact() -> None:
     """Square bbox computation returns exact coordinate tuple."""
-    poly = shape_polygon("square", center=(5.0, 5.0), size=4.0)
+    poly = shape_outline("square", center=(5.0, 5.0), size=4.0)
     assert polygon_to_bbox_xyxy(poly) == (3.0, 3.0, 7.0, 7.0)
 
 
 def test_rectangle_is_non_square() -> None:
     """Rectangle bounding box has different width and height."""
-    poly = shape_polygon("rectangle", center=(0.0, 0.0), size=10.0)
+    poly = shape_outline("rectangle", center=(0.0, 0.0), size=10.0)
     x1, y1, x2, y2 = polygon_to_bbox_xyxy(poly)
     assert (x2 - x1) != pytest.approx(y2 - y1)
 
@@ -110,7 +105,7 @@ def test_rectangle_is_non_square() -> None:
 @pytest.mark.parametrize("shape", ["square", "rectangle", "triangle"])
 def test_rotation_preserves_area(shape: str) -> None:
     """Polygon rotation preserves area to floating point precision."""
-    poly = shape_polygon(shape, center=(30.0, 30.0), size=12.0)
+    poly = shape_outline(shape, center=(30.0, 30.0), size=12.0)
     rotated = rotate_polygon(poly, np.pi / 5, center=(30.0, 30.0))
     assert _polygon_area(rotated) == pytest.approx(_polygon_area(poly), rel=1e-6)
 
@@ -123,14 +118,14 @@ def test_zero_skew_matches_the_unskewed_polygon() -> None:
     the knob existed.
 
     """
-    plain = shape_polygon("square", center=(10.0, 10.0), size=8.0, angle=0.3)
-    skewed = shape_polygon("square", center=(10.0, 10.0), size=8.0, angle=0.3, skew=0.0)
+    plain = shape_outline("square", center=(10.0, 10.0), size=8.0, angle=0.3)
+    skewed = shape_outline("square", center=(10.0, 10.0), size=8.0, angle=0.3, skew=0.0)
     assert np.array_equal(plain, skewed)
 
 
 def test_positive_skew_narrows_only_the_right_half_of_a_square() -> None:
     """A positive `skew` scales the `x > 0` half toward the axis, leaving the `x < 0` half fixed."""
-    poly = shape_polygon("square", center=(0.0, 0.0), size=10.0, skew=0.3)
+    poly = shape_outline("square", center=(0.0, 0.0), size=10.0, skew=0.3)
     xs = sorted(poly[:, 0])
     assert xs[:2] == pytest.approx([-5.0, -5.0])  # left edge untouched
     assert xs[2:] == pytest.approx([3.5, 3.5])  # right edge narrowed by 30%
@@ -138,13 +133,13 @@ def test_positive_skew_narrows_only_the_right_half_of_a_square() -> None:
 
 def test_negative_skew_narrows_only_the_left_half_of_a_square() -> None:
     """A negative `skew` narrows the `x < 0` half instead, mirroring the positive case."""
-    poly = shape_polygon("square", center=(0.0, 0.0), size=10.0, skew=-0.3)
+    poly = shape_outline("square", center=(0.0, 0.0), size=10.0, skew=-0.3)
     xs = sorted(poly[:, 0])
     assert xs[:2] == pytest.approx([-3.5, -3.5])  # left edge narrowed by 30%
     assert xs[2:] == pytest.approx([5.0, 5.0])  # right edge untouched
 
 
-@pytest.mark.parametrize("shape", [s.value for s in (*GeomShape, *AnimalShape, *SymbolShape)])
+@pytest.mark.parametrize("shape", [s.value for s in (*PrimitiveShape, *AnimalShape, *SymbolShape)])
 @pytest.mark.parametrize("skew", [0.49, -0.49])
 def test_skew_near_its_upper_bound_keeps_every_shape_simple(shape: str, skew: float) -> None:
     """Every shape stays a simple (non-self-intersecting) polygon at the edge of the allowed skew range.
@@ -153,13 +148,13 @@ def test_skew_near_its_upper_bound_keeps_every_shape_simple(shape: str, skew: fl
     this package draws, not just the ones exercised by example configs.
 
     """
-    poly = shape_polygon(shape, center=(0.0, 0.0), size=10.0, skew=skew)
+    poly = shape_outline(shape, center=(0.0, 0.0), size=10.0, skew=skew)
     assert _self_intersections(poly) == []
 
 
 def test_obb_returns_four_corners_within_aabb() -> None:
     """OBB area is smaller or equal to AABB area."""
-    poly = shape_polygon("rectangle", center=(40.0, 40.0), size=16.0, angle=0.6)
+    poly = shape_outline("rectangle", center=(40.0, 40.0), size=16.0, angle=0.6)
     corners = polygon_to_obb(poly)
     assert corners.shape == (4, 2)
     obb_area = _polygon_area(corners)
@@ -169,7 +164,7 @@ def test_obb_returns_four_corners_within_aabb() -> None:
 
 def test_obb_tight_for_axis_aligned_rectangle() -> None:
     """OBB equals AABB when rectangle is axis-aligned."""
-    poly = shape_polygon("rectangle", center=(0.0, 0.0), size=10.0, angle=0.0)
+    poly = shape_outline("rectangle", center=(0.0, 0.0), size=10.0, angle=0.0)
     obb_area = _polygon_area(polygon_to_obb(poly))
     aabb_area = _rect_area(polygon_to_bbox_xyxy(poly))
     assert obb_area == pytest.approx(aabb_area, rel=1e-6)
@@ -177,7 +172,7 @@ def test_obb_tight_for_axis_aligned_rectangle() -> None:
 
 def test_circle_obb_approximates_aabb() -> None:
     """OBB for circle approximates AABB within 5% relative tolerance."""
-    poly = shape_polygon("circle", center=(20.0, 20.0), size=10.0)
+    poly = shape_outline("circle", center=(20.0, 20.0), size=10.0)
     obb_area = _polygon_area(polygon_to_obb(poly))
     aabb_area = _rect_area(polygon_to_bbox_xyxy(poly))
     assert obb_area == pytest.approx(aabb_area, rel=0.05)
@@ -216,7 +211,7 @@ def test_obb_places_the_reference_shape_back_onto_the_drawn_one(shape: str) -> N
     """
     center, size = (200.0, 200.0), 100.0
     for angle_deg in (10, 47, 91, 133, 179, 250, 311):
-        drawn = shape_polygon(shape, center=center, size=size, angle=np.radians(float(angle_deg)))
+        drawn = shape_outline(shape, center=center, size=size, angle=np.radians(float(angle_deg)))
         error = rebuild_error(shape, polygon_to_obb(drawn), drawn)
         assert error < 1e-9 * size, f"{shape} at {angle_deg} degrees is off by {error:.3g}px"
 
@@ -228,17 +223,17 @@ def test_obb_is_rotation_equivariant(shape: str) -> None:
     A shape with reflective symmetry (every animal and symbol here, plus the geometric square and rectangle) can have
     more than one candidate box achieving the true minimum area — `kite` and `teardrop` were the two shapes that first
     exposed this bug (see `polygon_to_obb`'s docstring for why a right or acute triangle would tie too, even though the
-    shipped `GeomShape.TRIANGLE` is deliberately obtuse-scalene and does not). Before this was fixed, which tied
+    shipped `PrimitiveShape.TRIANGLE` is deliberately obtuse-scalene and does not). Before this was fixed, which tied
     candidate won depended on `_convex_hull`'s rotated-frame lexicographic sort rather than the shape's own geometry, so
     the box orientation "wobbled" between the tied candidates as an otherwise-identical shape rotated — even though
     nothing about the shape changed relative to its own frame.
 
     """
     center, size = (0.0, 0.0), 100.0
-    reference = polygon_to_obb(shape_polygon(shape, center=center, size=size, angle=0.0))
+    reference = polygon_to_obb(shape_outline(shape, center=center, size=size, angle=0.0))
     for angle_deg in (10, 47, 91, 133, 179, 250, 311):
         angle = np.radians(float(angle_deg))
-        actual = polygon_to_obb(shape_polygon(shape, center=center, size=size, angle=angle))
+        actual = polygon_to_obb(shape_outline(shape, center=center, size=size, angle=angle))
         expected = rotate_polygon(reference, angle, center=center)
         assert _best_corner_set_distance(expected, actual) < 1e-3, f"{shape} at {angle_deg} degrees"
 
@@ -246,7 +241,7 @@ def test_obb_is_rotation_equivariant(shape: str) -> None:
 def test_unknown_shape_raises() -> None:
     """Unknown shape name raises ValueError."""
     with pytest.raises(ValueError, match="unknown shape"):
-        shape_polygon("hexagon", center=(0.0, 0.0), size=4.0)
+        shape_outline("hexagon", center=(0.0, 0.0), size=4.0)
 
 
 def test_bbox_iou_known_value() -> None:

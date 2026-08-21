@@ -10,76 +10,73 @@ never needs to know the output format.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
-from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES
-from fuse_augmentations.data.letters import LETTER_KEYPOINT_NAMES
-from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_NAMES
+import numpy as np
+
+from fuse_augmentations.data.geometry import polygon_to_obb
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
+
+    from fuse_augmentations.data.keypoints import KeypointSchema
 
 #: The COCO landmark visibility flags a triple may carry: ``0`` "not labeled", ``1`` "labeled but not
 #: visible", ``2`` "labeled and visible". Spelled as the accepted set rather than a ``0 <= v <= 2``
 #: range test so a value that is numerically in range but not a flag (``1.5``) is rejected too.
 _KEYPOINT_VISIBILITIES: frozenset[int] = frozenset({0, 1, 2})
 
-#: Landmark names per registered keypoint-schema width. A `keypoints` table's length uniquely
-#: identifies which family it belongs to (16 for :data:`~fuse_augmentations.data.animals.ANIMAL_KEYPOINT_NAMES`,
-#: 7 for :data:`~fuse_augmentations.data.symbols.SYMBOL_KEYPOINT_NAMES`, 15 for
-#: :data:`~fuse_augmentations.data.letters.LETTER_KEYPOINT_NAMES`), which is what lets
-#: :meth:`Annotation.__post_init__` validate any registered family without knowing in advance which
-#: one built the table.
-_KEYPOINT_SCHEMA_NAMES: dict[int, tuple[str, ...]] = {
-    len(ANIMAL_KEYPOINT_NAMES): ANIMAL_KEYPOINT_NAMES,
-    len(SYMBOL_KEYPOINT_NAMES): SYMBOL_KEYPOINT_NAMES,
-    len(LETTER_KEYPOINT_NAMES): LETTER_KEYPOINT_NAMES,
-}
-
 
 @dataclass(frozen=True)
 class Annotation:
     """One object instance with all task representations precomputed.
 
-    Coordinates are absolute pixel values in the image frame. Polygons and OBB
-    corners are flat ``[x1, y1, x2, y2, ...]`` lists.
+    Coordinates are absolute pixel values in the image frame. Polygons and OBB corners are flat
+    ``[x1, y1, x2, y2, ...]`` lists. The oriented box is *derived* from the polygon on first access
+    (see :attr:`obb_corners`) rather than stored, so the tasks that never read it never pay for it.
 
-    A landmark table is validated on construction (see :meth:`__post_init__`), so every consumer —
-    the writers, :class:`~fuse_augmentations.data.datasets.SyntheticIterableDataset`, and any
-    third-party code reading a :class:`Sample` — can rely on the fixed-width schema without
-    re-checking it. Validating here rather than in a writer is what makes that guarantee hold for
-    consumers that never touch a writer at all.
+    A landmark table is validated against its own schema on construction (see
+    :meth:`__post_init__`), so every consumer — the writers,
+    :class:`~fuse_augmentations.data.datasets.SyntheticIterableDataset`, and any third-party code
+    reading a :class:`Sample` — can rely on the width without re-checking it. Validating here rather
+    than in a writer is what makes that guarantee hold for consumers that never touch a writer.
 
     Args:
         class_id: Zero-based class index (see :func:`~fuse_augmentations.data.config.class_names`).
         class_name: Human-readable class label.
         polygon: Filled-shape outline as a flat pixel-coordinate list.
         bbox_xyxy: Axis-aligned box ``(x_min, y_min, x_max, y_max)`` in pixels.
-        obb_corners: Oriented box as four corners, flat ``[x1, y1, x2, y2, x3, y3, x4, y4]``.
-        keypoints: Landmarks as ``(x, y, visibility)`` triples in the drawn shape's own family
-            order — :data:`~fuse_augmentations.data.animals.ANIMAL_KEYPOINT_NAMES` or
-            :data:`~fuse_augmentations.data.symbols.SYMBOL_KEYPOINT_NAMES` — or ``None`` for any
-            task other than :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS`. Visibility
-            follows COCO: ``2`` for a point inside the canvas, ``0`` for one clipped away by the
-            frame — a ``0`` point carries ``(0.0, 0.0)`` rather than its off-canvas coordinates.
+        keypoints: Landmarks as ``(x, y, visibility)`` triples in ``keypoint_schema`` order, or
+            ``None`` for any task other than
+            :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS`. Visibility follows COCO: ``2``
+            for a point inside the canvas, ``0`` for one clipped away by the frame — a ``0`` point
+            carries ``(0.0, 0.0)`` rather than its off-canvas coordinates.
+        keypoint_schema: The keypoint-bearing family ``keypoints`` was drawn from, which names and
+            sizes the table. Required whenever ``keypoints`` is given, ``None`` otherwise. Carrying
+            it here is what lets any consumer — the writers,
+            :class:`~fuse_augmentations.data.datasets.SyntheticIterableDataset`, third-party code —
+            interpret a table without being told separately which family produced it.
 
     Raises:
-        ValueError: If ``keypoints`` is not ``None`` and either holds a number of triples that
-            matches no registered keypoint schema, or carries a visibility outside COCO's
+        ValueError: If ``keypoints`` is given without a ``keypoint_schema``, holds a number of
+            triples other than the schema's ``kpt_shape``, or carries a visibility outside COCO's
             ``{0, 1, 2}``.
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES
+        >>> from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_SCHEMA
         >>> from fuse_augmentations.data.sample import Annotation
         >>> ann = Annotation(0, "square", [0.0, 0.0, 2.0, 0.0, 2.0, 2.0, 0.0, 2.0],
-        ...                  (0.0, 0.0, 2.0, 2.0), [0.0, 0.0, 2.0, 0.0, 2.0, 2.0, 0.0, 2.0])
+        ...                  (0.0, 0.0, 2.0, 2.0))
         >>> ann.class_name
         'square'
         >>> ann.keypoints is None
         True
-        >>> table = tuple((1.0, 2.0, 2) for _ in ANIMAL_KEYPOINT_NAMES)
-        >>> Annotation(4, "duck", [], (0.0, 0.0, 2.0, 2.0), [], keypoints=table).keypoints[0]
+        >>> table = tuple((1.0, 2.0, 2) for _ in ANIMAL_KEYPOINT_SCHEMA.names)
+        >>> duck = Annotation(4, "duck", [], (0.0, 0.0, 2.0, 2.0), keypoints=table,
+        ...                   keypoint_schema=ANIMAL_KEYPOINT_SCHEMA)
+        >>> duck.keypoints[0]
         (1.0, 2.0, 2)
 
         ```
@@ -90,32 +87,71 @@ class Annotation:
     class_name: str
     polygon: list[float]
     bbox_xyxy: tuple[float, float, float, float]
-    obb_corners: list[float]
     keypoints: tuple[tuple[float, float, int], ...] | None = None
+    keypoint_schema: KeypointSchema | None = None
+
+    @cached_property
+    def obb_corners(self) -> list[float]:
+        """Return the minimum-area oriented box as four corners, flat ``[x1, y1, ..., x4, y4]``.
+
+        Derived from :attr:`polygon` on first access rather than stored. It used to be computed for
+        every object at generation time, which meant every detection, segmentation and keypoint run
+        paid for a convex hull plus a rotating-calipers scan per object and then never read the
+        result — measured at **75% of generation time** on a mixed-family run. Deriving it here costs
+        exactly the same for an OBB run, and nothing for the three tasks that do not want it.
+
+        Returns:
+            The eight corner coordinates, or an empty list when :attr:`polygon` holds fewer than
+            three points and has no oriented box to speak of.
+
+        Examples:
+            ```pycon
+            >>> from fuse_augmentations.data.sample import Annotation
+            >>> square = [0.0, 0.0, 2.0, 0.0, 2.0, 2.0, 0.0, 2.0]
+            >>> ann = Annotation(0, "square", square, (0.0, 0.0, 2.0, 2.0))
+            >>> len(ann.obb_corners)
+            8
+
+            ```
+
+        """
+        points = np.asarray(self.polygon, dtype=np.float64).reshape(-1, 2)
+        if points.shape[0] < 3:
+            return []
+        return [float(value) for value in polygon_to_obb(points).reshape(-1)]
 
     def __post_init__(self) -> None:
-        """Reject a landmark table matching no registered schema.
+        """Reject a landmark table that does not match the schema it claims to follow.
 
         A short, long, or mis-flagged table is silently lossy downstream rather than loud: a COCO
         ``keypoints`` array of the wrong length still parses, and a YOLO pose row of the wrong width
         is read positionally, so both mislabel every landmark after the first missing one instead of
         failing. Catching it at construction turns that into an error at the point the bad table was
-        built. A table's length uniquely identifies which family built it (16 animal landmarks, 7
-        symbol landmarks, 15 letter nodes), so no separate family argument is needed here.
+        built.
+
+        The schema is carried rather than inferred. It used to be looked up by *table length* —
+        which worked only because the registered families happened to have distinct landmark counts,
+        and left an annotation unable to say which family it belonged to, so a writer had to be told
+        separately and the two could disagree.
 
         Raises:
-            ValueError: If ``keypoints`` holds a number of triples matching no registered keypoint
-                schema, or a triple's visibility is not a COCO flag.
+            ValueError: If ``keypoints`` is given without a ``keypoint_schema``, if it holds a
+                number of triples other than the schema's ``kpt_shape``, or if a triple's visibility
+                is not a COCO flag.
 
         """
         if self.keypoints is None:
             return
-        names = _KEYPOINT_SCHEMA_NAMES.get(len(self.keypoints))
-        if names is None:
-            valid = sorted(_KEYPOINT_SCHEMA_NAMES)
+        if self.keypoint_schema is None:
             raise ValueError(
-                f"keypoints must hold a number of (x, y, visibility) triples matching a registered keypoint "
-                f"schema {valid}, got {len(self.keypoints)}"
+                f"keypoints were given without a keypoint_schema; pass the family's schema so the "
+                f"{len(self.keypoints)} triples can be named and validated"
+            )
+        names = self.keypoint_schema.names
+        if len(self.keypoints) != len(names):
+            raise ValueError(
+                f"keypoints must hold exactly {len(names)} (x, y, visibility) triples to match the "
+                f"schema, got {len(self.keypoints)}"
             )
         for name, (_x, _y, visibility) in zip(names, self.keypoints, strict=True):
             if type(visibility) is not int or visibility not in _KEYPOINT_VISIBILITIES:

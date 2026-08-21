@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
-from fuse_augmentations.data.geometry import GeomShape, shape_polygon
-from fuse_augmentations.data.landmarks import KeypointSchema
+from fuse_augmentations.data.families import shape_outline
+from fuse_augmentations.data.keypoints import KeypointSchema
+from fuse_augmentations.data.primitives import PrimitiveShape
 from fuse_augmentations.data.symbols import (
     SYMBOL_KEYPOINT_FLIP_IDX,
     SYMBOL_KEYPOINT_NAMES,
@@ -18,7 +19,6 @@ from fuse_augmentations.data.symbols import (
     SYMBOL_POLYGONS,
     SymbolShape,
     symbol_keypoints,
-    symbol_shapes,
 )
 
 #: Which `SYMBOL_KEYPOINT_NAMES` slots each symbol actually uses, hand-reviewed and pinned as a literal — see the
@@ -81,7 +81,7 @@ def _self_intersections(points: np.ndarray) -> list[tuple[int, int]]:
 def _rasterize(name: str, size: float, canvas: int, angle: float = 0.0) -> np.ndarray:
     """Fill one symbol outline into a boolean canvas exactly as the generator would."""
     image = Image.new("L", (canvas, canvas), 0)
-    poly = shape_polygon(name, center=(canvas / 2.0, canvas / 2.0), size=size, angle=angle)
+    poly = shape_outline(name, center=(canvas / 2.0, canvas / 2.0), size=size, angle=angle)
     ImageDraw.Draw(image).polygon([(float(x), float(y)) for x, y in poly], fill=255)
     return np.asarray(image) > 0
 
@@ -220,19 +220,7 @@ def test_placed_keypoints_do_not_alias_the_table(name: str) -> None:
 def test_symbol_keypoints_rejects_a_shape_without_a_table() -> None:
     """A geometric shape (no keypoint table at all) is refused with a clear message."""
     with pytest.raises(ValueError, match="no keypoint table"):
-        symbol_keypoints(GeomShape.SQUARE, center=(0.0, 0.0), size=10.0)
-
-
-def test_symbol_shapes_returns_declaration_order() -> None:
-    """`symbol_shapes` mirrors `animal_shapes`: `None` returns every symbol, `count` takes a stable prefix."""
-    assert symbol_shapes() == tuple(SymbolShape)
-    assert symbol_shapes(3) == (SymbolShape.KITE, SymbolShape.TRAPEZOID, SymbolShape.HOUSE)
-
-
-def test_symbol_shapes_rejects_an_out_of_range_count() -> None:
-    """`count` outside `[0, len(SymbolShape)]` raises rather than silently clamping."""
-    with pytest.raises(ValueError, match=r"\[0, 7\]"):
-        symbol_shapes(8)
+        symbol_keypoints(PrimitiveShape.SQUARE, center=(0.0, 0.0), size=10.0)
 
 
 def test_flip_idx_is_pinned() -> None:

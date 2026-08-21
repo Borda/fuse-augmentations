@@ -1,13 +1,25 @@
 """Synthetic detection / segmentation / OBB / keypoint dataset generation.
 
-Draw colored shapes on a canvas and export **COCO** or **YOLO** datasets for
-detection, segmentation, oriented-bounding-box, or keypoint tasks. This is a standalone
-generation utility: no dataset loaders, no model, no training loop.
+Draw colored shapes on a canvas and export **COCO** or **YOLO** datasets for detection,
+segmentation, oriented-bounding-box, or keypoint tasks. This is a standalone generation utility: no
+dataset loaders, no model, no training loop.
+
+The shape vocabulary is assembled from independent families —
+:mod:`~fuse_augmentations.data.primitives` (analytic), :mod:`~fuse_augmentations.data.animals`
+(traced silhouettes), :mod:`~fuse_augmentations.data.symbols`, and
+:mod:`~fuse_augmentations.data.letters` (stroke figures) — registered in
+:mod:`~fuse_augmentations.data.families`. Reach for a family's own module when you want its
+specifics; this namespace exports the pieces a dataset-building caller needs.
+
+This module does not *itself* import torch: :class:`SyntheticIterableDataset` is the only
+torch-dependent name here and is resolved lazily on first attribute access. Note that importing it
+still pulls torch in today, because the parent :mod:`fuse_augmentations` package imports the
+augmentation stack eagerly — roughly 440 ms of the ~480 ms an ``import fuse_augmentations.data``
+costs. Making the saving visible needs the same treatment there.
 
 Examples:
     ```pycon
     >>> import tempfile
-    >>> from pathlib import Path
     >>> from fuse_augmentations.data import generate_dataset
     >>> with tempfile.TemporaryDirectory() as tmp:
     ...     counts = generate_dataset(tmp, num_images=10, fmt="yolo", task="detection", seed=0)
@@ -20,92 +32,103 @@ Examples:
 
 from __future__ import annotations
 
+import importlib
 import itertools
 from typing import TYPE_CHECKING, Any
 
-from fuse_augmentations.data.animals import (
-    ANIMAL_KEYPOINT_NAMES,
-    ANIMAL_KEYPOINT_SKELETON,
-    AnimalShape,
-    animal_keypoints,
-    animal_shapes,
-)
 from fuse_augmentations.data.config import (
-    DEFAULT_SHAPES,
+    ClassEntry,
     ClassMode,
+    ClassVocabulary,
     Color,
+    Fill,
     OutputFormat,
-    Shape,
     SplitRatios,
     SyntheticConfig,
     Task,
-    class_id_of,
+    class_id,
     class_names,
+    class_vocabulary,
+)
+from fuse_augmentations.data.families import (
+    ALL_SHAPES,
+    DEFAULT_SHAPES,
+    SHAPE_FAMILIES,
+    Shape,
+    ShapeFamily,
+    family_of,
     keypoint_schema_for,
+    shape_outline,
 )
-from fuse_augmentations.data.datasets import SyntheticIterableDataset
 from fuse_augmentations.data.generator import SyntheticGenerator
-from fuse_augmentations.data.geometry import GeomShape
-from fuse_augmentations.data.landmarks import KeypointSchema
-from fuse_augmentations.data.letters import (
-    LETTER_KEYPOINT_NAMES,
-    LETTER_KEYPOINT_SKELETON,
-    LetterShape,
-    letter_keypoints,
-    letter_shapes,
-)
+from fuse_augmentations.data.keypoints import KeypointSchema
 from fuse_augmentations.data.sample import Annotation, Sample
-from fuse_augmentations.data.symbols import (
-    SYMBOL_KEYPOINT_NAMES,
-    SYMBOL_KEYPOINT_SKELETON,
-    SymbolShape,
-    symbol_keypoints,
-    symbol_shapes,
-)
-from fuse_augmentations.data.writers import CocoWriter, DatasetWriter, YoloWriter, get_writer
+from fuse_augmentations.data.writers import CocoWriter, DatasetWriter, YoloWriter, get_writer, register_writer
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
+    from fuse_augmentations.data.datasets import SyntheticIterableDataset
+
 __all__ = [
-    "ANIMAL_KEYPOINT_NAMES",
-    "ANIMAL_KEYPOINT_SKELETON",
+    "ALL_SHAPES",
     "DEFAULT_SHAPES",
-    "LETTER_KEYPOINT_NAMES",
-    "LETTER_KEYPOINT_SKELETON",
-    "SYMBOL_KEYPOINT_NAMES",
-    "SYMBOL_KEYPOINT_SKELETON",
-    "AnimalShape",
+    "SHAPE_FAMILIES",
     "Annotation",
+    "ClassEntry",
     "ClassMode",
+    "ClassVocabulary",
     "CocoWriter",
     "Color",
-    "GeomShape",
+    "DatasetWriter",
+    "Fill",
     "KeypointSchema",
-    "LetterShape",
     "OutputFormat",
     "Sample",
     "Shape",
+    "ShapeFamily",
     "SplitRatios",
-    "SymbolShape",
     "SyntheticConfig",
     "SyntheticGenerator",
     "SyntheticIterableDataset",
     "Task",
     "YoloWriter",
-    "animal_keypoints",
-    "animal_shapes",
-    "class_id_of",
+    "class_id",
     "class_names",
+    "class_vocabulary",
+    "family_of",
     "generate_dataset",
     "get_writer",
     "keypoint_schema_for",
-    "letter_keypoints",
-    "letter_shapes",
-    "symbol_keypoints",
-    "symbol_shapes",
+    "register_writer",
+    "shape_outline",
 ]
+
+#: Names resolved on first access rather than at import. :class:`SyntheticIterableDataset` is here
+#: to keep ``import fuse_augmentations.data`` free of torch — measured at ~440 ms of the ~480 ms this
+#: package used to cost, imposed on every caller including the many who only write a dataset to disk.
+_LAZY: dict[str, str] = {"SyntheticIterableDataset": "fuse_augmentations.data.datasets"}
+
+
+def __getattr__(name: str) -> Any:  # noqa: ANN401 - module-level attribute access is untyped by nature
+    """Resolve a lazily-imported public name on first access (:pep:`562`).
+
+    Args:
+        name: The attribute being looked up on this module.
+
+    Returns:
+        The resolved object. Names in :data:`_LAZY` are exported here like any other; they are
+        simply imported late.
+
+    Raises:
+        AttributeError: If ``name`` is neither exported nor deferred.
+
+    """
+    module_path = _LAZY.get(name)
+    if module_path is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(importlib.import_module(module_path), name)
 
 
 def _assign_splits(num_images: int, split_ratios: SplitRatios) -> dict[str, int]:
@@ -130,8 +153,6 @@ def generate_dataset(
     output_dir: str | Path,
     num_images: int,
     fmt: OutputFormat | str = OutputFormat.COCO,
-    task: Task | str | None = None,
-    class_mode: ClassMode | str = ClassMode.SHAPE,
     split_ratios: SplitRatios | None = None,
     seed: int | None = None,
     config: SyntheticConfig | None = None,
@@ -139,37 +160,34 @@ def generate_dataset(
 ) -> dict[str, int]:
     """Generate a synthetic dataset on disk and return per-split image counts.
 
+    Everything about an image's *content* — task, class mode, shapes, colors, size — is a
+    :class:`SyntheticConfig` field, reachable either through ``config`` or through ``config_kwargs``.
+    Only ``fmt`` and ``split_ratios``, which describe the on-disk layout rather than the pixels, are
+    parameters here.
+
+    ``task`` and ``class_mode`` used to be parameters *as well as* config fields. The task in
+    particular had two owners — the generator read it off the config, the writer off the argument —
+    so passing both meant a cross-check, a ``None`` sentinel to distinguish "not supplied" from a
+    default, and a paragraph of documentation about which won. Giving the config sole ownership
+    deleted all three; ``task="keypoints"`` still works, it simply arrives as a config field.
+
     Args:
         output_dir: Destination directory (created if absent).
         num_images: Total number of images to generate across all splits.
         fmt: Output layout, ``"coco"`` or ``"yolo"`` (or an :class:`OutputFormat`).
-        task: ``"detection"``, ``"segmentation"``, ``"obb"``, or ``"keypoints"`` (or a
-            :class:`Task`). ``None`` (the default) adopts :attr:`SyntheticConfig.task` — the
-            supplied ``config``'s own task, or the config default when no ``config`` is given — so
-            a keypoints config never has to restate its task here. ``"keypoints"`` additionally
-            requires every entry of :attr:`SyntheticConfig.shapes` to belong to one
-            keypoint-bearing family (:class:`AnimalShape` or :class:`SymbolShape`) — the default
-            geometric shapes have no keypoint table, and pairing them (or mixing two families)
-            with it raises :class:`ValueError`; the writer emits whichever family's schema
-            (:func:`keypoint_schema_for`) that turns out to be.
-        class_mode: ``"shape"``, ``"color"``, or ``"shape_color"`` (or a :class:`ClassMode`).
         split_ratios: Train/val/test fractions; defaults to 70/20/10.
         seed: Seed for reproducible generation; ``None`` uses fresh entropy.
-        config: Full :class:`SyntheticConfig`; when given, ``class_mode`` and ``config_kwargs``
-            are ignored in favor of the config's own fields. ``task`` is **not** ignored: an
-            explicitly supplied one is cross-checked against :attr:`SyntheticConfig.task` and must
-            agree with it, because the generator reads the task off the config while the writer
-            reads the argument. Omitting ``task`` adopts the config's own task instead.
-        **config_kwargs: Extra :class:`SyntheticConfig` fields (e.g. ``img_size``)
-            used only when ``config`` is not supplied.
+        config: Full :class:`SyntheticConfig`. When given, ``config_kwargs`` must be empty — a
+            config already says everything they would.
+        **config_kwargs: :class:`SyntheticConfig` fields (``task``, ``class_mode``, ``img_size``,
+            ``shapes``, ``colors``, …) used to build the config when ``config`` is not supplied.
 
     Returns:
         Ordered mapping of split name to the number of images written.
 
     Raises:
-        ValueError: If ``num_images`` is not a positive integer, or if an explicitly supplied
-            ``task`` disagrees with the :attr:`SyntheticConfig.task` of a supplied ``config``.
-            An omitted ``task`` can never conflict, since it takes its value from the config.
+        ValueError: If ``num_images`` is not a positive integer, or if both a ``config`` and
+            ``config_kwargs`` were supplied.
 
     Examples:
         ```pycon
@@ -185,54 +203,32 @@ def generate_dataset(
     """
     if num_images < 1:
         raise ValueError(f"num_images must be a positive integer, got {num_images}")
-    fmt = OutputFormat(fmt)
-    # ``None`` is the "adopt whatever the config says" sentinel and must survive normalization:
-    # ``Task(None)`` raises, and folding it into a concrete default here would resurrect the very
-    # clash the sentinel removes -- a keypoints config plus an omitted argument reported as a
-    # conflict against a default the caller never passed.
-    task = None if task is None else Task(task)
-    split_ratios = split_ratios or SplitRatios()
-    if config is None:
-        # ``class_mode`` feeds only the config built here; when a ``config`` is supplied it is
-        # ignored, so normalize (and validate) it lazily to avoid rejecting a valid ``config`` call.
-        # ``task`` cannot be treated that way: the generator reads it off the config and the writer
-        # off the argument, so it is forwarded here -- one task, two readers. An omitted task is
-        # left out of the call rather than restated, keeping SyntheticConfig the only place that
-        # names the default.
-        mode = ClassMode(class_mode)
-        config = (
-            SyntheticConfig(class_mode=mode, **config_kwargs)
-            if task is None
-            else SyntheticConfig(class_mode=mode, task=task, **config_kwargs)
-        )
-    elif task is not None and config.task is not task:
-        # Both sides are normalized ``Task`` members by now, so identity is the exact test. Left
-        # unchecked, a mismatch splits the two readers: e.g. a KEYPOINTS writer over a DETECTION
-        # config emits a landmark block that is all-zero and visibility-0 for every object.
+    if config is not None and config_kwargs:
         raise ValueError(
-            f"task={task.value!r} conflicts with config.task={config.task.value!r}; "
-            "pass the task on the config, or omit the task argument"
+            f"pass either a config or its fields as keywords, not both; got config plus {sorted(config_kwargs)}"
         )
-    # Every path above leaves the config carrying the task, so reading it back is what keeps the
-    # writer below on the same member the generator uses -- including when the argument was omitted.
-    task = config.task
+    fmt = OutputFormat(fmt)
+    split_ratios = split_ratios or SplitRatios()
+    config = config if config is not None else SyntheticConfig(**config_kwargs)
 
     counts = _assign_splits(num_images, split_ratios)
 
-    # Stream a single lazy sample source through per-split islice views so only one
-    # Sample is materialized at a time; the writer consumes each split in order.
+    # Stream a single lazy sample source through per-split islice views so only one Sample is
+    # materialized at a time. The writer must consume the splits in insertion order and exactly once
+    # each; DatasetWriter.write documents that contract, since these views share one iterator.
     generator = SyntheticGenerator(config)
     sample_stream = generator.generate(num_images, seed=seed)
     splits: dict[str, Iterable[Sample]] = {
         split: itertools.islice(sample_stream, count) for split, count in counts.items()
     }
 
-    # ``SyntheticConfig._validate_vocabulary`` already guarantees every shape belongs to one
-    # keypoint-bearing family when task is KEYPOINTS, so this can only be ``None`` for every other
-    # task -- and get_writer's own default (the animal schema) is simply unused there, since no
-    # writer path reads keypoint_schema outside Task.KEYPOINTS.
-    schema = keypoint_schema_for(config.shapes)
-    writer_kwargs = {} if schema is None else {"keypoint_schema": schema}
-    writer: DatasetWriter = get_writer(fmt, task, class_names(config.class_mode, shapes=config.shapes), **writer_kwargs)
+    # ``SyntheticConfig`` already guarantees a single keypoint-bearing family under Task.KEYPOINTS,
+    # so this is None only for tasks that never read it.
+    writer: DatasetWriter = get_writer(
+        fmt,
+        config.task,
+        class_vocabulary(config.class_mode, config.shapes, config.colors),
+        keypoint_schema=keypoint_schema_for(config.shapes),
+    )
     writer.write(splits, output_dir)
     return counts

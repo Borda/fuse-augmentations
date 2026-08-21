@@ -11,25 +11,30 @@ from PIL import Image, ImageDraw
 
 from fuse_augmentations.data.animals import (
     _OPTIONAL_KEYPOINTS,
-    _SVG_NS,
+    _REQUIRED_KEYPOINTS,
     _ZOO,
-    _ZOO_NS,
     ANIMAL_KEYPOINT_NAMES,
     ANIMAL_KEYPOINTS,
     ANIMAL_NAMES,
     ANIMAL_POLYGONS,
     ANIMAL_SOURCES,
     AnimalShape,
-    _parse_path_d,
-    _read_keypoints,
     _read_svg,
-    _reject_transforms,
-    _svg_tag,
-    _zoo_attr,
     animal_keypoints,
 )
-from fuse_augmentations.data.geometry import GeomShape, polygon_to_bbox_xyxy, shape_polygon
-from fuse_augmentations.data.landmarks import _normalized, _normalized_pair
+from fuse_augmentations.data.families import shape_outline
+from fuse_augmentations.data.geometry import polygon_to_bbox_xyxy
+from fuse_augmentations.data.keypoints import _normalized, _normalized_pair
+from fuse_augmentations.data.primitives import PrimitiveShape
+from fuse_augmentations.data.svgio import (
+    _SVG_NS,
+    _ZOO_NS,
+    parse_path_d,
+    read_named_circles,
+    reject_transforms,
+    svg_tag,
+    zoo_attr,
+)
 
 
 def _area_centroid(points: np.ndarray) -> np.ndarray:
@@ -157,7 +162,7 @@ def _shoelace_area(points: np.ndarray) -> float:
 def _rasterize(name: str, size: float, canvas: int, angle: float = 0.0) -> np.ndarray:
     """Fill one animal outline into a boolean canvas exactly as the generator would."""
     image = Image.new("L", (canvas, canvas), 0)
-    poly = shape_polygon(name, center=(canvas / 2.0, canvas / 2.0), size=size, angle=angle)
+    poly = shape_outline(name, center=(canvas / 2.0, canvas / 2.0), size=size, angle=angle)
     ImageDraw.Draw(image).polygon([(float(x), float(y)) for x, y in poly], fill=255)
     return np.asarray(image) > 0
 
@@ -213,7 +218,7 @@ def test_table_has_no_repeated_vertex(name: str) -> None:
 def test_table_area_centroid_is_the_origin(name: str) -> None:
     """The outline is centred on its area centroid (center of mass), not its vertex mean.
 
-    `shape_polygon` translates the base outline by the requested centre without re-centring, so a
+    `shape_outline` translates the base outline by the requested centre without re-centring, so a
     table whose centroid drifts would place objects off their annotated centre. A vertex mean would
     not do here: a traced silhouette's vertices are unevenly spread along its edges (dense around a
     curved neck, sparse along a straight back), so only the area centroid reliably lands on the
@@ -287,26 +292,26 @@ def test_table_is_frozen_against_mutation(name: str) -> None:
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
 def test_scaled_polygon_does_not_alias_the_table(name: str) -> None:
-    """`shape_polygon` returns a fresh writable array rather than a view of the constant.
+    """`shape_outline` returns a fresh writable array rather than a view of the constant.
 
     Downstream code freely mutates the returned polygon (rotation, translation); aliasing the frozen table would either
     raise or silently corrupt the vocabulary.
 
     """
-    poly = shape_polygon(name, center=(0.0, 0.0), size=10.0)
+    poly = shape_outline(name, center=(0.0, 0.0), size=10.0)
     poly[0, 0] += 1.0  # must not raise
     assert poly.base is not ANIMAL_POLYGONS[name]
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
 def test_polygon_scales_and_translates_like_a_geometric_shape(name: str) -> None:
-    """`shape_polygon` bounds an animal by `size` and centres it on the requested point.
+    """`shape_outline` bounds an animal by `size` and centres it on the requested point.
 
     This is the contract the placement loop depends on: it derives the candidate box from the
     polygon and rejects on that box, so a mis-scaled animal would break boundary handling.
 
     """
-    poly = shape_polygon(name, center=(120.0, 80.0), size=40.0)
+    poly = shape_outline(name, center=(120.0, 80.0), size=40.0)
     x1, y1, x2, y2 = polygon_to_bbox_xyxy(poly)
     assert max(x2 - x1, y2 - y1) == pytest.approx(40.0)
     assert _area_centroid(poly) == pytest.approx([120.0, 80.0], abs=1e-6)
@@ -336,7 +341,7 @@ def test_silhouette_survives_a_small_rotated_draw(name: str) -> None:
 
     """
     image = Image.new("L", (64, 64), 0)
-    poly = shape_polygon(name, center=(32.0, 32.0), size=32.0, angle=0.7)
+    poly = shape_outline(name, center=(32.0, 32.0), size=32.0, angle=0.7)
     ImageDraw.Draw(image).polygon([(float(x), float(y)) for x, y in poly], fill=255)
     assert int((np.asarray(image) > 0).sum()) > 0
 
@@ -440,12 +445,12 @@ def test_keypoint_colors_are_consistent_across_every_document() -> None:
     fills: dict[str, set[str]] = {}
     for name in ANIMAL_NAMES:
         root = ET.parse(str(_ZOO / f"{name}.svg")).getroot()  # noqa: S314 - our own packaged asset, not untrusted input
-        circles_group = root.find(f"{_svg_tag('g')}[@id='keypoints']")
+        circles_group = root.find(f"{svg_tag('g')}[@id='keypoints']")
         assert circles_group is not None
-        circles = circles_group.findall(_svg_tag("circle"))
+        circles = circles_group.findall(svg_tag("circle"))
         assert circles
         for circle in circles:
-            kpt_name = circle.get(_zoo_attr("name"))
+            kpt_name = circle.get(zoo_attr("name"))
             fill_color = circle.get("fill")
             if kpt_name is not None and fill_color is not None:
                 fills.setdefault(kpt_name, set()).add(fill_color)
@@ -539,7 +544,7 @@ def test_placed_keypoints_stay_within_the_placed_polygon(name: str) -> None:
 
     """
     center, size, angle = (120.0, 80.0), 40.0, 0.9
-    poly = shape_polygon(name, center=center, size=size, angle=angle)
+    poly = shape_outline(name, center=center, size=size, angle=angle)
     points = animal_keypoints(AnimalShape(name), center=center, size=size, angle=angle)
     x1, y1, x2, y2 = polygon_to_bbox_xyxy(poly)
     present = points[~np.isnan(points[:, 0])]
@@ -563,7 +568,7 @@ def test_animal_keypoints_rejects_a_shape_without_a_table() -> None:
 
     """
     with pytest.raises(ValueError, match="no keypoint table"):
-        animal_keypoints(GeomShape.SQUARE, center=(0.0, 0.0), size=10.0)
+        animal_keypoints(PrimitiveShape.SQUARE, center=(0.0, 0.0), size=10.0)
 
 
 def test_normalized_pair_rejects_a_wrong_sized_landmark_table() -> None:
@@ -629,7 +634,7 @@ def test_zoo_svg_is_well_formed(name: str) -> None:
 
     """
     root = ET.parse(str(_ZOO / f"{name}.svg")).getroot()  # noqa: S314 - fixed literal XML or our own packaged asset, not untrusted input
-    assert root.tag == _svg_tag("svg")
+    assert root.tag == svg_tag("svg")
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
@@ -641,14 +646,14 @@ def test_zoo_svg_vertices_lie_inside_the_viewbox(name: str) -> None:
 
     """
     root = ET.parse(str(_ZOO / f"{name}.svg")).getroot()  # noqa: S314 - fixed literal XML or our own packaged asset, not untrusted input
-    (path_el,) = root.findall(_svg_tag("path"))
-    points = _parse_path_d(path_el.get("d"), name)
+    (path_el,) = root.findall(svg_tag("path"))
+    points = parse_path_d(path_el.get("d"), name)
     for x, y in points:
         assert 0 <= x <= 1000
         assert 0 <= y <= 1000
-    group = root.find(f"{_svg_tag('g')}[@id='keypoints']")
+    group = root.find(f"{svg_tag('g')}[@id='keypoints']")
     if group is not None:
-        for circle in group.findall(_svg_tag("circle")):
+        for circle in group.findall(svg_tag("circle")):
             cx = circle.get("cx")
             cy = circle.get("cy")
             if cx is not None and cy is not None:
@@ -665,9 +670,9 @@ def test_zoo_svg_title_matches_zoo_title(name: str) -> None:
 
     """
     root = ET.parse(str(_ZOO / f"{name}.svg")).getroot()  # noqa: S314 - fixed literal XML or our own packaged asset, not untrusted input
-    title_el = root.find(_svg_tag("title"))
+    title_el = root.find(svg_tag("title"))
     assert title_el is not None
-    assert title_el.text == root.get(_zoo_attr("title"))
+    assert title_el.text == root.get(zoo_attr("title"))
 
 
 def test_read_svg_rejects_a_document_without_exactly_one_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -708,25 +713,25 @@ def test_parse_path_d_rejects_a_curve_command() -> None:
 
     """
     with pytest.raises(ValueError, match="curve command"):
-        _parse_path_d("M 0 0 C 1 1 2 2 3 3 Z", "test")
+        parse_path_d("M 0 0 C 1 1 2 2 3 3 Z", "test")
 
 
 def test_parse_path_d_rejects_a_second_subpath() -> None:
     """A second `M`/`m` mid-path (a second subpath) is refused; a zoo outline is exactly one closed path."""
     with pytest.raises(ValueError, match="second subpath"):
-        _parse_path_d("M 0 0 L 1 1 Z M 5 5 L 6 6 Z", "test")
+        parse_path_d("M 0 0 L 1 1 Z M 5 5 L 6 6 Z", "test")
 
 
 def test_parse_path_d_rejects_an_unclosed_path() -> None:
     """A path missing its trailing `Z`/`z` is refused rather than silently treated as closed."""
     with pytest.raises(ValueError, match="not closed"):
-        _parse_path_d("M 0 0 L 1 1 L 2 2", "test")
+        parse_path_d("M 0 0 L 1 1 L 2 2", "test")
 
 
 def test_parse_path_d_rejects_an_unsupported_command() -> None:
     """A recognised-but-unsupported letter (not curve, not M/L/H/V/Z) is refused, not silently skipped."""
     with pytest.raises(ValueError, match="unsupported command"):
-        _parse_path_d("M 0 0 L 1 1 B 2 2 Z", "test")
+        parse_path_d("M 0 0 L 1 1 B 2 2 Z", "test")
 
 
 def test_parse_path_d_rejects_coordinates_after_the_close() -> None:
@@ -738,7 +743,7 @@ def test_parse_path_d_rejects_coordinates_after_the_close() -> None:
 
     """
     with pytest.raises(ValueError, match="after the closing Z"):
-        _parse_path_d("M 0 0 L 1 1 Z 2 2", "test")
+        parse_path_d("M 0 0 L 1 1 Z 2 2", "test")
 
 
 def test_parse_path_d_rejects_a_moveto_without_a_coordinate_pair() -> None:
@@ -750,7 +755,7 @@ def test_parse_path_d_rejects_a_moveto_without_a_coordinate_pair() -> None:
 
     """
     with pytest.raises(ValueError, match="moveto without a coordinate pair"):
-        _parse_path_d("M L 1 1 L 2 2 Z", "test")
+        parse_path_d("M L 1 1 L 2 2 Z", "test")
 
 
 def test_parse_path_d_rejects_path_data_ending_mid_coordinate_pair() -> None:
@@ -762,7 +767,7 @@ def test_parse_path_d_rejects_path_data_ending_mid_coordinate_pair() -> None:
 
     """
     with pytest.raises(ValueError, match="ends mid-coordinate-pair"):
-        _parse_path_d("M 0 0 L 1 1 L 2", "test")
+        parse_path_d("M 0 0 L 1 1 L 2", "test")
 
 
 def test_parse_path_d_rejects_a_command_where_a_coordinate_belongs() -> None:
@@ -774,7 +779,7 @@ def test_parse_path_d_rejects_a_command_where_a_coordinate_belongs() -> None:
 
     """
     with pytest.raises(ValueError, match="inside a coordinate pair"):
-        _parse_path_d("M 0 0 L 1 1 L 2 Z", "test")
+        parse_path_d("M 0 0 L 1 1 L 2 Z", "test")
 
 
 @pytest.mark.parametrize(
@@ -794,14 +799,14 @@ def test_parse_path_d_tolerant_forms_agree(d: str) -> None:
 
     """
     expected = [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)]
-    assert _parse_path_d(d, "test") == expected
+    assert parse_path_d(d, "test") == expected
 
 
 def test_reject_transforms_flags_the_offending_element() -> None:
     """A `transform` attribute anywhere in the document is refused, naming the element and the Inkscape fix."""
     root = ET.fromstring(f'<svg xmlns="{_SVG_NS}"><path transform="translate(1,1)" d="M 0 0 Z"/></svg>')  # noqa: S314 - fixed literal XML or our own packaged asset, not untrusted input
     with pytest.raises(ValueError, match="transform"):
-        _reject_transforms(root, "test")
+        reject_transforms(root, "test")
 
 
 def test_read_keypoints_rejects_an_unknown_zoo_name() -> None:
@@ -811,7 +816,7 @@ def test_read_keypoints_rejects_an_unknown_zoo_name() -> None:
         f'<g id="keypoints"><circle zoo:name="wing" cx="1" cy="1"/></g></svg>'
     )
     with pytest.raises(ValueError, match="unknown"):
-        _read_keypoints(root, "test")
+        read_named_circles(root, "test", "keypoints", ANIMAL_KEYPOINT_NAMES, _REQUIRED_KEYPOINTS)
 
 
 def test_read_keypoints_rejects_a_duplicate_zoo_name() -> None:
@@ -822,17 +827,22 @@ def test_read_keypoints_rejects_a_duplicate_zoo_name() -> None:
         "</g></svg>"
     )
     with pytest.raises(ValueError, match="duplicate"):
-        _read_keypoints(root, "test")
+        read_named_circles(root, "test", "keypoints", ANIMAL_KEYPOINT_NAMES, _REQUIRED_KEYPOINTS)
 
 
 def test_read_keypoints_rejects_a_missing_mandatory_landmark() -> None:
-    """A document missing a mandatory (non-optional) landmark is refused, listing what is missing."""
+    """A document missing a mandatory (non-optional) landmark is refused, listing what is missing.
+
+    The reader is shared with the symbol and letter families now, so it says "point" rather than "landmark" — the
+    animals' anatomical word for the same thing.
+
+    """
     root = ET.fromstring(  # noqa: S314 - fixed literal XML, not untrusted input
         f'<svg xmlns="{_SVG_NS}" xmlns:zoo="{_ZOO_NS}"><g id="keypoints">'
         f'<circle zoo:name="mouth" cx="1" cy="1"/></g></svg>'
     )
-    with pytest.raises(ValueError, match="missing the landmark"):
-        _read_keypoints(root, "test")
+    with pytest.raises(ValueError, match="missing the point"):
+        read_named_circles(root, "test", "keypoints", ANIMAL_KEYPOINT_NAMES, _REQUIRED_KEYPOINTS)
 
 
 @pytest.mark.parametrize(
@@ -852,7 +862,7 @@ def test_read_keypoints_rejects_a_landmark_without_coordinates(kp_name: str, att
     root = ET.fromstring(f'<svg xmlns="{_SVG_NS}" xmlns:zoo="{_ZOO_NS}"><g id="keypoints">{circles}</g></svg>')  # noqa: S314 - fixed literal XML or our own packaged asset, not untrusted input
     # The mandatory-landmark guard only tests key presence, so a NaN-defaulted circle passed it.
     with pytest.raises(ValueError, match="missing cx/cy"):
-        _read_keypoints(root, "test")
+        read_named_circles(root, "test", "keypoints", ANIMAL_KEYPOINT_NAMES, _REQUIRED_KEYPOINTS)
 
 
 def test_read_keypoints_allows_missing_optional_landmarks() -> None:
@@ -860,5 +870,5 @@ def test_read_keypoints_allows_missing_optional_landmarks() -> None:
     mandatory = [name for name in ANIMAL_KEYPOINT_NAMES if name not in _OPTIONAL_KEYPOINTS]
     circles = "".join(f'<circle zoo:name="{name}" cx="1" cy="1"/>' for name in mandatory)
     root = ET.fromstring(f'<svg xmlns="{_SVG_NS}" xmlns:zoo="{_ZOO_NS}"><g id="keypoints">{circles}</g></svg>')  # noqa: S314 - fixed literal XML or our own packaged asset, not untrusted input
-    present = _read_keypoints(root, "test")
+    present = read_named_circles(root, "test", "keypoints", ANIMAL_KEYPOINT_NAMES, _REQUIRED_KEYPOINTS)
     assert set(present) == set(mandatory)

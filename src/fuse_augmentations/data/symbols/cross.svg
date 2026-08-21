@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:zoo="https://github.com/Borda/fuse-augmentations/ns/zoo" viewBox="0 0 1000 1000" width="1000" height="1000" zoo:archetype="analytic-symbol" zoo:title="cross" zoo:origin="hand-authored" zoo:license="https://creativecommons.org/publicdomain/zero/1.0/" zoo:note="Analytic outline, hand-authored (no source artwork to attribute). Converted from the former symbols.json literal; coordinates are the JSON values scaled by 400 about a 1000x1000 centre. Save as Plain SVG, never Optimized SVG (it strips the zoo: namespace).">
+  <title>cross</title>
+  <path id="outline" fill="#000000" d="M 380.000 100.000 L 620.000 100.000 L 620.000 380.000 L 860.000 380.000 L 860.000 620.000 L 620.000 620.000 L 620.000 1020.000 L 380.000 1020.000 L 380.000 620.000 L 140.000 620.000 L 140.000 380.000 L 380.000 380.000 Z" />
+  <g id="keypoints">
+  <circle id="kp-center" zoo:name="center" cx="500.000" cy="539.428" r="8" fill="#e6194b" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-apex" zoo:name="apex" cx="500.000" cy="209.856" r="8" fill="#ffe119" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-tail" zoo:name="tail" cx="500.000" cy="899.856" r="8" fill="#f58231" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-flank_left" zoo:name="flank_left" cx="230.000" cy="509.856" r="8" fill="#911eb4" stroke="#ffffff" stroke-width="1.5" />
+  <circle id="kp-flank_right" zoo:name="flank_right" cx="770.000" cy="509.856" r="8" fill="#4363d8" stroke="#ffffff" stroke-width="1.5" />
+  </g>
+</svg>

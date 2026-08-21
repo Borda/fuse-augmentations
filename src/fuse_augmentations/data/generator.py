@@ -7,9 +7,9 @@ representation (polygon, axis-aligned box, oriented box). All randomness flows
 through a caller-supplied :class:`numpy.random.Generator`, so a fixed seed yields
 byte-identical output.
 
-Under :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS` each annotation also carries the
-animal's landmarks, derived from the placement that was already sampled — no extra random draw —
-so a seed produces the same scene whatever the configured task.
+Under :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS` each annotation also carries its
+family's landmarks plus the schema naming them, derived from the placement that was already
+sampled — no extra random draw — so a seed produces the same scene whatever the configured task.
 
 Examples:
     ```pycon
@@ -35,28 +35,22 @@ from typing import TYPE_CHECKING
 import numpy as np
 from PIL import Image, ImageDraw
 
-from fuse_augmentations.data.animals import AnimalShape, animal_keypoints
-from fuse_augmentations.data.config import Color, Shape, Task, class_id_of, class_names
-from fuse_augmentations.data.geometry import (
-    GeomShape,
-    bbox_iou,
-    polygon_to_bbox_xyxy,
-    polygon_to_obb,
-    shape_polygon,
-)
-from fuse_augmentations.data.letters import LetterShape, letter_keypoints
+from fuse_augmentations.data.config import Fill, Task, class_vocabulary
+from fuse_augmentations.data.families import keypoint_schema_for, place_keypoints, shape_outline
+from fuse_augmentations.data.geometry import bbox_iou, polygon_to_bbox_xyxy
+from fuse_augmentations.data.primitives import PrimitiveShape
 from fuse_augmentations.data.sample import Annotation, Sample
-from fuse_augmentations.data.symbols import SymbolShape, symbol_keypoints
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from fuse_augmentations.data.config import SyntheticConfig
+    from fuse_augmentations.data.families import Shape
 
 _BBox = tuple[float, float, float, float]
 #: One sampled placement's full result: shape, color, the polygon bbox/OBB are measured from, and
 #: the landmark table (``None`` off the keypoints task or for a shape with no schema).
-_Placement = tuple[Shape, Color, "NDArray[np.float64]", "NDArray[np.float64] | None"]
+_Placement = tuple["Shape", Fill, "NDArray[np.float64]", "NDArray[np.float64] | None"]
 
 #: COCO visibility flags emitted for a landmark: ``2`` is "labeled and visible", ``0`` is
 #: "not labeled". The intermediate ``1`` ("labeled but not visible") never occurs here — the
@@ -132,37 +126,20 @@ class SyntheticGenerator:
     """
 
     def __init__(self, config: SyntheticConfig) -> None:
-        """Store config and precompute the class-name vocabulary.
+        """Store config and precompute the class vocabulary and keypoint schema this run uses.
 
         The vocabulary is narrowed to ``config.shapes``, the same list every writer declares as its
         ``categories``/``names`` block, so an annotation's ``class_id`` always resolves against the
-        vocabulary written beside it (see :func:`~fuse_augmentations.data.config.class_names`).
+        vocabulary written beside it (see
+        :func:`~fuse_augmentations.data.config.class_vocabulary`). The schema is resolved once here
+        and stamped onto every landmark-bearing annotation, so a table always travels with the
+        family that produced it.
 
         """
         self.config = config
-        self.class_names = class_names(config.class_mode, shapes=config.shapes)
-
-    @staticmethod
-    def _place_keypoints(
-        shape: Shape, center: tuple[float, float], size: float, angle: float, skew: float
-    ) -> NDArray[np.float64] | None:
-        """Place one shape's landmark table, or return ``None`` for a family with no keypoints.
-
-        Only :class:`~fuse_augmentations.data.animals.AnimalShape`,
-        :class:`~fuse_augmentations.data.symbols.SymbolShape`, and
-        :class:`~fuse_augmentations.data.letters.LetterShape` have a landmark table; the config
-        validator already rejects any other shape under
-        :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS`, so this narrowing can never silently
-        drop a labeled object.
-
-        """
-        if isinstance(shape, AnimalShape):
-            return animal_keypoints(shape, center, size, angle, skew)
-        if isinstance(shape, SymbolShape):
-            return symbol_keypoints(shape, center, size, angle, skew)
-        if isinstance(shape, LetterShape):
-            return letter_keypoints(shape, center, size, angle, skew)
-        return None
+        self.vocabulary = class_vocabulary(config.class_mode, config.shapes, config.colors)
+        self.class_names = self.vocabulary.names
+        self.keypoint_schema = keypoint_schema_for(config.shapes)
 
     def _attempt_placement(self, rng: np.random.Generator, kept: list[_BBox]) -> _Placement | None:
         """Draw one candidate shape; return it if in-bounds and non-overlapping, else ``None``.
@@ -186,19 +163,19 @@ class SyntheticGenerator:
         color = colors[int(rng.integers(len(colors)))]
         size_px = float(rng.uniform(cfg.min_size_ratio, cfg.max_size_ratio)) * cfg.img_size
         center = (float(rng.uniform(0, cfg.img_size)), float(rng.uniform(0, cfg.img_size)))
-        angle = float(rng.uniform(0, 2 * np.pi)) if cfg.rotate and shape is not GeomShape.CIRCLE else 0.0
+        angle = float(rng.uniform(0, 2 * np.pi)) if cfg.rotate and shape is not PrimitiveShape.CIRCLE else 0.0
         skew = (
             float(rng.uniform(-cfg.asymmetry_jitter, cfg.asymmetry_jitter))
-            if cfg.asymmetry_jitter and shape is not GeomShape.CIRCLE
+            if cfg.asymmetry_jitter and shape is not PrimitiveShape.CIRCLE
             else 0.0
         )
-        poly = shape_polygon(shape.value, center, size_px, angle, skew)
+        poly = shape_outline(shape.value, center, size_px, angle, skew)
         bbox = polygon_to_bbox_xyxy(poly)
         if _boundary_overlap(bbox, cfg.img_size) > cfg.boundary_tolerance:
             return None
         if any(bbox_iou(bbox, other) > cfg.overlap_iou for other in kept):
             return None
-        keypoints = self._place_keypoints(shape, center, size_px, angle, skew) if cfg.task is Task.KEYPOINTS else None
+        keypoints = place_keypoints(shape, center, size_px, angle, skew) if cfg.task is Task.KEYPOINTS else None
         return shape, color, poly, keypoints
 
     def sample(self, rng: np.random.Generator) -> Sample:
@@ -248,15 +225,15 @@ class SyntheticGenerator:
             draw.polygon([(float(x), float(y)) for x, y in poly], fill=color.rgb)
             bbox = polygon_to_bbox_xyxy(poly)
             kept.append(bbox)
-            class_id = class_id_of(shape, color, cfg.class_mode, shapes=cfg.shapes)
+            class_id = self.vocabulary.id_of(shape, color)
             annotations.append(
                 Annotation(
                     class_id=class_id,
                     class_name=self.class_names[class_id],
                     polygon=[float(v) for v in poly.reshape(-1)],
                     bbox_xyxy=bbox,
-                    obb_corners=[float(v) for v in polygon_to_obb(poly).reshape(-1)],
                     keypoints=None if points is None else _visible_keypoints(points, cfg.img_size),
+                    keypoint_schema=None if points is None else self.keypoint_schema,
                 )
             )
         if len(annotations) < cfg.min_objects:

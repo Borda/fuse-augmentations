@@ -13,25 +13,30 @@ def test_top_level_facade_is_accessible() -> None:
 def test_subpackage_exports_public_names() -> None:
     """The datasets subpackage re-exports the documented public API.
 
-    `animal_keypoints` and `DEFAULT_SHAPES` are part of that surface — both are documented public names (the first
-    carries its own `Examples:` block, the second is the default of `SyntheticConfig.shapes`), so reaching them must not
-    require importing a submodule the facade otherwise hides.
+    The facade carries what a dataset-building caller needs — the generator, the config, the writers, the vocabulary
+    helpers — and no longer carries five names per shape family. Family specifics like `animal_keypoints` now come from
+    the family's own module, which is what stops this surface growing every time a family is added.
 
     """
     from fuse_augmentations.data import (
+        ALL_SHAPES,
         DEFAULT_SHAPES,
+        SHAPE_FAMILIES,
         CocoWriter,
         SyntheticConfig,
         SyntheticGenerator,
         YoloWriter,
-        animal_keypoints,
         generate_dataset,
         get_writer,
+        shape_outline,
     )
+    from fuse_augmentations.data.animals import animal_keypoints
 
     assert all(
-        callable(obj) for obj in (generate_dataset, get_writer, SyntheticGenerator, SyntheticConfig, animal_keypoints)
+        callable(obj)
+        for obj in (generate_dataset, get_writer, SyntheticGenerator, SyntheticConfig, shape_outline, animal_keypoints)
     )
+    assert len(ALL_SHAPES) == sum(len(family.members) for family in SHAPE_FAMILIES)
     assert CocoWriter.__name__ == "CocoWriter"
     assert YoloWriter.__name__ == "YoloWriter"
     assert isinstance(DEFAULT_SHAPES, tuple)
@@ -50,3 +55,34 @@ def test_all_exported_names_resolve() -> None:
 
     missing = [name for name in data.__all__ if not hasattr(data, name)]
     assert missing == []
+
+
+def test_every_registered_family_derives_from_the_shape_base() -> None:
+    """`Shape` is the shared base class, so the registry is the only place a family is named.
+
+    `Shape` used to be a hand-written `PrimitiveShape | AnimalShape | SymbolShape | LetterShape` union that had to be
+    extended alongside `SHAPE_FAMILIES`. Missing that second edit left the new family drawable but invisible to
+    `SyntheticConfig`'s validation, which rejects anything failing `isinstance(value, Shape)` — so the family's own
+    members would have been refused as if they were bare strings. Deriving every family enum from one base makes the two
+    impossible to desynchronize, and this asserts the property the union used to provide by hand.
+
+    """
+    from fuse_augmentations.data import ALL_SHAPES, SHAPE_FAMILIES, Shape
+
+    assert all(issubclass(family.member_type, Shape) for family in SHAPE_FAMILIES)
+    assert all(isinstance(shape, Shape) for shape in ALL_SHAPES)
+
+
+def test_the_shape_base_still_rejects_a_bare_string() -> None:
+    """A shape *value* is not a `Shape`, even though the str mixin makes it compare equal to one.
+
+    This is the check `SyntheticConfig._validate_vocabulary` relies on to catch `shapes=("duck",)`. Under the `str`
+    mixin `"duck" == AnimalShape.DUCK` and both hash alike, so a membership or equality test would let the string
+    through and it would only fail much later, in a registry lookup keyed by `type(shape)`.
+
+    """
+    from fuse_augmentations.data import Shape
+    from fuse_augmentations.data.animals import AnimalShape
+
+    assert AnimalShape.DUCK == "duck"
+    assert not isinstance("duck", Shape)

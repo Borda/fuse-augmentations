@@ -8,10 +8,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, AnimalShape
-from fuse_augmentations.data.config import ClassMode, Color, SyntheticConfig, Task, class_names
+from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, ANIMAL_KEYPOINT_SCHEMA, AnimalShape
+from fuse_augmentations.data.config import ClassMode, Color, SyntheticConfig, Task, class_vocabulary
+from fuse_augmentations.data.families import ALL_SHAPES, keypoint_schema_for
 from fuse_augmentations.data.generator import SyntheticGenerator
-from fuse_augmentations.data.landmarks import KeypointSchema
+from fuse_augmentations.data.keypoints import KeypointSchema
 from fuse_augmentations.data.letters import LETTER_KEYPOINT_SCHEMA, LetterShape
 from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_NAMES, SYMBOL_KEYPOINT_SCHEMA, SymbolShape
 from fuse_augmentations.data.writers import CocoWriter
@@ -32,7 +33,7 @@ def _write(
     `img_size`, or `task` — is a keyword here, so a test states only what makes it different from the others. The
     writer's `task` is positional and separate from the config's: the writer formats whatever the samples already carry,
     so a detection-configured stream can still be written out as segmentation or OBB. `keypoint_schema` is only relevant
-    to `Task.KEYPOINTS` runs and defaults to `CocoWriter`'s own default (the animal schema) when omitted.
+    to `Task.KEYPOINTS` runs and defaults to whichever family the config's own `shapes` name.
 
     The writer's vocabulary is narrowed to the config's own `shapes`, exactly as `generate_dataset` narrows it, so the
     ids the generator stamps index the very `categories` block written beside them. `full_vocabulary=True` hands the
@@ -44,9 +45,19 @@ def _write(
     generator = SyntheticGenerator(config)
     rng = np.random.default_rng(seed)
     samples = [generator.sample(rng) for _ in range(count)]
-    names = class_names(config.class_mode, shapes=None if full_vocabulary else config.shapes)
-    writer_kwargs = {} if keypoint_schema is None else {"keypoint_schema": keypoint_schema}
-    CocoWriter(writer_task, names, **writer_kwargs).write({"train": samples}, tmp_path)
+    # `shapes` is required now, so "the full vocabulary" is spelled out as ALL_SHAPES rather than
+    # signalled by omitting the argument.
+    vocabulary = class_vocabulary(config.class_mode, ALL_SHAPES if full_vocabulary else config.shapes)
+    names = vocabulary.names
+    # A keypoints *writer* over a non-keypoints *config* is a case several tests here exercise on
+    # purpose. The config's own shapes then name no schema, so the family has to be stated — which
+    # is exactly what removing the writer's implicit animal default forces, and why the choice is
+    # visible here instead of hidden in the writer.
+    schema = keypoint_schema if keypoint_schema is not None else keypoint_schema_for(config.shapes)
+    if schema is None and writer_task is Task.KEYPOINTS:
+        schema = ANIMAL_KEYPOINT_SCHEMA
+    writer_kwargs = {} if schema is None else {"keypoint_schema": schema}
+    CocoWriter(writer_task, vocabulary, **writer_kwargs).write({"train": samples}, tmp_path)
     doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
     return doc, samples, names
 
@@ -183,12 +194,12 @@ def test_keypoints_task_declares_the_sixteen_point_schema_and_fifteen_edge_skele
 def test_keypoints_task_leaves_categories_outside_the_run_family_without_a_keypoint_schema(tmp_path: Path) -> None:
     """Only the run's own keypoint-bearing family is decorated — every category outside it stays undecorated.
 
-    A `CocoWriter` is handed whatever vocabulary its caller chooses, and a full-vocabulary one (`class_names` with no
-    `shapes`, still the default) covers categories the run's own family never includes: every geometric-shape category
-    always, plus every category of the *other* keypoint-bearing family. A category the writer never draws a matching
-    annotation for must not claim a landmark schema it can't back — checked here for an animal run (geometric categories
-    undecorated) and a symbol run (both geometric *and* animal categories undecorated). `generate_dataset` narrows the
-    vocabulary and so never hits this path, but the writer is public and must stay correct without it.
+    A `CocoWriter` is handed whatever vocabulary its caller chooses, and a full-vocabulary one (`class_vocabulary` over
+    `ALL_SHAPES`) covers categories the run's own family never includes: every geometric-shape category always, plus
+    every category of the *other* keypoint-bearing family. A category the writer never draws a matching annotation for
+    must not claim a landmark schema it can't back — checked here for an animal run (geometric categories undecorated)
+    and a symbol run (both geometric *and* animal categories undecorated). `generate_dataset` narrows the vocabulary and
+    so never hits this path, but the writer is public and must stay correct without it.
 
     """
     doc, _samples, names = _write(

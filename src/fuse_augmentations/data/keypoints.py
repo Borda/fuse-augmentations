@@ -60,7 +60,7 @@ class KeypointSchema:
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.data.landmarks import KeypointSchema
+        >>> from fuse_augmentations.data.keypoints import KeypointSchema
         >>> schema = KeypointSchema(names=("a", "b"), skeleton=((0, 1),), flip_idx=(1, 0), shape_values=("x",))
         >>> schema.kpt_shape
         2

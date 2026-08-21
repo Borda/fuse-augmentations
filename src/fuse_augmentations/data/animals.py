@@ -72,17 +72,17 @@ Examples:
 
 from __future__ import annotations
 
-import re
-import xml.etree.ElementTree as ET
 from collections.abc import Mapping
-from enum import Enum
 from importlib.resources import files
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from fuse_augmentations.data.landmarks import KeypointSchema, _normalized_pair
+from fuse_augmentations.data.geometry import place_points
+from fuse_augmentations.data.keypoints import KeypointSchema, _normalized_pair
+from fuse_augmentations.data.shape_enum import ShapeEnum
+from fuse_augmentations.data.svgio import read_outline_document
 
 if TYPE_CHECKING:
     from importlib.resources.abc import Traversable
@@ -90,7 +90,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 
-class AnimalShape(str, Enum):
+class AnimalShape(ShapeEnum):
     """Animal silhouette vocabulary (definition order is the animal class order).
 
     Twelve fixed side-profile silhouettes traced from public-domain reference art. Each is
@@ -186,6 +186,10 @@ _OPTIONAL_KEYPOINTS: frozenset[str] = frozenset({
     "hind_limb_right",
 })
 
+#: The landmarks every animal must carry — the family's vocabulary minus the optional ones. Derived
+#: rather than listed so the two can never disagree.
+_REQUIRED_KEYPOINTS: tuple[str, ...] = tuple(name for name in ANIMAL_KEYPOINT_NAMES if name not in _OPTIONAL_KEYPOINTS)
+
 #: Skeleton edges as index pairs into :data:`ANIMAL_KEYPOINT_NAMES`: ``mouth-head``, ``eye-head``,
 #: ``ear-head``, the ``head-neck-body_top-body_bottom-tail`` chain, a two-segment
 #: ``body_top-front_elbow-front_limb`` chain per front limb, and a two-segment
@@ -212,203 +216,11 @@ ANIMAL_KEYPOINT_SKELETON: tuple[tuple[int, int], ...] = (
     (13, 15),
 )
 
-#: Provenance attributes every document must carry (as ``zoo:``-namespaced root attributes).
-#: ``attribution`` is deliberately excluded — CC0/PDM art carries no attribution obligation.
-_REQUIRED_PROVENANCE: tuple[str, ...] = ("origin", "title", "license", "note")
-
-#: SVG commands accepted by :func:`_parse_path_d`, absolute and relative.
-_SUPPORTED_PATH_COMMANDS = "MmLlHhVvZz"
-
-#: Curve commands rejected with an authoring hint — anything with an SVG letter that isn't a straight
-#: line, a move, or a close belongs to this set.
-_CURVE_PATH_COMMANDS = "CcSsQqTtAa"
-
-_SVG_NS = "http://www.w3.org/2000/svg"
-_ZOO_NS = "https://github.com/Borda/fuse-augmentations/ns/zoo"
-
-#: Directory holding the packaged animal documents, resolved through :mod:`importlib.resources` so it
-#: works from a source checkout and from an installed wheel alike.
 _ZOO: Traversable = files("fuse_augmentations.data") / "zoo"
 
 
-def _svg_tag(tag: str) -> str:
-    """Return ``tag`` fully qualified with the SVG namespace, for ``ElementTree`` lookups."""
-    return f"{{{_SVG_NS}}}{tag}"
-
-
-def _zoo_attr(name: str) -> str:
-    """Return ``name`` fully qualified with the ``zoo:`` namespace, for ``ElementTree`` lookups."""
-    return f"{{{_ZOO_NS}}}{name}"
-
-
-def _parse_path_d(d: str, name: str) -> list[tuple[float, float]]:
-    """Parse an SVG path ``d`` attribute into a closed polygon's vertex list.
-
-    Tolerant of both absolute and relative ``M``/``L``/``H``/``V``/``Z`` and of SVG's implicit
-    command repetition (a bare coordinate pair following ``M``/``L`` repeats the last command) —
-    that tolerance is what lets a re-saved Inkscape path (relative, ``H``/``V``-heavy) still parse,
-    rather than only the absolute ``M``/``L``/``Z`` this package's own authoring script emits.
-
-    Args:
-        d: The ``<path>`` element's ``d`` attribute.
-        name: Animal name, for error messages.
-
-    Returns:
-        The outline vertices in path order.
-
-    Raises:
-        ValueError: If the path uses a curve command, an unrecognised command, a second subpath
-            (a second ``M``/``m``), a moveto without a coordinate pair, ends part-way through a
-            coordinate pair, puts a command letter where the second half of a pair belongs, carries
-            coordinates after its closing ``Z``/``z``, or is not closed with a trailing ``Z``/``z``.
-
-    """
-    raw_tokens = re.findall(r"[A-Za-z]|-?\d*\.?\d+(?:[eE][-+]?\d+)?", d)
-    points: list[tuple[float, float]] = []
-    current = (0.0, 0.0)
-    cmd: str | None = None
-    started = False
-    closed = False
-    i = 0
-    while i < len(raw_tokens):
-        tok = raw_tokens[i]
-        if tok[:1].isalpha():
-            # A moveto that consumed a pair leaves ``cmd`` as the implicit lineto it decays to, so
-            # ``cmd`` still being ``M``/``m`` here means the moveto never got its coordinates — the
-            # first vertex would otherwise be dropped without a word.
-            if cmd in {"M", "m"}:
-                raise ValueError(f"zoo document {name}.svg has a moveto without a coordinate pair")
-            cmd, started, closed, i = _consume_command(tok, name, started, i)
-            continue
-        if cmd is None:
-            raise ValueError(f"zoo document {name}.svg path data must start with a moveto command")
-        if cmd in "Zz":
-            # ``Z``/``z`` takes no arguments, so a numeric token here is malformed path data. Without
-            # this guard it fell through every branch of _consume_coordinate to the relative-lineto
-            # default and was silently absorbed as a phantom vertex.
-            raise ValueError(
-                f"zoo document {name}.svg has coordinates after the closing Z; a close command takes no arguments"
-            )
-        current, cmd, consumed = _consume_coordinate(cmd, name, raw_tokens, i, current)
-        points.append(current)
-        i += consumed
-    if not closed:
-        raise ValueError(f"zoo document {name}.svg path is not closed; append a trailing Z")
-    return points
-
-
-def _consume_command(tok: str, name: str, started: bool, i: int) -> tuple[str, bool, bool, int]:
-    """Validate one command letter token and return ``(cmd, started, closed, next_index)``."""
-    if tok in _CURVE_PATH_COMMANDS:
-        raise ValueError(
-            f"zoo document {name}.svg uses a curve command {tok!r}; in Inkscape use Path ▸ Flatten "
-            "to straight segments before saving"
-        )
-    if tok not in _SUPPORTED_PATH_COMMANDS:
-        raise ValueError(f"zoo document {name}.svg path data has an unsupported command {tok!r}")
-    if tok in "Mm" and started:
-        raise ValueError(f"zoo document {name}.svg path has a second subpath (a second M/m); expected exactly one")
-    if tok in "Zz":
-        return tok, started, True, i + 1
-    return tok, started or tok in "Mm", False, i + 1
-
-
-def _consume_coordinate(
-    cmd: str, name: str, tokens: list[str], i: int, current: tuple[float, float]
-) -> tuple[tuple[float, float], str, int]:
-    """Apply one numeric argument (or coordinate pair) to ``current``; returns the new command.
-
-    A bare coordinate pair following ``M``/``m`` is an implicit lineto for every pair after the first, per the SVG path
-    grammar — the returned ``cmd`` reflects that so the next bare pair (if any) is interpreted correctly too.
-
-    ``name`` is threaded in for the same reason :func:`_consume_command` takes it: a two-token read has to be validated
-    before it happens, and the resulting error belongs to the named-``ValueError`` contract :func:`_parse_path_d`
-    documents — not to a raw ``IndexError`` off the end of the token list, nor to :func:`float`'s own message about a
-    command letter, neither of which names the document that failed to load.
-
-    Args:
-        cmd: The command in effect for this argument, absolute or relative.
-        name: Animal name, for error messages.
-        tokens: The whole token list, so a coordinate *pair* can be read (and bounds-checked) as one unit.
-        i: Index of the first argument token to consume.
-        current: The point the path is standing on, which relative commands offset from.
-
-    Returns:
-        The new current point, the command in effect for the next argument, and how many tokens were consumed.
-
-    Raises:
-        ValueError: If a pair is cut short by the end of the path data, or if its second half is a command letter.
-
-    """
-    if cmd in "Hh":
-        x = float(tokens[i])
-        return (current[0] + x if cmd == "h" else x, current[1]), cmd, 1
-    if cmd in "Vv":
-        y = float(tokens[i])
-        return (current[0], current[1] + y if cmd == "v" else y), cmd, 1
-    # Every command left takes an (x, y) pair, so the second token must exist and must be a number. The tokenizer emits
-    # only command letters and numerals, which is what makes a leading alpha the exact test for "this is not a
-    # coordinate".
-    if i + 1 >= len(tokens):
-        raise ValueError(f"zoo document {name}.svg path data ends mid-coordinate-pair after {tokens[i]!r}")
-    if tokens[i + 1][:1].isalpha():
-        raise ValueError(
-            f"zoo document {name}.svg has the command {tokens[i + 1]!r} inside a coordinate pair, "
-            f"where the second half of the pair opened by {tokens[i]!r} belongs"
-        )
-    x, y = float(tokens[i]), float(tokens[i + 1])
-    if cmd == "M":
-        return (x, y), "L", 2
-    if cmd == "m":
-        return (current[0] + x, current[1] + y), "l", 2
-    if cmd == "L":
-        return (x, y), "L", 2
-    return (current[0] + x, current[1] + y), "l", 2  # cmd == "l"
-
-
-def _reject_transforms(root: ET.Element, name: str) -> None:
-    """Raise if any element in the document carries a ``transform`` attribute."""
-    for element in root.iter():
-        if "transform" in element.attrib:
-            tag = element.tag.rsplit("}", 1)[-1]
-            raise ValueError(
-                f"zoo document {name}.svg has a transform on <{tag}>; in Inkscape set "
-                "Preferences ▸ Behavior ▸ Transforms ▸ Store transformation = Optimized"
-            )
-
-
-def _read_keypoints(root: ET.Element, name: str) -> dict[str, tuple[float, float]]:
-    """Parse and validate the ``<g id="keypoints">`` circles of one zoo document."""
-    group = root.find(f"{_svg_tag('g')}[@id='keypoints']")
-    if group is None:
-        raise ValueError(f'zoo document {name}.svg is missing the <g id="keypoints"> group')
-    seen: dict[str, tuple[float, float]] = {}
-    for circle in group.findall(_svg_tag("circle")):
-        kp_name = circle.get(_zoo_attr("name"))
-        if kp_name not in ANIMAL_KEYPOINT_NAMES:
-            raise ValueError(
-                f"zoo document {name}.svg has an unknown or missing zoo:name {kp_name!r}; "
-                f"expected one of {ANIMAL_KEYPOINT_NAMES}"
-            )
-        if kp_name in seen:
-            raise ValueError(f"zoo document {name}.svg has a duplicate zoo:name {kp_name!r}")
-        # A present-but-coordinate-less circle is malformed whether the landmark is mandatory or
-        # optional, so it is rejected here rather than defaulted to NaN: the mandatory-landmark
-        # guard below only tests key presence, so a NaN sentinel would sail straight through it.
-        cx, cy = circle.get("cx"), circle.get("cy")
-        if cx is None or cy is None:
-            raise ValueError(f"zoo document {name}.svg landmark {kp_name!r} is missing cx/cy")
-        seen[kp_name] = (float(cx), float(cy))
-    missing = [key for key in ANIMAL_KEYPOINT_NAMES if key not in seen and key not in _OPTIONAL_KEYPOINTS]
-    if missing:
-        raise ValueError(f"zoo document {name}.svg is missing the landmark(s) {missing}")
-    return seen
-
-
-def _read_svg(
-    name: str,
-) -> tuple[list[tuple[float, float]], dict[str, tuple[float, float]], dict[str, str]]:
-    """Read, parse and validate one zoo SVG document.
+def _read_svg(name: str) -> tuple[list[tuple[float, float]], dict[str, tuple[float, float]], dict[str, str]]:
+    """Read one packaged zoo document through the shared reader.
 
     Args:
         name: Animal name, i.e. the ``<name>.svg`` stem in the packaged ``zoo`` directory.
@@ -416,33 +228,8 @@ def _read_svg(
     Returns:
         The outline vertices, the present keypoints (by name), and the provenance attributes.
 
-    Raises:
-        ValueError: If the document uses a curve or a transform, does not have exactly one closed
-            simple path, or is missing a mandatory landmark, a landmark's coordinates, or a
-            provenance attribute. A malformed document is rejected here, at import, rather than
-            surfacing mid-generation as a lookup failure.
-
     """
-    # ``str()`` on a Traversable is not guaranteed to yield an openable path (a zipimport or frozen
-    # loader has no real file behind it), so the document is read through the resource's own opener.
-    # Binary, not text: that leaves any XML declaration's encoding for ElementTree to honor.
-    with (_ZOO / f"{name}.svg").open("rb") as handle:
-        root = ET.parse(handle).getroot()  # noqa: S314 - packaged asset addressed by a fixed enum name, never untrusted input
-    _reject_transforms(root, name)
-    paths = root.findall(_svg_tag("path"))
-    if len(paths) != 1:
-        raise ValueError(f"zoo document {name}.svg must have exactly one <path>, found {len(paths)}")
-    outline = _parse_path_d(paths[0].get("d", ""), name)
-    missing_provenance = [key for key in _REQUIRED_PROVENANCE if not root.get(_zoo_attr(key))]
-    if missing_provenance:
-        raise ValueError(f"zoo document {name}.svg is missing the key(s) {missing_provenance}")
-    source = {
-        key: value
-        for key in ("origin", "title", "license", "attribution", "note")
-        if (value := root.get(_zoo_attr(key)))
-    }
-    keypoints = _read_keypoints(root, name)
-    return outline, keypoints, source
+    return read_outline_document(_ZOO, name, ANIMAL_KEYPOINT_NAMES, _REQUIRED_KEYPOINTS)
 
 
 def _load() -> tuple[
@@ -503,51 +290,13 @@ ANIMAL_KEYPOINT_SCHEMA = KeypointSchema(
 )
 
 
-def animal_shapes(count: int | None = None) -> tuple[AnimalShape, ...]:
-    """Return the animal silhouettes, optionally just the first ``count`` of them.
-
-    A convenience selector for :attr:`~fuse_augmentations.data.config.SyntheticConfig.shapes`, which
-    still takes (and stores) a plain tuple — naming members explicitly stays equally valid. "First
-    ``count``" means :class:`AnimalShape` declaration order, the same order the class-id vocabulary
-    uses, so ``animal_shapes(3)`` names the same three animals on every call and across releases;
-    appending a thirteenth animal can only extend the tail of that list.
-
-    Args:
-        count: How many animals to take, from the start of :class:`AnimalShape`. ``None`` (the
-            default) returns every animal.
-
-    Returns:
-        The selected :class:`AnimalShape` members, in declaration order.
-
-    Raises:
-        ValueError: If ``count`` is negative or exceeds the number of animals.
-
-    Examples:
-        ```pycon
-        >>> from fuse_augmentations.data.animals import animal_shapes
-        >>> animal_shapes(3)
-        (<AnimalShape.DUCK: 'duck'>, <AnimalShape.ELEPHANT: 'elephant'>, <AnimalShape.GIRAFFE: 'giraffe'>)
-        >>> len(animal_shapes())
-        12
-
-        ```
-
-    """
-    every = tuple(AnimalShape)
-    if count is None:
-        return every
-    if not 0 <= count <= len(every):
-        raise ValueError(f"count must be within [0, {len(every)}], got {count}")
-    return every[:count]
-
-
 def animal_keypoints(
     shape: AnimalShape, center: tuple[float, float], size: float, angle: float = 0.0, skew: float = 0.0
 ) -> NDArray[np.float64]:
     """Place one animal's landmark table into image coordinates.
 
     The table is looked up in :data:`ANIMAL_KEYPOINTS`, scaled, skewed, rotated, and translated
-    exactly as :func:`~fuse_augmentations.data.geometry.shape_polygon` treats the matching outline,
+    exactly as :func:`~fuse_augmentations.data.families.shape_outline` treats the matching outline,
     so passing the same ``center``, ``size``, ``angle``, and ``skew`` to both puts every landmark on
     the silhouette that was drawn. No randomness is involved: the result is a pure function of the
     placement the generator already sampled.
@@ -556,8 +305,8 @@ def animal_keypoints(
         shape: An :class:`AnimalShape` member. The geometric shapes have no landmark table at all
             (a square's 4-fold symmetry gives a fixed landmark no stable identity), which is why
             this signature names the animal enum rather than the shape union.
-        center: Target center ``(x, y)`` in pixels — the same value passed to ``shape_polygon``.
-        size: Bounding size in pixels — the same value passed to ``shape_polygon``.
+        center: Target center ``(x, y)`` in pixels — the same value passed to ``shape_outline``.
+        size: Bounding size in pixels — the same value passed to ``shape_outline``.
         angle: Rotation in radians about the shape center — likewise.
         skew: Signed fraction narrowing one pre-rotation half — likewise; see
             :attr:`~fuse_augmentations.data.config.SyntheticConfig.asymmetry_jitter`.
@@ -582,12 +331,9 @@ def animal_keypoints(
         ```
 
     """
-    # deferred: geometry imports this module's tables, so a module-level import here would cycle
-    from fuse_augmentations.data.geometry import _placed
-
     table = ANIMAL_KEYPOINTS.get(shape.value)
     if table is None:
         known = ", ".join(ANIMAL_KEYPOINTS)
         raise ValueError(f"shape {shape.value!r} has no keypoint table; expected one of {known}")
     # The stored table is frozen, so multiplying returns a fresh writable array, never an alias.
-    return _placed(table * size, center, angle, skew)
+    return place_points(table * size, center, angle, skew)

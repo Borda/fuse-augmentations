@@ -8,9 +8,11 @@ recursive-include src/fuse_augmentations *.md
 # Include the license file
 include LICENSE
 
-# Include packaged animal outline + keypoint assets
-recursive-include src/fuse_augmentations/data/ *.json
+# Include every packaged shape-family asset: animal silhouettes, symbol outlines, letter stroke
+# graphs. All three share one SVG schema (see fuse_augmentations/data/svgio.py).
 recursive-include src/fuse_augmentations/data/zoo *.svg
+recursive-include src/fuse_augmentations/data/symbols *.svg
+recursive-include src/fuse_augmentations/data/letters *.svg
 
 # Exclude build configs
 exclude *.yml

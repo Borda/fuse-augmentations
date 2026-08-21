@@ -1,16 +1,21 @@
-"""Analytic shape geometry: polygons, keypoints, rotation, and box derivation.
+"""Family-agnostic polygon math: placement, rotation, and box derivation.
 
-Pure NumPy, no image-library dependency. Polygons are ``(num_points, 2)`` float
-arrays of ``(x, y)`` pixel coordinates. Boxes are derived from the polygon so
-annotations always match the rasterized pixels. :func:`animal_keypoints` places an
-animal's landmark table through the very same scale/rotate/translate pipeline as
-:func:`shape_polygon`, so keypoints always land on the silhouette that was drawn.
+Pure NumPy, no image-library dependency and no knowledge of which shape families exist. Polygons are
+``(num_points, 2)`` float arrays of ``(x, y)`` pixel coordinates. Boxes are derived from the polygon
+so annotations always match the rasterized pixels.
+
+The analytic shape family that used to live here moved to
+:mod:`~fuse_augmentations.data.primitives`, and the per-family outline dispatch moved to
+:mod:`~fuse_augmentations.data.families`. What is left is the math every family shares — which is
+what lets each family module import this one without the import cycle the old arrangement dodged
+with deferred imports.
 
 Examples:
     ```pycon
-    >>> from fuse_augmentations.data.geometry import shape_polygon, polygon_to_bbox_xyxy
-    >>> poly = shape_polygon("square", center=(5.0, 5.0), size=4.0)
-    >>> polygon_to_bbox_xyxy(poly)
+    >>> import numpy as np
+    >>> from fuse_augmentations.data.geometry import polygon_to_bbox_xyxy
+    >>> square = np.array([[3.0, 3.0], [7.0, 3.0], [7.0, 7.0], [3.0, 7.0]])
+    >>> polygon_to_bbox_xyxy(square)
     (3.0, 3.0, 7.0, 7.0)
 
     ```
@@ -19,127 +24,12 @@ Examples:
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
-from fuse_augmentations.data.animals import ANIMAL_POLYGONS
-from fuse_augmentations.data.letters import LETTER_POLYGONS
-from fuse_augmentations.data.symbols import SYMBOL_POLYGONS
-
 if TYPE_CHECKING:
     from numpy.typing import NDArray
-
-#: Number of vertices used to approximate a circle outline.
-CIRCLE_POINTS = 32
-
-#: Height-to-width ratio for the ``rectangle`` shape (non-square, so its OBB is oriented).
-RECT_ASPECT = 0.5
-
-
-class GeomShape(str, Enum):
-    """Analytically computed shape vocabulary (definition order is the geometric class order).
-
-    Computed from ``size`` rather than looked up in a table. ``RECTANGLE`` is deliberately
-    non-square and every shape but ``CIRCLE`` takes a per-shape rotation, so oriented bounding
-    boxes carry real orientation variety; ``CIRCLE`` is rotation-invariant, so its OBB collapses to
-    the axis-aligned box. None of them carries a landmark table: a square is 4-fold symmetric and a
-    circle rotation-invariant, so a fixed landmark on them has no identity a model could learn.
-
-    Attributes:
-        SQUARE: Axis-aligned equal-sided quadrilateral.
-        RECTANGLE: Non-square quadrilateral.
-        TRIANGLE: Obtuse-scalene triangle (all three sides and angles distinct, one angle
-            obtuse) — unlike an equilateral triangle's 3-fold rotational symmetry, the outline
-            itself has none, so its orientation is always visually recoverable from the silhouette
-            alone. Unlike a *right* or *acute* triangle, its minimum-area OBB has a genuine unique
-            minimum too: an obtuse triangle's altitude from the obtuse vertex falls outside the
-            opposite side, so no other hull edge can tie the longest side's flush candidate — see
-            :func:`polygon_to_obb`'s docstring for why every other triangle shape ties.
-        CIRCLE: Polygon-approximated circle.
-
-    Examples:
-        ```pycon
-        >>> from fuse_augmentations.data.geometry import GeomShape
-        >>> [shape.value for shape in GeomShape]
-        ['square', 'rectangle', 'triangle', 'circle']
-
-        ```
-
-    """
-
-    SQUARE = "square"
-    RECTANGLE = "rectangle"
-    TRIANGLE = "triangle"
-    CIRCLE = "circle"
-
-
-#: Analytically computed shape names, in :class:`GeomShape` declaration order.
-GEOMETRIC_SHAPES: tuple[str, ...] = tuple(shape.value for shape in GeomShape)
-
-
-def _base_polygon(shape: str, size: float) -> NDArray[np.float64]:
-    """Return an origin-centered polygon for ``shape`` spanning ``size`` pixels.
-
-    Geometric shapes are computed analytically; animal, symbol, and letter shapes are looked up in
-    :data:`~fuse_augmentations.data.animals.ANIMAL_POLYGONS`,
-    :data:`~fuse_augmentations.data.symbols.SYMBOL_POLYGONS`, and
-    :data:`~fuse_augmentations.data.letters.LETTER_POLYGONS`, whose tables share this function's
-    unit convention (center of mass at the origin, larger extent equal to ``1``) and therefore
-    need only a scale by ``size``.
-
-    Args:
-        shape: A :class:`~fuse_augmentations.data.config.Shape` value — one of the four
-            geometric names (``"square"``, ``"rectangle"``, ``"triangle"``, ``"circle"``), one of
-            the twelve animal names (``"duck"``, ``"elephant"``, ``"giraffe"``, ``"fish"``,
-            ``"rabbit"``, ``"camel"``, ``"eagle"``, ``"penguin"``, ``"whale"``, ``"kangaroo"``,
-            ``"flamingo"``, ``"crocodile"``), one of the seven symbol names
-            (``"kite"``, ``"trapezoid"``, ``"house"``, ``"arrow"``, ``"cross"``, ``"teardrop"``,
-            ``"anchor"``), or one of the twenty-six letter values (``"a"``-``"z"``).
-        size: Bounding size (side / diameter / larger extent) in pixels.
-
-    Returns:
-        ``(num_points, 2)`` float array centered at the origin.
-
-    Raises:
-        ValueError: If ``shape`` is not recognised.
-
-    """
-    half = size / 2.0
-    if shape == "square":
-        return np.array([[-half, -half], [half, -half], [half, half], [-half, half]], dtype=np.float64)
-    if shape == "rectangle":
-        h = half * RECT_ASPECT
-        return np.array([[-half, -h], [half, -h], [half, h], [-half, h]], dtype=np.float64)
-    if shape == "triangle":
-        # Obtuse-scalene: a full-width base with an off-center apex, so all three sides and angles
-        # are distinct (the base vertex at the origin is the obtuse one, ~110 degrees), and this
-        # outline has no rotational or reflective symmetry at all — its rotation is always visually
-        # recoverable. Unlike a right or acute triangle, its minimum-area OBB also has a genuine
-        # unique minimum, not a tie (see polygon_to_obb's docstring). Vertices are offset by their
-        # own centroid (== the vertex mean for any triangle), matching every other shape's
-        # centered-at-origin convention.
-        apex_x, apex_y = 0.45 * size, 0.35 * size
-        verts = np.array([[0.0, 0.0], [size, 0.0], [apex_x, apex_y]], dtype=np.float64)
-        centroid: NDArray[np.float64] = verts.mean(axis=0)
-        return verts - centroid
-    if shape == "circle":
-        angles = np.linspace(0.0, 2.0 * np.pi, CIRCLE_POINTS, endpoint=False)
-        return np.stack([half * np.cos(angles), half * np.sin(angles)], axis=1).astype(np.float64)
-    # One lookup rather than near-identical branches per family; the stored table is frozen, so
-    # multiplying returns a fresh writable array and never aliases the constant.
-    animal = ANIMAL_POLYGONS.get(shape)
-    if animal is not None:
-        return animal * size
-    symbol = SYMBOL_POLYGONS.get(shape)
-    if symbol is not None:
-        return symbol * size
-    letter = LETTER_POLYGONS.get(shape)
-    if letter is not None:
-        return letter * size
-    known = ", ".join((*GEOMETRIC_SHAPES, *ANIMAL_POLYGONS, *SYMBOL_POLYGONS, *LETTER_POLYGONS))
-    raise ValueError(f"unknown shape {shape!r}; expected one of {known}")
 
 
 def _rotation_matrix(angle: float) -> NDArray[np.float64]:
@@ -181,7 +71,7 @@ def rotate_polygon(
 def _skewed(points: NDArray[np.float64], skew: float) -> NDArray[np.float64]:
     """Narrow one half of origin-centered ``points`` toward the vertical axis.
 
-    Every shape in this package but :attr:`GeomShape.CIRCLE` is drawn mirror-symmetric about its
+    Every shape in this package but :attr:`PrimitiveShape.CIRCLE` is drawn mirror-symmetric about its
     own local vertical axis (before rotation), so its oriented bounding box would otherwise show
     identical margins on both sides of that axis — see
     :attr:`~fuse_augmentations.data.config.SyntheticConfig.asymmetry_jitter`. This breaks that
@@ -190,7 +80,7 @@ def _skewed(points: NDArray[np.float64], skew: float) -> NDArray[np.float64]:
     Args:
         points: ``(num_points, 2)`` array already centered on the origin, in the shape's own
             pre-rotation frame — "left" and "right" are only meaningful there, which is why this
-            runs before :func:`_placed` applies ``angle``. NaN rows (absent landmarks) pass through
+            runs before :func:`place_points` applies ``angle``. NaN rows (absent landmarks) pass through
             unchanged: a comparison against NaN is always false, so the selection mask below never
             selects one.
         skew: Signed fraction narrowing one half. Positive narrows the ``x > 0`` half, negative the
@@ -206,14 +96,14 @@ def _skewed(points: NDArray[np.float64], skew: float) -> NDArray[np.float64]:
     return narrowed
 
 
-def _placed(
+def place_points(
     points: NDArray[np.float64], center: tuple[float, float], angle: float, skew: float = 0.0
 ) -> NDArray[np.float64]:
     """Skew, rotate, and translate origin-centered ``points`` onto ``center``, in that order.
 
-    Shared by :func:`shape_polygon`, :func:`~fuse_augmentations.data.animals.animal_keypoints`, and
-    :func:`~fuse_augmentations.data.symbols.symbol_keypoints` so an outline and its landmarks can
-    never drift apart: all three are placed by this one implementation. Skew runs first because
+    The single placement implementation every family shares — outlines via
+    :func:`~fuse_augmentations.data.families.shape_outline`, landmarks via each family's own
+    ``*_keypoints`` — so an outline and its landmarks can never drift apart. Skew runs first because
     "left"/"right" are only meaningful in the shape's own pre-rotation frame.
 
     Args:
@@ -232,36 +122,6 @@ def _placed(
     if angle:
         points = points @ _rotation_matrix(angle).T
     return points + np.asarray(center, dtype=np.float64)
-
-
-def shape_polygon(
-    shape: str, center: tuple[float, float], size: float, angle: float = 0.0, skew: float = 0.0
-) -> NDArray[np.float64]:
-    """Build a skewed, rotated, translated polygon for a shape.
-
-    Args:
-        shape: Shape name (see :func:`_base_polygon`).
-        center: Target center ``(x, y)`` in pixels.
-        size: Bounding size in pixels.
-        angle: Rotation in radians applied about the shape center.
-        skew: Signed fraction narrowing one pre-rotation half — see :func:`_skewed` and
-            :attr:`~fuse_augmentations.data.config.SyntheticConfig.asymmetry_jitter`. ``0.0`` (the
-            default) leaves the polygon unchanged.
-
-    Returns:
-        ``(num_points, 2)`` float array in image coordinates.
-
-    Examples:
-        ```pycon
-        >>> from fuse_augmentations.data.geometry import shape_polygon
-        >>> poly = shape_polygon("triangle", center=(10.0, 10.0), size=6.0)
-        >>> poly.shape
-        (3, 2)
-
-        ```
-
-    """
-    return _placed(_base_polygon(shape, size), center, angle, skew)
 
 
 def polygon_to_bbox_xyxy(points: NDArray[np.float64]) -> tuple[float, float, float, float]:
@@ -371,7 +231,7 @@ def polygon_to_obb(points: NDArray[np.float64]) -> NDArray[np.float64]:
     hypotenuse/base-flush candidate always ties (exactly) at least one leg-flush candidate. Only an
     *obtuse* triangle avoids this — its altitude from the obtuse vertex falls outside the opposite
     side, leaving the longest side's candidate strictly smaller than the others (see
-    :attr:`GeomShape.TRIANGLE`). Ties are broken by each candidate edge's
+    :attr:`PrimitiveShape.TRIANGLE`). Ties are broken by each candidate edge's
     original vertex-index pair (see :func:`_convex_hull`) — a value fixed to the shape's own
     geometry — rather than by which candidate a plain ``<`` comparison happens to visit first,
     which would depend on the polygon's absolute rotation and make the chosen box orientation

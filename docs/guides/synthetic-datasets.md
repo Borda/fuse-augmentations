@@ -162,10 +162,10 @@ Pass `shapes=` (or the CLI's `--shapes animals`) to draw the twelve animal silho
 
 ### Selecting animals
 
-Name the members explicitly, or take the first `N` of them with `animal_shapes()`:
+Name the members explicitly, or take the first `N` of them with `tuple(AnimalShape)`:
 
 ```python
-from fuse_augmentations.data.animals import AnimalShape, animal_shapes
+from fuse_augmentations.data.animals import AnimalShape
 from fuse_augmentations.data.config import SyntheticConfig, Task
 
 explicit = SyntheticConfig(
@@ -174,7 +174,7 @@ explicit = SyntheticConfig(
 assert explicit.shapes == (AnimalShape.DUCK, AnimalShape.GIRAFFE)
 
 first_four = SyntheticConfig(
-    task=Task.KEYPOINTS, shapes=animal_shapes(4)
+    task=Task.KEYPOINTS, shapes=tuple(AnimalShape)[:4]
 )  # duck, elephant, giraffe, fish
 assert first_four.shapes == (
     AnimalShape.DUCK,
@@ -183,11 +183,13 @@ assert first_four.shapes == (
     AnimalShape.FISH,
 )  # same 4 species every call, per the declaration-order guarantee below
 
-all_animals = SyntheticConfig(task=Task.KEYPOINTS, shapes=animal_shapes())  # all twelve
+all_animals = SyntheticConfig(
+    task=Task.KEYPOINTS, shapes=tuple(AnimalShape)
+)  # all twelve
 assert len(all_animals.shapes) == 12
 ```
 
-`animal_shapes(n)` is a prefix of the `AnimalShape` declaration order, so the same `n` names the same species on every call — a thirteenth animal could only extend the tail of that list. `shapes` itself stays a plain `tuple[Shape, ...]` — where `Shape` is the `GeomShape | AnimalShape | SymbolShape | LetterShape` union — and the helper only builds one animal-shaped tuple; `symbol_shapes()` and `letter_shapes()` are its counterparts for the other two keypoint-bearing families (see [Symbol shapes](#symbol-shapes) and [Letter shapes](#letter-shapes)). A count outside `[0, 12]` raises `ValueError` rather than clamping.
+Slicing `tuple(AnimalShape)` takes a prefix of the declaration order, so the same `n` names the same species on every call — a thirteenth animal could only extend the tail of that list. `shapes` itself is a plain `tuple[Shape, ...]` — where `Shape` is the base class every family's enum derives from, re-exported from [`data.families`](#extending-the-vocabulary) — so `tuple(SymbolShape)` and `tuple(LetterShape)` work identically for the other two keypoint-bearing families (see [Symbol shapes](#symbol-shapes) and [Letter shapes](#letter-shapes)).
 
 All four tasks work on animal shapes; `keypoints` is available for the animal, symbol, and letter families — not the geometric shapes, which have no keypoint tables:
 
@@ -223,15 +225,15 @@ Pass `shapes=` (or the CLI's `--shapes symbols`) to draw seven analytic 2D symbo
 | `teardrop`  | round top tapering to a bottom point      | yes     |
 | `anchor`    | ring, stock, shaft, and two flukes        | no      |
 
-There is no plain-triangle symbol: an isosceles triangle both collides in name with the geometric family's `triangle` and, being acute, has a minimum-area OBB with no unique answer (all three candidate edges tie — see [Tasks](#tasks)) — the same problem that motivated redesigning `GeomShape.TRIANGLE` into an obtuse-scalene shape, not worth solving twice for a shape this family does not need to keep. `arrow`, `cross`, and `anchor` are concave, so their segmentation polygon and OBB carry real shape information an axis-aligned box does not.
+There is no plain-triangle symbol: an isosceles triangle both collides in name with the geometric family's `triangle` and, being acute, has a minimum-area OBB with no unique answer (all three candidate edges tie — see [Tasks](#tasks)) — the same problem that motivated redesigning `PrimitiveShape.TRIANGLE` into an obtuse-scalene shape, not worth solving twice for a shape this family does not need to keep. `arrow`, `cross`, and `anchor` are concave, so their segmentation polygon and OBB carry real shape information an axis-aligned box does not.
 
 ### Selecting symbols
 
-`symbol_shapes()` mirrors `animal_shapes()` — name the members explicitly, or take a stable prefix:
+`tuple(SymbolShape)` mirrors `tuple(AnimalShape)` — name the members explicitly, or take a stable prefix:
 
 ```python
 from fuse_augmentations.data.config import SyntheticConfig, Task
-from fuse_augmentations.data.symbols import SymbolShape, symbol_shapes
+from fuse_augmentations.data.symbols import SymbolShape
 
 explicit = SyntheticConfig(
     task=Task.KEYPOINTS, shapes=(SymbolShape.KITE, SymbolShape.ANCHOR)
@@ -239,7 +241,7 @@ explicit = SyntheticConfig(
 assert explicit.shapes == (SymbolShape.KITE, SymbolShape.ANCHOR)
 
 first_three = SyntheticConfig(
-    task=Task.KEYPOINTS, shapes=symbol_shapes(3)
+    task=Task.KEYPOINTS, shapes=tuple(SymbolShape)[:3]
 )  # kite, trapezoid, house
 assert first_three.shapes == (
     SymbolShape.KITE,
@@ -247,7 +249,9 @@ assert first_three.shapes == (
     SymbolShape.HOUSE,
 )
 
-all_symbols = SyntheticConfig(task=Task.KEYPOINTS, shapes=symbol_shapes())  # all seven
+all_symbols = SyntheticConfig(
+    task=Task.KEYPOINTS, shapes=tuple(SymbolShape)
+)  # all seven
 assert len(all_symbols.shapes) == 7
 ```
 
@@ -287,18 +291,20 @@ The 15 named keypoint slots give every letter the same landmark vocabulary (a fi
 
 ### Selecting letters
 
-`letter_shapes()` mirrors `animal_shapes()`/`symbol_shapes()` — name the members explicitly, or take a stable prefix:
+`tuple(LetterShape)` mirrors `tuple(AnimalShape)`/`tuple(SymbolShape)` — name the members explicitly, or take a stable prefix:
 
 ```python
 from fuse_augmentations.data.config import SyntheticConfig, Task
-from fuse_augmentations.data.letters import LetterShape, letter_shapes
+from fuse_augmentations.data.letters import LetterShape
 
 explicit = SyntheticConfig(
     task=Task.KEYPOINTS, shapes=(LetterShape.X, LetterShape.O)
 )  # explicit
 assert explicit.shapes == (LetterShape.X, LetterShape.O)
 
-first_three = SyntheticConfig(task=Task.KEYPOINTS, shapes=letter_shapes(3))  # a, b, c
+first_three = SyntheticConfig(
+    task=Task.KEYPOINTS, shapes=tuple(LetterShape)[:3]
+)  # a, b, c
 assert first_three.shapes == (
     LetterShape.A,
     LetterShape.B,
@@ -306,7 +312,7 @@ assert first_three.shapes == (
 )
 
 all_letters = SyntheticConfig(
-    task=Task.KEYPOINTS, shapes=letter_shapes()
+    task=Task.KEYPOINTS, shapes=tuple(LetterShape)
 )  # all twenty-six
 assert len(all_letters.shapes) == 26
 ```
@@ -467,7 +473,7 @@ names:
   16: kite
 ```
 
-Each symbol pose row is `cls cx cy w h x1 y1 v1 ... x7 y7 v7` — 26 tokens, fixed-width even for a symbol using only 4 of the 7 slots. Symbol outlines and keypoint tables are authored as data in the packaged `fuse_augmentations/data/symbols.json` asset (analytic, not traced), loaded at import time — so there is no editable-SVG asset or `zoo/` entry for this family.
+Each symbol pose row is `cls cx cy w h x1 y1 v1 ... x7 y7 v7` — 26 tokens, fixed-width even for a symbol using only 4 of the 7 slots. Each symbol ships as an editable SVG under `fuse_augmentations/data/symbols/<symbol>.svg`, in the same schema the animals use: one closed `<path id="outline">` plus a `<g id="keypoints">` of named circles. The two families store the same thing — an outline and the landmarks annotating it — so they now store it the same way, and `examples/edit_shape_keypoints.py` drags a symbol's landmarks exactly as it drags a duck's.
 
 ### Letter keypoint schema
 
@@ -488,7 +494,7 @@ names:
   23: x
 ```
 
-Each letter pose row is `cls cx cy w h x1 y1 v1 ... x15 y15 v15` — 50 tokens, fixed-width even for `i`, which uses only 3 of the 15 slots. Letter stroke graphs, counter-opening cuts, and free node positions are authored as data in the packaged `fuse_augmentations/data/letters.json` asset, loaded at import time — so there is no editable-SVG asset or `zoo/` entry for this family either.
+Each letter pose row is `cls cx cy w h x1 y1 v1 ... x15 y15 v15` — 50 tokens, fixed-width even for `i`, which uses only 3 of the 15 slots. Each letter ships as an editable SVG under `fuse_augmentations/data/letters/<letter>.svg`, but in a *graph* schema rather than an outline one: a `<g id="nodes">` of named grid positions and a `<g id="strokes">` of `<line>` edges (optionally curved by `zoo:bulge`, cut by `zoo:cut`). There is no outline in the file — the silhouette is generated by stroking that graph at load time, which is what keeps `LETTER_STROKE_WIDTH` and `LETTER_COUNTER_GAP` tunable after the fact and keeps a node a single draggable point instead of a consequence baked into a hundred outline vertices. `examples/edit_shape_keypoints.py` opens letters too, drawing the strokes themselves so dragging a node visibly reshapes the letter.
 
 ## COCO output
 
@@ -653,7 +659,9 @@ print(counts)
 
 </details>
 
-`SyntheticConfig` knobs: `img_size`, `min_objects`/`max_objects`, `min_size_ratio`/`max_size_ratio`, `overlap_iou`, `boundary_tolerance`, `rotate`, `asymmetry_jitter`, `background`, `class_mode`. Overlapping candidates (IoU above `overlap_iou`) and out-of-bounds candidates (more than `boundary_tolerance` outside the frame) are rejected during placement.
+`SyntheticConfig` knobs: `img_size`, `min_objects`/`max_objects`, `min_size_ratio`/`max_size_ratio`, `overlap_iou`, `boundary_tolerance`, `rotate`, `asymmetry_jitter`, `background`, `class_mode`, `task`, `shapes`, `colors`. Overlapping candidates (IoU above `overlap_iou`) and out-of-bounds candidates (more than `boundary_tolerance` outside the frame) are rejected during placement.
+
+`task` and `class_mode` are config fields only. `generate_dataset` takes no `task=` argument of its own — pass it as a keyword and it flows into the config, or set it on a `SyntheticConfig` you build yourself, but not both. Earlier releases accepted it in both places and cross-checked them, which meant a `None` sentinel, a conflict error, and a paragraph explaining which one won; one owner removes all three.
 
 ### Breaking left/right symmetry
 
@@ -667,6 +675,135 @@ Most shapes are drawn mirror-symmetric about their own vertical axis in canonica
 ```
 
 `circle` is always excluded — it never rotates either, so an unrotated skew would bias every circle toward the same absolute image direction instead of varying with a random orientation. Under `Task.KEYPOINTS` the same draw skews the polygon and the landmark table together, so a shape and its keypoints never drift apart. `0.0` (the default) draws exactly the RNG sequence this package always has, so existing seeded configurations are unaffected.
+
+### Custom splits
+
+`SplitRatios` names train/val/test because that is what almost every caller wants, not because the set is closed. `SplitRatios.custom` takes any names at all:
+
+```python
+from fuse_augmentations.data import SplitRatios
+
+holdout = SplitRatios.custom({"train": 0.6, "calib": 0.2, "test": 0.2})
+print(holdout.to_dict())
+```
+
+<details>
+<summary>Custom split fractions</summary>
+
+```
+{'train': 0.6, 'calib': 0.2, 'test': 0.2}
+```
+
+</details>
+
+The arithmetic is unchanged: fractions must be non-negative and sum to 1, or construction raises.
+
+### Custom fill colors
+
+`colors` accepts a named `Color`, any 8-bit `(r, g, b)` triple, or an explicit `Fill`. All three are normalized to `Fill` at construction, so `config.colors` reads back as `Fill` objects whichever spelling went in — the same one-type-inside rule `task` and `class_mode` already follow.
+
+A `Fill` carries the RGB to draw with and, when it came from a named `Color`, that name. A raw triple has no name, so `Fill.label` falls back to the hex value — which is what keeps class naming well defined under `ClassMode.COLOR` and `ClassMode.SHAPE_COLOR` without inventing color names:
+
+```python
+from fuse_augmentations.data import (
+    ClassMode,
+    Color,
+    DEFAULT_SHAPES,
+    SyntheticConfig,
+    class_names,
+)
+
+gold = SyntheticConfig(colors=((255, 215, 0), Color.RED))
+print([fill.label for fill in gold.colors])
+print(class_names(ClassMode.SHAPE_COLOR, DEFAULT_SHAPES, gold.colors)[:2])
+```
+
+<details>
+<summary>Class names for a custom fill</summary>
+
+```
+['ffd700', 'red']
+['ffd700_square', 'red_square']
+```
+
+</details>
+
+## Extending the vocabulary
+
+Every shape family — the analytic primitives, the animals, the symbols, the letters — is registered once in `fuse_augmentations.data.families`, and every other module reads that registry rather than naming the families itself:
+
+```python
+from fuse_augmentations.data import SHAPE_FAMILIES, family_of
+from fuse_augmentations.data.animals import AnimalShape
+
+print(
+    [
+        (family.name, len(family.members), family.has_keypoints)
+        for family in SHAPE_FAMILIES
+    ]
+)
+print(family_of(AnimalShape.DUCK).name)
+```
+
+<details>
+<summary>The registered families</summary>
+
+```
+[('primitives', 4, False), ('animals', 12, True), ('symbols', 7, True), ('letters', 26, True)]
+animals
+```
+
+</details>
+
+A `ShapeFamily` carries its members, an outline accessor, and — for a keypoint-bearing family — its schema and landmark placer. Adding a fifth family means writing the module and appending one entry: the enum derives from `ShapeEnum`, so `Shape` covers it with no second edit. It used to mean editing six places that each encoded the family list differently, where missing one failed quietly: forget the landmark dispatch and the family generated no keypoints at all, which the writer then serialized as a structurally valid all-zero table.
+
+### Registering an output format
+
+`OutputFormat` is a closed enum, but the writer table behind it is not. `register_writer` accepts any key, and `generate_dataset(fmt=...)` will then resolve it:
+
+```python
+from fuse_augmentations.data import (
+    ClassMode,
+    DEFAULT_SHAPES,
+    Task,
+    YoloWriter,
+    class_vocabulary,
+    get_writer,
+    register_writer,
+)
+
+
+class UltralyticsWriter(YoloWriter):
+    """A YOLO writer with house conventions layered on."""
+
+
+register_writer("ultralytics", UltralyticsWriter)
+
+vocabulary = class_vocabulary(ClassMode.SHAPE, DEFAULT_SHAPES)
+writer = get_writer("ultralytics", Task.DETECTION, vocabulary)
+print(type(writer).__name__)
+```
+
+<details>
+<summary>The registered writer</summary>
+
+```
+UltralyticsWriter
+```
+
+</details>
+
+### Editing the packaged assets
+
+All three asset-backed families are read by one parser (`fuse_augmentations.data.svgio`) and edited by one tool:
+
+```bash
+python examples/edit_shape_keypoints.py duck      # an animal silhouette
+python examples/edit_shape_keypoints.py anchor    # a symbol outline
+python examples/edit_shape_keypoints.py r         # a letter stroke graph
+```
+
+Press and hold a point to drag it, release to drop, `s` to save back into the SVG, `q` to quit. Saving rewrites the point group and everything derived from it — an outline family's skeleton, a letter's stroke and cut coordinates — so the file always renders as what it loads as.
 
 ## End-to-end example
 

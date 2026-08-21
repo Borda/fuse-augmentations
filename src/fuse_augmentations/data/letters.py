@@ -51,7 +51,7 @@ counter. ``test_counter_cuts_sit_at_the_bottom_of_their_counter`` pins edge and 
 stroke it branches off, and :func:`_reject_tight_cuts` says so rather than letting the ring fold.
 
 The cut is purely a rendering-time transform;
-:data:`_LETTER_STROKES` (the graph :attr:`~fuse_augmentations.data.landmarks.KeypointSchema.skeleton_for`
+:data:`_LETTER_STROKES` (the graph :attr:`~fuse_augmentations.data.keypoints.KeypointSchema.skeleton_for`
 reports) is untouched by it, so a counter letter's skeleton still connects straight across the cut
 — that hairline is the one place, anywhere in the family, where a skeleton edge leaves the fill.
 
@@ -85,7 +85,7 @@ animal silhouette; the field is published for format completeness.
 **Rotational-symmetry authoring rule.** A letter whose nodes and edges are together invariant under a
 180-degree rotation about its own center has keypoint-identity ambiguity under the generator's
 continuous random rotation — the shape looks the same upside down, so which node is which becomes
-unrecoverable. It is the same reason :class:`~fuse_augmentations.data.geometry.GeomShape` carries no
+unrecoverable. It is the same reason :class:`~fuse_augmentations.data.primitives.PrimitiveShape` carries no
 keypoint table for ``SQUARE``/``CIRCLE`` and :class:`~fuse_augmentations.data.symbols.SymbolShape`
 has no plain triangle. Checking every letter found nine that are exactly invariant as regular block
 letterforms: ``B``, ``D``, ``H``, ``I``, ``N``, ``O``, ``S``, ``X``, ``Z`` — the same set real
@@ -97,9 +97,8 @@ logical ``(nodes, edges)`` a viewer or this check ever sees.
 
 Pure NumPy, no image-library dependency, and no import from
 :mod:`~fuse_augmentations.data.animals` or :mod:`~fuse_augmentations.data.symbols`: this is a third
-sibling under :mod:`~fuse_augmentations.data.landmarks`, importing only
-:mod:`~fuse_augmentations.data.geometry` (deferred, to avoid the same import cycle
-:func:`~fuse_augmentations.data.symbols.symbol_keypoints` avoids). Tables are keyed by the plain
+sibling under :mod:`~fuse_augmentations.data.keypoints`, importing only
+:mod:`~fuse_augmentations.data.geometry`. Tables are keyed by the plain
 :class:`LetterShape` *values*.
 
 Examples:
@@ -118,16 +117,17 @@ Examples:
 
 from __future__ import annotations
 
-import json
 import math
-from enum import Enum
 from importlib.resources import files
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from fuse_augmentations.data.landmarks import KeypointSchema, _normalized_pair
+from fuse_augmentations.data.geometry import place_points
+from fuse_augmentations.data.keypoints import KeypointSchema, _normalized_pair
+from fuse_augmentations.data.shape_enum import ShapeEnum
+from fuse_augmentations.data.svgio import read_graph_document
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -140,7 +140,7 @@ _NAN = float("nan")
 _ABSENT: tuple[float, float] = (_NAN, _NAN)
 
 
-class LetterShape(str, Enum):
+class LetterShape(ShapeEnum):
     """Capital-letter outline vocabulary (definition order is the letter class order).
 
     Twenty-six capitals, each a single simple polygon derived from a small straight-stroke graph on
@@ -245,7 +245,15 @@ LETTER_KEYPOINT_FLIP_IDX: tuple[int, ...] = tuple(
 #: :data:`LETTER_KEYPOINT_SCHEMA`'s ``skeleton_by_value`` (annotation) both read from. A letter's
 #: *used* nodes are exactly the indices appearing in its own edge list; every other slot is absent
 #: (NaN) in :data:`LETTER_KEYPOINTS`.
-_ASSET: Traversable = files("fuse_augmentations.data") / "letters.json"
+#: Directory holding the packaged letter documents, resolved through :mod:`importlib.resources` so
+#: it works from a source checkout and from an installed wheel alike.
+_ASSET: Traversable = files("fuse_augmentations.data") / "letters"
+
+#: The document frame letters are authored in: a 1000x1000 canvas with the grid origin at its centre
+#: and one grid unit spanning :data:`_DOC_SCALE` pixels. Matches the zoo documents' canvas, so every
+#: family is edited at the same scale by the same tool.
+_DOC_SCALE: float = 400.0
+_DOC_MID: float = 500.0
 
 
 #: Shortest a cut stub may be, in multiples of half the stroke width — see :func:`_split_polyline`.
@@ -259,80 +267,87 @@ _MIN_STUB: float = 1.2
 _MAX_SAGITTA: float = 0.7
 
 
+#: Node name to grid index, the inverse of :data:`LETTER_KEYPOINT_NAMES`. Documents name their nodes
+#: (``"top_mid"``), while the stroke machinery indexes them, so the reader converts once here.
+_NODE_INDEX: dict[str, int] = {name: index for index, name in enumerate(LETTER_KEYPOINT_NAMES)}
+
+
+def _read_letter_document(
+    name: str,
+) -> tuple[
+    tuple[tuple[int, int], ...],
+    dict[tuple[int, int], float],
+    dict[tuple[int, int], float],
+    dict[int, tuple[float, float]],
+]:
+    """Read one packaged letter document into its stroke, bulge, cut, and node-position tables.
+
+    A letter is stored as a graph rather than an outline: the silhouette is generated by stroking
+    these edges (see :func:`_stroke_outline`), which is what keeps
+    :data:`LETTER_STROKE_WIDTH` and :data:`LETTER_COUNTER_GAP` tunable after the fact and keeps a
+    node a single draggable point instead of a consequence baked into hundreds of outline vertices.
+    That is also why letters keep their own document shape while animals and symbols share the
+    outline one — the schema follows the data, not the other way round.
+
+    Args:
+        name: Letter value, i.e. the ``<name>.svg`` stem in the packaged ``letters`` directory.
+
+    Returns:
+        The stroke edges as index pairs, the non-zero bulges by edge, the cuts by *sorted* edge with
+        the slit position measured from the lower index, and every used node's position in the
+        authored grid frame.
+
+    Raises:
+        ValueError: If a cut names an edge the letter's own stroke graph does not have, sits outside
+            that edge, or names a bowed one. Endpoint and provenance validation happens in the
+            shared reader.
+
+    """
+    nodes, raw_strokes, raw_cuts, _provenance = read_graph_document(_ASSET, name, LETTER_KEYPOINT_NAMES)
+    positions = {
+        _NODE_INDEX[node]: ((x - _DOC_MID) / _DOC_SCALE, (y - _DOC_MID) / _DOC_SCALE) for node, (x, y) in nodes.items()
+    }
+    strokes = tuple((_NODE_INDEX[start], _NODE_INDEX[end]) for start, end, _ in raw_strokes)
+    bulges = {(_NODE_INDEX[start], _NODE_INDEX[end]): bulge for start, end, bulge in raw_strokes if bulge != 0.0}
+    known_edges = {(min(i, j), max(i, j)) for i, j in strokes}
+    # A cut names where along its edge the slit sits, as a fraction from the endpoint it lists first;
+    # stored keyed by the sorted edge, so the fraction is always measured from the lower index.
+    cuts: dict[tuple[int, int], float] = {}
+    for start, end, at in raw_cuts:
+        lo, hi = _NODE_INDEX[start], _NODE_INDEX[end]
+        cuts[(min(lo, hi), max(lo, hi))] = at if lo < hi else 1.0 - at
+    unknown = set(cuts) - known_edges
+    if unknown:
+        raise ValueError(f"letter {name!r} cut(s) name edge(s) {unknown!r} not in its strokes")
+    outside = {edge: at for edge, at in cuts.items() if not 0.0 < at < 1.0}
+    if outside:
+        raise ValueError(f"letter {name!r} cut position(s) lie outside (0, 1): {outside!r}")
+    bowed = {edge for edge, value in bulges.items() if (min(edge), max(edge)) in cuts and value}
+    if bowed:
+        raise ValueError(
+            f"letter {name!r} cuts bowed edge(s) {bowed!r}; a cut edge must stay straight "
+            "(see _split_polyline) — bow a neighbouring edge instead, or move the cut"
+        )
+    return strokes, bulges, cuts, positions
+
+
 def _read_letter_data() -> tuple[
     dict[str, tuple[tuple[int, int], ...]],
     dict[str, dict[tuple[int, int], float]],
     dict[str, dict[tuple[int, int], float]],
     dict[str, dict[int, tuple[float, float]]],
 ]:
-    """Load and validate :data:`_ASSET` into the stroke, bulge, cut, and free-node-position tables.
-
-    Raises:
-        ValueError: If the asset is missing a registered :class:`LetterShape`'s stroke graph, an
-            edge or a node-position key indexes outside ``range(len(LETTER_KEYPOINT_NAMES))``, a
-            node position targets a node the letter's own stroke graph never uses or is not finite,
-            or a cut names an edge the letter's own stroke graph does not have, sits outside that
-            edge, or names a bowed one.
-
-    """
-    with _ASSET.open("rb") as handle:
-        payload = json.load(handle)
-    grid_size = len(LETTER_KEYPOINT_NAMES)
+    """Read every packaged letter document into the per-letter stroke, bulge, cut, and node tables."""
     strokes: dict[str, tuple[tuple[int, int], ...]] = {}
     bulges: dict[str, dict[tuple[int, int], float]] = {}
-    for name in LETTER_NAMES:
-        edges = payload["strokes"].get(name)
-        if edges is None:
-            raise ValueError(f"letters.json is missing the strokes for letter {name!r}")
-        parsed = tuple((int(edge[0]), int(edge[1])) for edge in edges)
-        bad = [edge for edge in parsed if not all(0 <= idx < grid_size for idx in edge)]
-        if bad:
-            raise ValueError(f"letters.json letter {name!r} has out-of-range edge(s) {bad!r}")
-        strokes[name] = parsed
-        curved = {
-            (int(edge[0]), int(edge[1])): float(edge[2]) for edge in edges if len(edge) > 2 and float(edge[2]) != 0.0
-        }
-        bulges[name] = curved
     cuts: dict[str, dict[tuple[int, int], float]] = {}
-    for name, edge_list in payload.get("cuts", {}).items():
-        known_edges = {(min(i, j), max(i, j)) for i, j in strokes[name]}
-        # A cut may name where along its edge the slit sits, as a fraction from the endpoint it lists
-        # first; stored keyed by the sorted edge, so the fraction is always measured from the lower
-        # index. Omitted means the midpoint, which is what every cut opening a free-standing ring
-        # wants; naming a small fraction is how a bowl's slit is tucked against the stem it meets.
-        parsed_cuts = {
-            (min(int(entry[0]), int(entry[1])), max(int(entry[0]), int(entry[1]))): (
-                float(entry[2]) if len(entry) > 2 else 0.5
-            )
-            if int(entry[0]) < int(entry[1])
-            else (1.0 - float(entry[2]) if len(entry) > 2 else 0.5)
-            for entry in edge_list
-        }
-        unknown = set(parsed_cuts) - known_edges
-        if unknown:
-            raise ValueError(f"letters.json cut(s) for letter {name!r} name edge(s) {unknown!r} not in its strokes")
-        outside = {edge: at for edge, at in parsed_cuts.items() if not 0.0 < at < 1.0}
-        if outside:
-            raise ValueError(f"letters.json cut position(s) for letter {name!r} lie outside (0, 1): {outside!r}")
-        bowed = {edge for edge, value in bulges[name].items() if (min(edge), max(edge)) in parsed_cuts and value}
-        if bowed:
-            raise ValueError(
-                f"letters.json letter {name!r} cuts bowed edge(s) {bowed!r}; a cut edge must stay straight "
-                "(see _split_polyline) — bow a neighbouring edge instead, or move the cut"
-            )
-        cuts[name] = parsed_cuts
     positions: dict[str, dict[int, tuple[float, float]]] = {}
-    for name, by_node in payload.get("nodes", {}).items():
-        used = {index for edge in strokes[name] for index in edge}
-        parsed_positions: dict[int, tuple[float, float]] = {}
-        for key, (x, y) in by_node.items():
-            index = int(key)
-            if index not in used:
-                raise ValueError(f"letters.json node position for letter {name!r} targets unused node {index}")
-            if not (math.isfinite(float(x)) and math.isfinite(float(y))):
-                raise ValueError(f"letters.json node position for letter {name!r} node {index} is not finite")
-            parsed_positions[index] = (float(x), float(y))
-        positions[name] = parsed_positions
+    for name in LETTER_NAMES:
+        strokes[name], bulges[name], letter_cuts, positions[name] = _read_letter_document(name)
+        # Only letters that actually have counters get a cuts entry, so membership in this table
+        # keeps meaning "this letter has a counter to open" rather than "this letter exists".
+        if letter_cuts:
+            cuts[name] = letter_cuts
     return strokes, bulges, cuts, positions
 
 
@@ -355,9 +370,9 @@ LETTER_STROKE_WIDTH: float = 0.16
 LETTER_COUNTER_GAP: float = 0.01
 
 #: Every distinct stroke edge across the whole alphabet, deduplicated and sorted — the family-wide
-#: fallback :attr:`~fuse_augmentations.data.landmarks.KeypointSchema.skeleton`. A consumer that
+#: fallback :attr:`~fuse_augmentations.data.keypoints.KeypointSchema.skeleton`. A consumer that
 #: reads only this field (rather than
-#: :meth:`~fuse_augmentations.data.landmarks.KeypointSchema.skeleton_for`) sees the union of every
+#: :meth:`~fuse_augmentations.data.keypoints.KeypointSchema.skeleton_for`) sees the union of every
 #: letter's strokes; the per-letter accuracy lives in ``skeleton_by_value`` instead.
 LETTER_KEYPOINT_SKELETON: tuple[tuple[int, int], ...] = tuple(
     sorted({(min(edge), max(edge)) for edges in _LETTER_STROKES.values() for edge in edges})
@@ -677,7 +692,7 @@ def _load() -> tuple[dict[str, NDArray[np.float64]], dict[str, NDArray[np.float6
 
     The outline is wrapped around the very nodes the keypoint table reports (see
     :func:`_stroke_outline`) and both pass through one shared normalization (see
-    :func:`~fuse_augmentations.data.landmarks._normalized_pair`), so a keypoint can never drift off
+    :func:`~fuse_augmentations.data.keypoints._normalized_pair`), so a keypoint can never drift off
     the ink the way authoring an outline and its landmarks separately could — and needs no
     correction afterwards, since every node sits a full half stroke-width inside the fill.
 
@@ -808,7 +823,7 @@ _POLYGONS, _KEYPOINTS = _load()
 #: its area centroid with larger extent ``1`` — the same unit convention
 #: :data:`~fuse_augmentations.data.animals.ANIMAL_POLYGONS` and
 #: :data:`~fuse_augmentations.data.symbols.SYMBOL_POLYGONS` use, so
-#: :func:`~fuse_augmentations.data.geometry.shape_polygon` needs no letter-specific handling.
+#: :func:`~fuse_augmentations.data.families.shape_outline` needs no letter-specific handling.
 LETTER_POLYGONS: Mapping[str, NDArray[np.float64]] = MappingProxyType(_POLYGONS)
 
 #: Keypoint table per letter :class:`~fuse_augmentations.data.config.Shape` *value*, in
@@ -831,51 +846,13 @@ LETTER_KEYPOINT_SCHEMA = KeypointSchema(
 )
 
 
-def letter_shapes(count: int | None = None) -> tuple[LetterShape, ...]:
-    """Return the letter shapes, optionally just the first ``count`` of them.
-
-    A convenience selector for :attr:`~fuse_augmentations.data.config.SyntheticConfig.shapes`,
-    mirroring :func:`~fuse_augmentations.data.animals.animal_shapes` and
-    :func:`~fuse_augmentations.data.symbols.symbol_shapes`. "First ``count``" means
-    :class:`LetterShape` declaration order (``A`` through ``Z``), so ``letter_shapes(3)`` names the
-    same three letters on every call and across releases.
-
-    Args:
-        count: How many letters to take, from the start of :class:`LetterShape`. ``None`` (the
-            default) returns every letter.
-
-    Returns:
-        The selected :class:`LetterShape` members, in declaration order.
-
-    Raises:
-        ValueError: If ``count`` is negative or exceeds the number of letters.
-
-    Examples:
-        ```pycon
-        >>> from fuse_augmentations.data.letters import letter_shapes
-        >>> letter_shapes(3)
-        (<LetterShape.A: 'a'>, <LetterShape.B: 'b'>, <LetterShape.C: 'c'>)
-        >>> len(letter_shapes())
-        26
-
-        ```
-
-    """
-    every = tuple(LetterShape)
-    if count is None:
-        return every
-    if not 0 <= count <= len(every):
-        raise ValueError(f"count must be within [0, {len(every)}], got {count}")
-    return every[:count]
-
-
 def letter_keypoints(
     shape: LetterShape, center: tuple[float, float], size: float, angle: float = 0.0, skew: float = 0.0
 ) -> NDArray[np.float64]:
     """Place one letter's keypoint table into image coordinates.
 
     The table is looked up in :data:`LETTER_KEYPOINTS`, scaled, skewed, rotated, and translated
-    exactly as :func:`~fuse_augmentations.data.geometry.shape_polygon` treats
+    exactly as :func:`~fuse_augmentations.data.families.shape_outline` treats
     :data:`LETTER_POLYGONS` — mirroring
     :func:`~fuse_augmentations.data.animals.animal_keypoints` and
     :func:`~fuse_augmentations.data.symbols.symbol_keypoints`.
@@ -883,7 +860,7 @@ def letter_keypoints(
     Args:
         shape: A :class:`LetterShape` member.
         center: Target center ``(x, y)`` in pixels — the same value passed to
-            :func:`~fuse_augmentations.data.geometry.shape_polygon`.
+            :func:`~fuse_augmentations.data.families.shape_outline`.
         size: Bounding size in pixels — likewise.
         angle: Rotation in radians about the shape center — likewise.
         skew: Signed fraction narrowing one pre-rotation half — likewise; see
@@ -907,12 +884,8 @@ def letter_keypoints(
         ```
 
     """
-    # deferred: geometry imports this module's tables at module level, so a module-level import
-    # here would cycle — same reasoning as symbols.py's symbol_keypoints.
-    from fuse_augmentations.data.geometry import _placed
-
     table = LETTER_KEYPOINTS.get(shape.value)
     if table is None:
         known = ", ".join(LETTER_KEYPOINTS)
         raise ValueError(f"shape {shape.value!r} has no keypoint table; expected one of {known}")
-    return _placed(table * size, center, angle, skew)
+    return place_points(table * size, center, angle, skew)

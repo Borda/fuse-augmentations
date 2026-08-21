@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from fuse_augmentations.data import generate_dataset
-from fuse_augmentations.data.config import SyntheticConfig, Task, class_names
+from fuse_augmentations.data.config import SyntheticConfig, Task, class_vocabulary
 from fuse_augmentations.data.generator import SyntheticGenerator
 from fuse_augmentations.data.writers import CocoWriter, YoloWriter
 
@@ -13,8 +13,8 @@ from fuse_augmentations.data.writers import CocoWriter, YoloWriter
 def test_coco_writer_consumes_a_generator(tmp_path):
     """CocoWriter writes correctly from a single-pass generator (not a list)."""
     gen = SyntheticGenerator(SyntheticConfig(img_size=48, min_objects=1, max_objects=3))
-    names = class_names(SyntheticConfig().class_mode)
-    CocoWriter(Task.DETECTION, names).write({"train": gen.generate(4, seed=0)}, tmp_path)
+    vocabulary = class_vocabulary(SyntheticConfig().class_mode, SyntheticConfig().shapes)
+    CocoWriter(Task.DETECTION, vocabulary).write({"train": gen.generate(4, seed=0)}, tmp_path)
     doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
     assert len(doc["images"]) == 4
 
@@ -22,8 +22,8 @@ def test_coco_writer_consumes_a_generator(tmp_path):
 def test_yolo_writer_consumes_a_generator(tmp_path):
     """YoloWriter writes correctly from a single-pass generator (not a list)."""
     gen = SyntheticGenerator(SyntheticConfig(img_size=48, min_objects=1, max_objects=3))
-    names = class_names(SyntheticConfig().class_mode)
-    YoloWriter(Task.DETECTION, names).write({"train": gen.generate(4, seed=0)}, tmp_path)
+    vocabulary = class_vocabulary(SyntheticConfig().class_mode, SyntheticConfig().shapes)
+    YoloWriter(Task.DETECTION, vocabulary).write({"train": gen.generate(4, seed=0)}, tmp_path)
     assert len(list((tmp_path / "images" / "train").glob("*.jpg"))) == 4
 
 

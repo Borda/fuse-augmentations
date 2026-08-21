@@ -4,20 +4,22 @@ from __future__ import annotations
 
 import pytest
 
-from fuse_augmentations.data.animals import AnimalShape, animal_shapes
+from fuse_augmentations.data.animals import AnimalShape
 from fuse_augmentations.data.config import (
     DEFAULT_COLORS,
     DEFAULT_SHAPES,
     ClassMode,
     Color,
+    Fill,
     SplitRatios,
     SyntheticConfig,
     Task,
-    class_id_of,
+    class_id,
     class_names,
 )
-from fuse_augmentations.data.geometry import GeomShape
+from fuse_augmentations.data.families import ALL_SHAPES
 from fuse_augmentations.data.letters import LetterShape
+from fuse_augmentations.data.primitives import PrimitiveShape
 from fuse_augmentations.data.symbols import SymbolShape
 
 
@@ -92,13 +94,13 @@ def test_synthetic_config_accepts_asymmetry_jitter_within_range(value: float) ->
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        (ClassMode.SHAPE, [s.value for s in (*GeomShape, *AnimalShape, *SymbolShape, *LetterShape)]),
+        (ClassMode.SHAPE, [s.value for s in (*PrimitiveShape, *AnimalShape, *SymbolShape, *LetterShape)]),
         (ClassMode.COLOR, [c.value for c in Color]),
     ],
 )
 def test_class_names(mode: ClassMode, expected: list[str]) -> None:
     """Class names match expected values for mode."""
-    assert class_names(mode) == expected
+    assert class_names(mode, ALL_SHAPES) == expected
 
 
 def test_shape_class_vocabulary_is_pinned_in_order() -> None:
@@ -109,7 +111,7 @@ def test_shape_class_vocabulary_is_pinned_in_order() -> None:
     literal can.
 
     """
-    assert class_names(ClassMode.SHAPE) == [
+    assert class_names(ClassMode.SHAPE, ALL_SHAPES) == [
         "square",
         "rectangle",
         "triangle",
@@ -164,8 +166,8 @@ def test_shape_class_vocabulary_is_pinned_in_order() -> None:
 
 def test_class_names_shape_color_product_size() -> None:
     """Shape-color class count is product of shape and color counts."""
-    assert len(class_names(ClassMode.SHAPE_COLOR)) == (
-        len(GeomShape) + len(AnimalShape) + len(SymbolShape) + len(LetterShape)
+    assert len(class_names(ClassMode.SHAPE_COLOR, ALL_SHAPES)) == (
+        len(PrimitiveShape) + len(AnimalShape) + len(SymbolShape) + len(LetterShape)
     ) * len(Color)
 
 
@@ -177,7 +179,7 @@ def test_class_names_shape_color_pins_shape_major_color_minor_order() -> None:
     changed, so pin the actual sequence for the first 12 (pre-animal-shape) ids.
 
     """
-    assert class_names(ClassMode.SHAPE_COLOR)[:12] == [
+    assert class_names(ClassMode.SHAPE_COLOR, ALL_SHAPES)[:12] == [
         "red_square",
         "green_square",
         "blue_square",
@@ -198,20 +200,20 @@ def test_class_names_shapes_param_narrows_shape_mode_to_the_given_family() -> No
 
     Golden fixtures that pin a category count (e.g. a frozen detection-task output) need a vocabulary that stays a
     stable 4 regardless of how many animal shapes later get added to the full `Shape` union; the opt-in `shapes`
-    parameter is how they ask for that without touching `class_id_of`'s full-vocabulary behavior.
+    parameter is how they ask for that without touching `class_id`'s full-vocabulary behavior.
 
     """
-    assert class_names(ClassMode.SHAPE, shapes=DEFAULT_SHAPES) == ["square", "rectangle", "triangle", "circle"]
+    assert class_names(ClassMode.SHAPE, DEFAULT_SHAPES) == ["square", "rectangle", "triangle", "circle"]
 
 
 def test_class_names_shapes_param_narrows_shape_color_mode() -> None:
     """Passing `shapes` under `ClassMode.SHAPE_COLOR` restricts the product to that shape family.
 
     Mirrors the `ClassMode.SHAPE` narrowing but exercises the shape-major/color-minor product path, which builds its
-    class names from the same `universe` rather than the module-level `(*GeomShape, *AnimalShape)` tuple.
+    class names from the same `universe` rather than the module-level `(*PrimitiveShape, *AnimalShape)` tuple.
 
     """
-    assert class_names(ClassMode.SHAPE_COLOR, shapes=(AnimalShape.DUCK,)) == ["red_duck", "green_duck", "blue_duck"]
+    assert class_names(ClassMode.SHAPE_COLOR, (AnimalShape.DUCK,)) == ["red_duck", "green_duck", "blue_duck"]
 
 
 def test_class_names_shapes_param_ignored_under_color_mode() -> None:
@@ -221,21 +223,23 @@ def test_class_names_shapes_param_ignored_under_color_mode() -> None:
     and reusing the same argument for a `COLOR`-mode one must not see it silently drop colors.
 
     """
-    assert class_names(ClassMode.COLOR, shapes=DEFAULT_SHAPES) == class_names(ClassMode.COLOR)
+    assert class_names(ClassMode.COLOR, DEFAULT_SHAPES) == class_names(ClassMode.COLOR, ALL_SHAPES)
 
 
-def test_class_names_shapes_param_defaults_to_full_vocabulary() -> None:
-    """Omitting `shapes` still returns the full 49-member vocabulary, unchanged from before the parameter existed.
+def test_class_names_requires_an_explicit_shape_vocabulary() -> None:
+    """`shapes` has no default, so "which vocabulary" is always stated rather than assumed.
 
-    The parameter is opt-in on both `class_names` and `class_id_of`: a caller that names no vocabulary keeps seeing the
-    full span and the ids that index it, even though `generate_dataset` now always narrows both to the run's `shapes`.
+    It used to default to the full 49-shape span while `SyntheticConfig` defaulted to the four primitives, so the
+    obvious call for a default config returned a vocabulary twelve times too large — silently, since the ids still
+    resolved against it. Requiring the argument removes the mismatch instead of documenting it.
 
     """
-    assert class_names(ClassMode.SHAPE) == class_names(ClassMode.SHAPE, shapes=None)
+    with pytest.raises(TypeError, match="shapes"):
+        class_names(ClassMode.SHAPE)  # type: ignore[call-arg]
 
 
-def test_class_id_of_narrows_with_the_same_shapes_class_names_does() -> None:
-    """`class_id_of(..., shapes=)` indexes the vocabulary `class_names(..., shapes=)` returns.
+def test_class_id_narrows_with_the_same_shapes_class_names_does() -> None:
+    """`class_id(..., shapes=)` indexes the vocabulary `class_names(..., shapes=)` returns.
 
     The two are one contract: a written dataset's `category_id` must resolve against the `categories` block beside it.
     Checked on a symbol, whose global id (16) differs from its narrowed one (0) — a geometric shape cannot show the
@@ -244,8 +248,10 @@ def test_class_id_of_narrows_with_the_same_shapes_class_names_does() -> None:
     """
     narrowed = (SymbolShape.KITE, SymbolShape.HOUSE)
 
-    assert class_id_of(SymbolShape.HOUSE, Color.RED, ClassMode.SHAPE) == class_names(ClassMode.SHAPE).index("house")
-    assert class_id_of(SymbolShape.HOUSE, Color.RED, ClassMode.SHAPE, shapes=narrowed) == 1
+    assert class_id(SymbolShape.HOUSE, Color.RED, ClassMode.SHAPE, ALL_SHAPES) == class_names(
+        ClassMode.SHAPE, ALL_SHAPES
+    ).index("house")
+    assert class_id(SymbolShape.HOUSE, Color.RED, ClassMode.SHAPE, narrowed) == 1
 
 
 @pytest.mark.parametrize("mode", list(ClassMode))
@@ -253,13 +259,15 @@ def test_a_bare_string_class_mode_selects_the_same_vocabulary_as_its_member(mode
     """A plain `"shape"` behaves exactly like `ClassMode.SHAPE` in both vocabulary functions.
 
     `ClassMode` is a str-Enum, so a bare string compares *and hashes* equal to its member while failing the `is` tests
-    both functions branch on — and `class_id_of`'s per-vocabulary cache is keyed on that equal hash. Left uncoerced,
+    both functions branch on — and `class_id`'s per-vocabulary cache is keyed on that equal hash. Left uncoerced,
     whichever spelling ran first won the cache entry and the other silently read the wrong naming out of it, which
     surfaced as an order-dependent `KeyError` from a `SyntheticIterableDataset(class_mode="shape")` stream.
 
     """
-    assert class_names(mode.value) == class_names(mode)
-    assert class_id_of(GeomShape.CIRCLE, Color.GREEN, mode.value) == class_id_of(GeomShape.CIRCLE, Color.GREEN, mode)
+    assert class_names(mode.value, ALL_SHAPES) == class_names(mode, ALL_SHAPES)
+    assert class_id(PrimitiveShape.CIRCLE, Color.GREEN, mode.value, ALL_SHAPES) == class_id(
+        PrimitiveShape.CIRCLE, Color.GREEN, mode, ALL_SHAPES
+    )
 
 
 def test_config_normalizes_a_bare_string_class_mode_to_the_member() -> None:
@@ -277,10 +285,10 @@ def test_config_normalizes_a_bare_string_class_mode_to_the_member() -> None:
 def test_class_id_round_trips() -> None:
     """Class ID round-trips work for all modes, shapes, and colors."""
     for mode in ClassMode:
-        for shape in (*GeomShape, *AnimalShape, *SymbolShape, *LetterShape):
+        for shape in (*PrimitiveShape, *AnimalShape, *SymbolShape, *LetterShape):
             for color in Color:
-                idx = class_id_of(shape, color, mode)
-                assert 0 <= idx < len(class_names(mode))
+                idx = class_id(shape, color, mode, ALL_SHAPES)
+                assert 0 <= idx < len(class_names(mode, ALL_SHAPES))
 
 
 def test_shapes_defaults_to_the_four_geometric_shapes() -> None:
@@ -290,7 +298,12 @@ def test_shapes_defaults_to_the_four_geometric_shapes() -> None:
     default here is the guard that kept that upgrade non-breaking.
 
     """
-    assert SyntheticConfig().shapes == (GeomShape.SQUARE, GeomShape.RECTANGLE, GeomShape.TRIANGLE, GeomShape.CIRCLE)
+    assert SyntheticConfig().shapes == (
+        PrimitiveShape.SQUARE,
+        PrimitiveShape.RECTANGLE,
+        PrimitiveShape.TRIANGLE,
+        PrimitiveShape.CIRCLE,
+    )
     assert SyntheticConfig().shapes == DEFAULT_SHAPES
 
 
@@ -301,7 +314,7 @@ def test_default_shapes_keeps_the_original_class_ids() -> None:
     appending rather than by re-ordering.
 
     """
-    assert [class_id_of(shape, Color.RED, ClassMode.SHAPE) for shape in DEFAULT_SHAPES] == [0, 1, 2, 3]
+    assert [class_id(shape, Color.RED, ClassMode.SHAPE, ALL_SHAPES) for shape in DEFAULT_SHAPES] == [0, 1, 2, 3]
 
 
 def test_shapes_accepts_an_animal_override() -> None:
@@ -313,60 +326,6 @@ def test_shapes_accepts_an_animal_override() -> None:
     """
     config = SyntheticConfig(shapes=(AnimalShape.GIRAFFE, AnimalShape.DUCK))
     assert config.shapes == (AnimalShape.GIRAFFE, AnimalShape.DUCK)
-
-
-def test_animal_shapes_returns_every_animal_by_default() -> None:
-    """`animal_shapes()` is the whole roster, which is exactly `tuple(AnimalShape)`.
-
-    The helper exists so callers can ask for "the animals" without importing and re-listing the roster; if it ever
-    returned a different set than the keypoint-capable one, `Task.KEYPOINTS` would start rejecting its own default.
-
-    """
-    assert animal_shapes() == tuple(AnimalShape)
-    assert len(animal_shapes()) == 12
-    assert not set(animal_shapes()) & set(DEFAULT_SHAPES)
-
-
-@pytest.mark.parametrize("count", range(13))
-def test_animal_shapes_by_count_is_a_declaration_order_prefix(count: int) -> None:
-    """`animal_shapes(n)` takes the first `n` animals in `Shape` declaration order.
-
-    "First n" has to mean a stable prefix, not an arbitrary subset: a dataset regenerated with the same `n` after a
-    thirteenth animal is appended must still contain the same species, or its class ids stop meaning one thing.
-
-    """
-    selected = animal_shapes(count)
-    assert len(selected) == count
-    assert selected == tuple(AnimalShape)[:count]
-
-
-def test_animal_shapes_by_count_feeds_a_keypoints_config() -> None:
-    """A count-selected tuple is accepted verbatim by the field it exists to fill.
-
-    The helper is a convenience constructor for `SyntheticConfig.shapes`, so the round trip through the dataclass —
-    including its `Task.KEYPOINTS` vocabulary check — is the behaviour worth pinning, not the tuple in isolation.
-
-    """
-    config = SyntheticConfig(task=Task.KEYPOINTS, shapes=animal_shapes(5))
-    assert config.shapes == (
-        AnimalShape.DUCK,
-        AnimalShape.ELEPHANT,
-        AnimalShape.GIRAFFE,
-        AnimalShape.FISH,
-        AnimalShape.RABBIT,
-    )
-
-
-@pytest.mark.parametrize("count", [-1, 13, 99])
-def test_animal_shapes_rejects_a_count_outside_the_roster(count: int) -> None:
-    """An out-of-range count raises instead of silently clamping to the roster length.
-
-    Asking for 13 of 12 animals is a caller bug — quietly returning 12 would hide it until the dataset came out one
-    class short of what the caller believed it had requested.
-
-    """
-    with pytest.raises(ValueError, match="count must be within"):
-        animal_shapes(count)
 
 
 def test_shapes_rejects_an_empty_tuple() -> None:
@@ -406,8 +365,8 @@ def test_colors_defaults_to_every_color() -> None:
     existing seeded caller generates.
 
     """
-    assert SyntheticConfig().colors == (Color.RED, Color.GREEN, Color.BLUE)
     assert SyntheticConfig().colors == DEFAULT_COLORS
+    assert [fill.label for fill in SyntheticConfig().colors] == ["red", "green", "blue"]
 
 
 def test_colors_accepts_a_restricted_override() -> None:
@@ -418,7 +377,7 @@ def test_colors_accepts_a_restricted_override() -> None:
 
     """
     config = SyntheticConfig(colors=(Color.BLUE, Color.RED))
-    assert config.colors == (Color.BLUE, Color.RED)
+    assert config.colors == (Fill.parse(Color.BLUE), Fill.parse(Color.RED))
 
 
 def test_colors_rejects_an_empty_tuple() -> None:
@@ -441,13 +400,14 @@ def test_colors_rejects_an_empty_tuple() -> None:
     ],
 )
 def test_colors_rejects_non_color_elements(bad: tuple[object, ...]) -> None:
-    """Anything that is not a `Color` member is refused, including an equal bare string.
+    """Anything that is neither a `Color` member nor a valid RGB triple is refused.
 
-    Mirrors `test_shapes_rejects_non_shape_elements`: `Color` subclasses `str`, so `"red" == Color.RED` is True and a
-    plain string would sail through a naive equality check while breaking identity comparisons downstream.
+    `Color` subclasses `str`, so `"red" == Color.RED` is True and a plain string would sail through a naive equality
+    check while breaking identity comparisons downstream. Custom fills are accepted now, but only as real `(r, g, b)`
+    triples — widening the field must not turn it into "accept anything".
 
     """
-    with pytest.raises(ValueError, match="only Color members"):
+    with pytest.raises(ValueError, match="Color member or an"):
         SyntheticConfig(colors=bad)
 
 
@@ -455,8 +415,8 @@ def test_colors_rejects_non_color_elements(bad: tuple[object, ...]) -> None:
     "bad_shapes",
     [
         pytest.param(DEFAULT_SHAPES, id="all-geometric"),
-        pytest.param((GeomShape.SQUARE,), id="single-geometric"),
-        pytest.param((AnimalShape.DUCK, GeomShape.SQUARE), id="mixed-animal-and-geometric"),
+        pytest.param((PrimitiveShape.SQUARE,), id="single-geometric"),
+        pytest.param((AnimalShape.DUCK, PrimitiveShape.SQUARE), id="mixed-animal-and-geometric"),
     ],
 )
 def test_keypoints_task_rejects_shapes_without_a_keypoint_table(bad_shapes: tuple[object, ...]) -> None:
@@ -467,7 +427,7 @@ def test_keypoints_task_rejects_shapes_without_a_keypoint_table(bad_shapes: tupl
     lookup instead of at construction.
 
     """
-    with pytest.raises(ValueError, match="needs a keypoint table"):
+    with pytest.raises(ValueError, match="have no keypoint table"):
         SyntheticConfig(task=Task.KEYPOINTS, shapes=bad_shapes)
 
 
@@ -479,17 +439,141 @@ def test_keypoints_task_rejects_shapes_mixing_two_keypoint_families() -> None:
     individually has a table — is still unrepresentable and must be rejected at construction.
 
     """
-    with pytest.raises(ValueError, match="same keypoint-bearing family"):
+    with pytest.raises(ValueError, match=r"families.*only one landmark schema"):
         SyntheticConfig(task=Task.KEYPOINTS, shapes=(AnimalShape.DUCK, SymbolShape.KITE))
 
 
-def test_task_rejects_a_value_that_is_not_a_task_member() -> None:
-    """A bare string equal to a `Task` value is refused despite passing equality checks.
+def test_task_accepts_its_string_form_and_normalizes_it() -> None:
+    """`task="keypoints"` is coerced to the member, the same way `class_mode` already was.
 
-    `Task` is a str-Enum, so `"keypoints" == Task.KEYPOINTS` is True even though `"keypoints"` fails `isinstance(...,
-    Task)`; without this check a plain string would silently skip every downstream identity comparison instead of
-    raising here.
+    The config used to reject a bare string, which was safe only because `generate_dataset` normalized the task before
+    ever constructing a config. With the config the task's sole owner, the string spelling arrives here directly and is
+    the documented one — so it is coerced at this boundary, which also means every downstream `is Task.KEYPOINTS` test
+    stays valid.
 
     """
-    with pytest.raises(ValueError, match="must be a Task member"):
-        SyntheticConfig(task="keypoints", shapes=(AnimalShape.DUCK,))
+    config = SyntheticConfig(task="keypoints", shapes=tuple(AnimalShape))
+
+    assert config.task is Task.KEYPOINTS
+
+
+def test_task_rejects_a_value_naming_no_task() -> None:
+    """A string that is not a `Task` value is refused at construction rather than downstream.
+
+    Coercion must not become "accept anything": an unknown task would otherwise reach the writer and pick no branch at
+    all, emitting a detection dataset for a task the caller never asked for.
+
+    """
+    with pytest.raises(ValueError, match="not a valid Task"):
+        SyntheticConfig(task="segmentation_v2")
+
+
+def test_colors_accepts_a_raw_rgb_triple() -> None:
+    """A fill may be a plain `(r, g, b)` triple, not only one of the three named colors.
+
+    `background` always took an arbitrary RGB while object fills took only the enum — an asymmetry with no defensible
+    reason, since both end up as a Pillow fill. A caller wanting a yellow object had no path at all.
+
+    """
+    config = SyntheticConfig(colors=((255, 215, 0),))
+
+    assert config.colors == (Fill(rgb=(255, 215, 0)),)
+
+
+def test_a_raw_fill_is_labelled_by_its_hex_value() -> None:
+    """A custom fill still yields a well-defined class name, derived from its hex value.
+
+    `ClassMode.COLOR` and `ClassMode.SHAPE_COLOR` name classes after the fill, so an unnamed color needs *some* stable
+    label — hex is the one choice that neither invents a color name nor collides with the three that have one.
+
+    """
+    names = class_names(ClassMode.SHAPE_COLOR, (PrimitiveShape.SQUARE,), ((255, 215, 0), Color.RED))
+
+    assert names == ["ffd700_square", "red_square"]
+
+
+def test_split_ratios_accepts_arbitrary_split_names() -> None:
+    """Splits are not limited to train/val/test; any named set summing to 1 works.
+
+    The three standard names were hardcoded, so a fourth calibration split was impossible and a bare train/test pair had
+    to be spelled as `val=0.0`.
+
+    """
+    ratios = SplitRatios.custom({"train": 0.6, "calib": 0.2, "test": 0.2})
+
+    assert ratios.to_dict() == {"train": 0.6, "calib": 0.2, "test": 0.2}
+
+
+def test_custom_split_ratios_still_must_sum_to_one() -> None:
+    """Opening up the names does not relax the arithmetic that makes a split a split.
+
+    Fractions that do not sum to 1 would silently drop or duplicate images across the generated splits.
+
+    """
+    with pytest.raises(ValueError, match=r"must sum to 1\.0"):
+        SplitRatios.custom({"train": 0.6, "test": 0.2})
+
+
+def test_color_members_stay_plain_strings_despite_the_rgb_payload() -> None:
+    """Carrying RGB through `__new__` must not change what a `Color` member *is*.
+
+    The payload is attached by overriding `__new__`, which is the one place a str-Enum's value could quietly stop being
+    its own string. Everything downstream depends on it still being one: class names are rendered from `.value`, a
+    member is used as a dict key against plain strings, and a written dataset serializes the name.
+
+    """
+    assert Color.RED.value == "red"
+    assert Color.RED == "red"
+    assert Color("red") is Color.RED
+    assert tuple(Color) == (Color.RED, Color.GREEN, Color.BLUE)
+    assert (Color.RED.rgb, Color.GREEN.rgb, Color.BLUE.rgb) == ((255, 0, 0), (0, 128, 0), (0, 0, 255))
+
+
+def test_fill_parse_accepts_every_spelling_and_is_idempotent() -> None:
+    """`Fill.parse` is the single boundary the fill union is unpacked at, so it must absorb its own output.
+
+    `SyntheticConfig` normalizes at construction and `class_vocabulary` normalizes again on whatever it is handed —
+    typically a config's already-normalized tuple. A `parse` that wrapped or rejected a `Fill` would make that second
+    pass either lossy or an error.
+
+    """
+    named, raw = Fill.parse(Color.GREEN), Fill.parse((255, 215, 0))
+
+    assert (named.rgb, named.name) == ((0, 128, 0), "green")
+    assert (raw.rgb, raw.name) == ((255, 215, 0), None)
+    assert Fill.parse(named) is named
+    assert Fill.parse(raw) is raw
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param("red", id="bare-string"),
+        pytest.param((255, 0), id="two-channels"),
+        pytest.param((255, 0, 0, 0), id="four-channels"),
+        pytest.param((256, 0, 0), id="channel-above-range"),
+        pytest.param((-1, 0, 0), id="negative-channel"),
+        pytest.param((255.0, 0, 0), id="float-channel"),
+        pytest.param([255, 0, 0], id="list-not-tuple"),
+    ],
+)
+def test_fill_rejects_anything_that_is_not_an_8_bit_triple(bad: object) -> None:
+    """A malformed fill raises where it is written, not deep inside the generator's draw call.
+
+    `"red"` is the case worth naming: under the `str` mixin it compares equal to `Color.RED` and hashes alike, so an
+    equality or membership check would pass it straight through to a `.rgb` access that has no such attribute.
+
+    """
+    with pytest.raises(ValueError, match="Color member or an"):
+        Fill.parse(bad)  # type: ignore[arg-type]
+
+
+def test_fill_is_hashable_so_it_can_key_the_vocabulary_cache() -> None:
+    """`_build_vocabulary` is `lru_cache`d on its `(mode, shapes, colors)` tuple, so fills must hash.
+
+    An unhashable fill would not fail a type check — it would raise `TypeError` on the first call that builds a
+    vocabulary, i.e. on every real run.
+
+    """
+    assert Fill.parse(Color.RED) == Fill.parse(Color.RED)
+    assert len({Fill.parse(Color.RED), Fill.parse(Color.RED), Fill.parse((255, 215, 0))}) == 2

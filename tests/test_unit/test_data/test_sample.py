@@ -1,79 +1,62 @@
-"""Annotation construction-time validation of the landmark table."""
+"""Annotation construction-time validation of the landmark table against its schema."""
 
 from __future__ import annotations
 
 import pytest
 
-from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES
-from fuse_augmentations.data.letters import LETTER_KEYPOINT_NAMES
+from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_SCHEMA
+from fuse_augmentations.data.keypoints import KeypointSchema
+from fuse_augmentations.data.letters import LETTER_KEYPOINT_SCHEMA
 from fuse_augmentations.data.sample import Annotation
-from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_NAMES
+from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_SCHEMA
 
 _BOX = (0.0, 0.0, 10.0, 10.0)
 _POLYGON = [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0]
 
 
-def _annotation(keypoints: tuple[tuple[float, float, int], ...] | None) -> Annotation:
-    """Build an annotation whose only interesting field is its landmark table."""
+def _annotation(
+    keypoints: tuple[tuple[float, float, int], ...] | None,
+    schema: KeypointSchema | None = ANIMAL_KEYPOINT_SCHEMA,
+) -> Annotation:
+    """Build an annotation whose only interesting fields are its landmark table and that table's schema."""
     return Annotation(
         class_id=4,
         class_name="duck",
         polygon=_POLYGON,
         bbox_xyxy=_BOX,
-        obb_corners=_POLYGON,
         keypoints=keypoints,
+        keypoint_schema=None if keypoints is None else schema,
     )
 
 
-def _valid_table(visibility: int = 2) -> tuple[tuple[float, float, int], ...]:
-    """Return a full-length table with every landmark carrying the same visibility flag."""
-    return tuple((1.0, 2.0, visibility) for _ in ANIMAL_KEYPOINT_NAMES)
+def _table(schema: KeypointSchema, visibility: int = 2) -> tuple[tuple[float, float, int], ...]:
+    """Return a full-length table for ``schema`` with every landmark carrying the same visibility flag."""
+    return tuple((1.0, 2.0, visibility) for _ in schema.names)
 
 
-def test_accepts_a_full_length_table() -> None:
-    """A 16-triple table with valid visibilities is stored verbatim.
+@pytest.mark.parametrize(
+    "schema",
+    [
+        pytest.param(ANIMAL_KEYPOINT_SCHEMA, id="animals-16"),
+        pytest.param(SYMBOL_KEYPOINT_SCHEMA, id="symbols-7"),
+        pytest.param(LETTER_KEYPOINT_SCHEMA, id="letters-15"),
+    ],
+)
+def test_accepts_a_table_matching_its_schema(schema: KeypointSchema) -> None:
+    """A full-width table for any registered family is stored verbatim.
 
     This is the shape the generator emits for every `Task.KEYPOINTS` object, so the guard must let the normal case
     through untouched — a validator that also rewrote or reordered the table would break the landmark-to-name
-    correspondence it exists to protect.
+    correspondence it exists to protect. Every family is covered because the annotation now carries the schema it was
+    built against, so no family is privileged by being the one whose width is assumed.
 
     """
-    table = _valid_table()
+    table = _table(schema)
 
-    ann = _annotation(table)
-
-    assert ann.keypoints == table
-    assert len(ann.keypoints or ()) == len(ANIMAL_KEYPOINT_NAMES)
-
-
-def test_accepts_a_symbol_length_table() -> None:
-    """A 7-triple table (the symbol schema's width) is stored verbatim, same as the 16-triple animal one.
-
-    A table's length alone identifies which registered keypoint family built it, so both widths must be accepted without
-    a separate "which family" argument.
-
-    """
-    table = tuple((1.0, 2.0, 2) for _ in SYMBOL_KEYPOINT_NAMES)
-
-    ann = _annotation(table)
+    ann = _annotation(table, schema)
 
     assert ann.keypoints == table
-    assert len(ann.keypoints or ()) == len(SYMBOL_KEYPOINT_NAMES)
-
-
-def test_accepts_a_letter_length_table() -> None:
-    """A 15-triple table (the letter schema's width) is stored verbatim, same as the other two widths.
-
-    A table's length alone identifies which registered keypoint family built it, so all three registered widths must be
-    accepted without a separate "which family" argument.
-
-    """
-    table = tuple((1.0, 2.0, 2) for _ in LETTER_KEYPOINT_NAMES)
-
-    ann = _annotation(table)
-
-    assert ann.keypoints == table
-    assert len(ann.keypoints or ()) == len(LETTER_KEYPOINT_NAMES)
+    assert ann.keypoint_schema is schema
 
 
 def test_accepts_no_table_at_all() -> None:
@@ -86,15 +69,36 @@ def test_accepts_no_table_at_all() -> None:
     assert _annotation(None).keypoints is None
 
 
+def test_rejects_a_table_with_no_schema() -> None:
+    """Landmarks without a schema are refused rather than guessed at from their width.
+
+    The width used to be the identifier: a 16-triple table meant animals, 7 meant symbols, 15 meant letters. That only
+    worked while the registered families happened to have distinct counts, and it left the annotation unable to say
+    which family it belonged to — so a writer had to be told separately, and the two could disagree. An annotation now
+    either carries its schema or is not a keypoint annotation.
+
+    """
+    with pytest.raises(ValueError, match="without a keypoint_schema"):
+        Annotation(
+            class_id=4,
+            class_name="duck",
+            polygon=_POLYGON,
+            bbox_xyxy=_BOX,
+            keypoints=_table(ANIMAL_KEYPOINT_SCHEMA),
+        )
+
+
 @pytest.mark.parametrize(
     "count",
     [
         pytest.param(0, id="empty"),
         pytest.param(1, id="single-triple"),
-        # `SYMBOL_KEYPOINT_NAMES` (7), not `ANIMAL_KEYPOINT_NAMES` (16): 16 - 1 == 15, which now
-        # collides with the registered letter schema's own width, so it would wrongly be accepted.
-        pytest.param(len(SYMBOL_KEYPOINT_NAMES) - 1, id="one-short"),
-        pytest.param(len(SYMBOL_KEYPOINT_NAMES) + 1, id="one-too-many"),
+        pytest.param(len(ANIMAL_KEYPOINT_SCHEMA.names) - 1, id="one-short"),
+        pytest.param(len(ANIMAL_KEYPOINT_SCHEMA.names) + 1, id="one-too-many"),
+        # 15 is the letter schema's own width. Under the old length-keyed lookup this count was
+        # *accepted* for an animal annotation, which is why the case had to be written against the
+        # symbol width instead; checked against a named schema it is simply wrong, as it always was.
+        pytest.param(len(LETTER_KEYPOINT_SCHEMA.names), id="another-familys-width"),
     ],
 )
 def test_rejects_a_table_of_the_wrong_length(count: int) -> None:
@@ -105,7 +109,7 @@ def test_rejects_a_table_of_the_wrong_length(count: int) -> None:
     rather than failing.
 
     """
-    with pytest.raises(ValueError, match="registered keypoint schema"):
+    with pytest.raises(ValueError, match="to match the schema"):
         _annotation(tuple((1.0, 2.0, 2) for _ in range(count)))
 
 
@@ -129,7 +133,7 @@ def test_rejects_a_visibility_outside_the_coco_flags(visibility: float | bool) -
 
     """
     with pytest.raises(ValueError, match="visibility"):
-        _annotation(_valid_table(visibility))
+        _annotation(_table(ANIMAL_KEYPOINT_SCHEMA, visibility))
 
 
 @pytest.mark.parametrize("visibility", [0, 1, 2])
@@ -140,7 +144,9 @@ def test_accepts_every_coco_visibility_flag(visibility: int) -> None:
     would refuse a legitimate table built by hand or by a downstream tool.
 
     """
-    assert _annotation(_valid_table(visibility)).keypoints == _valid_table(visibility)
+    table = _table(ANIMAL_KEYPOINT_SCHEMA, visibility)
+
+    assert _annotation(table).keypoints == table
 
 
 def test_names_the_offending_landmark_in_the_error() -> None:
@@ -150,7 +156,40 @@ def test_names_the_offending_landmark_in_the_error() -> None:
     by hand.
 
     """
-    table = (*_valid_table()[:2], (1.0, 2.0, 9), *_valid_table()[3:])
+    valid = _table(ANIMAL_KEYPOINT_SCHEMA)
+    table = (*valid[:2], (1.0, 2.0, 9), *valid[3:])
 
-    with pytest.raises(ValueError, match=ANIMAL_KEYPOINT_NAMES[2]):
+    with pytest.raises(ValueError, match=ANIMAL_KEYPOINT_SCHEMA.names[2]):
         _annotation(table)
+
+
+def test_obb_corners_is_derived_from_the_polygon() -> None:
+    """The oriented box comes from the polygon on access, matching what a direct computation gives.
+
+    It used to be a constructor field the generator filled for every object, which meant detection, segmentation and
+    keypoint runs all paid for a convex hull plus a rotating-calipers scan per object and then never read the result —
+    measured at 75% of generation time. Deriving it must produce the identical box, or the saving came at the cost of
+    the answer.
+
+    """
+    from fuse_augmentations.data.families import shape_outline
+    from fuse_augmentations.data.geometry import polygon_to_obb
+
+    outline = shape_outline("rectangle", center=(50.0, 50.0), size=30.0, angle=0.7)
+    ann = Annotation(0, "rectangle", [float(v) for v in outline.reshape(-1)], (0.0, 0.0, 100.0, 100.0))
+
+    expected = [float(v) for v in polygon_to_obb(outline).reshape(-1)]
+
+    assert ann.obb_corners == expected
+
+
+def test_obb_corners_is_computed_once_and_cached() -> None:
+    """Repeated access returns the same list object rather than recomputing the hull each time.
+
+    A caller iterating annotations to write an OBB dataset touches this per object; recomputing per access would undo
+    the saving for the one task that does read it.
+
+    """
+    ann = Annotation(0, "square", _POLYGON, _BOX)
+
+    assert ann.obb_corners is ann.obb_corners

@@ -16,7 +16,7 @@ preview and the "Tasks" section for that box, which is not axis-aligned in gener
 arrow itself is drawn upright). Showing the true rotated OBB here, at a fixed unrotated pose,
 produced a tilted box for concave/asymmetric outlines and an arbitrary tied choice for a
 symmetric one (an isosceles triangle's minimum-area OBB has no unique answer — see
-:attr:`~fuse_augmentations.data.geometry.GeomShape.TRIANGLE`'s docstring for why a right *or*
+:attr:`~fuse_augmentations.data.primitives.PrimitiveShape.TRIANGLE`'s docstring for why a right *or*
 acute triangle ties), neither of which says anything useful about a shape drawn in its own
 reference position; the plain detection box is simpler and unambiguous for every shape. The three
 keypoint-bearing families (animals, symbols, letters) get their landmark dots and skeleton drawn in
@@ -35,10 +35,10 @@ Files are named ``<prefix><shape>.png`` with the same prefix convention
 ``letters-x.png``.
 
 A letter (see :mod:`~fuse_augmentations.data.letters`) is a single outline polygon exactly like a
-geometric, animal, or symbol shape, so it reuses ``shape_polygon`` the same way every other family
+geometric, animal, or symbol shape, so it reuses ``shape_outline`` the same way every other family
 does. Its skeleton differs per member (that is what makes it that letter), though, unlike the
 animal/symbol families' one shared topology, so its edges come from
-:meth:`~fuse_augmentations.data.landmarks.KeypointSchema.skeleton_for` instead of a fixed tuple.
+:meth:`~fuse_augmentations.data.keypoints.KeypointSchema.skeleton_for` instead of a fixed tuple.
 
 Render every shape in every family:
     python examples/render_shape_reference.py
@@ -57,8 +57,10 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_SCHEMA, AnimalShape, animal_keypoints
-from fuse_augmentations.data.geometry import GeomShape, polygon_to_bbox_xyxy, shape_polygon
+from fuse_augmentations.data.families import shape_outline
+from fuse_augmentations.data.geometry import polygon_to_bbox_xyxy
 from fuse_augmentations.data.letters import LETTER_KEYPOINT_SCHEMA, LetterShape, letter_keypoints
+from fuse_augmentations.data.primitives import PrimitiveShape
 from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_SCHEMA, SymbolShape, symbol_keypoints
 
 if TYPE_CHECKING:
@@ -66,7 +68,7 @@ if TYPE_CHECKING:
 
     from numpy.typing import NDArray
 
-    from fuse_augmentations.data.landmarks import KeypointSchema
+    from fuse_augmentations.data.keypoints import KeypointSchema
 
 _CANVAS = 200
 #: Pixels reserved on every side of the canvas so a fitted shape's stroke width and keypoint dot
@@ -90,7 +92,7 @@ _FAMILIES: dict[
     str,
     tuple[str, tuple[str, ...], Callable[..., NDArray[np.float64]] | None, KeypointSchema | None],
 ] = {
-    "geometric": ("geometry-", tuple(s.value for s in GeomShape), None, None),
+    "geometric": ("geometry-", tuple(s.value for s in PrimitiveShape), None, None),
     "symbols": ("symbols-", tuple(s.value for s in SymbolShape), symbol_keypoints, SYMBOL_KEYPOINT_SCHEMA),
     "animals": ("animals-", tuple(s.value for s in AnimalShape), animal_keypoints, ANIMAL_KEYPOINT_SCHEMA),
     "letters": ("letters-", tuple(s.value for s in LetterShape), letter_keypoints, LETTER_KEYPOINT_SCHEMA),
@@ -114,7 +116,7 @@ def _fit_size(name: str) -> float:
     orientation (see :func:`_draw_shape`), so fitting the outline alone is sufficient.
 
     """
-    poly = shape_polygon(name, (0.0, 0.0), 1.0)
+    poly = shape_outline(name, (0.0, 0.0), 1.0)
     half_extent = float(np.abs(poly).max())
     half_available = (_CANVAS - 2 * _MARGIN) / 2.0
     return half_available / half_extent
@@ -128,7 +130,7 @@ def _draw_shape(draw: ImageDraw.ImageDraw, name: str, size: float) -> None:
     generator's rotated samples use instead (see the module docstring for why).
 
     """
-    poly = shape_polygon(name, _SHAPE_CENTER, size)
+    poly = shape_outline(name, _SHAPE_CENTER, size)
     draw.polygon([(float(x), float(y)) for x, y in poly], outline=_INK, fill=_FILL, width=2)
     x1, y1, x2, y2 = polygon_to_bbox_xyxy(poly)
     draw.rectangle((x1, y1, x2, y2), outline=_BBOX_RGB, width=1)

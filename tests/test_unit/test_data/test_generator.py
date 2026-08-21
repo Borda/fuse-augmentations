@@ -14,12 +14,11 @@ from fuse_augmentations.data.config import (
     Task,
     class_names,
 )
+from fuse_augmentations.data.families import ALL_SHAPES
 from fuse_augmentations.data.generator import SyntheticGenerator, _boundary_overlap, _visible_keypoints
-from fuse_augmentations.data.geometry import (
-    GeomShape,
-    bbox_iou,
-)
+from fuse_augmentations.data.geometry import bbox_iou
 from fuse_augmentations.data.letters import LetterShape
+from fuse_augmentations.data.primitives import PrimitiveShape
 from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_NAMES, SymbolShape
 
 from ._obb_pose import rebuild_error
@@ -122,23 +121,27 @@ def test_generate_same_seed_is_deterministic() -> None:
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        (ClassMode.SHAPE, {s.value for s in (*GeomShape, *AnimalShape, *SymbolShape, *LetterShape)}),
+        (ClassMode.SHAPE, {s.value for s in (*PrimitiveShape, *AnimalShape, *SymbolShape, *LetterShape)}),
         (ClassMode.COLOR, {c.value for c in Color}),
         (
             ClassMode.SHAPE_COLOR,
-            {f"{c.value}_{s.value}" for s in (*GeomShape, *AnimalShape, *SymbolShape, *LetterShape) for c in Color},
+            {
+                f"{c.value}_{s.value}"
+                for s in (*PrimitiveShape, *AnimalShape, *SymbolShape, *LetterShape)
+                for c in Color
+            },
         ),
     ],
 )
 def test_class_names_belong_to_mode(mode: ClassMode, expected: set[str]) -> None:
     config = SyntheticConfig(img_size=128, min_objects=8, max_objects=10, class_mode=mode)
     sample = SyntheticGenerator(config).sample(np.random.default_rng(0))
-    vocab = set(class_names(mode))
+    vocab = set(class_names(mode, ALL_SHAPES))
     assert vocab == expected
     # Indexed through the run's *own* narrowed vocabulary, the one every writer declares -- not
-    # `class_names(mode)` above, which spans the full 49 shapes and would agree here only because
+    # `class_names(mode, ALL_SHAPES)` above, which spans the full 49 shapes and would agree here only because
     # the default geometric shapes happen to lead it (the coincidence that hid a real id mismatch).
-    run_names = class_names(mode, shapes=config.shapes)
+    run_names = class_names(mode, config.shapes)
     for ann in sample.annotations:
         assert ann.class_name in vocab
         assert run_names[ann.class_id] == ann.class_name
@@ -184,7 +187,7 @@ def test_default_config_draws_only_the_original_four_shapes() -> None:
 
 
 @pytest.mark.parametrize("shape", ANIMAL_SHAPES)
-def test_single_animal_shape_is_the_only_one_drawn(shape: AnimalShape | GeomShape) -> None:
+def test_single_animal_shape_is_the_only_one_drawn(shape: AnimalShape | PrimitiveShape) -> None:
     """Restricting `cfg.shapes` to one animal makes every annotation carry that class.
 
     This is the documented opt-in for the animal family; a sampler still reading the full enum would leak geometric
@@ -408,7 +411,7 @@ def test_asymmetry_jitter_never_skews_a_circle() -> None:
         img_size=128,
         min_objects=6,
         max_objects=6,
-        shapes=(GeomShape.CIRCLE,),
+        shapes=(PrimitiveShape.CIRCLE,),
         asymmetry_jitter=0.45,
     )
     sample = SyntheticGenerator(config).sample(np.random.default_rng(9))
@@ -469,7 +472,7 @@ def test_exported_obb_replaces_its_own_shape(shapes: tuple) -> None:  # type: ig
 def test_asymmetry_jitter_keeps_base_landmarks_on_the_skewed_symbol() -> None:
     """A symbol's `base_left`/`base_right` landmarks stay inside its own outline once both are skewed.
 
-    `_attempt_placement` draws one `skew` value and passes it to both `shape_polygon` and `symbol_keypoints`; if a
+    `_attempt_placement` draws one `skew` value and passes it to both `shape_outline` and `symbol_keypoints`; if a
     future edit ever threaded a different value to one of the two calls, a landmark that moves with skew (unlike the on-
     axis `center`) would drift outside the outline it is meant to annotate.
 

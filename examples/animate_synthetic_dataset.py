@@ -33,7 +33,7 @@ geometric, animal, or symbol shape, so its ``segmentation``/``obb`` overlay draw
 closed loop through ``ann.polygon``/``ann.obb_corners`` every other family uses. Its keypoints
 overlay differs per letter, though — unlike the animal/symbol families' one shared topology, a
 letter's skeleton edges come from
-:meth:`~fuse_augmentations.data.landmarks.KeypointSchema.skeleton_for` per
+:meth:`~fuse_augmentations.data.keypoints.KeypointSchema.skeleton_for` per
 annotation instead of one schema-wide tuple.
 
 Render every task (detection, segmentation, obb; keypoints when using animals, symbols, or letters):
@@ -61,14 +61,14 @@ from typing import TYPE_CHECKING, TypedDict
 from PIL import Image, ImageDraw
 
 from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
-from fuse_augmentations.data.animals import animal_shapes
+from fuse_augmentations.data.animals import AnimalShape
 from fuse_augmentations.data.config import DEFAULT_SHAPES, Task, keypoint_schema_for
-from fuse_augmentations.data.letters import letter_shapes
+from fuse_augmentations.data.letters import LetterShape
 from fuse_augmentations.data.sample import Annotation, Sample
-from fuse_augmentations.data.symbols import symbol_shapes
+from fuse_augmentations.data.symbols import SymbolShape
 
 if TYPE_CHECKING:
-    from fuse_augmentations.data.landmarks import KeypointSchema
+    from fuse_augmentations.data.keypoints import KeypointSchema
 
 TASKS = ("detection", "segmentation", "obb", "keypoints")
 
@@ -86,9 +86,9 @@ class _Scene(TypedDict):
 #: whole roster, so a new animal, symbol, or letter is picked up without editing this script.
 SHAPE_SETS = {
     "geometric": DEFAULT_SHAPES,
-    "animals": animal_shapes(),
-    "symbols": symbol_shapes(),
-    "letters": letter_shapes(),
+    "animals": tuple(AnimalShape),
+    "symbols": tuple(SymbolShape),
+    "letters": tuple(LetterShape),
 }
 #: Scene knobs per vocabulary. ``geometric`` reproduces the original clips byte-for-byte. The other
 #: three size their objects against how many members they have to get through: the generator picks
@@ -137,7 +137,7 @@ def _draw_annotation(
     ``schema`` is the active run's keypoint schema — see
     :func:`~fuse_augmentations.data.config.keypoint_schema_for` — and is only read for the
     ``"keypoints"`` task, resolved to ``ann``'s own edges via
-    :meth:`~fuse_augmentations.data.landmarks.KeypointSchema.skeleton_for` (identical to
+    :meth:`~fuse_augmentations.data.keypoints.KeypointSchema.skeleton_for` (identical to
     ``schema.skeleton`` for every family but letters, whose topology genuinely differs per member);
     every other task ignores it.
 

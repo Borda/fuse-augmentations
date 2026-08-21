@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
-from fuse_augmentations.data.geometry import GeomShape, polygon_to_obb, shape_polygon
-from fuse_augmentations.data.landmarks import KeypointSchema
+from fuse_augmentations.data.families import shape_outline
+from fuse_augmentations.data.geometry import polygon_to_obb
+from fuse_augmentations.data.keypoints import KeypointSchema
 from fuse_augmentations.data.letters import (
     LETTER_COUNTER_GAP,
     LETTER_KEYPOINT_FLIP_IDX,
@@ -20,8 +21,8 @@ from fuse_augmentations.data.letters import (
     LETTER_STROKE_WIDTH,
     LetterShape,
     letter_keypoints,
-    letter_shapes,
 )
+from fuse_augmentations.data.primitives import PrimitiveShape
 
 #: Which `LETTER_KEYPOINT_NAMES` slots each letter actually uses, hand-reviewed and pinned as a
 #: literal from the letter's own authored stroke graph — see `letters.json`'s `strokes` table.
@@ -195,7 +196,7 @@ def _area_centroid(points: np.ndarray) -> np.ndarray:
 def _rasterize(name: str, size: float, canvas: int, angle: float = 0.0) -> np.ndarray:
     """Fill one letter's outline into a boolean canvas exactly as the generator would."""
     image = Image.new("L", (canvas, canvas), 0)
-    poly = shape_polygon(name, center=(canvas / 2.0, canvas / 2.0), size=size, angle=angle)
+    poly = shape_outline(name, center=(canvas / 2.0, canvas / 2.0), size=size, angle=angle)
     ImageDraw.Draw(image).polygon([(float(x), float(y)) for x, y in poly], fill=255)
     return np.asarray(image) > 0
 
@@ -496,7 +497,7 @@ def test_letter_obb_stays_upright(name: str) -> None:
     in `letters.json`, never a tie-break in `polygon_to_obb`.
 
     """
-    corners = polygon_to_obb(shape_polygon(name, center=(0.0, 0.0), size=1.0))
+    corners = polygon_to_obb(shape_outline(name, center=(0.0, 0.0), size=1.0))
     edge = corners[1] - corners[0]
     heading = np.degrees(np.arctan2(edge[1], edge[0])) % 90.0
     assert min(heading, 90.0 - heading) <= _MAX_OBB_TILT_DEG
@@ -610,19 +611,7 @@ def test_placed_keypoints_do_not_alias_the_table(name: str) -> None:
 def test_letter_keypoints_rejects_a_shape_without_a_table() -> None:
     """A geometric shape (no keypoint table at all) is refused with a clear message."""
     with pytest.raises(ValueError, match="no keypoint table"):
-        letter_keypoints(GeomShape.SQUARE, center=(0.0, 0.0), size=10.0)
-
-
-def test_letter_shapes_returns_declaration_order() -> None:
-    """`letter_shapes` mirrors `symbol_shapes`: `None` returns every letter, `count` takes a stable prefix."""
-    assert letter_shapes() == tuple(LetterShape)
-    assert letter_shapes(3) == (LetterShape.A, LetterShape.B, LetterShape.C)
-
-
-def test_letter_shapes_rejects_an_out_of_range_count() -> None:
-    """`count` outside `[0, len(LetterShape)]` raises rather than silently clamping."""
-    with pytest.raises(ValueError, match=r"\[0, 26\]"):
-        letter_shapes(27)
+        letter_keypoints(PrimitiveShape.SQUARE, center=(0.0, 0.0), size=10.0)
 
 
 def test_flip_idx_is_the_grid_column_mirror() -> None:
