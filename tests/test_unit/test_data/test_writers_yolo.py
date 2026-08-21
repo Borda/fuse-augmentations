@@ -12,6 +12,7 @@ from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, AnimalShape
 from fuse_augmentations.data.config import SyntheticConfig, Task, class_names
 from fuse_augmentations.data.generator import SyntheticGenerator
 from fuse_augmentations.data.landmarks import KeypointSchema
+from fuse_augmentations.data.letters import LETTER_KEYPOINT_SCHEMA, LetterShape
 from fuse_augmentations.data.sample import Annotation, Sample
 from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_SCHEMA, SymbolShape
 from fuse_augmentations.data.writers import YoloWriter
@@ -40,7 +41,7 @@ def _write(
     generator = SyntheticGenerator(config)
     rng = np.random.default_rng(seed)
     data = {split: [generator.sample(rng) for _ in range(count)] for split in splits}
-    names = class_names(config.class_mode)
+    names = class_names(config.class_mode, shapes=config.shapes)
     writer_kwargs = {} if keypoint_schema is None else {"keypoint_schema": keypoint_schema}
     YoloWriter(writer_task, names, **writer_kwargs).write(data, tmp_path)
     return data, names
@@ -354,3 +355,84 @@ def test_data_yaml_declares_the_symbol_flip_idx(tmp_path: Path) -> None:
 
     doc = yaml.safe_load((tmp_path / "data.yaml").read_text())
     assert doc["flip_idx"] == [0, 1, 2, 4, 3, 6, 5]
+
+
+def test_letter_keypoints_row_has_fifty_tokens(tmp_path: Path) -> None:
+    """A letter pose row is `cls cx cy w h` (5) plus 15 `x y v` triples (45) = 50 tokens, always.
+
+    Mirrors `test_keypoints_row_has_fifty_three_tokens` for the 15-node letter schema: a letter that
+    uses fewer than all 15 grid slots (every letter but the few that touch every row/column) still
+    emits its unused slots' zeroed `0.000000 0.000000 0` triples, keeping the row fixed-width.
+
+    """
+    img_size = 192
+    data, _ = _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        splits=("train",),
+        count=2,
+        seed=4,
+        img_size=img_size,
+        max_objects=2,
+        task=Task.KEYPOINTS,
+        shapes=(LetterShape.X,),
+        keypoint_schema=LETTER_KEYPOINT_SCHEMA,
+    )
+
+    rows = _rows(tmp_path)
+    anns = [ann for sample in data["train"] for ann in sample.annotations]
+    assert rows
+    assert len(rows) == len(anns)
+    for row, ann in zip(rows, anns, strict=True):
+        tokens = row.split()
+        assert len(tokens) == 50
+        for i in range(len(LETTER_KEYPOINT_SCHEMA.names)):
+            x_tok, y_tok, v_tok = tokens[5 + 3 * i : 8 + 3 * i]
+            kp_x, kp_y, kp_v = ann.keypoints[i]
+            assert int(v_tok) == kp_v
+            if kp_v > 0:
+                assert float(x_tok) == pytest.approx(kp_x / img_size, abs=1e-3)
+                assert float(y_tok) == pytest.approx(kp_y / img_size, abs=1e-3)
+
+
+def test_data_yaml_declares_kpt_shape_fifteen_three_for_letters(tmp_path: Path) -> None:
+    """`data.yaml` declares `kpt_shape: [15, 3]` for a letter-family keypoints run."""
+    _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        splits=("train",),
+        count=2,
+        seed=0,
+        img_size=192,
+        max_objects=2,
+        task=Task.KEYPOINTS,
+        shapes=tuple(LetterShape),
+        keypoint_schema=LETTER_KEYPOINT_SCHEMA,
+    )
+
+    doc = yaml.safe_load((tmp_path / "data.yaml").read_text())
+    assert doc["kpt_shape"] == [15, 3]
+
+
+def test_data_yaml_declares_the_letter_grid_flip_idx(tmp_path: Path) -> None:
+    """`data.yaml` declares `flip_idx` as the grid's own column mirror, not the animals' identity mapping.
+
+    Every letter's node table shares one 3x5 grid; the flip mapping swaps each row's left/right column and holds the
+    middle column fixed regardless of which letters a run actually draws — see `LETTER_KEYPOINT_FLIP_IDX`.
+
+    """
+    _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        splits=("train",),
+        count=2,
+        seed=0,
+        img_size=192,
+        max_objects=2,
+        task=Task.KEYPOINTS,
+        shapes=tuple(LetterShape),
+        keypoint_schema=LETTER_KEYPOINT_SCHEMA,
+    )
+
+    doc = yaml.safe_load((tmp_path / "data.yaml").read_text())
+    assert doc["flip_idx"] == [2, 1, 0, 5, 4, 3, 8, 7, 6, 11, 10, 9, 14, 13, 12]

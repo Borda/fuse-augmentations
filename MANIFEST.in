@@ -9,6 +9,7 @@ recursive-include src/fuse_augmentations *.md
 include LICENSE
 
 # Include packaged animal outline + keypoint assets
+recursive-include src/fuse_augmentations/data/ *.json
 recursive-include src/fuse_augmentations/data/zoo *.svg
 
 # Exclude build configs

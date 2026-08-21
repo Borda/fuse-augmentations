@@ -17,7 +17,7 @@ silhouette it annotates. They live here, underneath every shape family, so
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -44,11 +44,19 @@ class KeypointSchema:
             keypoint-bearing family — see
             :func:`~fuse_augmentations.data.writers._keypoint_eligible_names` — independently of
             which landmark names or skeleton the family itself uses.
+        skeleton_by_value: Per-``shape_values``-entry skeleton override, for a family whose members
+            do not all share one topology (e.g.
+            :mod:`~fuse_augmentations.data.letters`, where each letter's stroke edges *are* its
+            drawn geometry, not just a viewer aid). ``None`` (the default) means every member shares
+            ``skeleton`` — the behavior every family before ``letters`` relies on, unaffected by
+            this field existing. When given, it need not cover every ``shape_values`` entry; a
+            missing key falls back to ``skeleton`` the same way ``None`` would.
 
     Raises:
         ValueError: If ``flip_idx`` is not exactly a self-inverse permutation of
-            ``range(len(names))``, a ``skeleton`` edge indexes outside ``names``, or
-            ``shape_values`` is empty.
+            ``range(len(names))``, a ``skeleton`` edge indexes outside ``names``, a
+            ``skeleton_by_value`` key is not in ``shape_values`` or one of its edges indexes outside
+            ``names``, or ``shape_values`` is empty.
 
     Examples:
         ```pycon
@@ -56,6 +64,8 @@ class KeypointSchema:
         >>> schema = KeypointSchema(names=("a", "b"), skeleton=((0, 1),), flip_idx=(1, 0), shape_values=("x",))
         >>> schema.kpt_shape
         2
+        >>> schema.skeleton_for("x")
+        ((0, 1),)
 
         ```
 
@@ -65,9 +75,10 @@ class KeypointSchema:
     skeleton: tuple[tuple[int, int], ...]
     flip_idx: tuple[int, ...]
     shape_values: tuple[str, ...]
+    skeleton_by_value: Mapping[str, tuple[tuple[int, int], ...]] | None = None
 
     def __post_init__(self) -> None:
-        """Validate that ``flip_idx`` is a self-inverse permutation and ``skeleton`` indexes in range."""
+        """Validate ``flip_idx``, ``skeleton``, and ``skeleton_by_value`` (when given)."""
         if not self.shape_values:
             raise ValueError("shape_values must name at least one shape value, got an empty sequence")
         n = len(self.names)
@@ -77,9 +88,35 @@ class KeypointSchema:
             raise ValueError(f"flip_idx must be a permutation of range({n}), got {self.flip_idx!r}")
         if any(self.flip_idx[i] != i and self.flip_idx[self.flip_idx[i]] != i for i in range(n)):
             raise ValueError(f"flip_idx must be self-inverse (flipping twice is the identity), got {self.flip_idx!r}")
-        bad_edges = [edge for edge in self.skeleton if not all(0 <= idx < n for idx in edge)]
+        self._validate_edges("skeleton", self.skeleton, n)
+        if self.skeleton_by_value is not None:
+            unknown = [value for value in self.skeleton_by_value if value not in self.shape_values]
+            if unknown:
+                raise ValueError(f"skeleton_by_value key(s) {unknown!r} are not in shape_values {self.shape_values!r}")
+            for value, edges in self.skeleton_by_value.items():
+                self._validate_edges(f"skeleton_by_value[{value!r}]", edges, n)
+
+    def _validate_edges(self, label: str, edges: tuple[tuple[int, int], ...], n: int) -> None:
+        """Raise if any ``edges`` pair indexes outside ``range(n)``."""
+        bad_edges = [edge for edge in edges if not all(0 <= idx < n for idx in edge)]
         if bad_edges:
-            raise ValueError(f"skeleton edges must index into names[0:{n}], got out-of-range edge(s) {bad_edges!r}")
+            raise ValueError(f"{label} edges must index into names[0:{n}], got out-of-range edge(s) {bad_edges!r}")
+
+    def skeleton_for(self, shape_value: str) -> tuple[tuple[int, int], ...]:
+        """Return the skeleton edges to draw for one ``shape_values`` member.
+
+        Args:
+            shape_value: A value from :attr:`shape_values`.
+
+        Returns:
+            ``skeleton_by_value[shape_value]`` when :attr:`skeleton_by_value` is given and holds an
+            entry for it; :attr:`skeleton` otherwise — the single shared topology every
+            pre-``letters`` family uses.
+
+        """
+        if self.skeleton_by_value is not None and shape_value in self.skeleton_by_value:
+            return self.skeleton_by_value[shape_value]
+        return self.skeleton
 
     @property
     def kpt_shape(self) -> int:

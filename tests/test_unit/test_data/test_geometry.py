@@ -14,7 +14,14 @@ from fuse_augmentations.data.geometry import (
     rotate_polygon,
     shape_polygon,
 )
+from fuse_augmentations.data.letters import LetterShape
 from fuse_augmentations.data.symbols import SymbolShape
+
+from ._obb_pose import rebuild_error
+
+#: Every drawable shape across all four families — the OBB contract is family-agnostic, so the
+#: box-derivation tests below sweep the whole vocabulary rather than one family's roster.
+ALL_SHAPE_VALUES = [s.value for s in (*GeomShape, *AnimalShape, *SymbolShape, *LetterShape)]
 
 
 def _polygon_area(points: np.ndarray) -> float:
@@ -194,7 +201,27 @@ def _best_corner_set_distance(a: np.ndarray, b: np.ndarray) -> float:
     return best
 
 
-@pytest.mark.parametrize("shape", [s.value for s in (*GeomShape, *AnimalShape, *SymbolShape)])
+@pytest.mark.parametrize("shape", ALL_SHAPE_VALUES)
+def test_obb_places_the_reference_shape_back_onto_the_drawn_one(shape: str) -> None:
+    """Turning the upright reference shape by what its OBB says lands it back on the drawn shape.
+
+    Every other OBB test here checks a property *of the box* — its area, its corner count, that it rotates rigidly.
+    None checks the thing the box actually promises a consumer: that it describes the pose of the object inside it.
+    This closes the loop by discarding the drawn polygon's own coordinates entirely, rebuilding it from the reference
+    outline plus the four box corners (see `_obb_pose.rebuild_error`), and requiring the rebuild to land on the original
+    to float precision. A tie-break that flips to a different equal-area candidate as the shape turns, a hull whose
+    vertex set shifts under rotation, a corner ordering that is not itself equivariant, or any drift between a polygon
+    and the box derived from it all break this and are invisible to a same-shape-only or unordered-corner-set check.
+
+    """
+    center, size = (200.0, 200.0), 100.0
+    for angle_deg in (10, 47, 91, 133, 179, 250, 311):
+        drawn = shape_polygon(shape, center=center, size=size, angle=np.radians(float(angle_deg)))
+        error = rebuild_error(shape, polygon_to_obb(drawn), drawn)
+        assert error < 1e-9 * size, f"{shape} at {angle_deg} degrees is off by {error:.3g}px"
+
+
+@pytest.mark.parametrize("shape", ALL_SHAPE_VALUES)
 def test_obb_is_rotation_equivariant(shape: str) -> None:
     """The chosen OBB rotates rigidly with the shape — it never flips to a different tied candidate.
 

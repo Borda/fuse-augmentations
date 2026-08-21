@@ -77,7 +77,9 @@ Examples:
 
 from __future__ import annotations
 
+import json
 from enum import Enum
+from importlib.resources import files
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
@@ -87,6 +89,7 @@ from fuse_augmentations.data.landmarks import KeypointSchema, _normalized_pair
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from importlib.resources.abc import Traversable
 
     from numpy.typing import NDArray
 
@@ -174,104 +177,60 @@ SYMBOL_KEYPOINT_SCHEMA = KeypointSchema(
     shape_values=SYMBOL_NAMES,
 )
 
-#: Raw ``(outline, landmarks)`` literals per symbol, in a nominal ``[-1.3, 1.3]`` unit-ish box,
-#: screen orientation (``+y`` down). ``landmarks`` follows :data:`SYMBOL_KEYPOINT_NAMES` order;
-#: every entry here is mirror-symmetric about ``x == 0`` (so its center-of-mass ``x`` is exactly
-#: ``0`` before normalization), which is what keeps :data:`SYMBOL_KEYPOINT_FLIP_IDX` correct. Each
-#: ``center`` is set to its own outline's raw-space area centroid (shoelace formula), computed and
-#: verified (in ``test_symbols.py``) to lie inside the outline for every shape here — a future,
-#: more exotic concave outline whose true centroid falls outside its own silhouette would need a
-#: hand-placed override instead. Every other present landmark sits three-quarters of the way from
-#: ``center`` to its named outline vertex — not *on* that vertex — because a landmark placed
-#: exactly on a polygon boundary is fragile under rotation: a rasterizer's scanline fill can
-#: exclude the exact boundary pixel from whichever direction the fill sweeps, and which vertex that
-#: is changes with the rotation angle. Pulling every point solidly into the interior, the way the
-#: animals' anatomical landmarks already are, makes the placement robust at any angle.
-_RAW: dict[str, tuple[list[tuple[float, float]], list[tuple[float, float]]]] = {
-    "kite": (
-        [(0.0, -1.0), (0.6, 0.0), (0.0, 0.5), (-0.6, 0.0)],
-        [(0.0, -0.16667), (0.0, -0.79167), (0.0, 0.33333), (-0.45, -0.04167), (0.45, -0.04167), _ABSENT, _ABSENT],
-    ),
-    "trapezoid": (
-        [(-0.5, -0.8), (0.5, -0.8), (1.0, 0.8), (-1.0, 0.8)],
-        [(0.0, 0.08889), _ABSENT, _ABSENT, (-0.375, -0.57778), (0.375, -0.57778), (-0.75, 0.62222), (0.75, 0.62222)],
-    ),
-    "house": (
-        [(0.0, -1.2), (0.8, -0.4), (0.8, 0.8), (-0.8, 0.8), (-0.8, -0.4)],
-        [(0.0, -0.01667), (0.0, -0.90417), _ABSENT, (-0.6, -0.30417), (0.6, -0.30417), (-0.6, 0.59583), (0.6, 0.59583)],
-    ),
-    "arrow": (
-        [
-            (0.0, -1.2),
-            (0.9, -0.2),
-            (0.3, -0.2),
-            (0.3, 0.9),
-            (-0.3, 0.9),
-            (-0.3, -0.2),
-            (-0.9, -0.2),
-        ],
-        # flank_left/right are the centroid of each barb's own triangle (tip, barb tip, notch)
-        # rather than an interpolation toward `center`: the straight path from `center` to a barb
-        # tip crosses the concave notch and exits the polygon, so that interpolation (used for
-        # every other shape/slot here) does not apply to a barb landmark.
-        [(0.0, -0.15962), (0.0, -0.9399), (0.0, 0.6351), (-0.4, -0.53333), (0.4, -0.53333), _ABSENT, _ABSENT],
-    ),
-    "cross": (
-        [
-            (-0.3, -1.0),
-            (0.3, -1.0),
-            (0.3, -0.3),
-            (0.9, -0.3),
-            (0.9, 0.3),
-            (0.3, 0.3),
-            (0.3, 1.3),
-            (-0.3, 1.3),
-            (-0.3, 0.3),
-            (-0.9, 0.3),
-            (-0.9, -0.3),
-            (-0.3, -0.3),
-        ],
-        [(0.0, 0.09857), (0.0, -0.72536), (0.0, 0.99964), (-0.675, 0.02464), (0.675, 0.02464), _ABSENT, _ABSENT],
-    ),
-    "teardrop": (
-        [
-            (-0.35, -0.85),
-            (0.0, -0.95),
-            (0.35, -0.85),
-            (0.55, -0.55),
-            (0.5, -0.15),
-            (0.0, 0.9),
-            (-0.5, -0.15),
-            (-0.55, -0.55),
-        ],
-        [(0.0, -0.2082), (0.0, -0.76455), (0.0, 0.62295), (-0.375, -0.16455), (0.375, -0.16455), _ABSENT, _ABSENT],
-    ),
-    "anchor": (
-        [
-            (0.0, -1.1),
-            (0.22, -0.85),
-            (0.45, -0.55),
-            (0.12, -0.5),
-            (0.75, 0.85),
-            (0.15, 0.6),
-            (0.0, 0.5),
-            (-0.15, 0.6),
-            (-0.75, 0.85),
-            (-0.12, -0.5),
-            (-0.45, -0.55),
-            (-0.22, -0.85),
-        ],
-        [(0.0, 0.01259), (0.0, -0.82185), (0.0, 0.37815), (-0.5625, 0.64065), (0.5625, 0.64065), _ABSENT, _ABSENT],
-    ),
-}
+#: Packaged asset holding the raw ``(outline, landmarks)`` literal per symbol, in a nominal
+#: ``[-1.3, 1.3]`` unit-ish box, screen orientation (``+y`` down). ``landmarks`` follows
+#: :data:`SYMBOL_KEYPOINT_NAMES` order, ``null`` for an absent slot (see :func:`_read_raw`). Every
+#: entry is mirror-symmetric about ``x == 0`` (so its center-of-mass ``x`` is exactly ``0`` before
+#: normalization), which is what keeps :data:`SYMBOL_KEYPOINT_FLIP_IDX` correct. Each ``center`` is
+#: set to its own outline's raw-space area centroid (shoelace formula), computed and verified (in
+#: ``test_symbols.py``) to lie inside the outline for every shape here — a future, more exotic
+#: concave outline whose true centroid falls outside its own silhouette would need a hand-placed
+#: override instead. Every other present landmark sits three-quarters of the way from ``center`` to
+#: its named outline vertex — not *on* that vertex — because a landmark placed exactly on a polygon
+#: boundary is fragile under rotation: a rasterizer's scanline fill can exclude the exact boundary
+#: pixel from whichever direction the fill sweeps, and which vertex that is changes with the
+#: rotation angle. Pulling every point solidly into the interior, the way the animals' anatomical
+#: landmarks already are, makes the placement robust at any angle. ``arrow``'s ``flank_left/right``
+#: are the one exception to the three-quarters rule: they are the centroid of each barb's own
+#: triangle (tip, barb tip, notch), because the straight path from ``center`` to a barb tip crosses
+#: the concave notch and exits the polygon.
+_ASSET: Traversable = files("fuse_augmentations.data") / "symbols.json"
+
+
+def _read_raw() -> dict[str, tuple[list[tuple[float, float]], list[tuple[float, float]]]]:
+    """Load and validate :data:`_ASSET` into the raw ``(outline, landmarks)`` literal per symbol.
+
+    Raises:
+        ValueError: If the asset is missing a registered :class:`SymbolShape`'s entry, or a
+            ``landmarks`` list does not hold exactly ``len(SYMBOL_KEYPOINT_NAMES)`` entries.
+
+    """
+    with _ASSET.open("rb") as handle:
+        payload = json.load(handle)
+    raw: dict[str, tuple[list[tuple[float, float]], list[tuple[float, float]]]] = {}
+    for name in SYMBOL_NAMES:
+        entry = payload.get(name)
+        if entry is None:
+            raise ValueError(f"symbols.json is missing the shape {name!r}")
+        landmarks = entry["landmarks"]
+        if len(landmarks) != len(SYMBOL_KEYPOINT_NAMES):
+            raise ValueError(
+                f"symbols.json shape {name!r} needs exactly {len(SYMBOL_KEYPOINT_NAMES)} landmarks, "
+                f"got {len(landmarks)}"
+            )
+        outline = [tuple(point) for point in entry["outline"]]
+        points = [_ABSENT if point is None else tuple(point) for point in landmarks]
+        raw[name] = (outline, points)
+    return raw
 
 
 def _load() -> tuple[dict[str, NDArray[np.float64]], dict[str, NDArray[np.float64]]]:
     """Normalize every raw ``(outline, landmarks)`` literal into the unit-space table pair."""
+    raw = _read_raw()
     polygons: dict[str, NDArray[np.float64]] = {}
     keypoints: dict[str, NDArray[np.float64]] = {}
     for name in SYMBOL_NAMES:
-        outline, landmarks = _RAW[name]
+        outline, landmarks = raw[name]
         polygons[name], keypoints[name] = _normalized_pair(outline, landmarks, SYMBOL_KEYPOINT_NAMES)
     return polygons, keypoints
 

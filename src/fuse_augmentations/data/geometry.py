@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, NamedTuple
 import numpy as np
 
 from fuse_augmentations.data.animals import ANIMAL_POLYGONS
+from fuse_augmentations.data.letters import LETTER_POLYGONS
 from fuse_augmentations.data.symbols import SYMBOL_POLYGONS
 
 if TYPE_CHECKING:
@@ -81,9 +82,10 @@ GEOMETRIC_SHAPES: tuple[str, ...] = tuple(shape.value for shape in GeomShape)
 def _base_polygon(shape: str, size: float) -> NDArray[np.float64]:
     """Return an origin-centered polygon for ``shape`` spanning ``size`` pixels.
 
-    Geometric shapes are computed analytically; animal and symbol shapes are looked up in
-    :data:`~fuse_augmentations.data.animals.ANIMAL_POLYGONS` and
-    :data:`~fuse_augmentations.data.symbols.SYMBOL_POLYGONS`, whose tables share this function's
+    Geometric shapes are computed analytically; animal, symbol, and letter shapes are looked up in
+    :data:`~fuse_augmentations.data.animals.ANIMAL_POLYGONS`,
+    :data:`~fuse_augmentations.data.symbols.SYMBOL_POLYGONS`, and
+    :data:`~fuse_augmentations.data.letters.LETTER_POLYGONS`, whose tables share this function's
     unit convention (center of mass at the origin, larger extent equal to ``1``) and therefore
     need only a scale by ``size``.
 
@@ -92,9 +94,9 @@ def _base_polygon(shape: str, size: float) -> NDArray[np.float64]:
             geometric names (``"square"``, ``"rectangle"``, ``"triangle"``, ``"circle"``), one of
             the twelve animal names (``"duck"``, ``"elephant"``, ``"giraffe"``, ``"fish"``,
             ``"rabbit"``, ``"camel"``, ``"eagle"``, ``"penguin"``, ``"whale"``, ``"kangaroo"``,
-            ``"flamingo"``, ``"crocodile"``), or one of the seven symbol names
+            ``"flamingo"``, ``"crocodile"``), one of the seven symbol names
             (``"kite"``, ``"trapezoid"``, ``"house"``, ``"arrow"``, ``"cross"``, ``"teardrop"``,
-            ``"anchor"``).
+            ``"anchor"``), or one of the twenty-six letter values (``"a"``-``"z"``).
         size: Bounding size (side / diameter / larger extent) in pixels.
 
     Returns:
@@ -133,7 +135,10 @@ def _base_polygon(shape: str, size: float) -> NDArray[np.float64]:
     symbol = SYMBOL_POLYGONS.get(shape)
     if symbol is not None:
         return symbol * size
-    known = ", ".join((*GEOMETRIC_SHAPES, *ANIMAL_POLYGONS, *SYMBOL_POLYGONS))
+    letter = LETTER_POLYGONS.get(shape)
+    if letter is not None:
+        return letter * size
+    known = ", ".join((*GEOMETRIC_SHAPES, *ANIMAL_POLYGONS, *SYMBOL_POLYGONS, *LETTER_POLYGONS))
     raise ValueError(f"unknown shape {shape!r}; expected one of {known}")
 
 

@@ -15,8 +15,14 @@ from fuse_augmentations.data.config import (
     class_names,
 )
 from fuse_augmentations.data.generator import SyntheticGenerator, _boundary_overlap, _visible_keypoints
-from fuse_augmentations.data.geometry import GeomShape, bbox_iou
+from fuse_augmentations.data.geometry import (
+    GeomShape,
+    bbox_iou,
+)
+from fuse_augmentations.data.letters import LetterShape
 from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_NAMES, SymbolShape
+
+from ._obb_pose import rebuild_error
 
 
 def _generate(**kwargs: object) -> tuple:  # type: ignore[type-arg]
@@ -116,11 +122,11 @@ def test_generate_same_seed_is_deterministic() -> None:
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        (ClassMode.SHAPE, {s.value for s in (*GeomShape, *AnimalShape, *SymbolShape)}),
+        (ClassMode.SHAPE, {s.value for s in (*GeomShape, *AnimalShape, *SymbolShape, *LetterShape)}),
         (ClassMode.COLOR, {c.value for c in Color}),
         (
             ClassMode.SHAPE_COLOR,
-            {f"{c.value}_{s.value}" for s in (*GeomShape, *AnimalShape, *SymbolShape) for c in Color},
+            {f"{c.value}_{s.value}" for s in (*GeomShape, *AnimalShape, *SymbolShape, *LetterShape) for c in Color},
         ),
     ],
 )
@@ -129,9 +135,13 @@ def test_class_names_belong_to_mode(mode: ClassMode, expected: set[str]) -> None
     sample = SyntheticGenerator(config).sample(np.random.default_rng(0))
     vocab = set(class_names(mode))
     assert vocab == expected
+    # Indexed through the run's *own* narrowed vocabulary, the one every writer declares -- not
+    # `class_names(mode)` above, which spans the full 49 shapes and would agree here only because
+    # the default geometric shapes happen to lead it (the coincidence that hid a real id mismatch).
+    run_names = class_names(mode, shapes=config.shapes)
     for ann in sample.annotations:
         assert ann.class_name in vocab
-        assert class_names(mode)[ann.class_id] == ann.class_name
+        assert run_names[ann.class_id] == ann.class_name
 
 
 def test_sample_reaches_requested_count_under_pressure() -> None:
@@ -408,6 +418,52 @@ def test_asymmetry_jitter_never_skews_a_circle() -> None:
         center_y = (min(y for _, y in poly.tolist()) + max(y for _, y in poly.tolist())) / 2.0
         radii = np.hypot(poly[:, 0] - center_x, poly[:, 1] - center_y)
         assert radii.max() - radii.min() == pytest.approx(0.0, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    "shapes",
+    [
+        pytest.param(DEFAULT_SHAPES, id="geometric"),
+        pytest.param(tuple(AnimalShape)[:6], id="animals"),
+        pytest.param(tuple(SymbolShape), id="symbols"),
+        pytest.param(tuple(LetterShape)[:12], id="letters"),
+    ],
+)
+def test_exported_obb_replaces_its_own_shape(shapes: tuple) -> None:  # type: ignore[type-arg]
+    """Every exported `obb_corners` turns its shape's reference outline back onto the object it annotates.
+
+    An OBB annotation is only worth anything if a consumer can read a pose out of it, so this is that read performed
+    literally: take the upright reference outline for the annotation's own class, turn and scale and place it by what
+    the four exported corners say, and require it to land on the exported polygon. Unlike the geometry-level version in
+    `test_geometry.py`, this runs on what the generator actually hands out — so it also covers the placement path that
+    produced both fields, and would catch a polygon and a box that were derived from different transforms of the shape.
+    The guarantee is for unskewed shapes: `asymmetry_jitter` stays at its `0.0` default here on purpose, since a skewed
+    instance is no longer a rigid copy of its reference and could not be rebuilt from one.
+
+    """
+    config = SyntheticConfig(
+        img_size=256,
+        min_objects=3,
+        max_objects=5,
+        min_size_ratio=0.15,
+        max_size_ratio=0.3,
+        rotate=True,
+        class_mode=ClassMode.SHAPE,
+        shapes=shapes,
+    )
+    # Enough images that every shape in the roster is drawn at several unrelated angles: a tie-break that only flips
+    # over part of the circle would otherwise slip through a handful of poses untouched.
+    annotations = [ann for sample in SyntheticGenerator(config).generate(24, seed=7) for ann in sample.annotations]
+    assert annotations, "the placement budget produced nothing to check"
+    worst = max(
+        rebuild_error(
+            ann.class_name,
+            np.array(ann.obb_corners).reshape(-1, 2),
+            np.array(ann.polygon).reshape(-1, 2),
+        )
+        for ann in annotations
+    )
+    assert worst < 1e-6, f"worst rebuild is {worst:.3g}px off its own annotation"
 
 
 def test_asymmetry_jitter_keeps_base_landmarks_on_the_skewed_symbol() -> None:

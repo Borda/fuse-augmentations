@@ -44,6 +44,7 @@ from fuse_augmentations.data.geometry import (
     polygon_to_obb,
     shape_polygon,
 )
+from fuse_augmentations.data.letters import LetterShape, letter_keypoints
 from fuse_augmentations.data.sample import Annotation, Sample
 from fuse_augmentations.data.symbols import SymbolShape, symbol_keypoints
 
@@ -53,6 +54,9 @@ if TYPE_CHECKING:
     from fuse_augmentations.data.config import SyntheticConfig
 
 _BBox = tuple[float, float, float, float]
+#: One sampled placement's full result: shape, color, the polygon bbox/OBB are measured from, and
+#: the landmark table (``None`` off the keypoints task or for a shape with no schema).
+_Placement = tuple[Shape, Color, "NDArray[np.float64]", "NDArray[np.float64] | None"]
 
 #: COCO visibility flags emitted for a landmark: ``2`` is "labeled and visible", ``0`` is
 #: "not labeled". The intermediate ``1`` ("labeled but not visible") never occurs here — the
@@ -128,13 +132,39 @@ class SyntheticGenerator:
     """
 
     def __init__(self, config: SyntheticConfig) -> None:
-        """Store config and precompute the class-name vocabulary."""
-        self.config = config
-        self.class_names = class_names(config.class_mode)
+        """Store config and precompute the class-name vocabulary.
 
-    def _attempt_placement(
-        self, rng: np.random.Generator, kept: list[_BBox]
-    ) -> tuple[Shape, Color, NDArray[np.float64], NDArray[np.float64] | None] | None:
+        The vocabulary is narrowed to ``config.shapes``, the same list every writer declares as its
+        ``categories``/``names`` block, so an annotation's ``class_id`` always resolves against the
+        vocabulary written beside it (see :func:`~fuse_augmentations.data.config.class_names`).
+
+        """
+        self.config = config
+        self.class_names = class_names(config.class_mode, shapes=config.shapes)
+
+    @staticmethod
+    def _place_keypoints(
+        shape: Shape, center: tuple[float, float], size: float, angle: float, skew: float
+    ) -> NDArray[np.float64] | None:
+        """Place one shape's landmark table, or return ``None`` for a family with no keypoints.
+
+        Only :class:`~fuse_augmentations.data.animals.AnimalShape`,
+        :class:`~fuse_augmentations.data.symbols.SymbolShape`, and
+        :class:`~fuse_augmentations.data.letters.LetterShape` have a landmark table; the config
+        validator already rejects any other shape under
+        :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS`, so this narrowing can never silently
+        drop a labeled object.
+
+        """
+        if isinstance(shape, AnimalShape):
+            return animal_keypoints(shape, center, size, angle, skew)
+        if isinstance(shape, SymbolShape):
+            return symbol_keypoints(shape, center, size, angle, skew)
+        if isinstance(shape, LetterShape):
+            return letter_keypoints(shape, center, size, angle, skew)
+        return None
+
+    def _attempt_placement(self, rng: np.random.Generator, kept: list[_BBox]) -> _Placement | None:
         """Draw one candidate shape; return it if in-bounds and non-overlapping, else ``None``.
 
         Exactly one candidate is sampled per call (fixed RNG draw order: shape, color, size, centre x, centre y, angle
@@ -145,8 +175,9 @@ class SyntheticGenerator:
         :class:`Color` vocabularies, so widening either enum never changes what an existing seeded configuration
         produces.
 
-        Landmarks (last tuple element, ``None`` off the keypoints task) are a pure function of the placement that was
-        just sampled, so computing them consumes no further randomness and leaves every seeded stream unchanged.
+        Landmarks (the last tuple element — ``None`` off the keypoints task or for a shape with no schema) are a pure
+        function of the placement that was just sampled, so computing them consumes no further randomness and leaves
+        every seeded stream unchanged.
 
         """
         cfg = self.config
@@ -167,15 +198,7 @@ class SyntheticGenerator:
             return None
         if any(bbox_iou(bbox, other) > cfg.overlap_iou for other in kept):
             return None
-        # only AnimalShape/SymbolShape have a landmark table; the config validator already rejects
-        # any other shape under Task.KEYPOINTS, so this narrowing can never silently drop a labeled
-        # object
-        keypoints = None
-        if cfg.task is Task.KEYPOINTS:
-            if isinstance(shape, AnimalShape):
-                keypoints = animal_keypoints(shape, center, size_px, angle, skew)
-            elif isinstance(shape, SymbolShape):
-                keypoints = symbol_keypoints(shape, center, size_px, angle, skew)
+        keypoints = self._place_keypoints(shape, center, size_px, angle, skew) if cfg.task is Task.KEYPOINTS else None
         return shape, color, poly, keypoints
 
     def sample(self, rng: np.random.Generator) -> Sample:
@@ -225,7 +248,7 @@ class SyntheticGenerator:
             draw.polygon([(float(x), float(y)) for x, y in poly], fill=color.rgb)
             bbox = polygon_to_bbox_xyxy(poly)
             kept.append(bbox)
-            class_id = class_id_of(shape, color, cfg.class_mode)
+            class_id = class_id_of(shape, color, cfg.class_mode, shapes=cfg.shapes)
             annotations.append(
                 Annotation(
                     class_id=class_id,

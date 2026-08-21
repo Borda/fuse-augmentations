@@ -82,6 +82,29 @@ def _clamp_flat(flat: list[float], img_w: float, img_h: float) -> list[float]:
     return [_clamp(v, 0.0, img_w) if i % 2 == 0 else _clamp(v, 0.0, img_h) for i, v in enumerate(flat)]
 
 
+def _category_shape_value(name: str, schema: KeypointSchema) -> str | None:
+    """Return the :class:`~fuse_augmentations.data.config.Shape` value a category name draws from.
+
+    ``class_names`` (see :func:`~fuse_augmentations.data.config.class_names`) names a category
+    either as a bare shape value (``ClassMode.SHAPE``, e.g. ``"duck"``), a color-prefixed one
+    (``ClassMode.SHAPE_COLOR``, e.g. ``"red_duck"``), or a bare color (``ClassMode.COLOR``, e.g.
+    ``"red"``) that names no specific shape at all.
+
+    Args:
+        name: A ``class_names`` category name.
+        schema: The active run's keypoint schema.
+
+    Returns:
+        The matching entry of ``schema.shape_values``, or ``None`` when ``name`` is a bare color
+        that names no specific shape (the caller falls back to ``schema.skeleton`` in that case).
+
+    """
+    if name in schema.shape_values:
+        return name
+    _, _, shape_part = name.partition("_")
+    return shape_part if shape_part in schema.shape_values else None
+
+
 def _keypoint_triples(
     ann: Annotation, img_w: float, img_h: float, schema: KeypointSchema
 ) -> list[tuple[float, float, int]]:
@@ -200,7 +223,11 @@ class CocoWriter(DatasetWriter):
         family when one is active (an animal category in a symbol run, or vice versa). Decorating
         those with a schema they can never produce a matching annotation for would misdescribe the
         dataset to any COCO consumer, so only categories :func:`_keypoint_eligible_names` returns for
-        ``self.keypoint_schema`` are decorated.
+        ``self.keypoint_schema`` are decorated. A category's ``skeleton`` prefers
+        ``self.keypoint_schema.skeleton_for`` — the letter family's per-letter stroke edges, when
+        the category names one specific shape (see :func:`_category_shape_value`) — falling back to
+        the family-wide ``skeleton`` for a bare-color category or a family every member shares one
+        topology with (animals, symbols).
 
         """
         categories: list[dict[str, Any]] = [
@@ -212,8 +239,14 @@ class CocoWriter(DatasetWriter):
                 if category["name"] not in eligible:
                     continue
                 category["keypoints"] = list(self.keypoint_schema.names)
+                shape_value = _category_shape_value(category["name"], self.keypoint_schema)
+                skeleton = (
+                    self.keypoint_schema.skeleton
+                    if shape_value is None
+                    else self.keypoint_schema.skeleton_for(shape_value)
+                )
                 # COCO skeleton edges are 1-based indices into the category's own keypoint list.
-                category["skeleton"] = [[i + 1, j + 1] for i, j in self.keypoint_schema.skeleton]
+                category["skeleton"] = [[i + 1, j + 1] for i, j in skeleton]
         return categories
 
     def _coco_doc(self, images: list[dict[str, Any]], annotations: list[dict[str, Any]]) -> dict[str, Any]:

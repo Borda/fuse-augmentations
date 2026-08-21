@@ -20,22 +20,23 @@ from functools import cache
 from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_SCHEMA, AnimalShape
 from fuse_augmentations.data.geometry import GeomShape
 from fuse_augmentations.data.landmarks import KeypointSchema
+from fuse_augmentations.data.letters import LETTER_KEYPOINT_SCHEMA, LetterShape
 from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_SCHEMA, SymbolShape
 
 _SPLIT_SUM_TOL = 1e-6
 
 
-#: The drawable-shape vocabulary: the analytic geometric shapes, the animal silhouettes, and the
-#: analytic symbols, kept as a union rather than one blended enum so each family owns its own
-#: definition (and so a family-only API such as :func:`~fuse_augmentations.data.animals.animal_keypoints`
-#: can say so in its signature). It is a real runtime union: ``isinstance(value, Shape)`` accepts any
-#: member type and still rejects a bare ``"duck"`` string, which is what
-#: :meth:`SyntheticConfig._validate_vocabulary` relies on. It is not iterable — build a full
-#: vocabulary as ``[*GeomShape, *AnimalShape, *SymbolShape]``.
-Shape = GeomShape | AnimalShape | SymbolShape
+#: The drawable-shape vocabulary: the analytic geometric shapes, the animal silhouettes, the
+#: analytic symbols, and the capital-letter stroke figures, kept as a union rather than one blended
+#: enum so each family owns its own definition (and so a family-only API such as
+#: :func:`~fuse_augmentations.data.animals.animal_keypoints` can say so in its signature). It is a
+#: real runtime union: ``isinstance(value, Shape)`` accepts any member type and still rejects a bare
+#: ``"duck"`` string, which is what :meth:`SyntheticConfig._validate_vocabulary` relies on. It is
+#: not iterable — build a full vocabulary as ``[*GeomShape, *AnimalShape, *SymbolShape, *LetterShape]``.
+Shape = GeomShape | AnimalShape | SymbolShape | LetterShape
 
 #: Shapes drawn when :attr:`SyntheticConfig.shapes` is not overridden — the four geometric shapes,
-#: i.e. the vocabulary that predates the animal silhouettes and the symbols.
+#: i.e. the vocabulary that predates the animal silhouettes, the symbols, and the letters.
 DEFAULT_SHAPES: tuple[GeomShape, ...] = tuple(GeomShape)
 
 #: Keypoint schema per shape-family type, keyed by the concrete :class:`Shape` member class. Every
@@ -46,6 +47,7 @@ DEFAULT_SHAPES: tuple[GeomShape, ...] = tuple(GeomShape)
 _KEYPOINT_SCHEMAS: dict[type, KeypointSchema] = {
     AnimalShape: ANIMAL_KEYPOINT_SCHEMA,
     SymbolShape: SYMBOL_KEYPOINT_SCHEMA,
+    LetterShape: LETTER_KEYPOINT_SCHEMA,
 }
 
 
@@ -190,20 +192,23 @@ class ClassMode(str, Enum):
 def class_names(class_mode: ClassMode, shapes: Iterable[Shape] | None = None) -> list[str]:
     """Return the ordered class-name vocabulary for a class mode.
 
-    By default (``shapes=None``) the vocabulary always spans the full range for the selected
-    ``class_mode``, independently of :attr:`SyntheticConfig.shapes`. ``ClassMode.SHAPE`` spans the
-    full **23**-member :class:`Shape` enum; ``ClassMode.SHAPE_COLOR`` spans all 23 shapes times the 3
-    colors (69 combined classes); and ``ClassMode.COLOR`` spans only the 3 colors, independently of
-    the shape vocabulary entirely. That keeps a class id meaning the same thing across every
-    configuration — a dataset restricted to ``(AnimalShape.GIRAFFE,)`` still uses giraffe's ``SHAPE``
-    id from this list rather than renumbering it to ``0`` — at the cost of declaring classes that a
-    restricted run never draws. This is what :func:`class_id_of` relies on, so it never passes
-    ``shapes``.
+    By default (``shapes=None``) the vocabulary spans the full range for the selected
+    ``class_mode``: ``ClassMode.SHAPE`` spans the full **49**-member :class:`Shape` enum;
+    ``ClassMode.SHAPE_COLOR`` spans all 49 shapes times the 3 colors (147 combined classes); and
+    ``ClassMode.COLOR`` spans only the 3 colors, independently of the shape vocabulary entirely.
 
     Pass ``shapes`` to narrow ``ClassMode.SHAPE``/``ClassMode.SHAPE_COLOR`` to a specific shape
-    family instead — e.g. a golden-fixture assertion that wants a stable 4-category list for
-    :data:`DEFAULT_SHAPES` regardless of how many animal or symbol shapes the full vocabulary later
-    grows to. ``ClassMode.COLOR`` ignores ``shapes`` since it never depends on the shape vocabulary.
+    family instead — a dataset restricted to ``(AnimalShape.GIRAFFE,)`` then declares one category
+    and numbers it ``0`` rather than carrying 48 categories it never draws. ``ClassMode.COLOR``
+    ignores ``shapes`` since it never depends on the shape vocabulary.
+
+    **The ids follow the narrowing.** A generated dataset's ids are local to its own vocabulary:
+    :func:`class_id_of` takes the same ``shapes`` argument and indexes into the same list, and
+    :class:`~fuse_augmentations.data.generator.SyntheticGenerator` passes its config's ``shapes`` to
+    both. That is what keeps a written dataset internally consistent — every annotation's id
+    resolves against the very ``categories``/``names`` block written beside it — at the cost of an
+    id meaning different things in a narrowed run and a full-vocabulary one. Compare two runs by
+    class *name*, never by raw id.
 
     Args:
         class_mode: The selected :class:`ClassMode`.
@@ -211,7 +216,7 @@ def class_names(class_mode: ClassMode, shapes: Iterable[Shape] | None = None) ->
             keeps the full-vocabulary behavior described above.
 
     Returns:
-        Class names in a stable order; list index is the class id when ``shapes`` is ``None``.
+        Class names in a stable order; list index is the class id for the same ``shapes``.
 
     Examples:
         ```pycon
@@ -222,8 +227,12 @@ def class_names(class_mode: ClassMode, shapes: Iterable[Shape] | None = None) ->
         ['duck', 'elephant', 'giraffe', 'fish']
         >>> class_names(ClassMode.SHAPE)[8:16]
         ['rabbit', 'camel', 'eagle', 'penguin', 'whale', 'kangaroo', 'flamingo', 'crocodile']
-        >>> class_names(ClassMode.SHAPE)[16:]
+        >>> class_names(ClassMode.SHAPE)[16:23]
         ['kite', 'trapezoid', 'house', 'arrow', 'cross', 'teardrop', 'anchor']
+        >>> class_names(ClassMode.SHAPE)[23:27]
+        ['a', 'b', 'c', 'd']
+        >>> len(class_names(ClassMode.SHAPE))
+        49
         >>> class_names(ClassMode.COLOR)
         ['red', 'green', 'blue']
         >>> class_names(ClassMode.SHAPE_COLOR)[:2]
@@ -234,7 +243,10 @@ def class_names(class_mode: ClassMode, shapes: Iterable[Shape] | None = None) ->
         ```
 
     """
-    universe = (*GeomShape, *AnimalShape, *SymbolShape) if shapes is None else tuple(shapes)
+    # ``ClassMode`` is a str-Enum, so a bare ``"shape"`` compares and hashes equal to the member yet
+    # fails every ``is`` test below -- silently selecting the wrong naming rather than raising.
+    class_mode = ClassMode(class_mode)
+    universe = (*GeomShape, *AnimalShape, *SymbolShape, *LetterShape) if shapes is None else tuple(shapes)
     if class_mode is ClassMode.SHAPE:
         return [shape.value for shape in universe]
     if class_mode is ClassMode.COLOR:
@@ -242,42 +254,62 @@ def class_names(class_mode: ClassMode, shapes: Iterable[Shape] | None = None) ->
     return [f"{color.value}_{shape.value}" for shape in universe for color in Color]
 
 
-def class_id_of(shape: Shape, color: Color, class_mode: ClassMode) -> int:
+def class_id_of(shape: Shape, color: Color, class_mode: ClassMode, shapes: tuple[Shape, ...] | None = None) -> int:
     """Return the class id for a (shape, color) pair under a class mode.
+
+    ``shapes`` selects which vocabulary the id indexes into, exactly as it does for
+    :func:`class_names` — pass the run's own :attr:`SyntheticConfig.shapes` to get an id local to
+    that run (what every writer's ``categories``/``names`` block declares), or leave it ``None`` for
+    an id into the full 49-shape vocabulary.
 
     Args:
         shape: The :class:`Shape` member.
         color: The :class:`Color` member.
         class_mode: The selected :class:`ClassMode`.
+        shapes: The narrowed shape vocabulary to index into, in order — must be a tuple, so the
+            per-vocabulary id map can be cached. ``None`` (the default) uses the full vocabulary.
 
     Returns:
-        Zero-based class id indexing into :func:`class_names`.
+        Zero-based class id indexing into ``class_names(class_mode, shapes)``.
+
+    Raises:
+        KeyError: If ``shape`` is not in ``shapes`` (under a shape-naming mode).
 
     Examples:
         ```pycon
         >>> from fuse_augmentations.data.config import ClassMode, Color, class_id_of
         >>> from fuse_augmentations.data.geometry import GeomShape
+        >>> from fuse_augmentations.data.symbols import SymbolShape
         >>> class_id_of(GeomShape.TRIANGLE, Color.RED, ClassMode.SHAPE)
         2
         >>> class_id_of(GeomShape.TRIANGLE, Color.RED, ClassMode.COLOR)
+        0
+        >>> class_id_of(SymbolShape.KITE, Color.RED, ClassMode.SHAPE)
+        16
+        >>> class_id_of(SymbolShape.KITE, Color.RED, ClassMode.SHAPE, shapes=(SymbolShape.KITE,))
         0
 
         ```
 
     """
-    return _class_ids(class_mode)[_class_key(shape, color, class_mode)]
+    # Coerced before it reaches the cache: a bare ``"shape"`` hashes equal to ``ClassMode.SHAPE``, so
+    # an uncoerced call would hit whichever of the two populated ``_class_ids`` first and then look
+    # that map up with the *other* naming's key -- an order-dependent `KeyError`, or worse, silence.
+    class_mode = ClassMode(class_mode)
+    return _class_ids(class_mode, shapes)[_class_key(shape, color, class_mode)]
 
 
 @cache
-def _class_ids(class_mode: ClassMode) -> dict[str, int]:
-    """Return the cached ``class name -> class id`` map for a class mode.
+def _class_ids(class_mode: ClassMode, shapes: tuple[Shape, ...] | None) -> dict[str, int]:
+    """Return the cached ``class name -> class id`` map for a class mode and shape vocabulary.
 
     :func:`class_id_of` runs once per placed object, so rebuilding the vocabulary and scanning it linearly there costs a
-    fresh 48-entry list plus a lookup per object; the map is built once per mode instead. Module-private and never
-    handed out — callers must not mutate it.
+    fresh 49-entry list plus a lookup per object; the map is built once per ``(mode, shapes)`` pair instead — hence the
+    tuple-typed ``shapes``, which a :class:`SyntheticConfig` already carries. Module-private and never handed out —
+    callers must not mutate it.
 
     """
-    return {name: index for index, name in enumerate(class_names(class_mode))}
+    return {name: index for index, name in enumerate(class_names(class_mode, shapes))}
 
 
 def _class_key(shape: Shape, color: Color, class_mode: ClassMode) -> str:
@@ -364,13 +396,16 @@ class SyntheticConfig:
         shapes: Shapes the generator may draw, sampled uniformly. Defaults to
             :data:`DEFAULT_SHAPES`; pass e.g. ``(AnimalShape.DUCK, AnimalShape.GIRAFFE)`` to draw
             animal silhouettes instead, ``tuple(AnimalShape)`` for every animal, ``tuple(SymbolShape)``
-            for every symbol, or ``(*GeomShape, *AnimalShape, *SymbolShape)`` for the full mixed
-            vocabulary. Restricting this does **not** renumber classes: class ids always index the
-            full :class:`Shape` vocabulary.
+            for every symbol, ``tuple(LetterShape)`` for every letter, or
+            ``(*GeomShape, *AnimalShape, *SymbolShape, *LetterShape)`` for the full mixed vocabulary.
+            Restricting this **does** renumber classes: the vocabulary a run declares and the ids
+            it stamps both narrow to exactly these shapes, in this order (see :func:`class_names`),
+            so a symbols-only run numbers its symbols from ``0`` rather than from their offset into
+            the full :class:`Shape` enum. Compare runs by class name, not by raw id.
         colors: Fill colors the generator may draw, sampled uniformly. Defaults to
             :data:`DEFAULT_COLORS` (all three); pass e.g. ``(Color.RED,)`` to draw only red
-            objects. Restricting this does **not** renumber classes either, for the same reason
-            as ``shapes``.
+            objects. Restricting this does **not** renumber classes: no naming mode narrows its
+            color axis, so the three colors keep their ids in every run.
         task: Annotation task the generated samples target. Only :attr:`Task.KEYPOINTS`
             changes what the generator computes (it adds the landmark table); the other
             tasks all read the same polygon/box fields, so they differ at write time only.
@@ -384,8 +419,9 @@ class SyntheticConfig:
             :class:`Task` member, or a :attr:`Task.KEYPOINTS` task combined with a ``shapes`` tuple
             that does not belong entirely to one keypoint-bearing family (see
             :func:`keypoint_schema_for`) — a :class:`~fuse_augmentations.data.geometry.GeomShape`
-            mixed in, or :class:`~fuse_augmentations.data.animals.AnimalShape` and
-            :class:`~fuse_augmentations.data.symbols.SymbolShape` mixed together, since only one
+            mixed in, or two of :class:`~fuse_augmentations.data.animals.AnimalShape`,
+            :class:`~fuse_augmentations.data.symbols.SymbolShape`, and
+            :class:`~fuse_augmentations.data.letters.LetterShape` mixed together, since only one
             landmark schema can describe a dataset.
 
     Examples:
@@ -422,7 +458,14 @@ class SyntheticConfig:
     task: Task = Task.DETECTION
 
     def __post_init__(self) -> None:
-        """Validate size, object-count, ratio, and placement-knob ranges, then the vocabulary."""
+        """Normalize ``class_mode``, then validate the numeric knobs and the vocabulary."""
+        # ``SyntheticIterableDataset`` forwards ``**config_kwargs`` verbatim, so a documented
+        # ``class_mode="shape"`` arrives here as a bare string. ``ClassMode`` is a str-Enum, so that
+        # string compares *and hashes* equal to the member while failing every ``is`` identity test
+        # the module uses to branch on it -- the silent half of the trap `_validate_vocabulary`
+        # rejects outright for `shapes`/`colors`/`task`. Rejecting is not an option here (the string
+        # form is public API), so coerce once, at the only boundary that sees the raw value.
+        object.__setattr__(self, "class_mode", ClassMode(self.class_mode))
         if self.img_size <= 0:
             raise ValueError(f"img_size must be positive, got {self.img_size}")
         if not 1 <= self.min_objects <= self.max_objects:
@@ -479,7 +522,7 @@ class SyntheticConfig:
             # below.
             unsupported = [shape.value for shape in self.shapes if type(shape) not in _KEYPOINT_SCHEMAS]
             if unsupported:
-                supported = ", ".join(shape.value for shape in (*AnimalShape, *SymbolShape))
+                supported = ", ".join(shape.value for shape in (*AnimalShape, *SymbolShape, *LetterShape))
                 raise ValueError(
                     f"task {Task.KEYPOINTS.value!r} needs a keypoint table for every drawable shape, but "
                     f"{unsupported} have none; restrict shapes to a keypoint-bearing family: {supported}"

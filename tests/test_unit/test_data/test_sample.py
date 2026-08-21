@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES
+from fuse_augmentations.data.letters import LETTER_KEYPOINT_NAMES
 from fuse_augmentations.data.sample import Annotation
 from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_NAMES
 
@@ -60,6 +61,21 @@ def test_accepts_a_symbol_length_table() -> None:
     assert len(ann.keypoints or ()) == len(SYMBOL_KEYPOINT_NAMES)
 
 
+def test_accepts_a_letter_length_table() -> None:
+    """A 15-triple table (the letter schema's width) is stored verbatim, same as the other two widths.
+
+    A table's length alone identifies which registered keypoint family built it, so all three registered widths must be
+    accepted without a separate "which family" argument.
+
+    """
+    table = tuple((1.0, 2.0, 2) for _ in LETTER_KEYPOINT_NAMES)
+
+    ann = _annotation(table)
+
+    assert ann.keypoints == table
+    assert len(ann.keypoints or ()) == len(LETTER_KEYPOINT_NAMES)
+
+
 def test_accepts_no_table_at_all() -> None:
     """`keypoints=None` stays the documented "not a keypoints task" state and is not validated.
 
@@ -75,8 +91,10 @@ def test_accepts_no_table_at_all() -> None:
     [
         pytest.param(0, id="empty"),
         pytest.param(1, id="single-triple"),
-        pytest.param(len(ANIMAL_KEYPOINT_NAMES) - 1, id="one-short"),
-        pytest.param(len(ANIMAL_KEYPOINT_NAMES) + 1, id="one-too-many"),
+        # `SYMBOL_KEYPOINT_NAMES` (7), not `ANIMAL_KEYPOINT_NAMES` (16): 16 - 1 == 15, which now
+        # collides with the registered letter schema's own width, so it would wrongly be accepted.
+        pytest.param(len(SYMBOL_KEYPOINT_NAMES) - 1, id="one-short"),
+        pytest.param(len(SYMBOL_KEYPOINT_NAMES) + 1, id="one-too-many"),
     ],
 )
 def test_rejects_a_table_of_the_wrong_length(count: int) -> None:

@@ -17,6 +17,7 @@ from fuse_augmentations.data.config import (
     class_names,
 )
 from fuse_augmentations.data.geometry import GeomShape
+from fuse_augmentations.data.letters import LetterShape
 from fuse_augmentations.data.symbols import SymbolShape
 
 
@@ -91,7 +92,7 @@ def test_synthetic_config_accepts_asymmetry_jitter_within_range(value: float) ->
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        (ClassMode.SHAPE, [s.value for s in (*GeomShape, *AnimalShape, *SymbolShape)]),
+        (ClassMode.SHAPE, [s.value for s in (*GeomShape, *AnimalShape, *SymbolShape, *LetterShape)]),
         (ClassMode.COLOR, [c.value for c in Color]),
     ],
 )
@@ -101,7 +102,7 @@ def test_class_names(mode: ClassMode, expected: list[str]) -> None:
 
 
 def test_shape_class_vocabulary_is_pinned_in_order() -> None:
-    """The 23 shape class names, pinned as a literal in their exact class-id order.
+    """The 49 shape class names, pinned as a literal in their exact class-id order.
 
     A class id is this list's index, and seeded runs are documented as byte-identical across releases, so reordering or
     renaming a member silently relabels every previously exported dataset. Derived assertions cannot catch that — only a
@@ -132,14 +133,40 @@ def test_shape_class_vocabulary_is_pinned_in_order() -> None:
         "cross",
         "teardrop",
         "anchor",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "i",
+        "j",
+        "k",
+        "l",
+        "m",
+        "n",
+        "o",
+        "p",
+        "q",
+        "r",
+        "s",
+        "t",
+        "u",
+        "v",
+        "w",
+        "x",
+        "y",
+        "z",
     ]
 
 
 def test_class_names_shape_color_product_size() -> None:
     """Shape-color class count is product of shape and color counts."""
-    assert len(class_names(ClassMode.SHAPE_COLOR)) == (len(GeomShape) + len(AnimalShape) + len(SymbolShape)) * len(
-        Color
-    )
+    assert len(class_names(ClassMode.SHAPE_COLOR)) == (
+        len(GeomShape) + len(AnimalShape) + len(SymbolShape) + len(LetterShape)
+    ) * len(Color)
 
 
 def test_class_names_shape_color_pins_shape_major_color_minor_order() -> None:
@@ -198,19 +225,59 @@ def test_class_names_shapes_param_ignored_under_color_mode() -> None:
 
 
 def test_class_names_shapes_param_defaults_to_full_vocabulary() -> None:
-    """Omitting `shapes` still returns the full 24-member vocabulary, unchanged from before the parameter existed.
+    """Omitting `shapes` still returns the full 49-member vocabulary, unchanged from before the parameter existed.
 
-    The parameter is opt-in: existing callers (the generator, the writers, `_class_ids`) call `class_names` with no
-    `shapes` argument and must keep seeing the full span.
+    The parameter is opt-in on both `class_names` and `class_id_of`: a caller that names no vocabulary keeps seeing the
+    full span and the ids that index it, even though `generate_dataset` now always narrows both to the run's `shapes`.
 
     """
     assert class_names(ClassMode.SHAPE) == class_names(ClassMode.SHAPE, shapes=None)
 
 
+def test_class_id_of_narrows_with_the_same_shapes_class_names_does() -> None:
+    """`class_id_of(..., shapes=)` indexes the vocabulary `class_names(..., shapes=)` returns.
+
+    The two are one contract: a written dataset's `category_id` must resolve against the `categories` block beside it.
+    Checked on a symbol, whose global id (16) differs from its narrowed one (0) — a geometric shape cannot show the
+    difference, since the four geometric shapes lead the full vocabulary.
+
+    """
+    narrowed = (SymbolShape.KITE, SymbolShape.HOUSE)
+
+    assert class_id_of(SymbolShape.HOUSE, Color.RED, ClassMode.SHAPE) == class_names(ClassMode.SHAPE).index("house")
+    assert class_id_of(SymbolShape.HOUSE, Color.RED, ClassMode.SHAPE, shapes=narrowed) == 1
+
+
+@pytest.mark.parametrize("mode", list(ClassMode))
+def test_a_bare_string_class_mode_selects_the_same_vocabulary_as_its_member(mode: ClassMode) -> None:
+    """A plain `"shape"` behaves exactly like `ClassMode.SHAPE` in both vocabulary functions.
+
+    `ClassMode` is a str-Enum, so a bare string compares *and hashes* equal to its member while failing the `is` tests
+    both functions branch on — and `class_id_of`'s per-vocabulary cache is keyed on that equal hash. Left uncoerced,
+    whichever spelling ran first won the cache entry and the other silently read the wrong naming out of it, which
+    surfaced as an order-dependent `KeyError` from a `SyntheticIterableDataset(class_mode="shape")` stream.
+
+    """
+    assert class_names(mode.value) == class_names(mode)
+    assert class_id_of(GeomShape.CIRCLE, Color.GREEN, mode.value) == class_id_of(GeomShape.CIRCLE, Color.GREEN, mode)
+
+
+def test_config_normalizes_a_bare_string_class_mode_to_the_member() -> None:
+    """`SyntheticConfig(class_mode="shape")` stores the `ClassMode` member, not the raw string.
+
+    `SyntheticIterableDataset` forwards `**config_kwargs` verbatim, so the string spelling is public API and reaches the
+    config unconverted. Coercing once here is what lets every downstream `is ClassMode.X` branch stay sound.
+
+    """
+    config = SyntheticConfig(class_mode="shape")
+
+    assert config.class_mode is ClassMode.SHAPE
+
+
 def test_class_id_round_trips() -> None:
     """Class ID round-trips work for all modes, shapes, and colors."""
     for mode in ClassMode:
-        for shape in (*GeomShape, *AnimalShape, *SymbolShape):
+        for shape in (*GeomShape, *AnimalShape, *SymbolShape, *LetterShape):
             for color in Color:
                 idx = class_id_of(shape, color, mode)
                 assert 0 <= idx < len(class_names(mode))

@@ -50,11 +50,11 @@ Pass a real path instead of the temporary directory to keep the dataset. The sam
 
 ## Shapes, colors, and classes
 
-Shapes are drawn on a gray canvas at random positions, sizes, and rotations, in three colors (`red`, `green`, `blue`). The shape vocabulary has three families: four **geometric** shapes (`square`, `rectangle`, `triangle`, `circle`), twelve **animal** silhouettes (`duck`, `elephant`, `giraffe`, `fish`, `rabbit`, `camel`, `eagle`, `penguin`, `whale`, `kangaroo`, `flamingo`, `crocodile` — see [Animal shapes](#animal-shapes)), and seven **symbol** shapes (`kite`, `trapezoid`, `house`, `arrow`, `cross`, `teardrop`, `anchor` — see [Symbol shapes](#symbol-shapes)). Only the geometric four are drawn unless you opt in.
+Shapes are drawn on a gray canvas at random positions, sizes, and rotations, in three colors (`red`, `green`, `blue`). The shape vocabulary has four families: four **geometric** shapes (`square`, `rectangle`, `triangle`, `circle`), twelve **animal** silhouettes (`duck`, `elephant`, `giraffe`, `fish`, `rabbit`, `camel`, `eagle`, `penguin`, `whale`, `kangaroo`, `flamingo`, `crocodile` — see [Animal shapes](#animal-shapes)), seven **symbol** shapes (`kite`, `trapezoid`, `house`, `arrow`, `cross`, `teardrop`, `anchor` — see [Symbol shapes](#symbol-shapes)), and twenty-six **letter** stroke figures (`a`–`z` — see [Letter shapes](#letter-shapes)). Only the geometric four are drawn unless you opt in.
 
 ### Shape reference
 
-A field-guide-style lookup of every shape and its plain axis-aligned detection box (blue), upright at its own authored orientation exactly as drawn — not sampled from the generator, so no random color, rotation, or `asymmetry_jitter`. Every symbol and animal is authored mirror-symmetric about its own vertical axis, so this is what keeps a reference recognizable: an `arrow` pointing up, a `house` with its roof up, a `kite` on its long axis. The blue box here is the detection box at this fixed reference position — **not** the minimum-area oriented bounding box (see [Tasks](#tasks)) the generator's actually-rotated samples carry; that box is a rotated quadrilateral in general, not always axis-aligned even at this same unrotated pose (the `arrow`'s true minimum-area OBB, for instance, is a diamond flush to its barb tips), and drawing it here at a fixed angle would show one arbitrary rotation rather than the shape itself. Animals and symbols also show their keypoint schema (dots and skeleton) in orange, matching the animated previews' occluded-keypoint color.
+A field-guide-style lookup of every shape and its plain axis-aligned detection box (blue), upright at its own authored orientation exactly as drawn — not sampled from the generator, so no random color, rotation, or `asymmetry_jitter`. Every symbol and animal is authored mirror-symmetric about its own vertical axis, so this is what keeps a reference recognizable: an `arrow` pointing up, a `house` with its roof up, a `kite` on its long axis. The blue box here is the detection box at this fixed reference position — **not** the minimum-area oriented bounding box (see [Tasks](#tasks)) the generator's actually-rotated samples carry; that box is a rotated quadrilateral in general, not always axis-aligned even at this same unrotated pose (the `arrow`'s true minimum-area OBB, for instance, is a diamond flush to its barb tips), and drawing it here at a fixed angle would show one arbitrary rotation rather than the shape itself. Animals, symbols, and letters also show their keypoint schema (dots and skeleton) in orange, matching the animated previews' occluded-keypoint color.
 
 === "Geometric"
 
@@ -94,19 +94,52 @@ A field-guide-style lookup of every shape and its plain axis-aligned detection b
     |  ![flamingo](../assets/shape-references/animals-flamingo.png)  | `flamingo`  | long-legged-wader         |
     | ![crocodile](../assets/shape-references/animals-crocodile.png) | `crocodile` | sprawling-reptile         |
 
+=== "Letters"
+
+    |                   Reference                    | Shape | Details                                   |
+    | :--------------------------------------------: | ----- | ----------------------------------------- |
+    | ![a](../assets/shape-references/letters-a.png) | `a`   | 5 strokes — lambda legs + crossbar        |
+    | ![b](../assets/shape-references/letters-b.png) | `b`   | 11 strokes — two bowls off a stem         |
+    | ![c](../assets/shape-references/letters-c.png) | `c`   | 6 strokes — open ring                     |
+    | ![d](../assets/shape-references/letters-d.png) | `d`   | 9 strokes — one bowl off a stem           |
+    | ![e](../assets/shape-references/letters-e.png) | `e`   | 5 strokes — three bars off a stem         |
+    | ![f](../assets/shape-references/letters-f.png) | `f`   | 4 strokes — two bars off a stem           |
+    | ![g](../assets/shape-references/letters-g.png) | `g`   | 7 strokes — open ring with an inward hook |
+    | ![h](../assets/shape-references/letters-h.png) | `h`   | 5 strokes — two verticals + crossbar      |
+    | ![i](../assets/shape-references/letters-i.png) | `i`   | 5 strokes — I-beam, even serifs           |
+    | ![j](../assets/shape-references/letters-j.png) | `j`   | 6 strokes — barred stem with a round hook |
+    | ![k](../assets/shape-references/letters-k.png) | `k`   | 4 strokes — spine + two diagonals         |
+    | ![l](../assets/shape-references/letters-l.png) | `l`   | 2 strokes — spine + base bar              |
+    | ![m](../assets/shape-references/letters-m.png) | `m`   | 4 strokes — two verticals + inner V       |
+    | ![n](../assets/shape-references/letters-n.png) | `n`   | 3 strokes — two verticals + diagonal      |
+    | ![o](../assets/shape-references/letters-o.png) | `o`   | 8 strokes — closed oval ring              |
+    | ![p](../assets/shape-references/letters-p.png) | `p`   | 7 strokes — one upper bowl off a stem     |
+    | ![q](../assets/shape-references/letters-q.png) | `q`   | 9 strokes — oval ring + descending tail   |
+    | ![r](../assets/shape-references/letters-r.png) | `r`   | 8 strokes — upper bowl + leg off a stem   |
+    | ![s](../assets/shape-references/letters-s.png) | `s`   | 8 strokes — upright figure-eight          |
+    | ![t](../assets/shape-references/letters-t.png) | `t`   | 3 strokes — top bar + stem                |
+    | ![u](../assets/shape-references/letters-u.png) | `u`   | 5 strokes — open-top bowl                 |
+    | ![v](../assets/shape-references/letters-v.png) | `v`   | 2 strokes — narrow diagonal pair          |
+    | ![w](../assets/shape-references/letters-w.png) | `w`   | 4 strokes — double V                      |
+    | ![x](../assets/shape-references/letters-x.png) | `x`   | 4 strokes — center + 4 corners            |
+    | ![y](../assets/shape-references/letters-y.png) | `y`   | 3 strokes — V + stem                      |
+    | ![z](../assets/shape-references/letters-z.png) | `z`   | 6 strokes — bar-diagonal-bar, crossed     |
+
+    Nine letters (`b`, `d`, `h`, `i`, `n`, `o`, `s`, `x`, `z`) have one node deliberately placed off the default grid, because their regular block form would be exactly invariant under a 180-degree rotation — see [Letter shapes](#letter-shapes).
+
 Each reference is scaled independently to the largest size that keeps its own outline inside the frame, so a thin shape (the triangle) and a tall one (the giraffe) each fill their own frame rather than sharing one scale sized for the largest shape. Regenerate these with `python examples/render_shape_reference.py` (writes into `docs/assets/shape-references/`, one `<prefix><shape>.png` file per shape; `--families symbols` to regenerate just one family).
 
 `class_mode` selects how object classes are derived:
 
-| `class_mode`  | Classes                                           |
-| ------------- | ------------------------------------------------- |
-| `shape`       | all 23 shape names, in vocabulary order           |
-| `color`       | red, green, blue                                  |
-| `shape_color` | Cartesian product, e.g. `red_square` (69 classes) |
+| `class_mode`  | Classes                                            |
+| ------------- | -------------------------------------------------- |
+| `shape`       | all 49 shape names, in vocabulary order            |
+| `color`       | red, green, blue                                   |
+| `shape_color` | Cartesian product, e.g. `red_square` (147 classes) |
 
-The class vocabulary always spans the full shape enum, independently of which shapes a run actually draws. A class id therefore means the same thing in every dataset: a giraffes-only run still declares all 23 shape classes and uses giraffe's id rather than renumbering it to `0`.
+The table above lists the full vocabulary; a run narrows it to its own `shapes`. Both the declared classes and the ids stamped on annotations narrow together, so a giraffes-only run declares one class and numbers it `0` — every dataset is internally consistent, and every annotation's id resolves against the `categories` (COCO) or `names` (YOLO) block written beside it. The flip side is that an id means different things in differently-scoped runs, so compare two datasets by class **name**, never by raw id. The `color` mode is the exception that never narrows: no run restricts the color axis of the vocabulary, so red/green/blue keep ids 0/1/2 everywhere.
 
-`rectangle` (non-square) plus a random per-shape rotation give oriented boxes real orientation; a circle is rotation-invariant, so its OBB collapses to the axis-aligned box. Every animal silhouette is asymmetric, so all twelve carry orientation — and so does every symbol; three of the seven (`arrow`, `cross`, `anchor`) are concave, so their segmentation polygon and OBB carry information an axis-aligned box alone does not.
+`rectangle` (non-square) plus a random per-shape rotation give oriented boxes real orientation; a circle is rotation-invariant, so its OBB collapses to the axis-aligned box. Every animal silhouette is asymmetric, so all twelve carry orientation — and so does every symbol and every letter; three of the seven symbols (`arrow`, `cross`, `anchor`) are concave, so their segmentation polygon and OBB carry information an axis-aligned box alone does not — every letter is concave too, one connected outline wrapped around its own keypoint skeleton rather than a hand-authored polygon (see [Letter shapes](#letter-shapes)).
 
 ## Animal shapes
 
@@ -154,9 +187,9 @@ all_animals = SyntheticConfig(task=Task.KEYPOINTS, shapes=animal_shapes())  # al
 assert len(all_animals.shapes) == 12
 ```
 
-`animal_shapes(n)` is a prefix of the `AnimalShape` declaration order, so the same `n` names the same species on every call — a thirteenth animal could only extend the tail of that list. `shapes` itself stays a plain `tuple[Shape, ...]` — where `Shape` is the `GeomShape | AnimalShape | SymbolShape` union — and the helper only builds one animal-shaped tuple; `symbol_shapes()` is its counterpart for the symbol family (see [Symbol shapes](#symbol-shapes)). A count outside `[0, 12]` raises `ValueError` rather than clamping.
+`animal_shapes(n)` is a prefix of the `AnimalShape` declaration order, so the same `n` names the same species on every call — a thirteenth animal could only extend the tail of that list. `shapes` itself stays a plain `tuple[Shape, ...]` — where `Shape` is the `GeomShape | AnimalShape | SymbolShape | LetterShape` union — and the helper only builds one animal-shaped tuple; `symbol_shapes()` and `letter_shapes()` are its counterparts for the other two keypoint-bearing families (see [Symbol shapes](#symbol-shapes) and [Letter shapes](#letter-shapes)). A count outside `[0, 12]` raises `ValueError` rather than clamping.
 
-All four tasks work on animal shapes; `keypoints` is available for the animal and symbol families — not the geometric shapes, which have no keypoint tables:
+All four tasks work on animal shapes; `keypoints` is available for the animal, symbol, and letter families — not the geometric shapes, which have no keypoint tables:
 
 === "Detection"
 
@@ -218,7 +251,7 @@ all_symbols = SyntheticConfig(task=Task.KEYPOINTS, shapes=symbol_shapes())  # al
 assert len(all_symbols.shapes) == 7
 ```
 
-A dataset can draw from the animal family or the symbol family under `keypoints`, but never both at once — see [Symbol keypoint schema](#symbol-keypoint-schema) for why.
+A dataset can draw from the animal family, the symbol family, or the letter family under `keypoints`, but never more than one at once — see [Symbol keypoint schema](#symbol-keypoint-schema) and [Letter keypoint schema](#letter-keypoint-schema) for why.
 
 === "Detection"
 
@@ -237,6 +270,68 @@ A dataset can draw from the animal family or the symbol family under `keypoints`
     ![Synthetic keypoint sample with symbol shapes](../assets/datasets/symbols-keypoints.webp)
 
 Regenerate these clips with `python examples/animate_synthetic_dataset.py --shapes symbols --task all`.
+
+## Letter shapes
+
+Pass `shapes=` (or the CLI's `--shapes letters`) to draw twenty-six capital-letter figures (`a`–`z`) instead of the four geometric shapes. Like every other family, a letter is one filled outline polygon — but unlike the hand-authored outlines of `symbols`/`animals`, it is derived. Each letter is authored the way you would sketch one, as a set of **keypoints and the edges between them**, and the drawable shape is produced by wrapping that skeleton in a pen stroke of constant width.
+
+Authoring skeleton-first is what makes the landmarks trustworthy. Because the polygon *is* the set of points within half a stroke width of the skeleton, **every keypoint and every edge between two keypoints lies strictly inside the letter**, with half a stroke width of clearance — a keypoint can never land on the boundary or outside the ink, and a skeleton edge can never cut across empty space. Joining a letter's keypoints in skeleton order therefore sketches that letter *through its own fill*.
+
+Every stroke tip is capped with a semicircle and every convex corner rounded, so no letter has a sharp point anywhere on it; only the concave side of a turn stays angular, where the two strokes' bodies already cover the corner and rounding it would bulge the outline outward across the inside of the turn.
+
+An edge may itself be a shallow circular arc rather than a straight segment, which is what makes `o`/`c`/`g`/`s`'s bowls read as bowls instead of octagons; letters with no curve in a block face (`a e f h i k l m n t v w x y z`) stay straight throughout. How deep an arc may go is bounded by the promise above rather than by taste: the annotated skeleton joins two keypoints with a *straight* line, so an edge bowed far enough for its own chord to leave the stroke is rejected when the asset loads, as is a curved edge that a counter opens on.
+
+Seven letters (`a`, `b`, `d`, `o`, `p`, `q`, `r`) have an enclosed counter. A single polygon ring cannot hold a true hole, so the graph edge that closes each counter's loop is split into two flat-capped stubs separated by a hairline before wrapping — that opens the loop while leaving a slit far too thin to read as a gap, keeping the counter intact (`o`'s hole, `a`'s crossbar pocket) inside one simple, non-self-intersecting ring. Where the slit goes is a letterform decision: a bowl hung off a stem (`b`, `d`, `p`, `r`) breaks on the edge leaving that stem and as near it as fits, so the bowl reads as a curve just touching a vertical line, while a free-standing ring breaks along its bottom — left of centre for `o`, bottom-right for `q` beside where its tail joins. That hairline is the single place in the whole family where a skeleton edge leaves the fill.
+
+The 15 named keypoint slots give every letter the same landmark vocabulary (a fixed count per dataset is a hard requirement of both output formats), and their default coordinates form a regular 3-column x 5-row grid — but a letter is free to place any of its own nodes anywhere, which is what shapes `b`/`d`/`p`/`q`/`r`'s bowls, `o`'s oval, and `q`'s outward tail. Nine letters (`b`, `d`, `h`, `i`, `n`, `o`, `s`, `x`, `z`) also use that freedom to break an exact 180-degree rotational symmetry their regular block form would otherwise carry — the same "look the same upside down" set real handwriting has, and the same kind of fix `SymbolShape.KITE`'s unequal diagonal lengths already make for the symbol family. See the [Letters](#shape-reference) tab above for every letter's stroke count.
+
+### Selecting letters
+
+`letter_shapes()` mirrors `animal_shapes()`/`symbol_shapes()` — name the members explicitly, or take a stable prefix:
+
+```python
+from fuse_augmentations.data.config import SyntheticConfig, Task
+from fuse_augmentations.data.letters import LetterShape, letter_shapes
+
+explicit = SyntheticConfig(
+    task=Task.KEYPOINTS, shapes=(LetterShape.X, LetterShape.O)
+)  # explicit
+assert explicit.shapes == (LetterShape.X, LetterShape.O)
+
+first_three = SyntheticConfig(task=Task.KEYPOINTS, shapes=letter_shapes(3))  # a, b, c
+assert first_three.shapes == (
+    LetterShape.A,
+    LetterShape.B,
+    LetterShape.C,
+)
+
+all_letters = SyntheticConfig(
+    task=Task.KEYPOINTS, shapes=letter_shapes()
+)  # all twenty-six
+assert len(all_letters.shapes) == 26
+```
+
+All four tasks work on letter shapes, and every output format behaves exactly as it does for the other three families — one `segmentation` ring per COCO annotation, one flat coordinate ring per YOLO-seg row — since a letter is a single polygon like any other shape by the time it reaches a writer.
+
+=== "Detection"
+
+    ![Synthetic detection sample with letter shapes](../assets/datasets/letters-detection.webp)
+
+=== "Segmentation"
+
+    ![Synthetic segmentation sample with letter shapes](../assets/datasets/letters-segmentation.webp)
+
+=== "OBB"
+
+    ![Synthetic OBB sample with letter shapes](../assets/datasets/letters-obb.webp)
+
+=== "Keypoints / pose"
+
+    ![Synthetic keypoint sample with letter shapes](../assets/datasets/letters-keypoints.webp)
+
+Regenerate these clips with `python examples/animate_synthetic_dataset.py --shapes letters --task all`.
+
+Every clip on this page shows its whole family: the generator picks each object's shape uniformly, so a family preview would otherwise be a lucky subset — twenty-six letters need roughly a hundred drawn objects between them before the last one turns up. Each vocabulary therefore sets its own object count and clip length, and the script then walks its seed forward until the stream it renders really does contain every member, printing the seed it settled on.
 
 ## Tasks
 
@@ -270,7 +365,7 @@ Regenerate these clips with `python examples/animate_synthetic_dataset.py`.
 
 ## Keypoints / pose
 
-The `keypoints` task is available for two shape families, each with its own fixed, dataset-wide schema: the twelve **animal** silhouettes use a 16-point anatomical schema (below), and the seven **symbol** shapes use a 7-point structural schema (see [Symbol keypoint schema](#symbol-keypoint-schema)). A dataset carries exactly one — Ultralytics' YOLO pose format declares one `kpt_shape` and COCO one `keypoints` list per category, so `shapes` must belong entirely to one family under this task; mixing the two, or pairing a geometric shape with either, raises `ValueError` at `SyntheticConfig` construction.
+The `keypoints` task is available for three shape families, each with its own fixed, dataset-wide schema: the twelve **animal** silhouettes use a 16-point anatomical schema (below), the seven **symbol** shapes use a 7-point structural schema (see [Symbol keypoint schema](#symbol-keypoint-schema)), and the twenty-six **letter** stroke figures use a 15-point grid schema (see [Letter keypoint schema](#letter-keypoint-schema)). A dataset carries exactly one — Ultralytics' YOLO pose format declares one `kpt_shape` and COCO one `keypoints` list per category, so `shapes` must belong entirely to one family under this task; mixing any two of them, or pairing a geometric shape with any of them, raises `ValueError` at `SyntheticConfig` construction.
 
 A single set of animal names covers quadrupeds, birds, and swimmers, because the `front_limb_*` pair is whatever the animal actually has at that slot (paws, wings, or fins/flippers). `left` is the limb nearer the viewer, `right` the far one — a documented convention, since a side profile cannot truly tell left from right. Because the far point sits only slightly offset from the near one (0.8–4.1px apart at shipped instance-size defaults), left/right-paired landmarks are visually indistinguishable at default rendering sizes — worth knowing before writing a custom evaluator or training on this data.
 
@@ -305,7 +400,7 @@ Every landmark is a pure rigid transform (translate/scale/rotate) of its package
 
 An absent landmark and a canvas-clipped landmark both serialize identically as `v=0` (matching COCO's own "not labeled" convention). A custom-eval author computing per-keypoint recall or OKS naively — treating every `v=0` as a detector miss — will see a systematic bias on `fish` and `whale`, whose four hind-leg points are structurally absent rather than missed.
 
-All 23 classes are still emitted as COCO categories, but the keypoint schema and skeleton are attached only to categories in the run's own keypoint family — for an animal run, the four geometric-shape categories carry no `keypoints`/`skeleton` fields, and neither would the seven symbol categories if this were a symbol run instead, since neither has a matching landmark table to draw from. Each animal category stores one flat triple per point on each of its annotations:
+All 49 classes are still emitted as COCO categories, but the keypoint schema and skeleton are attached only to categories in the run's own keypoint family — for an animal run, the four geometric-shape categories carry no `keypoints`/`skeleton` fields, and neither would the seven symbol categories or the twenty-six letter categories if this were a symbol or letter run instead, since none of them has a matching landmark table to draw from. Each animal category stores one flat triple per point on each of its annotations:
 
 ```json
 {
@@ -372,7 +467,28 @@ names:
   16: kite
 ```
 
-Each symbol pose row is `cls cx cy w h x1 y1 v1 ... x7 y7 v7` — 26 tokens, fixed-width even for a symbol using only 4 of the 7 slots. Symbol outlines and keypoint tables are authored directly as literals in `fuse_augmentations/data/symbols.py` (analytic, not traced), so there is no editable-SVG asset or `zoo/` entry for this family.
+Each symbol pose row is `cls cx cy w h x1 y1 v1 ... x7 y7 v7` — 26 tokens, fixed-width even for a symbol using only 4 of the 7 slots. Symbol outlines and keypoint tables are authored as data in the packaged `fuse_augmentations/data/symbols.json` asset (analytic, not traced), loaded at import time — so there is no editable-SVG asset or `zoo/` entry for this family.
+
+### Letter keypoint schema
+
+The twenty-six letters share a third, still smaller schema: fifteen generic grid slots — `top_left`, `top_mid`, `top_right`, `upper_left`, `upper_mid`, `upper_right`, `mid_left`, `center`, `mid_right`, `lower_left`, `lower_mid`, `lower_right`, `bottom_left`, `bottom_mid`, `bottom_right` — laid out as one shared 3-column x 5-row grid. Unlike the symbols, no slot is mandatory across every letter (`v`, for instance, never touches `center`); a letter uses whichever subset it needs, so point counts run from 3 (`l`, `v`) to 10 (`b`).
+
+Unlike either other family, a letter's **skeleton is not shared** across the family: each letter's edges are exactly its own stroke graph — the same graph the outline is wrapped around — because that graph *is* what makes it that letter, not a cosmetic overlay on a silhouette every member shares. COCO's per-category `skeleton` and the animated-preview overlay both resolve this per letter rather than reading one dataset-wide tuple.
+
+Unlike the animal and symbol landmarks, which need an inward inset to keep them off their own outline's boundary, a letter's keypoints need no correction at all: they are exactly the nodes the outline was wrapped around, and the wrap leaves every one of them half a stroke width inside the fill — including a stroke's free end, which sits at the center of its own round cap.
+
+The horizontal-flip `flip_idx` swaps each row's left/right slot and holds the middle column fixed. Note that a mirrored letter is generally a different letter (or no letter at all), so a horizontal flip is not the label-preserving augmentation here that it is for an animal silhouette; the field is published for format completeness.
+
+```yaml
+path: .
+kpt_shape: [15, 3]
+flip_idx: [2, 1, 0, 5, 4, 3, 8, 7, 6, 11, 10, 9, 14, 13, 12]
+names:
+  0: a
+  23: x
+```
+
+Each letter pose row is `cls cx cy w h x1 y1 v1 ... x15 y15 v15` — 50 tokens, fixed-width even for `i`, which uses only 3 of the 15 slots. Letter stroke graphs, counter-opening cuts, and free node positions are authored as data in the packaged `fuse_augmentations/data/letters.json` asset, loaded at import time — so there is no editable-SVG asset or `zoo/` entry for this family either.
 
 ## COCO output
 
@@ -450,12 +566,12 @@ names:
 
 Each label file has one row per object. Class ids are **0-based**; all coordinates are normalized to `[0, 1]` and clamped:
 
-| Task           | Row format                                                                                                           |
-| -------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `detection`    | `cls cx cy w h`                                                                                                      |
-| `segmentation` | `cls x1 y1 x2 y2 … xn yn`                                                                                            |
-| `obb`          | `cls x1 y1 x2 y2 x3 y3 x4 y4`                                                                                        |
-| `keypoints`    | `cls cx cy w h` + one `x y v` triple per schema landmark (53 tokens for the animal family, 26 for the symbol family) |
+| Task           | Row format                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------- |
+| `detection`    | `cls cx cy w h`                                                                                   |
+| `segmentation` | `cls x1 y1 x2 y2 … xn yn`                                                                         |
+| `obb`          | `cls x1 y1 x2 y2 x3 y3 x4 y4`                                                                     |
+| `keypoints`    | `cls cx cy w h` + one `x y v` triple per schema landmark (53 tokens animal, 26 symbol, 50 letter) |
 
 Example detection rows (`labels/train/img_000000.txt`):
 
@@ -541,7 +657,7 @@ print(counts)
 
 ### Breaking left/right symmetry
 
-Every shape but `circle` is drawn mirror-symmetric about its own vertical axis in canonical orientation, so its oriented bounding box otherwise always shows identical left/right margins — real oriented objects (vehicles, ships) rarely are. `asymmetry_jitter` (default `0.0`, a fraction in `[0, 0.5)`) narrows a randomly chosen half — left or right of that axis, before rotation — of each placed object by up to that fraction, independently per instance:
+Most shapes are drawn mirror-symmetric about their own vertical axis in canonical orientation (every geometric shape but the obtuse-scalene `triangle`, every symbol, most letters), so their oriented bounding box otherwise always shows identical left/right margins — real oriented objects (vehicles, ships) rarely are. `asymmetry_jitter` (default `0.0`, a fraction in `[0, 0.5)`) narrows a randomly chosen half — left or right of that axis, before rotation — of each placed object by up to that fraction, independently per instance. The animal silhouettes and roughly two-thirds of the letters are already asymmetric on their own (a letter's own strokes rarely balance left-right the way a symbol's outline is authored to), so the jitter is redundant orientation variety for them rather than the sole source of it — it still applies uniformly to every shape but `circle`, which is excluded for the separate reason below:
 
 ```pycon
 >>> from fuse_augmentations.data.config import SyntheticConfig

@@ -47,6 +47,13 @@ from fuse_augmentations.data.datasets import SyntheticIterableDataset
 from fuse_augmentations.data.generator import SyntheticGenerator
 from fuse_augmentations.data.geometry import GeomShape
 from fuse_augmentations.data.landmarks import KeypointSchema
+from fuse_augmentations.data.letters import (
+    LETTER_KEYPOINT_NAMES,
+    LETTER_KEYPOINT_SKELETON,
+    LetterShape,
+    letter_keypoints,
+    letter_shapes,
+)
 from fuse_augmentations.data.sample import Annotation, Sample
 from fuse_augmentations.data.symbols import (
     SYMBOL_KEYPOINT_NAMES,
@@ -65,6 +72,8 @@ __all__ = [
     "ANIMAL_KEYPOINT_NAMES",
     "ANIMAL_KEYPOINT_SKELETON",
     "DEFAULT_SHAPES",
+    "LETTER_KEYPOINT_NAMES",
+    "LETTER_KEYPOINT_SKELETON",
     "SYMBOL_KEYPOINT_NAMES",
     "SYMBOL_KEYPOINT_SKELETON",
     "AnimalShape",
@@ -74,6 +83,7 @@ __all__ = [
     "Color",
     "GeomShape",
     "KeypointSchema",
+    "LetterShape",
     "OutputFormat",
     "Sample",
     "Shape",
@@ -91,6 +101,8 @@ __all__ = [
     "generate_dataset",
     "get_writer",
     "keypoint_schema_for",
+    "letter_keypoints",
+    "letter_shapes",
     "symbol_keypoints",
     "symbol_shapes",
 ]
