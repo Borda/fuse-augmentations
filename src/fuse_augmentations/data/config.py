@@ -17,23 +17,66 @@ from dataclasses import dataclass
 from enum import Enum
 from functools import cache
 
-from fuse_augmentations.data.animals import AnimalShape
+from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_SCHEMA, AnimalShape
 from fuse_augmentations.data.geometry import GeomShape
+from fuse_augmentations.data.landmarks import KeypointSchema
+from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_SCHEMA, SymbolShape
 
 _SPLIT_SUM_TOL = 1e-6
 
 
-#: The drawable-shape vocabulary: the analytic geometric shapes plus the animal silhouettes, kept as
-#: a union rather than one blended enum so each family owns its own definition (and so an animal-only
-#: API such as :func:`~fuse_augmentations.data.animals.animal_keypoints` can say so in its
-#: signature). It is a real runtime union: ``isinstance(value, Shape)`` accepts either member type
-#: and still rejects a bare ``"duck"`` string, which is what :meth:`SyntheticConfig._validate_vocabulary`
-#: relies on. It is not iterable — build a full vocabulary as ``[*GeomShape, *AnimalShape]``.
-Shape = GeomShape | AnimalShape
+#: The drawable-shape vocabulary: the analytic geometric shapes, the animal silhouettes, and the
+#: analytic symbols, kept as a union rather than one blended enum so each family owns its own
+#: definition (and so a family-only API such as :func:`~fuse_augmentations.data.animals.animal_keypoints`
+#: can say so in its signature). It is a real runtime union: ``isinstance(value, Shape)`` accepts any
+#: member type and still rejects a bare ``"duck"`` string, which is what
+#: :meth:`SyntheticConfig._validate_vocabulary` relies on. It is not iterable — build a full
+#: vocabulary as ``[*GeomShape, *AnimalShape, *SymbolShape]``.
+Shape = GeomShape | AnimalShape | SymbolShape
 
 #: Shapes drawn when :attr:`SyntheticConfig.shapes` is not overridden — the four geometric shapes,
-#: i.e. the vocabulary that predates the animal silhouettes.
+#: i.e. the vocabulary that predates the animal silhouettes and the symbols.
 DEFAULT_SHAPES: tuple[GeomShape, ...] = tuple(GeomShape)
+
+#: Keypoint schema per shape-family type, keyed by the concrete :class:`Shape` member class. Every
+#: member of a keyed family shares one schema, which is what makes a "one keypoint family per
+#: ``Task.KEYPOINTS`` run" rule checkable from ``type(shape)`` alone. :class:`GeomShape` is
+#: deliberately absent: none of its members carry a landmark table (see
+#: :class:`~fuse_augmentations.data.geometry.GeomShape`), so it names no keypoint family at all.
+_KEYPOINT_SCHEMAS: dict[type, KeypointSchema] = {
+    AnimalShape: ANIMAL_KEYPOINT_SCHEMA,
+    SymbolShape: SYMBOL_KEYPOINT_SCHEMA,
+}
+
+
+def keypoint_schema_for(shapes: Iterable[Shape]) -> KeypointSchema | None:
+    """Return the single keypoint-bearing family's schema that ``shapes`` all belong to.
+
+    Args:
+        shapes: The shapes a run draws from — typically :attr:`SyntheticConfig.shapes`.
+
+    Returns:
+        The :class:`~fuse_augmentations.data.landmarks.KeypointSchema` shared by every shape in
+        ``shapes``, or ``None`` when ``shapes`` spans no single keypoint-bearing family (e.g. it is
+        empty, holds only :class:`~fuse_augmentations.data.geometry.GeomShape` members, or mixes
+        more than one keypoint-bearing family).
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.animals import AnimalShape
+        >>> from fuse_augmentations.data.config import keypoint_schema_for
+        >>> keypoint_schema_for((AnimalShape.DUCK, AnimalShape.CAMEL)).kpt_shape
+        16
+        >>> keypoint_schema_for((GeomShape.SQUARE,)) is None
+        True
+
+        ```
+
+    """
+    families = {type(shape) for shape in shapes}
+    if len(families) != 1:
+        return None
+    return _KEYPOINT_SCHEMAS.get(families.pop())
 
 
 class Color(str, Enum):
@@ -149,8 +192,8 @@ def class_names(class_mode: ClassMode, shapes: Iterable[Shape] | None = None) ->
 
     By default (``shapes=None``) the vocabulary always spans the full range for the selected
     ``class_mode``, independently of :attr:`SyntheticConfig.shapes`. ``ClassMode.SHAPE`` spans the
-    full **16**-member :class:`Shape` enum; ``ClassMode.SHAPE_COLOR`` spans all 16 shapes times the 3
-    colors (48 combined classes); and ``ClassMode.COLOR`` spans only the 3 colors, independently of
+    full **23**-member :class:`Shape` enum; ``ClassMode.SHAPE_COLOR`` spans all 23 shapes times the 3
+    colors (69 combined classes); and ``ClassMode.COLOR`` spans only the 3 colors, independently of
     the shape vocabulary entirely. That keeps a class id meaning the same thing across every
     configuration — a dataset restricted to ``(AnimalShape.GIRAFFE,)`` still uses giraffe's ``SHAPE``
     id from this list rather than renumbering it to ``0`` — at the cost of declaring classes that a
@@ -159,8 +202,8 @@ def class_names(class_mode: ClassMode, shapes: Iterable[Shape] | None = None) ->
 
     Pass ``shapes`` to narrow ``ClassMode.SHAPE``/``ClassMode.SHAPE_COLOR`` to a specific shape
     family instead — e.g. a golden-fixture assertion that wants a stable 4-category list for
-    :data:`DEFAULT_SHAPES` regardless of how many animal shapes the full vocabulary later grows to.
-    ``ClassMode.COLOR`` ignores ``shapes`` since it never depends on the shape vocabulary.
+    :data:`DEFAULT_SHAPES` regardless of how many animal or symbol shapes the full vocabulary later
+    grows to. ``ClassMode.COLOR`` ignores ``shapes`` since it never depends on the shape vocabulary.
 
     Args:
         class_mode: The selected :class:`ClassMode`.
@@ -177,8 +220,10 @@ def class_names(class_mode: ClassMode, shapes: Iterable[Shape] | None = None) ->
         ['square', 'rectangle', 'triangle', 'circle']
         >>> class_names(ClassMode.SHAPE)[4:8]
         ['duck', 'elephant', 'giraffe', 'fish']
-        >>> class_names(ClassMode.SHAPE)[8:]
+        >>> class_names(ClassMode.SHAPE)[8:16]
         ['rabbit', 'camel', 'eagle', 'penguin', 'whale', 'kangaroo', 'flamingo', 'crocodile']
+        >>> class_names(ClassMode.SHAPE)[16:]
+        ['kite', 'trapezoid', 'house', 'arrow', 'cross', 'teardrop', 'anchor']
         >>> class_names(ClassMode.COLOR)
         ['red', 'green', 'blue']
         >>> class_names(ClassMode.SHAPE_COLOR)[:2]
@@ -189,7 +234,7 @@ def class_names(class_mode: ClassMode, shapes: Iterable[Shape] | None = None) ->
         ```
 
     """
-    universe = (*GeomShape, *AnimalShape) if shapes is None else tuple(shapes)
+    universe = (*GeomShape, *AnimalShape, *SymbolShape) if shapes is None else tuple(shapes)
     if class_mode is ClassMode.SHAPE:
         return [shape.value for shape in universe]
     if class_mode is ClassMode.COLOR:
@@ -303,12 +348,25 @@ class SyntheticConfig:
         max_placement_attempts: Retry cap per object before giving up.
         background: RGB background fill.
         rotate: Apply a random rotation to each polygonal shape.
+        asymmetry_jitter: Max fraction, in ``[0, 0.5)``, by which one randomly chosen half of a
+            shape — left or right of its own local vertical axis, before rotation — is narrowed,
+            drawn independently per placed object. ``0.0`` (the default) disables it and leaves
+            every existing seeded configuration's output unchanged. Every shape this package draws
+            except :attr:`~fuse_augmentations.data.geometry.GeomShape.CIRCLE` is mirror-symmetric
+            about that axis in its canonical orientation, so its oriented bounding box would
+            otherwise always show identical left/right margins; a nonzero value breaks that with
+            per-instance variety instead — real oriented objects (vehicles, ships) are rarely that
+            symmetric. ``circle`` is always excluded: it never rotates either, so an unrotated skew
+            would bias every instance toward the same absolute image direction rather than varying
+            with a random orientation. Applies to the polygon and, under :attr:`Task.KEYPOINTS`, the
+            landmark table together, so a shape and its keypoints never drift apart.
         class_mode: How classes are derived (see :class:`ClassMode`).
         shapes: Shapes the generator may draw, sampled uniformly. Defaults to
             :data:`DEFAULT_SHAPES`; pass e.g. ``(AnimalShape.DUCK, AnimalShape.GIRAFFE)`` to draw
-            animal silhouettes instead, ``tuple(AnimalShape)`` for every animal, or
-            ``(*GeomShape, *AnimalShape)`` for the full mixed vocabulary. Restricting this does
-            **not** renumber classes: class ids always index the full :class:`Shape` vocabulary.
+            animal silhouettes instead, ``tuple(AnimalShape)`` for every animal, ``tuple(SymbolShape)``
+            for every symbol, or ``(*GeomShape, *AnimalShape, *SymbolShape)`` for the full mixed
+            vocabulary. Restricting this does **not** renumber classes: class ids always index the
+            full :class:`Shape` vocabulary.
         colors: Fill colors the generator may draw, sampled uniformly. Defaults to
             :data:`DEFAULT_COLORS` (all three); pass e.g. ``(Color.RED,)`` to draw only red
             objects. Restricting this does **not** renumber classes either, for the same reason
@@ -319,12 +377,16 @@ class SyntheticConfig:
 
     Raises:
         ValueError: On non-positive sizes, inverted min/max ranges, an ``overlap_iou`` or
-            ``boundary_tolerance`` outside ``[0, 1]``, ``max_placement_attempts`` below 1,
+            ``boundary_tolerance`` outside ``[0, 1]``, ``max_placement_attempts`` below 1, an
+            ``asymmetry_jitter`` outside ``[0, 0.5)``,
             a ``shapes`` tuple that is empty or holds a non-:class:`Shape` element, a ``colors``
             tuple that is empty or holds a non-:class:`Color` element, a ``task`` that is not a
-            :class:`Task` member, or a :attr:`Task.KEYPOINTS` task combined with a shape that has
-            no keypoint table (anything but an
-                :class:`~fuse_augmentations.data.animals.AnimalShape`).
+            :class:`Task` member, or a :attr:`Task.KEYPOINTS` task combined with a ``shapes`` tuple
+            that does not belong entirely to one keypoint-bearing family (see
+            :func:`keypoint_schema_for`) — a :class:`~fuse_augmentations.data.geometry.GeomShape`
+            mixed in, or :class:`~fuse_augmentations.data.animals.AnimalShape` and
+            :class:`~fuse_augmentations.data.symbols.SymbolShape` mixed together, since only one
+            landmark schema can describe a dataset.
 
     Examples:
         ```pycon
@@ -353,6 +415,7 @@ class SyntheticConfig:
     max_placement_attempts: int = 100
     background: tuple[int, int, int] = (128, 128, 128)
     rotate: bool = True
+    asymmetry_jitter: float = 0.0
     class_mode: ClassMode = ClassMode.SHAPE
     shapes: tuple[Shape, ...] = DEFAULT_SHAPES
     colors: tuple[Color, ...] = DEFAULT_COLORS
@@ -374,6 +437,8 @@ class SyntheticConfig:
             raise ValueError(f"boundary_tolerance must be within [0, 1], got {self.boundary_tolerance}")
         if self.max_placement_attempts < 1:
             raise ValueError(f"max_placement_attempts must be >= 1, got {self.max_placement_attempts}")
+        if not 0.0 <= self.asymmetry_jitter < 0.5:
+            raise ValueError(f"asymmetry_jitter must be within [0, 0.5), got {self.asymmetry_jitter}")
         self._validate_vocabulary()
 
     def _validate_vocabulary(self) -> None:
@@ -385,7 +450,8 @@ class SyntheticConfig:
         Raises:
             ValueError: If ``shapes`` is empty or holds a non-:class:`Shape` element, ``colors`` is
                 empty or holds a non-:class:`Color` element, ``task`` is not a :class:`Task` member,
-                or a :attr:`Task.KEYPOINTS` task is paired with a shape that has no keypoint table.
+                or a :attr:`Task.KEYPOINTS` task is paired with a ``shapes`` tuple that does not
+                belong entirely to one keypoint-bearing family.
 
         """
         if not self.shapes:
@@ -406,11 +472,20 @@ class SyntheticConfig:
         # test downstream, which would silently emit a detection dataset instead of raising.
         if not isinstance(self.task, Task):
             raise ValueError(f"task must be a Task member, got {self.task!r}; pass e.g. Task.KEYPOINTS")
-        if self.task is Task.KEYPOINTS:
-            unsupported = [shape.value for shape in self.shapes if not isinstance(shape, AnimalShape)]
+        if self.task is Task.KEYPOINTS and keypoint_schema_for(self.shapes) is None:
+            # Any shape with no keypoint table at all (every GeomShape, alone or mixed with a
+            # keypoint-bearing family) is the primary failure and gets this message; only a *pure*
+            # mix of two keypoint-bearing families (no GeomShape present) falls through to the one
+            # below.
+            unsupported = [shape.value for shape in self.shapes if type(shape) not in _KEYPOINT_SCHEMAS]
             if unsupported:
-                supported = ", ".join(shape.value for shape in AnimalShape)
+                supported = ", ".join(shape.value for shape in (*AnimalShape, *SymbolShape))
                 raise ValueError(
                     f"task {Task.KEYPOINTS.value!r} needs a keypoint table for every drawable shape, but "
-                    f"{unsupported} have none; restrict shapes to the animal silhouettes: {supported}"
+                    f"{unsupported} have none; restrict shapes to a keypoint-bearing family: {supported}"
                 )
+            families = sorted({type(shape).__name__ for shape in self.shapes})
+            raise ValueError(
+                f"task {Task.KEYPOINTS.value!r} needs every shape to belong to the same keypoint-bearing family, "
+                f"but shapes mix {families}; a dataset carries only one landmark schema"
+            )

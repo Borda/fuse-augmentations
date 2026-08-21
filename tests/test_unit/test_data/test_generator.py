@@ -16,11 +16,27 @@ from fuse_augmentations.data.config import (
 )
 from fuse_augmentations.data.generator import SyntheticGenerator, _boundary_overlap, _visible_keypoints
 from fuse_augmentations.data.geometry import GeomShape, bbox_iou
+from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_NAMES, SymbolShape
 
 
 def _generate(**kwargs: object) -> tuple:  # type: ignore[type-arg]
     config = SyntheticConfig(**kwargs)
     return SyntheticGenerator(config).sample(np.random.default_rng(123)), config
+
+
+def _point_in_polygon(point: tuple[float, float], polygon: np.ndarray) -> bool:
+    """Ray-casting (even-odd rule) point-in-polygon test."""
+    x, y = point
+    inside = False
+    count = len(polygon)
+    for i in range(count):
+        x1, y1 = polygon[i]
+        x2, y2 = polygon[(i + 1) % count]
+        if (y1 > y) != (y2 > y):
+            x_at_y = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+            if x < x_at_y:
+                inside = not inside
+    return inside
 
 
 def test_image_shape_and_dtype() -> None:
@@ -100,9 +116,12 @@ def test_generate_same_seed_is_deterministic() -> None:
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        (ClassMode.SHAPE, {s.value for s in (*GeomShape, *AnimalShape)}),
+        (ClassMode.SHAPE, {s.value for s in (*GeomShape, *AnimalShape, *SymbolShape)}),
         (ClassMode.COLOR, {c.value for c in Color}),
-        (ClassMode.SHAPE_COLOR, {f"{c.value}_{s.value}" for s in (*GeomShape, *AnimalShape) for c in Color}),
+        (
+            ClassMode.SHAPE_COLOR,
+            {f"{c.value}_{s.value}" for s in (*GeomShape, *AnimalShape, *SymbolShape) for c in Color},
+        ),
     ],
 )
 def test_class_names_belong_to_mode(mode: ClassMode, expected: set[str]) -> None:
@@ -135,7 +154,10 @@ def test_sample_retry_is_reproducible_for_a_seed() -> None:
     assert first == second
 
 
-ANIMAL_SHAPES = tuple(s for s in (*GeomShape, *AnimalShape) if s not in DEFAULT_SHAPES)
+#: Pinned to `AnimalShape` directly (not derived as "every non-default shape") now that a third,
+#: non-geometric family exists: a derived `not in DEFAULT_SHAPES` filter would silently sweep every
+#: `SymbolShape` into a fixture whose name and tests are animal-specific.
+ANIMAL_SHAPES = tuple(AnimalShape)
 
 
 def test_default_config_draws_only_the_original_four_shapes() -> None:
@@ -347,3 +369,71 @@ def test_task_choice_does_not_perturb_the_seeded_scene() -> None:
         assert ann.keypoints is None
     for ann in keypoints_sample.annotations:
         assert len(ann.keypoints) == 16
+
+
+def test_asymmetry_jitter_default_leaves_placement_unchanged() -> None:
+    """`asymmetry_jitter=0.0` (the default) draws the identical scene as before the knob existed.
+
+    The extra RNG draw for `skew` is gated on `cfg.asymmetry_jitter` being truthy, so a config that never sets it must
+    consume the exact same RNG sequence as one that omits the field entirely.
+
+    """
+    common = {"img_size": 128, "min_objects": 4, "max_objects": 4, "rotate": True}
+    default_config = SyntheticConfig(**common)
+    explicit_zero_config = SyntheticConfig(asymmetry_jitter=0.0, **common)
+    default_sample = SyntheticGenerator(default_config).sample(np.random.default_rng(42))
+    explicit_sample = SyntheticGenerator(explicit_zero_config).sample(np.random.default_rng(42))
+    assert np.array_equal(default_sample.image, explicit_sample.image)
+
+
+def test_asymmetry_jitter_never_skews_a_circle() -> None:
+    """`circle` is excluded from skew even when `asymmetry_jitter` is set, matching its rotation exclusion.
+
+    A circle never rotates either (it is rotation-invariant by design), so an always-unrotated skew would bias every
+    drawn circle toward the same absolute image direction instead of varying with a random orientation like every other
+    shape's skew does.
+
+    """
+    config = SyntheticConfig(
+        img_size=128,
+        min_objects=6,
+        max_objects=6,
+        shapes=(GeomShape.CIRCLE,),
+        asymmetry_jitter=0.45,
+    )
+    sample = SyntheticGenerator(config).sample(np.random.default_rng(9))
+    for ann in sample.annotations:
+        poly = np.array(ann.polygon).reshape(-1, 2)
+        center_x = (min(x for x, _ in poly.tolist()) + max(x for x, _ in poly.tolist())) / 2.0
+        center_y = (min(y for _, y in poly.tolist()) + max(y for _, y in poly.tolist())) / 2.0
+        radii = np.hypot(poly[:, 0] - center_x, poly[:, 1] - center_y)
+        assert radii.max() - radii.min() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_asymmetry_jitter_keeps_base_landmarks_on_the_skewed_symbol() -> None:
+    """A symbol's `base_left`/`base_right` landmarks stay inside its own outline once both are skewed.
+
+    `_attempt_placement` draws one `skew` value and passes it to both `shape_polygon` and `symbol_keypoints`; if a
+    future edit ever threaded a different value to one of the two calls, a landmark that moves with skew (unlike the on-
+    axis `center`) would drift outside the outline it is meant to annotate.
+
+    """
+    config = SyntheticConfig(
+        img_size=256,
+        min_objects=1,
+        max_objects=1,
+        min_size_ratio=0.4,
+        max_size_ratio=0.4,
+        task=Task.KEYPOINTS,
+        shapes=(SymbolShape.HOUSE,),
+        asymmetry_jitter=0.45,
+        rotate=False,
+    )
+    sample = SyntheticGenerator(config).sample(np.random.default_rng(3))
+    (ann,) = sample.annotations
+    poly = np.array(ann.polygon).reshape(-1, 2)
+    triples = dict(zip(SYMBOL_KEYPOINT_NAMES, ann.keypoints, strict=True))
+    for name in ("base_left", "base_right"):
+        x, y, visibility = triples[name]
+        assert visibility == 2
+        assert _point_in_polygon((x, y), poly)

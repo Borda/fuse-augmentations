@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES
+from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_NAMES
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -21,6 +22,16 @@ if TYPE_CHECKING:
 #: visible", ``2`` "labeled and visible". Spelled as the accepted set rather than a ``0 <= v <= 2``
 #: range test so a value that is numerically in range but not a flag (``1.5``) is rejected too.
 _KEYPOINT_VISIBILITIES: frozenset[int] = frozenset({0, 1, 2})
+
+#: Landmark names per registered keypoint-schema width. A `keypoints` table's length uniquely
+#: identifies which family it belongs to (16 for :data:`~fuse_augmentations.data.animals.ANIMAL_KEYPOINT_NAMES`,
+#: 7 for :data:`~fuse_augmentations.data.symbols.SYMBOL_KEYPOINT_NAMES`), which is what lets
+#: :meth:`Annotation.__post_init__` validate any registered family without knowing in advance which
+#: one built the table.
+_KEYPOINT_SCHEMA_NAMES: dict[int, tuple[str, ...]] = {
+    len(ANIMAL_KEYPOINT_NAMES): ANIMAL_KEYPOINT_NAMES,
+    len(SYMBOL_KEYPOINT_NAMES): SYMBOL_KEYPOINT_NAMES,
+}
 
 
 @dataclass(frozen=True)
@@ -42,15 +53,17 @@ class Annotation:
         polygon: Filled-shape outline as a flat pixel-coordinate list.
         bbox_xyxy: Axis-aligned box ``(x_min, y_min, x_max, y_max)`` in pixels.
         obb_corners: Oriented box as four corners, flat ``[x1, y1, x2, y2, x3, y3, x4, y4]``.
-        keypoints: Landmarks as ``(x, y, visibility)`` triples in
-            :data:`~fuse_augmentations.data.animals.ANIMAL_KEYPOINT_NAMES` order, or ``None`` for any task
-            other than :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS`. Visibility follows
-            COCO: ``2`` for a point inside the canvas, ``0`` for one clipped away by the frame — a
-            ``0`` point carries ``(0.0, 0.0)`` rather than its off-canvas coordinates.
+        keypoints: Landmarks as ``(x, y, visibility)`` triples in the drawn shape's own family
+            order — :data:`~fuse_augmentations.data.animals.ANIMAL_KEYPOINT_NAMES` or
+            :data:`~fuse_augmentations.data.symbols.SYMBOL_KEYPOINT_NAMES` — or ``None`` for any
+            task other than :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS`. Visibility
+            follows COCO: ``2`` for a point inside the canvas, ``0`` for one clipped away by the
+            frame — a ``0`` point carries ``(0.0, 0.0)`` rather than its off-canvas coordinates.
 
     Raises:
-        ValueError: If ``keypoints`` is not ``None`` and either holds a number of triples other than
-            ``len(ANIMAL_KEYPOINT_NAMES)`` or carries a visibility outside COCO's ``{0, 1, 2}``.
+        ValueError: If ``keypoints`` is not ``None`` and either holds a number of triples that
+            matches no registered keypoint schema, or carries a visibility outside COCO's
+            ``{0, 1, 2}``.
 
     Examples:
         ```pycon
@@ -78,27 +91,30 @@ class Annotation:
     keypoints: tuple[tuple[float, float, int], ...] | None = None
 
     def __post_init__(self) -> None:
-        """Reject a landmark table that does not match the animal keypoint schema.
+        """Reject a landmark table that matches no registered keypoint schema.
 
         A short, long, or mis-flagged table is silently lossy downstream rather than loud: a COCO
         ``keypoints`` array of the wrong length still parses, and a YOLO pose row of the wrong width
         is read positionally, so both mislabel every landmark after the first missing one instead of
         failing. Catching it at construction turns that into an error at the point the bad table was
-        built.
+        built. A table's length uniquely identifies which family built it (16 animal landmarks vs. 7
+        symbol landmarks), so no separate family argument is needed here.
 
         Raises:
-            ValueError: If ``keypoints`` holds a number of triples other than
-                ``len(ANIMAL_KEYPOINT_NAMES)``, or a triple's visibility is not a COCO flag.
+            ValueError: If ``keypoints`` holds a number of triples matching no registered keypoint
+                schema, or a triple's visibility is not a COCO flag.
 
         """
         if self.keypoints is None:
             return
-        if len(self.keypoints) != len(ANIMAL_KEYPOINT_NAMES):
+        names = _KEYPOINT_SCHEMA_NAMES.get(len(self.keypoints))
+        if names is None:
+            valid = sorted(_KEYPOINT_SCHEMA_NAMES)
             raise ValueError(
-                f"keypoints must hold exactly {len(ANIMAL_KEYPOINT_NAMES)} (x, y, visibility) triples, one per name "
-                f"in ANIMAL_KEYPOINT_NAMES, got {len(self.keypoints)}"
+                f"keypoints must hold a number of (x, y, visibility) triples matching a registered keypoint "
+                f"schema {valid}, got {len(self.keypoints)}"
             )
-        for name, (_x, _y, visibility) in zip(ANIMAL_KEYPOINT_NAMES, self.keypoints, strict=True):
+        for name, (_x, _y, visibility) in zip(names, self.keypoints, strict=True):
             if type(visibility) is not int or visibility not in _KEYPOINT_VISIBILITIES:
                 raise ValueError(
                     f"keypoint {name!r} has visibility {visibility!r}, but COCO allows only "

@@ -11,16 +11,26 @@ import pytest
 from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, AnimalShape
 from fuse_augmentations.data.config import ClassMode, Color, SyntheticConfig, Task, class_names
 from fuse_augmentations.data.generator import SyntheticGenerator
+from fuse_augmentations.data.landmarks import KeypointSchema
+from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_NAMES, SYMBOL_KEYPOINT_SCHEMA, SymbolShape
 from fuse_augmentations.data.writers import CocoWriter
 
 
-def _write(tmp_path: Path, writer_task: Task, count: int = 4, seed: int = 5, **config_kwargs: object) -> tuple:  # type: ignore[type-arg]
+def _write(
+    tmp_path: Path,
+    writer_task: Task,
+    count: int = 4,
+    seed: int = 5,
+    keypoint_schema: KeypointSchema | None = None,
+    **config_kwargs: object,
+) -> tuple:  # type: ignore[type-arg]
     """Generate a seeded dataset, write it as COCO, and return its parsed JSON, samples, and class names.
 
     Every knob the individual tests vary — sample count, seed, and any `SyntheticConfig` field such as `shapes`,
     `img_size`, or `task` — is a keyword here, so a test states only what makes it different from the others. The
     writer's `task` is positional and separate from the config's: the writer formats whatever the samples already carry,
-    so a detection-configured stream can still be written out as segmentation or OBB.
+    so a detection-configured stream can still be written out as segmentation or OBB. `keypoint_schema` is only relevant
+    to `Task.KEYPOINTS` runs and defaults to `CocoWriter`'s own default (the animal schema) when omitted.
 
     """
     settings = {"img_size": 96, "min_objects": 2, "max_objects": 4, **config_kwargs}
@@ -29,7 +39,8 @@ def _write(tmp_path: Path, writer_task: Task, count: int = 4, seed: int = 5, **c
     rng = np.random.default_rng(seed)
     samples = [generator.sample(rng) for _ in range(count)]
     names = class_names(config.class_mode)
-    CocoWriter(writer_task, names).write({"train": samples}, tmp_path)
+    writer_kwargs = {} if keypoint_schema is None else {"keypoint_schema": keypoint_schema}
+    CocoWriter(writer_task, names, **writer_kwargs).write({"train": samples}, tmp_path)
     doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
     return doc, samples, names
 
@@ -163,13 +174,14 @@ def test_keypoints_task_declares_the_sixteen_point_schema_and_fifteen_edge_skele
             assert 1 <= j <= 16
 
 
-def test_keypoints_task_leaves_geometric_categories_without_a_keypoint_schema(tmp_path: Path) -> None:
-    """The four geometric-shape categories stay undecorated even though `class_names` still lists them.
+def test_keypoints_task_leaves_categories_outside_the_run_family_without_a_keypoint_schema(tmp_path: Path) -> None:
+    """Only the run's own keypoint-bearing family is decorated — every category outside it stays undecorated.
 
-    `class_names` always spans the full shape vocabulary (geometric shapes plus animals), independently of the `shapes`
-    a run actually draws; a `Task.KEYPOINTS` writer restricted to animal shapes still emits those geometric categories,
-    but only the animal-silhouette schema applies to them, and a category the writer never draws a matching annotation
-    for must not claim a landmark schema it can't back.
+    `class_names` always spans the full shape vocabulary independently of the `shapes`/family a run actually draws, so a
+    `Task.KEYPOINTS` writer restricted to one family still emits categories outside it: every geometric-shape category
+    always, plus every category of the *other* keypoint-bearing family when one is active. A category the writer never
+    draws a matching annotation for must not claim a landmark schema it can't back — checked here for an animal run
+    (geometric categories undecorated) and a symbol run (both geometric *and* animal categories undecorated).
 
     """
     doc, _samples, names = _write(
@@ -188,6 +200,33 @@ def test_keypoints_task_leaves_geometric_categories_without_a_keypoint_schema(tm
     for category in geometric_categories:
         assert "keypoints" not in category
         assert "skeleton" not in category
+
+    symbol_doc, _symbol_samples, symbol_names = _write(
+        tmp_path / "symbols",
+        Task.KEYPOINTS,
+        count=3,
+        seed=11,
+        img_size=192,
+        max_objects=3,
+        task=Task.KEYPOINTS,
+        shapes=tuple(SymbolShape),
+        keypoint_schema=SYMBOL_KEYPOINT_SCHEMA,
+    )
+    symbol_values = {shape.value for shape in SymbolShape}
+    outside_symbol_family = [
+        c for c, name in zip(symbol_doc["categories"], symbol_names, strict=True) if name not in symbol_values
+    ]
+    assert outside_symbol_family
+    for category in outside_symbol_family:
+        assert "keypoints" not in category
+        assert "skeleton" not in category
+    symbol_categories = [
+        c for c, name in zip(symbol_doc["categories"], symbol_names, strict=True) if name in symbol_values
+    ]
+    assert symbol_categories
+    for category in symbol_categories:
+        assert category["keypoints"] == list(SYMBOL_KEYPOINT_NAMES)
+        assert len(category["skeleton"]) == 6
 
 
 def test_keypoints_color_class_mode_categories_carry_the_keypoint_schema(tmp_path: Path) -> None:

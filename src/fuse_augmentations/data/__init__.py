@@ -41,11 +41,20 @@ from fuse_augmentations.data.config import (
     Task,
     class_id_of,
     class_names,
+    keypoint_schema_for,
 )
 from fuse_augmentations.data.datasets import SyntheticIterableDataset
 from fuse_augmentations.data.generator import SyntheticGenerator
 from fuse_augmentations.data.geometry import GeomShape
+from fuse_augmentations.data.landmarks import KeypointSchema
 from fuse_augmentations.data.sample import Annotation, Sample
+from fuse_augmentations.data.symbols import (
+    SYMBOL_KEYPOINT_NAMES,
+    SYMBOL_KEYPOINT_SKELETON,
+    SymbolShape,
+    symbol_keypoints,
+    symbol_shapes,
+)
 from fuse_augmentations.data.writers import CocoWriter, DatasetWriter, YoloWriter, get_writer
 
 if TYPE_CHECKING:
@@ -56,16 +65,20 @@ __all__ = [
     "ANIMAL_KEYPOINT_NAMES",
     "ANIMAL_KEYPOINT_SKELETON",
     "DEFAULT_SHAPES",
+    "SYMBOL_KEYPOINT_NAMES",
+    "SYMBOL_KEYPOINT_SKELETON",
     "AnimalShape",
     "Annotation",
     "ClassMode",
     "CocoWriter",
     "Color",
     "GeomShape",
+    "KeypointSchema",
     "OutputFormat",
     "Sample",
     "Shape",
     "SplitRatios",
+    "SymbolShape",
     "SyntheticConfig",
     "SyntheticGenerator",
     "SyntheticIterableDataset",
@@ -77,6 +90,9 @@ __all__ = [
     "class_names",
     "generate_dataset",
     "get_writer",
+    "keypoint_schema_for",
+    "symbol_keypoints",
+    "symbol_shapes",
 ]
 
 
@@ -119,9 +135,11 @@ def generate_dataset(
             :class:`Task`). ``None`` (the default) adopts :attr:`SyntheticConfig.task` — the
             supplied ``config``'s own task, or the config default when no ``config`` is given — so
             a keypoints config never has to restate its task here. ``"keypoints"`` additionally
-            requires every entry of :attr:`SyntheticConfig.shapes` to be an :class:`AnimalShape` —
-            the default geometric shapes have no keypoint table, and pairing them with it raises
-            :class:`ValueError`.
+            requires every entry of :attr:`SyntheticConfig.shapes` to belong to one
+            keypoint-bearing family (:class:`AnimalShape` or :class:`SymbolShape`) — the default
+            geometric shapes have no keypoint table, and pairing them (or mixing two families)
+            with it raises :class:`ValueError`; the writer emits whichever family's schema
+            (:func:`keypoint_schema_for`) that turns out to be.
         class_mode: ``"shape"``, ``"color"``, or ``"shape_color"`` (or a :class:`ClassMode`).
         split_ratios: Train/val/test fractions; defaults to 70/20/10.
         seed: Seed for reproducible generation; ``None`` uses fresh entropy.
@@ -197,6 +215,12 @@ def generate_dataset(
         split: itertools.islice(sample_stream, count) for split, count in counts.items()
     }
 
-    writer: DatasetWriter = get_writer(fmt, task, class_names(config.class_mode, shapes=config.shapes))
+    # ``SyntheticConfig._validate_vocabulary`` already guarantees every shape belongs to one
+    # keypoint-bearing family when task is KEYPOINTS, so this can only be ``None`` for every other
+    # task -- and get_writer's own default (the animal schema) is simply unused there, since no
+    # writer path reads keypoint_schema outside Task.KEYPOINTS.
+    schema = keypoint_schema_for(config.shapes)
+    writer_kwargs = {} if schema is None else {"keypoint_schema": schema}
+    writer: DatasetWriter = get_writer(fmt, task, class_names(config.class_mode, shapes=config.shapes), **writer_kwargs)
     writer.write(splits, output_dir)
     return counts

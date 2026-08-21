@@ -6,6 +6,7 @@ import pytest
 
 from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES
 from fuse_augmentations.data.sample import Annotation
+from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_NAMES
 
 _BOX = (0.0, 0.0, 10.0, 10.0)
 _POLYGON = [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0]
@@ -44,6 +45,21 @@ def test_accepts_a_full_length_table() -> None:
     assert len(ann.keypoints or ()) == len(ANIMAL_KEYPOINT_NAMES)
 
 
+def test_accepts_a_symbol_length_table() -> None:
+    """A 7-triple table (the symbol schema's width) is stored verbatim, same as the 16-triple animal one.
+
+    A table's length alone identifies which registered keypoint family built it, so both widths must be accepted without
+    a separate "which family" argument.
+
+    """
+    table = tuple((1.0, 2.0, 2) for _ in SYMBOL_KEYPOINT_NAMES)
+
+    ann = _annotation(table)
+
+    assert ann.keypoints == table
+    assert len(ann.keypoints or ()) == len(SYMBOL_KEYPOINT_NAMES)
+
+
 def test_accepts_no_table_at_all() -> None:
     """`keypoints=None` stays the documented "not a keypoints task" state and is not validated.
 
@@ -71,7 +87,7 @@ def test_rejects_a_table_of_the_wrong_length(count: int) -> None:
     rather than failing.
 
     """
-    with pytest.raises(ValueError, match="must hold exactly"):
+    with pytest.raises(ValueError, match="registered keypoint schema"):
         _annotation(tuple((1.0, 2.0, 2) for _ in range(count)))
 
 

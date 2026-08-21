@@ -15,16 +15,21 @@ Frames are written as an animated WebP (smaller than GIF, matching the existing
 WebP assets); ``--image_format gif`` is available as a fallback.
 
 ``--shapes`` picks which vocabulary is drawn: ``geometric`` (square, rectangle,
-triangle, circle) writes ``<task>.webp``, and ``animals`` (the twelve side-profile
-silhouettes) writes ``animals-<task>.webp`` so both sets can live side by side in
-the docs. The animal scene uses fewer, larger objects, because a crocodile or a
-giraffe needs more pixels than a square to stay readable at preview size.
+triangle, circle) writes ``geometry-<task>.webp``, ``animals`` (the twelve
+side-profile silhouettes) writes ``animals-<task>.webp``, and ``symbols`` (the
+eight analytic symbols) writes ``symbols-<task>.webp`` so all three sets can live
+side by side in the docs. The animal and symbol scenes use fewer, larger objects
+than the geometric one, because a crocodile, an anchor, or a giraffe needs more
+pixels than a square to stay readable at preview size.
 
-Render every task (detection, segmentation, obb; keypoints when using animals):
+Render every task (detection, segmentation, obb; keypoints when using animals or symbols):
     python examples/animate_synthetic_dataset.py
 
 Render the animal-shape previews:
     python examples/animate_synthetic_dataset.py --shapes animals
+
+Render the symbol-shape previews:
+    python examples/animate_synthetic_dataset.py --shapes symbols
 
 Render one task:
     python examples/animate_synthetic_dataset.py --task obb --img_size 320 --num_images 6
@@ -39,9 +44,10 @@ from typing import TypedDict
 from PIL import Image, ImageDraw
 
 from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
-from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_SKELETON, animal_shapes
-from fuse_augmentations.data.config import DEFAULT_SHAPES, Task
+from fuse_augmentations.data.animals import animal_shapes
+from fuse_augmentations.data.config import DEFAULT_SHAPES, Task, keypoint_schema_for
 from fuse_augmentations.data.sample import Annotation, Sample
+from fuse_augmentations.data.symbols import symbol_shapes
 
 TASKS = ("detection", "segmentation", "obb", "keypoints")
 
@@ -55,20 +61,24 @@ class _Scene(TypedDict):
     max_size_ratio: float
 
 
-#: Drawable vocabulary per ``--shapes`` choice; ``animals`` asks for the whole animal roster, so a
-#: new animal is picked up without editing this script.
+#: Drawable vocabulary per ``--shapes`` choice; ``animals``/``symbols`` ask for their whole roster,
+#: so a new animal or symbol is picked up without editing this script.
 SHAPE_SETS = {
     "geometric": DEFAULT_SHAPES,
     "animals": animal_shapes(),
+    "symbols": symbol_shapes(),
 }
 #: Scene knobs per vocabulary. ``geometric`` reproduces the original clips byte-for-byte;
-#: ``animals`` trades object count for object size so each silhouette stays legible.
+#: ``animals``/``symbols`` trade object count for object size so each silhouette stays legible.
 SCENES: dict[str, _Scene] = {
     "geometric": {"min_objects": 5, "max_objects": 7, "min_size_ratio": 0.1, "max_size_ratio": 0.3},
     "animals": {"min_objects": 3, "max_objects": 5, "min_size_ratio": 0.2, "max_size_ratio": 0.42},
+    "symbols": {"min_objects": 3, "max_objects": 5, "min_size_ratio": 0.2, "max_size_ratio": 0.42},
 }
-#: Filename prefix per vocabulary, keeping the pre-existing asset names untouched.
-PREFIXES = {"geometric": "", "animals": "animals-"}
+#: Filename prefix per vocabulary — every family now gets an explicit prefix (``geometric`` used to
+#: write unprefixed ``detection.webp``/``segmentation.webp``/``obb.webp``; renamed to ``geometry-``
+#: so all three vocabularies read consistently in a file listing).
+PREFIXES = {"geometric": "geometry-", "animals": "animals-", "symbols": "symbols-"}
 _OVERLAY_RGB = (255, 255, 0)  # yellow annotation overlay, matching the static previews
 _KEYPOINT_COLORS = {1: (255, 165, 0), 2: (255, 255, 0)}  # visible points are bright yellow
 _SUPERSAMPLE = 2  # render overlays at 2x then downscale so diagonal edges read smooth
@@ -81,8 +91,21 @@ def _pairs(flat: list[float], scale: float) -> list[tuple[float, float]]:
     return [(flat[i] * scale, flat[i + 1] * scale) for i in range(0, len(flat), 2)]
 
 
-def _draw_annotation(draw: ImageDraw.ImageDraw, ann: Annotation, task: str, scale: float, width: int) -> None:
-    """Draw one annotation's overlay for the given task onto ``draw``."""
+def _draw_annotation(
+    draw: ImageDraw.ImageDraw,
+    ann: Annotation,
+    task: str,
+    scale: float,
+    width: int,
+    skeleton: tuple[tuple[int, int], ...] = (),
+) -> None:
+    """Draw one annotation's overlay for the given task onto ``draw``.
+
+    ``skeleton`` is the active run's keypoint schema edges — see
+    :func:`~fuse_augmentations.data.config.keypoint_schema_for` — and is only read for the
+    ``"keypoints"`` task; every other task ignores it.
+
+    """
     if task == "detection":
         x1, y1, x2, y2 = (v * scale for v in ann.bbox_xyxy)
         draw.rectangle((x1, y1, x2, y2), outline=_OVERLAY_RGB, width=width)
@@ -93,10 +116,10 @@ def _draw_annotation(draw: ImageDraw.ImageDraw, ann: Annotation, task: str, scal
         visible = {
             index: (x * scale, y * scale) for index, (x, y, visibility) in enumerate(ann.keypoints) if visibility > 0
         }
-        for first, second in ANIMAL_KEYPOINT_SKELETON:
+        for first, second in skeleton:
             if first in visible and second in visible:
                 draw.line((visible[first], visible[second]), fill=_OVERLAY_RGB, width=max(1, width // 2))
-        # 16 points pack closely together on the same silhouette; a bit more radius than
+        # Landmarks pack closely together on the same silhouette; a bit more radius than
         # width // 2 keeps each dot legible instead of thinning into the skeleton lines.
         radius = max(3, width)
         for _index, (x, y, visibility) in enumerate(ann.keypoints):
@@ -110,25 +133,29 @@ def _draw_annotation(draw: ImageDraw.ImageDraw, ann: Annotation, task: str, scal
     draw.line([*points, points[0]], fill=_OVERLAY_RGB, width=width, joint="curve")
 
 
-def _render_frame(sample: Sample, task: str, out_size: int, annotate: bool) -> Image.Image:
+def _render_frame(
+    sample: Sample, task: str, out_size: int, annotate: bool, skeleton: tuple[tuple[int, int], ...] = ()
+) -> Image.Image:
     """Render one sample as a PIL frame, optionally with the task overlay drawn on."""
     canvas = Image.fromarray(sample.image).resize((out_size * _SUPERSAMPLE,) * 2, Image.Resampling.NEAREST)
     if annotate:
         scale = out_size * _SUPERSAMPLE / sample.width
         draw = ImageDraw.Draw(canvas)
         for ann in sample.annotations:
-            _draw_annotation(draw, ann, task, scale, width=_SUPERSAMPLE * 2)
+            _draw_annotation(draw, ann, task, scale, width=_SUPERSAMPLE * 2, skeleton=skeleton)
     return canvas.resize((out_size, out_size), Image.Resampling.LANCZOS)
 
 
-def _build_frames(samples: list[Sample], task: str, out_size: int) -> tuple[list[Image.Image], list[int]]:
+def _build_frames(
+    samples: list[Sample], task: str, out_size: int, skeleton: tuple[tuple[int, int], ...] = ()
+) -> tuple[list[Image.Image], list[int]]:
     """Build the ordered (image, duration) frame lists cycling bare then annotated per sample."""
     images: list[Image.Image] = []
     durations: list[int] = []
     for sample in samples:
         images.append(_render_frame(sample, task, out_size, annotate=False))
         durations.append(_BARE_MS)
-        images.append(_render_frame(sample, task, out_size, annotate=True))
+        images.append(_render_frame(sample, task, out_size, annotate=True, skeleton=skeleton))
         durations.append(_LABELLED_MS)
     return images, durations
 
@@ -152,10 +179,16 @@ def _save_animation(images: list[Image.Image], durations: list[int], output_path
 
 
 def render(
-    samples: list[Sample], task: str, output_dir: Path, out_size: int, image_format: str, prefix: str = ""
+    samples: list[Sample],
+    task: str,
+    output_dir: Path,
+    out_size: int,
+    image_format: str,
+    prefix: str = "",
+    skeleton: tuple[tuple[int, int], ...] = (),
 ) -> Path:
     """Render one task's animation from a shared sample stream and return its path."""
-    images, durations = _build_frames(samples, task, out_size)
+    images, durations = _build_frames(samples, task, out_size, skeleton=skeleton)
     output_path = output_dir / f"{prefix}{task}.{image_format}"
     _save_animation(images, durations, output_path, image_format)
     return output_path
@@ -179,8 +212,8 @@ def main(
         num_images: Number of distinct images cycled in each clip.
         seed: Seed for the shared sample stream (byte-identical output).
         image_format: Animation container, ``webp`` or ``gif``.
-        shapes: Drawable vocabulary, ``geometric`` or ``animals``; the latter writes
-            ``animals-<task>`` files so both preview sets can coexist.
+        shapes: Drawable vocabulary, ``geometric``, ``animals``, or ``symbols``; the latter two
+            write ``<shapes>-<task>`` files so all three preview sets can coexist.
 
     Examples:
         >>> callable(main)
@@ -191,11 +224,12 @@ def main(
     assert shapes in SHAPE_SETS, f"--shapes must be one of {tuple(SHAPE_SETS)}, got {shapes!r}"
     tasks: tuple[str, ...] = TASKS if task == "all" else (task,)
     assert all(t in TASKS for t in tasks), f"--task must be one of {TASKS} or 'all', got {task!r}"
-    if shapes == "geometric" and "keypoints" in tasks:
+    schema = keypoint_schema_for(SHAPE_SETS[shapes])
+    if schema is None and "keypoints" in tasks:
         if task == "all":
             tasks = TASKS[:-1]
         else:
-            raise AssertionError("--task keypoints requires --shapes animals")
+            raise AssertionError("--task keypoints requires --shapes animals or --shapes symbols")
 
     # One shared, seeded stream so every task clip shows the same shapes, only the overlay differs.
     config_task = Task.KEYPOINTS if "keypoints" in tasks else Task.DETECTION
@@ -204,8 +238,9 @@ def main(
     samples = list(SyntheticGenerator(config).generate(num_images, seed=seed))
 
     out_dir = Path(output_dir)
+    skeleton = schema.skeleton if schema is not None else ()
     for a_task in tasks:
-        print(f"wrote {render(samples, a_task, out_dir, img_size, image_format, PREFIXES[shapes])}")
+        print(f"wrote {render(samples, a_task, out_dir, img_size, image_format, PREFIXES[shapes], skeleton)}")
 
 
 if __name__ == "__main__":

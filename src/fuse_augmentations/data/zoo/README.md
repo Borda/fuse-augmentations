@@ -2,6 +2,8 @@
 
 Each `<animal>.svg` in this directory carries **both** a silhouette outline and its 16-point keypoint annotation, so opening the file in any SVG viewer (browser, Inkscape, Quick Look) shows exactly what the loader sees: shape, colored keypoint dots, and the skeleton connecting them.
 
+This "16-point" schema and the SVG-authoring workflow below are specific to the `AnimalShape` family loaded from this directory. `fuse_augmentations.data.symbols.SymbolShape` — a second, analytically-computed keypoint-bearing family — uses its own smaller 7-point schema and has no `zoo/` assets at all (see `docs/guides/synthetic-datasets.md`'s "Symbol keypoint schema" section); nothing here applies to it.
+
 ## The 16-point anatomical topology
 
 Fixed and shared across every animal in this package — one dataset-wide `kpt_shape` for YOLO, one `ANIMAL_KEYPOINT_NAMES`/`ANIMAL_KEYPOINT_SKELETON` pair for COCO. Defined once in `fuse_augmentations.data.animals`, alongside the `AnimalShape` roster and the loader that reads these files; this file only explains how to *place* points against it, it does not redefine it. One schema covers quadrupeds, birds, and swimmers alike: a front limb is whatever the animal actually has at that slot — a paw, a wing, or a fin/flipper.
@@ -79,7 +81,7 @@ Every animal carries **both** limbs of each pair, even when the silhouette only 
 </svg>
 ```
 
-- `viewBox="0 0 1000 1000"`, integer-ish coordinates — an authoring canvas only. The loader re-normalizes every outline (subtracts the vertex mean, divides by the larger extent), so no authored coordinate survives into the package's in-memory arrays; the 1000-unit canvas exists purely so the file is editable in a real vector tool.
+- `viewBox="0 0 1000 1000"`, integer-ish coordinates — an authoring canvas only. The loader re-normalizes every outline (subtracts the outline's area centroid — its center of mass, not the vertex mean — then divides by the larger extent), so no authored coordinate survives into the package's in-memory arrays; the 1000-unit canvas exists purely so the file is editable in a real vector tool.
 - `<path id="outline">` — straight-line-only (`M`/`L`/`Z`, absolute or relative, `H`/`V` accepted). No curves, no `transform` on any element — see `fuse_augmentations.data.animals` for the exact parser contract and rejection messages.
 - `<g id="skeleton">` is a **pure visualization aid** — the line endpoints are redundant with the keypoint coordinates below them. Nothing in generation, writing, or validation reads it; it exists only so a human opening the file sees the topology, not just a dot cloud. Regenerate it (or ignore it) freely when hand-editing keypoints — it is not a source of truth.
 - `<g id="keypoints">` — one `<circle zoo:name="...">` per present keypoint, keyed on the `zoo:name` attribute (never on `id`, which editors rewrite on duplicate/paste).

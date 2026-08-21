@@ -45,6 +45,7 @@ from fuse_augmentations.data.geometry import (
     shape_polygon,
 )
 from fuse_augmentations.data.sample import Annotation, Sample
+from fuse_augmentations.data.symbols import SymbolShape, symbol_keypoints
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -136,9 +137,9 @@ class SyntheticGenerator:
     ) -> tuple[Shape, Color, NDArray[np.float64], NDArray[np.float64] | None] | None:
         """Draw one candidate shape; return it if in-bounds and non-overlapping, else ``None``.
 
-        Exactly one candidate is sampled per call (fixed RNG draw order: shape, color, size, centre x, centre y, then
-        angle when rotation applies), so the caller controls the retry budget and the RNG consumption stays
-        deterministic for a given seed.
+        Exactly one candidate is sampled per call (fixed RNG draw order: shape, color, size, centre x, centre y, angle
+        when rotation applies, then an asymmetry skew when ``asymmetry_jitter`` is set), so the caller controls the
+        retry budget and the RNG consumption stays deterministic for a given seed.
 
         The shape is drawn from ``cfg.shapes`` and the color from ``cfg.colors`` rather than the full :class:`Shape` and
         :class:`Color` vocabularies, so widening either enum never changes what an existing seeded configuration
@@ -155,17 +156,26 @@ class SyntheticGenerator:
         size_px = float(rng.uniform(cfg.min_size_ratio, cfg.max_size_ratio)) * cfg.img_size
         center = (float(rng.uniform(0, cfg.img_size)), float(rng.uniform(0, cfg.img_size)))
         angle = float(rng.uniform(0, 2 * np.pi)) if cfg.rotate and shape is not GeomShape.CIRCLE else 0.0
-        poly = shape_polygon(shape.value, center, size_px, angle)
+        skew = (
+            float(rng.uniform(-cfg.asymmetry_jitter, cfg.asymmetry_jitter))
+            if cfg.asymmetry_jitter and shape is not GeomShape.CIRCLE
+            else 0.0
+        )
+        poly = shape_polygon(shape.value, center, size_px, angle, skew)
         bbox = polygon_to_bbox_xyxy(poly)
         if _boundary_overlap(bbox, cfg.img_size) > cfg.boundary_tolerance:
             return None
         if any(bbox_iou(bbox, other) > cfg.overlap_iou for other in kept):
             return None
-        # only an AnimalShape has a landmark table; the config validator already rejects any other
-        # shape under Task.KEYPOINTS, so this narrowing can never silently drop a labeled object
+        # only AnimalShape/SymbolShape have a landmark table; the config validator already rejects
+        # any other shape under Task.KEYPOINTS, so this narrowing can never silently drop a labeled
+        # object
         keypoints = None
-        if cfg.task is Task.KEYPOINTS and isinstance(shape, AnimalShape):
-            keypoints = animal_keypoints(shape, center, size_px, angle)
+        if cfg.task is Task.KEYPOINTS:
+            if isinstance(shape, AnimalShape):
+                keypoints = animal_keypoints(shape, center, size_px, angle, skew)
+            elif isinstance(shape, SymbolShape):
+                keypoints = symbol_keypoints(shape, center, size_px, angle, skew)
         return shape, color, poly, keypoints
 
     def sample(self, rng: np.random.Generator) -> Sample:

@@ -10,7 +10,7 @@ attributes); the artwork can therefore be opened, inspected and corrected in any
 touching Python. This module is only the loader that turns those documents into NumPy tables.
 
 Each outline is a **simple** (non-self-intersecting) polygon in the unit space
-:func:`~fuse_augmentations.data.geometry._base_polygon` uses for the geometric shapes: vertex centroid
+:func:`~fuse_augmentations.data.geometry._base_polygon` uses for the geometric shapes: center of mass
 at the origin and the larger of the two extents scaled to ``1``, so multiplying by a pixel ``size``
 yields a shape bounded by ``size`` pixels. Coordinates are in screen orientation — ``+x`` right,
 ``+y`` **down** — matching Pillow's raster axes, so every animal renders upright and faces left.
@@ -59,8 +59,8 @@ Examples:
     >>> duck = ANIMAL_POLYGONS["duck"]
     >>> duck.shape[1]
     2
-    >>> bool(abs(duck.mean(axis=0)).max() < 1e-9)
-    True
+    >>> round(float((duck.max(axis=0) - duck.min(axis=0)).max()), 9)
+    1.0
     >>> ANIMAL_KEYPOINTS["duck"].shape
     (16, 2)
     >>> sorted(ANIMAL_KEYPOINTS) == sorted(ANIMAL_POLYGONS)
@@ -82,8 +82,9 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from fuse_augmentations.data.landmarks import KeypointSchema, _normalized_pair
+
 if TYPE_CHECKING:
-    from collections.abc import Sequence
     from importlib.resources.abc import Traversable
 
     from numpy.typing import NDArray
@@ -238,101 +239,6 @@ def _svg_tag(tag: str) -> str:
 def _zoo_attr(name: str) -> str:
     """Return ``name`` fully qualified with the ``zoo:`` namespace, for ``ElementTree`` lookups."""
     return f"{{{_ZOO_NS}}}{name}"
-
-
-def _frame(points: NDArray[np.float64]) -> tuple[NDArray[np.float64], float]:
-    """Return the ``(offset, extent)`` that normalize an outline into unit space.
-
-    Args:
-        points: ``(num_points, 2)`` raw outline array.
-
-    Returns:
-        The vertex mean to subtract and the larger extent to divide by.
-
-    Raises:
-        ValueError: If the outline collapses to a point.
-
-    """
-    offset: NDArray[np.float64] = points.mean(axis=0)
-    extent = float(np.max(points.max(axis=0) - points.min(axis=0)))
-    if extent <= 0.0:
-        raise ValueError("outline has zero extent; every vertex is identical")
-    return offset, extent
-
-
-def _normalized(
-    vertices: Sequence[tuple[float, float]],
-) -> tuple[NDArray[np.float64], NDArray[np.float64], float]:
-    """Center a raw outline on its vertex mean and scale its larger extent to ``1``.
-
-    Args:
-        vertices: ``(x, y)`` outline points in any convenient scale, ordered along the outline
-            (winding direction is irrelevant).
-
-    Returns:
-        The read-only ``(num_points, 2)`` float array with zero vertex mean and a maximum extent of
-        exactly ``1``, followed by the ``(offset, extent)`` frame it was normalized through. The
-        frame is handed back so a caller mapping a second table into the same frame — see
-        :func:`_normalized_pair` — reuses this measurement instead of calling :func:`_frame` on the
-        same outline a second time. The array is frozen because it is shared by every caller;
-        consumers scale it into a fresh array rather than mutating the table.
-
-    Raises:
-        ValueError: If the outline has fewer than three points or collapses to a point.
-
-    """
-    points = np.asarray(vertices, dtype=np.float64)
-    if points.ndim != 2 or points.shape[0] < 3 or points.shape[1] != 2:
-        raise ValueError(f"an outline needs at least 3 (x, y) points, got array of shape {points.shape}")
-    offset, extent = _frame(points)
-    scaled: NDArray[np.float64] = (points - offset) / extent
-    scaled.setflags(write=False)
-    return scaled, offset, extent
-
-
-def _normalized_pair(
-    outline: Sequence[tuple[float, float]], landmarks: Sequence[tuple[float, float]]
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Normalize an outline and map its landmarks through the *outline's* transform.
-
-    Landmarks are authored in the same coordinates as the outline they annotate, so they must be
-    centred and scaled by the outline's own mean and extent — normalizing them independently would
-    re-centre them on their own mean and detach them from the silhouette. Pairing the two tables in
-    one call is what makes that impossible to get wrong.
-
-    Args:
-        outline: ``(x, y)`` outline points; see :func:`_normalized`.
-        landmarks: The sixteen ``(x, y)`` landmarks in :data:`ANIMAL_KEYPOINT_NAMES` order, in the same
-            coordinates as ``outline``. An absent optional landmark is ``(nan, nan)``.
-
-    Returns:
-        The read-only normalized ``(num_points, 2)`` outline and the read-only ``(16, 2)`` landmark
-        table. Unlike the outline, the landmark table is **not** self-normalized: its mean is not the
-        origin and its extent is not ``1``. NaN rows pass through unchanged: this call only ever
-        measures the *outline* (via :func:`_frame`), never the landmark table, so a NaN landmark can
-        never poison the offset/extent it and every other landmark are mapped through.
-
-    Raises:
-        ValueError: If the outline is degenerate (see :func:`_normalized`), the landmark table does
-            not hold exactly ``len(ANIMAL_KEYPOINT_NAMES)`` ``(x, y)`` points, or a row has exactly one NaN
-            coordinate (a parser bug — a real absence is NaN in both).
-
-    """
-    polygon, offset, extent = _normalized(outline)
-    points = np.asarray(landmarks, dtype=np.float64)
-    if points.shape != (len(ANIMAL_KEYPOINT_NAMES), 2):
-        raise ValueError(
-            f"a keypoint table needs exactly {len(ANIMAL_KEYPOINT_NAMES)} (x, y) landmarks, "
-            f"got array of shape {points.shape}"
-        )
-    nan_mask = np.isnan(points)
-    half_nan = nan_mask.any(axis=1) & ~nan_mask.all(axis=1)
-    if half_nan.any():
-        bad = [ANIMAL_KEYPOINT_NAMES[i] for i in np.nonzero(half_nan)[0]]
-        raise ValueError(f"keypoint(s) {bad} have exactly one NaN coordinate; an absent landmark must be NaN in both")
-    mapped: NDArray[np.float64] = (points - offset) / extent
-    mapped.setflags(write=False)
-    return polygon, mapped
 
 
 def _parse_path_d(d: str, name: str) -> list[tuple[float, float]]:
@@ -551,7 +457,7 @@ def _load() -> tuple[
     for name in ANIMAL_NAMES:
         outline, present, source = _read_svg(name)
         table = [present.get(key, (np.nan, np.nan)) for key in ANIMAL_KEYPOINT_NAMES]
-        polygons[name], keypoints[name] = _normalized_pair(outline, table)
+        polygons[name], keypoints[name] = _normalized_pair(outline, table, ANIMAL_KEYPOINT_NAMES)
         sources[name] = source
     return polygons, keypoints, sources
 
@@ -579,6 +485,22 @@ ANIMAL_KEYPOINTS: Mapping[str, NDArray[np.float64]] = MappingProxyType(_KEYPOINT
 ANIMAL_SOURCES: Mapping[str, Mapping[str, str]] = MappingProxyType({
     animal: MappingProxyType(source) for animal, source in _SOURCES.items()
 })
+
+#: Identity permutation: this schema's ``left``/``right`` are viewer-relative, not the animal's own
+#: left/right (a side-profile silhouette cannot truly tell them apart — see
+#: :data:`ANIMAL_KEYPOINT_NAMES`), so mirroring a side profile never turns a near limb into a far
+#: one and every landmark maps to itself under a horizontal flip.
+ANIMAL_KEYPOINT_FLIP_IDX: tuple[int, ...] = tuple(range(len(ANIMAL_KEYPOINT_NAMES)))
+
+#: The complete keypoint schema for every :class:`AnimalShape` — the one artifact
+#: :func:`~fuse_augmentations.data.config.keypoint_schema_for` and the writers need to describe an
+#: animal ``Task.KEYPOINTS`` run.
+ANIMAL_KEYPOINT_SCHEMA = KeypointSchema(
+    names=ANIMAL_KEYPOINT_NAMES,
+    skeleton=ANIMAL_KEYPOINT_SKELETON,
+    flip_idx=ANIMAL_KEYPOINT_FLIP_IDX,
+    shape_values=ANIMAL_NAMES,
+)
 
 
 def animal_shapes(count: int | None = None) -> tuple[AnimalShape, ...]:
@@ -620,15 +542,15 @@ def animal_shapes(count: int | None = None) -> tuple[AnimalShape, ...]:
 
 
 def animal_keypoints(
-    shape: AnimalShape, center: tuple[float, float], size: float, angle: float = 0.0
+    shape: AnimalShape, center: tuple[float, float], size: float, angle: float = 0.0, skew: float = 0.0
 ) -> NDArray[np.float64]:
     """Place one animal's landmark table into image coordinates.
 
-    The table is looked up in :data:`ANIMAL_KEYPOINTS`, scaled, rotated, and translated exactly as
-    :func:`~fuse_augmentations.data.geometry.shape_polygon` treats the matching outline, so passing
-    the same ``center``, ``size``, and ``angle`` to both puts every landmark on the silhouette that
-    was drawn. No randomness is involved: the result is a pure function of the placement the
-    generator already sampled.
+    The table is looked up in :data:`ANIMAL_KEYPOINTS`, scaled, skewed, rotated, and translated
+    exactly as :func:`~fuse_augmentations.data.geometry.shape_polygon` treats the matching outline,
+    so passing the same ``center``, ``size``, ``angle``, and ``skew`` to both puts every landmark on
+    the silhouette that was drawn. No randomness is involved: the result is a pure function of the
+    placement the generator already sampled.
 
     Args:
         shape: An :class:`AnimalShape` member. The geometric shapes have no landmark table at all
@@ -637,6 +559,8 @@ def animal_keypoints(
         center: Target center ``(x, y)`` in pixels — the same value passed to ``shape_polygon``.
         size: Bounding size in pixels — the same value passed to ``shape_polygon``.
         angle: Rotation in radians about the shape center — likewise.
+        skew: Signed fraction narrowing one pre-rotation half — likewise; see
+            :attr:`~fuse_augmentations.data.config.SyntheticConfig.asymmetry_jitter`.
 
     Returns:
         ``(16, 2)`` float array of landmark coordinates in image pixels, ordered by
@@ -666,4 +590,4 @@ def animal_keypoints(
         known = ", ".join(ANIMAL_KEYPOINTS)
         raise ValueError(f"shape {shape.value!r} has no keypoint table; expected one of {known}")
     # The stored table is frozen, so multiplying returns a fresh writable array, never an alias.
-    return _placed(table * size, center, angle)
+    return _placed(table * size, center, angle, skew)

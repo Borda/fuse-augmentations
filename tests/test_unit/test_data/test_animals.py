@@ -20,8 +20,6 @@ from fuse_augmentations.data.animals import (
     ANIMAL_POLYGONS,
     ANIMAL_SOURCES,
     AnimalShape,
-    _normalized,
-    _normalized_pair,
     _parse_path_d,
     _read_keypoints,
     _read_svg,
@@ -31,6 +29,19 @@ from fuse_augmentations.data.animals import (
     animal_keypoints,
 )
 from fuse_augmentations.data.geometry import GeomShape, polygon_to_bbox_xyxy, shape_polygon
+from fuse_augmentations.data.landmarks import _normalized, _normalized_pair
+
+
+def _area_centroid(points: np.ndarray) -> np.ndarray:
+    """Independent shoelace-formula centroid, kept separate from `landmarks._polygon_centroid`."""
+    x, y = points[:, 0], points[:, 1]
+    x_next, y_next = np.roll(x, -1), np.roll(y, -1)
+    cross = x * y_next - x_next * y
+    area = cross.sum() / 2.0
+    cx = ((x + x_next) * cross).sum() / (6.0 * area)
+    cy = ((y + y_next) * cross).sum() / (6.0 * area)
+    return np.array([cx, cy])
+
 
 ZOO_ANIMAL_NAMES = ANIMAL_NAMES
 
@@ -199,14 +210,17 @@ def test_table_has_no_repeated_vertex(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
-def test_table_vertex_mean_is_the_origin(name: str) -> None:
-    """The outline is centred on its vertex mean, matching `_base_polygon`'s convention.
+def test_table_area_centroid_is_the_origin(name: str) -> None:
+    """The outline is centred on its area centroid (center of mass), not its vertex mean.
 
-    `shape_polygon` translates the base outline by the requested centre without re-centring, so a table whose mean
-    drifts would place objects off their annotated centre.
+    `shape_polygon` translates the base outline by the requested centre without re-centring, so a
+    table whose centroid drifts would place objects off their annotated centre. A vertex mean would
+    not do here: a traced silhouette's vertices are unevenly spread along its edges (dense around a
+    curved neck, sparse along a straight back), so only the area centroid reliably lands on the
+    outline's true visual middle.
 
     """
-    assert ANIMAL_POLYGONS[name].mean(axis=0) == pytest.approx([0.0, 0.0], abs=1e-12)
+    assert _area_centroid(ANIMAL_POLYGONS[name]) == pytest.approx([0.0, 0.0], abs=1e-9)
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
@@ -295,7 +309,7 @@ def test_polygon_scales_and_translates_like_a_geometric_shape(name: str) -> None
     poly = shape_polygon(name, center=(120.0, 80.0), size=40.0)
     x1, y1, x2, y2 = polygon_to_bbox_xyxy(poly)
     assert max(x2 - x1, y2 - y1) == pytest.approx(40.0)
-    assert poly.mean(axis=0) == pytest.approx([120.0, 80.0], abs=1e-9)
+    assert _area_centroid(poly) == pytest.approx([120.0, 80.0], abs=1e-6)
 
 
 @pytest.mark.parametrize("name", ANIMAL_NAMES)
@@ -561,7 +575,7 @@ def test_normalized_pair_rejects_a_wrong_sized_landmark_table() -> None:
     """
     outline = [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0)]
     with pytest.raises(ValueError, match="exactly 16"):
-        _normalized_pair(outline, [(0.5, 0.5), (1.0, 0.5)])
+        _normalized_pair(outline, [(0.5, 0.5), (1.0, 0.5)], ANIMAL_KEYPOINT_NAMES)
 
 
 def test_normalized_pair_maps_landmarks_through_the_outline_frame() -> None:
@@ -574,7 +588,7 @@ def test_normalized_pair_maps_landmarks_through_the_outline_frame() -> None:
     outline = [(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]
     corners = [(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]
     landmarks_in = [(10.0, 5.0), *corners, *corners, *corners, *corners[:3]]  # 1 centre + 15 corner repeats = 16
-    polygon, landmarks = _normalized_pair(outline, landmarks_in)
+    polygon, landmarks = _normalized_pair(outline, landmarks_in, ANIMAL_KEYPOINT_NAMES)
     assert landmarks[0] == pytest.approx([0.0, 0.0])  # outline centre maps to the origin
     assert landmarks[1:5] == pytest.approx(polygon)  # corners map onto the normalized corners
 
@@ -589,7 +603,7 @@ def test_normalized_pair_rejects_a_half_nan_landmark_row() -> None:
     outline = [(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]
     landmarks = [(float("nan"), 5.0), *([(1.0, 1.0)] * 15)]
     with pytest.raises(ValueError, match="NaN"):
-        _normalized_pair(outline, landmarks)
+        _normalized_pair(outline, landmarks, ANIMAL_KEYPOINT_NAMES)
 
 
 def test_absent_keypoints_match_the_pinned_matrix() -> None:

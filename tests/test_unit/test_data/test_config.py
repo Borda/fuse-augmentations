@@ -17,6 +17,7 @@ from fuse_augmentations.data.config import (
     class_names,
 )
 from fuse_augmentations.data.geometry import GeomShape
+from fuse_augmentations.data.symbols import SymbolShape
 
 
 def test_split_ratios_default_sums_to_one() -> None:
@@ -62,6 +63,9 @@ def test_synthetic_config_rejects_inverted_size_ratio() -> None:
         ({"boundary_tolerance": 2.0}, "boundary_tolerance"),
         ({"max_placement_attempts": 0}, "max_placement_attempts"),
         ({"max_placement_attempts": -5}, "max_placement_attempts"),
+        ({"asymmetry_jitter": -0.1}, "asymmetry_jitter"),
+        ({"asymmetry_jitter": 0.5}, "asymmetry_jitter"),
+        ({"asymmetry_jitter": 0.8}, "asymmetry_jitter"),
     ],
 )
 def test_synthetic_config_rejects_out_of_range_placement_knobs(kwargs: dict[str, float], match: str) -> None:
@@ -78,10 +82,16 @@ def test_synthetic_config_accepts_boundary_values(value: float) -> None:
     assert config.max_placement_attempts == 1
 
 
+@pytest.mark.parametrize("value", [0.0, 0.15, 0.499])
+def test_synthetic_config_accepts_asymmetry_jitter_within_range(value: float) -> None:
+    """`asymmetry_jitter` accepts its full half-open range `[0, 0.5)`, including both edges tested."""
+    assert SyntheticConfig(asymmetry_jitter=value).asymmetry_jitter == value
+
+
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        (ClassMode.SHAPE, [s.value for s in (*GeomShape, *AnimalShape)]),
+        (ClassMode.SHAPE, [s.value for s in (*GeomShape, *AnimalShape, *SymbolShape)]),
         (ClassMode.COLOR, [c.value for c in Color]),
     ],
 )
@@ -91,7 +101,7 @@ def test_class_names(mode: ClassMode, expected: list[str]) -> None:
 
 
 def test_shape_class_vocabulary_is_pinned_in_order() -> None:
-    """The 16 shape class names, pinned as a literal in their exact class-id order.
+    """The 23 shape class names, pinned as a literal in their exact class-id order.
 
     A class id is this list's index, and seeded runs are documented as byte-identical across releases, so reordering or
     renaming a member silently relabels every previously exported dataset. Derived assertions cannot catch that — only a
@@ -115,12 +125,21 @@ def test_shape_class_vocabulary_is_pinned_in_order() -> None:
         "kangaroo",
         "flamingo",
         "crocodile",
+        "kite",
+        "trapezoid",
+        "house",
+        "arrow",
+        "cross",
+        "teardrop",
+        "anchor",
     ]
 
 
 def test_class_names_shape_color_product_size() -> None:
     """Shape-color class count is product of shape and color counts."""
-    assert len(class_names(ClassMode.SHAPE_COLOR)) == (len(GeomShape) + len(AnimalShape)) * len(Color)
+    assert len(class_names(ClassMode.SHAPE_COLOR)) == (len(GeomShape) + len(AnimalShape) + len(SymbolShape)) * len(
+        Color
+    )
 
 
 def test_class_names_shape_color_pins_shape_major_color_minor_order() -> None:
@@ -179,7 +198,7 @@ def test_class_names_shapes_param_ignored_under_color_mode() -> None:
 
 
 def test_class_names_shapes_param_defaults_to_full_vocabulary() -> None:
-    """Omitting `shapes` still returns the full 16-member vocabulary, unchanged from before the parameter existed.
+    """Omitting `shapes` still returns the full 24-member vocabulary, unchanged from before the parameter existed.
 
     The parameter is opt-in: existing callers (the generator, the writers, `_class_ids`) call `class_names` with no
     `shapes` argument and must keep seeing the full span.
@@ -191,7 +210,7 @@ def test_class_names_shapes_param_defaults_to_full_vocabulary() -> None:
 def test_class_id_round_trips() -> None:
     """Class ID round-trips work for all modes, shapes, and colors."""
     for mode in ClassMode:
-        for shape in (*GeomShape, *AnimalShape):
+        for shape in (*GeomShape, *AnimalShape, *SymbolShape):
             for color in Color:
                 idx = class_id_of(shape, color, mode)
                 assert 0 <= idx < len(class_names(mode))
@@ -374,14 +393,27 @@ def test_colors_rejects_non_color_elements(bad: tuple[object, ...]) -> None:
     ],
 )
 def test_keypoints_task_rejects_shapes_without_a_keypoint_table(bad_shapes: tuple[object, ...]) -> None:
-    """`Task.KEYPOINTS` refuses any shape tuple that includes a non-animal shape.
+    """`Task.KEYPOINTS` refuses any shape tuple that includes a geometric shape.
 
-    Only `AnimalShape` members carry a landmark table; pairing `Task.KEYPOINTS` with a geometric shape (alone or mixed
-    with an animal) would otherwise reach the generator and fail deep inside landmark lookup instead of at construction.
+    Only `AnimalShape` and `SymbolShape` members carry a landmark table; pairing `Task.KEYPOINTS` with a geometric shape
+    (alone or mixed with a keypoint-bearing shape) would otherwise reach the generator and fail deep inside landmark
+    lookup instead of at construction.
 
     """
     with pytest.raises(ValueError, match="needs a keypoint table"):
         SyntheticConfig(task=Task.KEYPOINTS, shapes=bad_shapes)
+
+
+def test_keypoints_task_rejects_shapes_mixing_two_keypoint_families() -> None:
+    """`Task.KEYPOINTS` refuses a shape tuple that mixes `AnimalShape` and `SymbolShape` members.
+
+    Each family carries its own fixed-width landmark schema (16 animal names vs. 7 symbol names), and a dataset carries
+    exactly one dataset-wide `kpt_shape`/category `keypoints` list, so mixing the two families — even though every shape
+    individually has a table — is still unrepresentable and must be rejected at construction.
+
+    """
+    with pytest.raises(ValueError, match="same keypoint-bearing family"):
+        SyntheticConfig(task=Task.KEYPOINTS, shapes=(AnimalShape.DUCK, SymbolShape.KITE))
 
 
 def test_task_rejects_a_value_that_is_not_a_task_member() -> None:

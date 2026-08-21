@@ -50,19 +50,63 @@ Pass a real path instead of the temporary directory to keep the dataset. The sam
 
 ## Shapes, colors, and classes
 
-Shapes are drawn on a gray canvas at random positions, sizes, and rotations, in three colors (`red`, `green`, `blue`). The shape vocabulary has two families: four **geometric** shapes (`square`, `rectangle`, `triangle`, `circle`) and twelve **animal** silhouettes (`duck`, `elephant`, `giraffe`, `fish`, `rabbit`, `camel`, `eagle`, `penguin`, `whale`, `kangaroo`, `flamingo`, `crocodile` — see [Animal shapes](#animal-shapes)). Only the geometric four are drawn unless you opt in.
+Shapes are drawn on a gray canvas at random positions, sizes, and rotations, in three colors (`red`, `green`, `blue`). The shape vocabulary has three families: four **geometric** shapes (`square`, `rectangle`, `triangle`, `circle`), twelve **animal** silhouettes (`duck`, `elephant`, `giraffe`, `fish`, `rabbit`, `camel`, `eagle`, `penguin`, `whale`, `kangaroo`, `flamingo`, `crocodile` — see [Animal shapes](#animal-shapes)), and seven **symbol** shapes (`kite`, `trapezoid`, `house`, `arrow`, `cross`, `teardrop`, `anchor` — see [Symbol shapes](#symbol-shapes)). Only the geometric four are drawn unless you opt in.
+
+### Shape reference
+
+A field-guide-style lookup of every shape and its plain axis-aligned detection box (blue), upright at its own authored orientation exactly as drawn — not sampled from the generator, so no random color, rotation, or `asymmetry_jitter`. Every symbol and animal is authored mirror-symmetric about its own vertical axis, so this is what keeps a reference recognizable: an `arrow` pointing up, a `house` with its roof up, a `kite` on its long axis. The blue box here is the detection box at this fixed reference position — **not** the minimum-area oriented bounding box (see [Tasks](#tasks)) the generator's actually-rotated samples carry; that box is a rotated quadrilateral in general, not always axis-aligned even at this same unrotated pose (the `arrow`'s true minimum-area OBB, for instance, is a diamond flush to its barb tips), and drawing it here at a fixed angle would show one arbitrary rotation rather than the shape itself. Animals and symbols also show their keypoint schema (dots and skeleton) in orange, matching the animated previews' occluded-keypoint color.
+
+=== "Geometric"
+
+    |                            Reference                            | Shape       | Details                                                                                                                                             |
+    | :-------------------------------------------------------------: | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+    |    ![square](../assets/shape-references/geometry-square.png)    | `square`    | Axis-aligned, 4-fold symmetric — under rotation its OBB stays axis-aligned too.                                                                     |
+    | ![rectangle](../assets/shape-references/geometry-rectangle.png) | `rectangle` | Non-square — under rotation its OBB carries real orientation.                                                                                       |
+    |  ![triangle](../assets/shape-references/geometry-triangle.png)  | `triangle`  | Obtuse-scalene, no symmetry at all — the only shape here whose minimum-area OBB is a unique, non-tied minimum under rotation (see [Tasks](#tasks)). |
+    |    ![circle](../assets/shape-references/geometry-circle.png)    | `circle`    | Rotation-invariant — its OBB collapses to the axis-aligned box at every angle.                                                                      |
+
+=== "Symbols"
+
+    |                           Reference                            | Shape       | Details                                                                                                                                                             |
+    | :------------------------------------------------------------: | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+    |      ![kite](../assets/shape-references/symbols-kite.png)      | `kite`      | Diamond with unequal top/bottom diagonals — convex.                                                                                                                 |
+    | ![trapezoid](../assets/shape-references/symbols-trapezoid.png) | `trapezoid` | Isosceles trapezoid, short side up — convex.                                                                                                                        |
+    |     ![house](../assets/shape-references/symbols-house.png)     | `house`     | Square body with a triangular roof — convex.                                                                                                                        |
+    |     ![arrow](../assets/shape-references/symbols-arrow.png)     | `arrow`     | Up-pointing arrow with two barbs — concave; under rotation its true minimum-area OBB is a diamond flush to the barb tips, not axis-aligned like the box shown here. |
+    |     ![cross](../assets/shape-references/symbols-cross.png)     | `cross`     | Latin cross, lower arm longer — concave.                                                                                                                            |
+    |  ![teardrop](../assets/shape-references/symbols-teardrop.png)  | `teardrop`  | Round top tapering to a bottom point — convex.                                                                                                                      |
+    |    ![anchor](../assets/shape-references/symbols-anchor.png)    | `anchor`    | Ring, stock, shaft, and two flukes — concave.                                                                                                                       |
+
+=== "Animals"
+
+    |                           Reference                            | Shape       | Details                   |
+    | :------------------------------------------------------------: | ----------- | ------------------------- |
+    |      ![duck](../assets/shape-references/animals-duck.png)      | `duck`      | upright-bird              |
+    |  ![elephant](../assets/shape-references/animals-elephant.png)  | `elephant`  | bulky-quadruped           |
+    |   ![giraffe](../assets/shape-references/animals-giraffe.png)   | `giraffe`   | tall-thin                 |
+    |      ![fish](../assets/shape-references/animals-fish.png)      | `fish`      | streamlined               |
+    |    ![rabbit](../assets/shape-references/animals-rabbit.png)    | `rabbit`    | compact-eared             |
+    |     ![camel](../assets/shape-references/animals-camel.png)     | `camel`     | bulky-quadruped-humped    |
+    |     ![eagle](../assets/shape-references/animals-eagle.png)     | `eagle`     | upright-bird              |
+    |   ![penguin](../assets/shape-references/animals-penguin.png)   | `penguin`   | upright-bird              |
+    |     ![whale](../assets/shape-references/animals-whale.png)     | `whale`     | streamlined-aquatic-large |
+    |  ![kangaroo](../assets/shape-references/animals-kangaroo.png)  | `kangaroo`  | hopping-marsupial         |
+    |  ![flamingo](../assets/shape-references/animals-flamingo.png)  | `flamingo`  | long-legged-wader         |
+    | ![crocodile](../assets/shape-references/animals-crocodile.png) | `crocodile` | sprawling-reptile         |
+
+Each reference is scaled independently to the largest size that keeps its own outline inside the frame, so a thin shape (the triangle) and a tall one (the giraffe) each fill their own frame rather than sharing one scale sized for the largest shape. Regenerate these with `python examples/render_shape_reference.py` (writes into `docs/assets/shape-references/`, one `<prefix><shape>.png` file per shape; `--families symbols` to regenerate just one family).
 
 `class_mode` selects how object classes are derived:
 
 | `class_mode`  | Classes                                           |
 | ------------- | ------------------------------------------------- |
-| `shape`       | all 16 shape names, in vocabulary order           |
+| `shape`       | all 23 shape names, in vocabulary order           |
 | `color`       | red, green, blue                                  |
-| `shape_color` | Cartesian product, e.g. `red_square` (48 classes) |
+| `shape_color` | Cartesian product, e.g. `red_square` (69 classes) |
 
-The class vocabulary always spans the full shape enum, independently of which shapes a run actually draws. A class id therefore means the same thing in every dataset: a giraffes-only run still declares all 16 shape classes and uses giraffe's id rather than renumbering it to `0`.
+The class vocabulary always spans the full shape enum, independently of which shapes a run actually draws. A class id therefore means the same thing in every dataset: a giraffes-only run still declares all 23 shape classes and uses giraffe's id rather than renumbering it to `0`.
 
-`rectangle` (non-square) plus a random per-shape rotation give oriented boxes real orientation; a circle is rotation-invariant, so its OBB collapses to the axis-aligned box. Every animal silhouette is asymmetric, so all twelve carry orientation.
+`rectangle` (non-square) plus a random per-shape rotation give oriented boxes real orientation; a circle is rotation-invariant, so its OBB collapses to the axis-aligned box. Every animal silhouette is asymmetric, so all twelve carry orientation — and so does every symbol; three of the seven (`arrow`, `cross`, `anchor`) are concave, so their segmentation polygon and OBB carry information an axis-aligned box alone does not.
 
 ## Animal shapes
 
@@ -110,9 +154,9 @@ all_animals = SyntheticConfig(task=Task.KEYPOINTS, shapes=animal_shapes())  # al
 assert len(all_animals.shapes) == 12
 ```
 
-`animal_shapes(n)` is a prefix of the `AnimalShape` declaration order, so the same `n` names the same species on every call — a thirteenth animal could only extend the tail of that list. `shapes` itself stays a plain `tuple[Shape, ...]` — where `Shape` is the `GeomShape | AnimalShape` union — and the helper only builds one. A count outside `[0, 12]` raises `ValueError` rather than clamping.
+`animal_shapes(n)` is a prefix of the `AnimalShape` declaration order, so the same `n` names the same species on every call — a thirteenth animal could only extend the tail of that list. `shapes` itself stays a plain `tuple[Shape, ...]` — where `Shape` is the `GeomShape | AnimalShape | SymbolShape` union — and the helper only builds one animal-shaped tuple; `symbol_shapes()` is its counterpart for the symbol family (see [Symbol shapes](#symbol-shapes)). A count outside `[0, 12]` raises `ValueError` rather than clamping.
 
-All four tasks work on animal shapes; `keypoints` is animal-only (the geometric shapes have no keypoint tables):
+All four tasks work on animal shapes; `keypoints` is available for the animal and symbol families — not the geometric shapes, which have no keypoint tables:
 
 === "Detection"
 
@@ -132,6 +176,68 @@ All four tasks work on animal shapes; `keypoints` is animal-only (the geometric 
 
 Regenerate these clips with `python examples/animate_synthetic_dataset.py --shapes animals --task all`.
 
+## Symbol shapes
+
+Pass `shapes=` (or the CLI's `--shapes symbols`) to draw seven analytic 2D symbols instead of the four geometric shapes. Unlike the animals, these are computed from formulas rather than traced from source art — there is no artwork to attribute — but each is still asymmetric enough to keep a real orientation under rotation, and each is drawn mirror-symmetric about its own vertical axis (see [Symbol keypoint schema](#symbol-keypoint-schema)).
+
+| Shape       | Outline                                   | Convex? |
+| ----------- | ----------------------------------------- | ------- |
+| `kite`      | diamond with unequal top/bottom diagonals | yes     |
+| `trapezoid` | isosceles trapezoid, short side up        | yes     |
+| `house`     | square body with a triangular roof        | yes     |
+| `arrow`     | up-pointing arrow with two barbs          | no      |
+| `cross`     | Latin cross, lower arm longer             | no      |
+| `teardrop`  | round top tapering to a bottom point      | yes     |
+| `anchor`    | ring, stock, shaft, and two flukes        | no      |
+
+There is no plain-triangle symbol: an isosceles triangle both collides in name with the geometric family's `triangle` and, being acute, has a minimum-area OBB with no unique answer (all three candidate edges tie — see [Tasks](#tasks)) — the same problem that motivated redesigning `GeomShape.TRIANGLE` into an obtuse-scalene shape, not worth solving twice for a shape this family does not need to keep. `arrow`, `cross`, and `anchor` are concave, so their segmentation polygon and OBB carry real shape information an axis-aligned box does not.
+
+### Selecting symbols
+
+`symbol_shapes()` mirrors `animal_shapes()` — name the members explicitly, or take a stable prefix:
+
+```python
+from fuse_augmentations.data.config import SyntheticConfig, Task
+from fuse_augmentations.data.symbols import SymbolShape, symbol_shapes
+
+explicit = SyntheticConfig(
+    task=Task.KEYPOINTS, shapes=(SymbolShape.KITE, SymbolShape.ANCHOR)
+)  # explicit
+assert explicit.shapes == (SymbolShape.KITE, SymbolShape.ANCHOR)
+
+first_three = SyntheticConfig(
+    task=Task.KEYPOINTS, shapes=symbol_shapes(3)
+)  # kite, trapezoid, house
+assert first_three.shapes == (
+    SymbolShape.KITE,
+    SymbolShape.TRAPEZOID,
+    SymbolShape.HOUSE,
+)
+
+all_symbols = SyntheticConfig(task=Task.KEYPOINTS, shapes=symbol_shapes())  # all seven
+assert len(all_symbols.shapes) == 7
+```
+
+A dataset can draw from the animal family or the symbol family under `keypoints`, but never both at once — see [Symbol keypoint schema](#symbol-keypoint-schema) for why.
+
+=== "Detection"
+
+    ![Synthetic detection sample with symbol shapes](../assets/datasets/symbols-detection.webp)
+
+=== "Segmentation"
+
+    ![Synthetic segmentation sample with symbol shapes](../assets/datasets/symbols-segmentation.webp)
+
+=== "OBB"
+
+    ![Synthetic OBB sample with symbol shapes](../assets/datasets/symbols-obb.webp)
+
+=== "Keypoints / pose"
+
+    ![Synthetic keypoint sample with symbol shapes](../assets/datasets/symbols-keypoints.webp)
+
+Regenerate these clips with `python examples/animate_synthetic_dataset.py --shapes symbols --task all`.
+
 ## Tasks
 
 Each task exposes a different annotation representation. In the looping previews below (yellow overlay), every generated image appears first bare, then with its exported annotation drawn back on. The clips share the same seeded sample stream, so the shapes line up one-for-one — only the label type differs.
@@ -140,19 +246,19 @@ Each task exposes a different annotation representation. In the looping previews
 
     Axis-aligned boxes.
 
-    ![Synthetic detection sample with axis-aligned boxes](../assets/datasets/detection.webp)
+    ![Synthetic detection sample with axis-aligned boxes](../assets/datasets/geometry-detection.webp)
 
 === "Segmentation"
 
     Filled-shape polygons.
 
-    ![Synthetic segmentation sample with polygon outlines](../assets/datasets/segmentation.webp)
+    ![Synthetic segmentation sample with polygon outlines](../assets/datasets/geometry-segmentation.webp)
 
 === "OBB"
 
     Oriented boxes.
 
-    ![Synthetic OBB sample with oriented boxes](../assets/datasets/obb.webp)
+    ![Synthetic OBB sample with oriented boxes](../assets/datasets/geometry-obb.webp)
 
 === "Keypoints / pose"
 
@@ -164,7 +270,9 @@ Regenerate these clips with `python examples/animate_synthetic_dataset.py`.
 
 ## Keypoints / pose
 
-The `keypoints` task is available for the twelve animal silhouettes and uses one fixed, dataset-wide 16-point anatomical schema — a single set of names covers quadrupeds, birds, and swimmers, because the `front_limb_*` pair is whatever the animal actually has at that slot (paws, wings, or fins/flippers). `left` is the limb nearer the viewer, `right` the far one — a documented convention, since a side profile cannot truly tell left from right. Because the far point sits only slightly offset from the near one (0.8–4.1px apart at shipped instance-size defaults), left/right-paired landmarks are visually indistinguishable at default rendering sizes — worth knowing before writing a custom evaluator or training on this data.
+The `keypoints` task is available for two shape families, each with its own fixed, dataset-wide schema: the twelve **animal** silhouettes use a 16-point anatomical schema (below), and the seven **symbol** shapes use a 7-point structural schema (see [Symbol keypoint schema](#symbol-keypoint-schema)). A dataset carries exactly one — Ultralytics' YOLO pose format declares one `kpt_shape` and COCO one `keypoints` list per category, so `shapes` must belong entirely to one family under this task; mixing the two, or pairing a geometric shape with either, raises `ValueError` at `SyntheticConfig` construction.
+
+A single set of animal names covers quadrupeds, birds, and swimmers, because the `front_limb_*` pair is whatever the animal actually has at that slot (paws, wings, or fins/flippers). `left` is the limb nearer the viewer, `right` the far one — a documented convention, since a side profile cannot truly tell left from right. Because the far point sits only slightly offset from the near one (0.8–4.1px apart at shipped instance-size defaults), left/right-paired landmarks are visually indistinguishable at default rendering sizes — worth knowing before writing a custom evaluator or training on this data.
 
 | Index | Name                | Meaning                                                                               |
 | ----- | ------------------- | ------------------------------------------------------------------------------------- |
@@ -197,7 +305,7 @@ Every landmark is a pure rigid transform (translate/scale/rotate) of its package
 
 An absent landmark and a canvas-clipped landmark both serialize identically as `v=0` (matching COCO's own "not labeled" convention). A custom-eval author computing per-keypoint recall or OKS naively — treating every `v=0` as a detector miss — will see a systematic bias on `fish` and `whale`, whose four hind-leg points are structurally absent rather than missed.
 
-All 16 classes are still emitted as COCO categories, but the keypoint schema and skeleton are attached only to the animal categories — the four geometric-shape categories (`square`, `rectangle`, `triangle`, `circle`) carry no `keypoints`/`skeleton` fields, since they have no landmark table to draw from. Each animal category stores one flat triple per point on each of its annotations:
+All 23 classes are still emitted as COCO categories, but the keypoint schema and skeleton are attached only to categories in the run's own keypoint family — for an animal run, the four geometric-shape categories carry no `keypoints`/`skeleton` fields, and neither would the seven symbol categories if this were a symbol run instead, since neither has a matching landmark table to draw from. Each animal category stores one flat triple per point on each of its annotations:
 
 ```json
 {
@@ -234,6 +342,37 @@ names:
 `flip_idx` is the identity permutation on purpose: `left`/`right` are viewer-relative here — `left` is the limb nearer the viewer, not the animal's anatomical left — so mirroring a side profile never turns a near limb into a far one and no landmark changes index under a horizontal flip.
 
 Each pose row is `cls cx cy w h x1 y1 v1 ... x16 y16 v16` — 53 tokens, fixed-width even for a whale whose absent hind legs still emit their zeroed `0.000000 0.000000 0` triples. Each animal ships as an editable SVG asset under `fuse_augmentations/data/zoo/<animal>.svg`, carrying its outline, its keypoints (with a visible skeleton overlay), and its CC0/Public Domain Mark provenance as `zoo:`-namespaced attributes; the placement rules and hand-editing instructions live in `fuse_augmentations/data/zoo/README.md`.
+
+### Symbol keypoint schema
+
+The seven symbol shapes share a different, smaller schema: seven generic structural slots rather than sixteen anatomical ones. Where the animals could share names because of anatomical homology (every quadruped has a `body_top`), the symbols have no equivalent shared vocabulary — a "flank" means a kite's side corner on one shape and an arrow's barb on another — so the names describe structural role instead, and only `center` is guaranteed present.
+
+| Index | Name          | Meaning                                                          |
+| ----- | ------------- | ---------------------------------------------------------------- |
+| 1     | `center`      | The outline's own area centroid (center of mass) — **mandatory** |
+| 2     | `apex`        | The distinctive distal point (optional)                          |
+| 3     | `tail`        | The point opposite `apex` along the main axis (optional)         |
+| 4     | `flank_left`  | Mirrored pair nearest the apex (optional)                        |
+| 5     | `flank_right` | Mirrored pair nearest the apex (optional)                        |
+| 6     | `base_left`   | Mirrored pair at the far end (optional)                          |
+| 7     | `base_right`  | Mirrored pair at the far end (optional)                          |
+
+Point counts run 4–6 across the seven symbols, so — exactly like the animals' absent `ear`/hind-leg rows — an unused slot is a `(nan, nan)` row paired with `v=0`, never a faked point. `center` is each symbol's own area centroid (the shoelace-formula center of mass, computed from its raw outline) rather than a hand-picked point — for every symbol shipped here that centroid lands safely inside the outline, even the concave ones (`arrow`, `cross`, `anchor`), so there is no need to fall back to a hand-placed substitute; a future, more exotic concave outline whose true centroid falls outside its own silhouette would need one.
+
+The skeleton is a **star**: six edges, each connecting `center` to one of the other six slots. Every optional slot is therefore a leaf, so an unused one drops exactly its own edge and orphans nothing — the same property the animal skeleton's `ear`/hind-leg leaves rely on.
+
+Unlike the animals' identity `flip_idx`, the symbol schema's horizontal flip is a genuine, non-trivial permutation: `flank_left` (index 3, 0-based) swaps with `flank_right` (4), and `base_left` (5) swaps with `base_right` (6); `center`/`apex`/`tail` sit on the symmetry axis and map to themselves. This is correct precisely because every symbol is drawn mirror-symmetric about its own vertical axis in canonical orientation — a property a square or a plain plus-sign could not offer (4-fold symmetry gives a fixed landmark no stable identity), but two-fold mirror symmetry does, since the generator's random in-plane rotation preserves winding and so keeps left and right distinguishable at any angle.
+
+```yaml
+path: .
+kpt_shape: [7, 3]
+flip_idx: [0, 1, 2, 4, 3, 6, 5]
+names:
+  0: square
+  16: kite
+```
+
+Each symbol pose row is `cls cx cy w h x1 y1 v1 ... x7 y7 v7` — 26 tokens, fixed-width even for a symbol using only 4 of the 7 slots. Symbol outlines and keypoint tables are authored directly as literals in `fuse_augmentations/data/symbols.py` (analytic, not traced), so there is no editable-SVG asset or `zoo/` entry for this family.
 
 ## COCO output
 
@@ -311,12 +450,12 @@ names:
 
 Each label file has one row per object. Class ids are **0-based**; all coordinates are normalized to `[0, 1]` and clamped:
 
-| Task           | Row format                                         |
-| -------------- | -------------------------------------------------- |
-| `detection`    | `cls cx cy w h`                                    |
-| `segmentation` | `cls x1 y1 x2 y2 … xn yn`                          |
-| `obb`          | `cls x1 y1 x2 y2 x3 y3 x4 y4`                      |
-| `keypoints`    | `cls cx cy w h x1 y1 v1 … x16 y16 v16` (53 tokens) |
+| Task           | Row format                                                                                                           |
+| -------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `detection`    | `cls cx cy w h`                                                                                                      |
+| `segmentation` | `cls x1 y1 x2 y2 … xn yn`                                                                                            |
+| `obb`          | `cls x1 y1 x2 y2 x3 y3 x4 y4`                                                                                        |
+| `keypoints`    | `cls cx cy w h` + one `x y v` triple per schema landmark (53 tokens for the animal family, 26 for the symbol family) |
 
 Example detection rows (`labels/train/img_000000.txt`):
 
@@ -398,7 +537,20 @@ print(counts)
 
 </details>
 
-`SyntheticConfig` knobs: `img_size`, `min_objects`/`max_objects`, `min_size_ratio`/`max_size_ratio`, `overlap_iou`, `boundary_tolerance`, `rotate`, `background`, `class_mode`. Overlapping candidates (IoU above `overlap_iou`) and out-of-bounds candidates (more than `boundary_tolerance` outside the frame) are rejected during placement.
+`SyntheticConfig` knobs: `img_size`, `min_objects`/`max_objects`, `min_size_ratio`/`max_size_ratio`, `overlap_iou`, `boundary_tolerance`, `rotate`, `asymmetry_jitter`, `background`, `class_mode`. Overlapping candidates (IoU above `overlap_iou`) and out-of-bounds candidates (more than `boundary_tolerance` outside the frame) are rejected during placement.
+
+### Breaking left/right symmetry
+
+Every shape but `circle` is drawn mirror-symmetric about its own vertical axis in canonical orientation, so its oriented bounding box otherwise always shows identical left/right margins — real oriented objects (vehicles, ships) rarely are. `asymmetry_jitter` (default `0.0`, a fraction in `[0, 0.5)`) narrows a randomly chosen half — left or right of that axis, before rotation — of each placed object by up to that fraction, independently per instance:
+
+```pycon
+>>> from fuse_augmentations.data.config import SyntheticConfig
+>>> SyntheticConfig(asymmetry_jitter=0.15).asymmetry_jitter
+0.15
+
+```
+
+`circle` is always excluded — it never rotates either, so an unrotated skew would bias every circle toward the same absolute image direction instead of varying with a random orientation. Under `Task.KEYPOINTS` the same draw skews the polygon and the landmark table together, so a shape and its keypoints never drift apart. `0.0` (the default) draws exactly the RNG sequence this package always has, so existing seeded configurations are unaffected.
 
 ## End-to-end example
 
