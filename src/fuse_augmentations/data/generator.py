@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 _BBox = tuple[float, float, float, float]
 #: One sampled placement's full result: shape, color, the polygon bbox/OBB are measured from, and
 #: the landmark table (``None`` off the keypoints task or for a shape with no schema).
-_Placement = tuple["Shape", Fill, "NDArray[np.float64]", "NDArray[np.float64] | None"]
+_Placement = tuple["Shape", Fill, "NDArray[np.float64]", float, "NDArray[np.float64] | None"]
 
 #: COCO visibility flags emitted for a landmark: ``2`` is "labeled and visible", ``0`` is
 #: "not labeled". The intermediate ``1`` ("labeled but not visible") never occurs here — the
@@ -176,7 +176,7 @@ class SyntheticGenerator:
         if any(bbox_iou(bbox, other) > cfg.overlap_iou for other in kept):
             return None
         keypoints = place_keypoints(shape, center, size_px, angle, skew) if cfg.task is Task.KEYPOINTS else None
-        return shape, color, poly, keypoints
+        return shape, color, poly, angle, keypoints
 
     def sample(self, rng: np.random.Generator) -> Sample:
         """Generate one image and its annotations.
@@ -221,7 +221,7 @@ class SyntheticGenerator:
             placed = self._attempt_placement(rng, kept)
             if placed is None:
                 continue
-            shape, color, poly, points = placed
+            shape, color, poly, angle, points = placed
             draw.polygon([(float(x), float(y)) for x, y in poly], fill=color.rgb)
             bbox = polygon_to_bbox_xyxy(poly)
             kept.append(bbox)
@@ -232,6 +232,7 @@ class SyntheticGenerator:
                     class_name=self.class_names[class_id],
                     polygon=[float(v) for v in poly.reshape(-1)],
                     bbox_xyxy=bbox,
+                    angle=angle,
                     keypoints=None if points is None else _visible_keypoints(points, cfg.img_size),
                     keypoint_schema=None if points is None else self.keypoint_schema,
                 )

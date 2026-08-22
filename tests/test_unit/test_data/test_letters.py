@@ -7,7 +7,6 @@ import pytest
 from PIL import Image, ImageDraw
 
 from fuse_augmentations.data.families import shape_outline
-from fuse_augmentations.data.geometry import polygon_to_obb
 from fuse_augmentations.data.keypoints import KeypointSchema
 from fuse_augmentations.data.letters import (
     LETTER_COUNTER_GAP,
@@ -453,8 +452,8 @@ def test_no_two_letters_share_a_silhouette_at_any_angle() -> None:
     crossbar taken away (0.85), and an upside-down `t` was a serifed `i` missing one bar (0.82). `v` now narrows at the
     top, and `i` carries even full-width serifs instead of a narrow top one, so it reads as a whole I-beam rather than
     as a `t` with something added. Both were fixed on the letter that could afford it: dropping `t`'s crossbar to
-    lowercase height separates the pair just as well, but a thin cross's hull is nearly a diamond, whose minimum-area
-    box is flush to a side, and every crossed `t` tried leaned 15 to 22 degrees (see `test_letter_obb_stays_upright`).
+    lowercase height would have separated the pair just as well, but back when the OBB was the minimum-area box a thin
+    cross's near-diamond hull leaned that box 15 to 22 degrees off upright, so the fix landed on `v` and `i` instead.
 
     Letters are drawn at one shared size, so the comparison is between shapes as the generator would place them; the
     size leaves room for a letter turned onto its diagonal to still fit the canvas.
@@ -474,33 +473,6 @@ def test_no_two_letters_share_a_silhouette_at_any_angle() -> None:
         if (iou := _mask_iou(turned[first, 0], turned[second, deg])) > _SILHOUETTE_IOU_LIMIT
     ]
     assert collisions == []
-
-
-#: How far a letter's minimum-area OBB may lean off its own upright axes, in degrees — see
-#: `test_letter_obb_stays_upright`. No letter is exempt: `s`'s 1.4 degrees is the largest lean the
-#: family still carries, and that is a floor — two loops opening opposite ways put a letter's widest
-#: points diagonally across from each other, so the rest would cost the curves that make it an `s`.
-_MAX_OBB_TILT_DEG = 3.0
-
-
-@pytest.mark.parametrize("name", LETTER_NAMES)
-def test_letter_obb_stays_upright(name: str) -> None:
-    """A letter's minimum-area OBB lines up with the letter's own upright axes.
-
-    `polygon_to_obb` returns the true minimum-area box, so a letterform whose hull is dominated by one long diagonal
-    gets a box tilted along that diagonal — correct by definition and visibly wrong in an `--task obb` preview, where
-    the box no longer reads as "this letter, rotated". `j` was exactly that: a bare hook, whose hull ran diagonally from
-    the stem top to the far side of the hook, giving a box leaning 39.6 degrees off the stem for a 6% area saving. Its
-    top bar fills that corner, so the upright box wins outright. `q` was the same defect milder: its tail reached far
-    enough to the lower right to lean the box 11.2 degrees, fixed by steepening the tail so it lengthens the letter
-    instead of widening it. This guards the geometry, not the algorithm — the fix for a failure here is the letterform
-    in `letters.json`, never a tie-break in `polygon_to_obb`.
-
-    """
-    corners = polygon_to_obb(shape_outline(name, center=(0.0, 0.0), size=1.0))
-    edge = corners[1] - corners[0]
-    heading = np.degrees(np.arctan2(edge[1], edge[0])) % 90.0
-    assert min(heading, 90.0 - heading) <= _MAX_OBB_TILT_DEG
 
 
 def _mask_iou(first: np.ndarray, second: np.ndarray) -> float:

@@ -167,18 +167,18 @@ def test_obb_corners_is_derived_from_the_polygon() -> None:
     """The oriented box comes from the polygon on access, matching what a direct computation gives.
 
     It used to be a constructor field the generator filled for every object, which meant detection, segmentation and
-    keypoint runs all paid for a convex hull plus a rotating-calipers scan per object and then never read the result —
-    measured at 75% of generation time. Deriving it must produce the identical box, or the saving came at the cost of
-    the answer.
+    keypoint runs all paid for a per-object box derivation and then never read the result — measured at 75% of
+    generation time when it was a convex-hull scan. Deriving it must produce the identical box, or the saving came at
+    the cost of the answer.
 
     """
     from fuse_augmentations.data.families import shape_outline
     from fuse_augmentations.data.geometry import polygon_to_obb
 
     outline = shape_outline("rectangle", center=(50.0, 50.0), size=30.0, angle=0.7)
-    ann = Annotation(0, "rectangle", [float(v) for v in outline.reshape(-1)], (0.0, 0.0, 100.0, 100.0))
+    ann = Annotation(0, "rectangle", [float(v) for v in outline.reshape(-1)], (0.0, 0.0, 100.0, 100.0), angle=0.7)
 
-    expected = [float(v) for v in polygon_to_obb(outline).reshape(-1)]
+    expected = [float(v) for v in polygon_to_obb(outline, 0.7).reshape(-1)]
 
     assert ann.obb_corners == expected
 

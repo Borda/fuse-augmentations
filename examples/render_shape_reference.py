@@ -9,16 +9,10 @@ rendering at that authored angle is what keeps a reference recognizable: an ``ar
 a ``house`` with its roof up, a ``kite`` on its long axis.
 
 The box drawn in blue is the shape's plain axis-aligned **detection** box (``bbox``) at this
-reference orientation — deliberately *not* :func:`~fuse_augmentations.data.geometry.polygon_to_obb`'s
-minimum-area **OBB**, which the generator's actually-rotated samples use (see the animated OBB
-preview and the "Tasks" section for that box, which is not axis-aligned in general — e.g. the
-``arrow``'s true minimum-area OBB is a diamond tilted off its own vertical axis even when the
-arrow itself is drawn upright). Showing the true rotated OBB here, at a fixed unrotated pose,
-produced a tilted box for concave/asymmetric outlines and an arbitrary tied choice for a
-symmetric one (an isosceles triangle's minimum-area OBB has no unique answer — see
-:attr:`~fuse_augmentations.data.primitives.PrimitiveShape.TRIANGLE`'s docstring for why a right *or*
-acute triangle ties), neither of which says anything useful about a shape drawn in its own
-reference position; the plain detection box is simpler and unambiguous for every shape. The three
+reference orientation. Since :func:`~fuse_augmentations.data.geometry.polygon_to_obb` derives the
+oriented box in the shape's own upright frame, this same box *is* what the **OBB** task exports at
+this unrotated pose — the generator's rotated samples carry it turned rigidly with the shape (see
+the animated OBB preview and the "Tasks" section). The three
 keypoint-bearing families (animals, symbols, letters) get their landmark dots and skeleton drawn in
 the same orange ``animate_synthetic_dataset.py`` uses for a visible-but-occluded keypoint. The
 geometric family has no keypoint schema, so its images carry only the outline and the box. There
@@ -126,8 +120,9 @@ def _draw_shape(draw: ImageDraw.ImageDraw, name: str, size: float) -> None:
     """Draw one shape's outline (filled light gray, black edge) and its blue detection box.
 
     The box is the plain axis-aligned bounding box over the outline at this reference orientation —
-    not :func:`~fuse_augmentations.data.geometry.polygon_to_obb`'s minimum-area OBB, which the
-    generator's rotated samples use instead (see the module docstring for why).
+    which, at an unrotated pose, is exactly the upright-frame oriented box
+    :func:`~fuse_augmentations.data.geometry.polygon_to_obb` derives for the OBB task (see the
+    module docstring).
 
     """
     poly = shape_outline(name, _SHAPE_CENTER, size)

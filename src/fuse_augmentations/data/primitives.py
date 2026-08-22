@@ -54,14 +54,10 @@ class PrimitiveShape(ShapeEnum):
     Attributes:
         SQUARE: Axis-aligned equal-sided quadrilateral.
         RECTANGLE: Non-square quadrilateral.
-        TRIANGLE: Obtuse-scalene triangle (all three sides and angles distinct, one angle
-            obtuse) — unlike an equilateral triangle's 3-fold rotational symmetry, the outline
-            itself has none, so its orientation is always visually recoverable from the silhouette
-            alone. Unlike a *right* or *acute* triangle, its minimum-area OBB has a genuine unique
-            minimum too: an obtuse triangle's altitude from the obtuse vertex falls outside the
-            opposite side, so no other hull edge can tie the longest side's flush candidate — see
-            :func:`~fuse_augmentations.data.geometry.polygon_to_obb`'s docstring for why every other
-            triangle shape ties.
+        TRIANGLE: Equilateral triangle, apex up — mirror-symmetric about its vertical axis
+            like every other upright shape in the package. Its 3-fold rotational symmetry means
+            the silhouette alone cannot distinguish rotations 120 degrees apart; the exported
+            oriented box still records the drawn angle exactly.
         CIRCLE: Polygon-approximated circle.
 
     Examples:
@@ -115,17 +111,10 @@ def primitive_outline(value: str, size: float) -> NDArray[np.float64]:
         h = half * RECT_ASPECT
         return np.array([[-half, -h], [half, -h], [half, h], [-half, h]], dtype=np.float64)
     if value == PrimitiveShape.TRIANGLE.value:
-        # Obtuse-scalene: a full-width base with an off-center apex, so all three sides and angles
-        # are distinct (the base vertex at the origin is the obtuse one, ~110 degrees), and this
-        # outline has no rotational or reflective symmetry at all — its rotation is always visually
-        # recoverable. Unlike a right or acute triangle, its minimum-area OBB also has a genuine
-        # unique minimum, not a tie (see polygon_to_obb's docstring). Vertices are offset by their
-        # own centroid (== the vertex mean for any triangle), matching every other shape's
-        # centered-at-origin convention.
-        apex_x, apex_y = 0.45 * size, 0.35 * size
-        verts = np.array([[0.0, 0.0], [size, 0.0], [apex_x, apex_y]], dtype=np.float64)
-        centroid: NDArray[np.float64] = verts.mean(axis=0)
-        return verts - centroid
+        # Equilateral, apex up, side == size, centered on the centroid (which for a triangle is
+        # the vertex mean), matching every other shape's centered-at-origin convention.
+        height = size * np.sqrt(3.0) / 2.0
+        return np.array([[0.0, -2.0 * height / 3.0], [half, height / 3.0], [-half, height / 3.0]], dtype=np.float64)
     if value == PrimitiveShape.CIRCLE.value:
         angles = np.linspace(0.0, 2.0 * np.pi, CIRCLE_POINTS, endpoint=False)
         return np.stack([half * np.cos(angles), half * np.sin(angles)], axis=1).astype(np.float64)

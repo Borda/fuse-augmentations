@@ -105,11 +105,9 @@ class SymbolShape(ShapeEnum):
     Seven straight-edge 2D symbols, each mirror-symmetric about its own vertical axis and belonging
     to a distinct silhouette archetype, so — like :class:`~fuse_augmentations.data.animals.AnimalShape`
     — every outline point keeps an unambiguous identity under rotation. There is no plain
-    ``TRIANGLE``/``ISOSCELES_TRIANGLE`` member here: an isosceles (and, being acute, tied) triangle
-    doubled up on both the naming collision with :attr:`~fuse_augmentations.data.primitives.PrimitiveShape.TRIANGLE`
-    and the "minimum-area OBB has no unique answer" problem that motivated redesigning that
-    geometric shape (see its docstring) — not worth solving twice for a shape this family does not
-    need to keep.
+    ``TRIANGLE``/``ISOSCELES_TRIANGLE`` member here: it would collide in name with
+    :attr:`~fuse_augmentations.data.primitives.PrimitiveShape.TRIANGLE` for a shape this family
+    does not need to keep.
 
     Attributes:
         KITE: Diamond quadrilateral with unequal top/bottom diagonal lengths.

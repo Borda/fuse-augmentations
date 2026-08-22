@@ -24,7 +24,7 @@ Examples:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -148,101 +148,32 @@ def polygon_to_bbox_xyxy(points: NDArray[np.float64]) -> tuple[float, float, flo
     return (float(mins[0]), float(mins[1]), float(maxs[0]), float(maxs[1]))
 
 
-def _convex_hull(points: NDArray[np.float64]) -> tuple[NDArray[np.float64], NDArray[np.intp]]:
-    """Return the convex hull of ``points`` (counter-clockwise) via monotone chain.
+def polygon_to_obb(points: NDArray[np.float64], angle: float = 0.0) -> NDArray[np.float64]:
+    """Return the oriented bounding box aligned with the shape's own upright frame.
+
+    The box is the polygon's axis-aligned bounding box *in the shape's pre-rotation frame*,
+    carried rigidly through the placement rotation: the polygon is de-rotated by ``-angle``
+    about its centroid, its min/max extents taken, and the four corners rotated back by
+    ``angle``. Every shape in this package is authored upright (mirror-symmetric about its
+    local vertical axis where it has a symmetry at all — see
+    :mod:`~fuse_augmentations.data.symbols`), so the box's sides always run along and across
+    that upright axis, matching how a human would draw the box around the object.
+
+    This deliberately is *not* the minimum-area rectangle. A minimum-area box must lie flush
+    to a convex-hull edge, so for a shape with no horizontal or vertical hull edge in its
+    upright pose (``kite``, ``arrow``, ``teardrop``) it sits tilted against the shape's own
+    symmetry axis — geometrically tighter, but visually wrong as a pose annotation.
 
     Args:
-        points: ``(num_points, 2)`` array, in the shape's own fixed vertex order (index ``i`` names
-            the same authored vertex at every rotation, since :func:`_placed` rotates the whole
-            array rigidly).
+        points: ``(num_points, 2)`` array of polygon coordinates in the image frame.
+        angle: Rotation in radians that was applied when the polygon was placed (see
+            :func:`place_points`). **Defaults to ``0.0``, which returns the plain axis-aligned
+            box** — a rotated polygon passed without its angle gets a loose upright box, not
+            the tight oriented one, so real callers must pass the placement angle through.
 
     Returns:
-        The ``(hull_points, 2)`` hull vertex array, paired with each hull vertex's index into
-        ``points``. The index is what makes a hull edge identifiable independent of the polygon's
-        absolute rotation: hull *position* depends on ``np.unique``'s lexicographic sort of the
-        coordinates actually passed in, which shifts with rotation, but a vertex's original index
-        does not — see :func:`polygon_to_obb`, which needs that stability to break ties between
-        equal-area candidate boxes consistently.
-
-    """
-    unique_points, unique_index = np.unique(points, axis=0, return_index=True)
-    if len(unique_points) <= 2:
-        return unique_points, unique_index
-    order = np.lexsort((unique_points[:, 1], unique_points[:, 0]))
-    pts = unique_points[order]
-    idx = unique_index[order]
-
-    def _cross(o: NDArray[np.float64], a: NDArray[np.float64], b: NDArray[np.float64]) -> float:
-        return float((a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]))
-
-    lower_pts: list[NDArray[np.float64]] = []
-    lower_idx: list[np.intp] = []
-    for p, i in zip(pts, idx, strict=True):
-        while len(lower_pts) >= 2 and _cross(lower_pts[-2], lower_pts[-1], p) <= 0:
-            lower_pts.pop()
-            lower_idx.pop()
-        lower_pts.append(p)
-        lower_idx.append(i)
-    upper_pts: list[NDArray[np.float64]] = []
-    upper_idx: list[np.intp] = []
-    for p, i in zip(pts[::-1], idx[::-1], strict=True):
-        while len(upper_pts) >= 2 and _cross(upper_pts[-2], upper_pts[-1], p) <= 0:
-            upper_pts.pop()
-            upper_idx.pop()
-        upper_pts.append(p)
-        upper_idx.append(i)
-    hull_pts = np.array(lower_pts[:-1] + upper_pts[:-1], dtype=np.float64)
-    hull_idx = np.array(lower_idx[:-1] + upper_idx[:-1], dtype=np.intp)
-    return hull_pts, hull_idx
-
-
-#: Relative tolerance for treating two candidate boxes' areas as tied in :func:`polygon_to_obb`.
-#: Genuine float64 noise between equal-area candidates is ~1e-13 relative; a real area gap between
-#: distinct candidates is always many orders of magnitude larger, so this threshold cannot conflate
-#: the two.
-_OBB_AREA_TIE_RTOL = 1e-9
-
-
-class _ObbCandidate(NamedTuple):
-    """One rotating-calipers candidate box for :func:`polygon_to_obb`, flush to one hull edge."""
-
-    area: float
-    #: The candidate edge's original vertex-index pair (sorted), used to break ties consistently —
-    #: see :func:`_convex_hull`.
-    key: tuple[int, int]
-    min_xy: NDArray[np.float64]
-    max_xy: NDArray[np.float64]
-    #: Radians the hull was rotated by to make this candidate's edge horizontal; rotating the
-    #: axis-aligned box built from ``min_xy``/``max_xy`` back by this angle places it in image space.
-    angle: float
-
-
-def polygon_to_obb(points: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Return the minimum-area oriented bounding box of a polygon as four corners.
-
-    Uses the rotating-calipers property that a minimum-area rectangle shares an edge
-    with the convex hull. For a rotation-invariant outline (e.g. a circle) the result
-    is effectively the axis-aligned box.
-
-    A polygon with reflective symmetry (every symbol and animal in this package; see
-    :mod:`~fuse_augmentations.data.symbols`) can have **more than one** candidate edge achieve the
-    true minimum area — so can a triangle with no symmetry at all: for a right *or* acute triangle,
-    the altitude from every vertex lands inside the opposite side, so the longest side's
-    hypotenuse/base-flush candidate always ties (exactly) at least one leg-flush candidate. Only an
-    *obtuse* triangle avoids this — its altitude from the obtuse vertex falls outside the opposite
-    side, leaving the longest side's candidate strictly smaller than the others (see
-    :attr:`PrimitiveShape.TRIANGLE`). Ties are broken by each candidate edge's
-    original vertex-index pair (see :func:`_convex_hull`) — a value fixed to the shape's own
-    geometry — rather than by which candidate a plain ``<`` comparison happens to visit first,
-    which would depend on the polygon's absolute rotation and make the chosen box orientation
-    flip inconsistently as an otherwise-identical shape spins.
-
-    Args:
-        points: ``(num_points, 2)`` array of polygon coordinates, in the shape's own fixed vertex
-            order (see :func:`_convex_hull`).
-
-    Returns:
-        ``(4, 2)`` array of corner coordinates in order.
+        ``(4, 2)`` array of corner coordinates in order (a rigid rotation of
+        ``(min, min) → (max, min) → (max, max) → (min, max)`` in the de-rotated frame).
 
     Examples:
         ```pycon
@@ -251,49 +182,29 @@ def polygon_to_obb(points: NDArray[np.float64]) -> NDArray[np.float64]:
         >>> corners = polygon_to_obb(np.array([[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]]))
         >>> corners.shape
         (4, 2)
+        >>> corners[2] - corners[0]
+        array([2., 1.])
 
         ```
 
     """
-    hull, hull_index = _convex_hull(points)
-    if len(hull) < 3:
+    if not angle:
         x1, y1, x2, y2 = polygon_to_bbox_xyxy(points)
         return np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float64)
-
-    # Two passes, not one: computing every candidate up front and comparing each against a single
-    # fixed `min_area` (rather than an incrementally-updated running best) rules out tolerance
-    # drifting across a chain of near-but-not-exactly-equal candidates.
-    count = len(hull)
-    candidates: list[_ObbCandidate] = []
-    for i in range(count):
-        j = (i + 1) % count
-        edge = hull[j] - hull[i]
-        angle = np.arctan2(edge[1], edge[0])
-        rot = hull @ _rotation_matrix(-angle).T
-        min_xy = rot.min(axis=0)
-        max_xy = rot.max(axis=0)
-        area = float((max_xy[0] - min_xy[0]) * (max_xy[1] - min_xy[1]))
-        key = (int(min(hull_index[i], hull_index[j])), int(max(hull_index[i], hull_index[j])))
-        candidates.append(_ObbCandidate(area, key, min_xy, max_xy, angle))
-
-    min_area = min(c.area for c in candidates)
-    tolerance = _OBB_AREA_TIE_RTOL * max(min_area, 1.0)
-    # Ties are broken by each candidate edge's original vertex-index pair (see _convex_hull) — a
-    # value fixed to the shape's own geometry — rather than by which tied candidate happens to be
-    # smallest-by-a-strict-`<`-comparison, which would depend on the polygon's absolute rotation
-    # and make the chosen box orientation flip inconsistently as an otherwise-identical shape spins.
-    winner = min((c for c in candidates if c.area <= min_area + tolerance), key=lambda c: c.key)
-
+    pivot = points.mean(axis=0)
+    upright = (points - pivot) @ _rotation_matrix(-angle).T
+    min_xy = upright.min(axis=0)
+    max_xy = upright.max(axis=0)
     aligned = np.array(
         [
-            [winner.min_xy[0], winner.min_xy[1]],
-            [winner.max_xy[0], winner.min_xy[1]],
-            [winner.max_xy[0], winner.max_xy[1]],
-            [winner.min_xy[0], winner.max_xy[1]],
+            [min_xy[0], min_xy[1]],
+            [max_xy[0], min_xy[1]],
+            [max_xy[0], max_xy[1]],
+            [min_xy[0], max_xy[1]],
         ],
         dtype=np.float64,
     )
-    corners: NDArray[np.float64] = aligned @ _rotation_matrix(winner.angle).T
+    corners: NDArray[np.float64] = aligned @ _rotation_matrix(angle).T + pivot
     return corners
 
 

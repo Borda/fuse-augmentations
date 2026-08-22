@@ -335,7 +335,7 @@ print(counts)
 
 Swap `fmt="yolo"`, `task="obb"`, or `class_mode="color"` for other layouts, tasks, and class schemes.
 
-`rectangle` plus random per-shape rotation give oriented boxes real orientation; all generation is seeded for byte-identical output. Generation streams — feed a training loop straight from `SyntheticGenerator.generate(n)` or a `DataLoader` via `SyntheticIterableDataset`, with no disk round-trip and bounded memory even for huge datasets. See the [synthetic datasets guide](docs/guides/synthetic-datasets.md) and `examples/generate_synthetic_dataset.py`.
+`rectangle` plus random per-shape rotation give oriented boxes real orientation; all generation is seeded for byte-identical output. Generation streams — feed a training loop straight from `SyntheticGenerator.generate(n)` or a `DataLoader` via `SyntheticIterableDataset`, with no disk round-trip and bounded memory even for huge datasets. See the [synthetic datasets docs](docs/datasets/index.md) and `examples/generate_synthetic_dataset.py`.
 
 ## 🧭 Where it fits
 

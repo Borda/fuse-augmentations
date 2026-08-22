@@ -34,9 +34,8 @@ def rebuild_error(shape: str, corners: NDArray[np.float64], drawn: NDArray[np.fl
     """Return how far `shape`'s reference outline, placed by `corners` alone, lands from `drawn`.
 
     Scale comes from the box's area against the reference box's, position from the two box centers, and rotation from
-    the box's heading measured *against the reference box's own heading* — that offset matters because a shape's
-    canonical pose need not have an axis-aligned box itself (`SymbolShape.ARROW`'s reference box is a diamond flush to
-    its barb tips, and several animal silhouettes lean similarly).
+    the box's heading measured against the reference box's own heading (zero for the upright-frame box, kept in the
+    formula so the rebuild stays correct for any box convention that orders its corners the same way).
 
     A box is unchanged by a half turn, and a square one by a quarter turn, so the pose it pins down is inherently only
     known up to a quarter turn. All four are tried and the closest reported, which is exactly the ambiguity a consumer

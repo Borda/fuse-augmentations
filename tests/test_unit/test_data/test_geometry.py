@@ -152,90 +152,99 @@ def test_skew_near_its_upper_bound_keeps_every_shape_simple(shape: str, skew: fl
     assert _self_intersections(poly) == []
 
 
-def test_obb_returns_four_corners_within_aabb() -> None:
-    """OBB area is smaller or equal to AABB area."""
-    poly = shape_outline("rectangle", center=(40.0, 40.0), size=16.0, angle=0.6)
+def test_obb_at_zero_angle_equals_aabb() -> None:
+    """With no rotation the oriented box is exactly the axis-aligned box, corner for corner."""
+    poly = shape_outline("rectangle", center=(40.0, 40.0), size=16.0, angle=0.0)
     corners = polygon_to_obb(poly)
+    x1, y1, x2, y2 = polygon_to_bbox_xyxy(poly)
+    expected = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
     assert corners.shape == (4, 2)
-    obb_area = _polygon_area(corners)
-    aabb_area = _rect_area(polygon_to_bbox_xyxy(poly))
-    assert obb_area <= aabb_area * (1.0 + 1e-6)
+    np.testing.assert_allclose(corners, expected)
 
 
-def test_obb_tight_for_axis_aligned_rectangle() -> None:
-    """OBB equals AABB when rectangle is axis-aligned."""
-    poly = shape_outline("rectangle", center=(0.0, 0.0), size=10.0, angle=0.0)
-    obb_area = _polygon_area(polygon_to_obb(poly))
-    aabb_area = _rect_area(polygon_to_bbox_xyxy(poly))
-    assert obb_area == pytest.approx(aabb_area, rel=1e-6)
+@pytest.mark.parametrize("shape", ALL_SHAPE_VALUES)
+def test_obb_area_is_angle_invariant(shape: str) -> None:
+    """The box area never changes as the shape turns — it is the upright-frame box carried rigidly.
+
+    The minimum-area box this replaced had the same property, but the axis-aligned *detection* box does not: this is
+    what separates `polygon_to_obb`'s output from a lazily re-fit AABB at each pose.
+
+    """
+    center, size = (0.0, 0.0), 100.0
+    reference_area = _polygon_area(polygon_to_obb(shape_outline(shape, center=center, size=size, angle=0.0)))
+    for angle_deg in (10, 47, 91, 133, 179, 250, 311):
+        angle = np.radians(float(angle_deg))
+        area = _polygon_area(polygon_to_obb(shape_outline(shape, center=center, size=size, angle=angle), angle))
+        assert area == pytest.approx(reference_area, rel=1e-9), f"{shape} at {angle_deg} degrees"
 
 
-def test_circle_obb_approximates_aabb() -> None:
-    """OBB for circle approximates AABB within 5% relative tolerance."""
+@pytest.mark.parametrize("shape", ALL_SHAPE_VALUES)
+def test_obb_contains_its_polygon(shape: str) -> None:
+    """Every polygon vertex sits inside (or on) the oriented box, at every pose.
+
+    The upright-frame box is a bounding box by construction only in the de-rotated frame; this pins that the rotate-
+    back places it around the image-frame polygon too — a pivot mismatch between the de-rotation and the re-rotation
+    would break exactly this.
+
+    """
+    center, size = (200.0, 200.0), 100.0
+    for angle_deg in (0, 10, 47, 91, 133, 179, 250, 311):
+        angle = np.radians(float(angle_deg))
+        poly = shape_outline(shape, center=center, size=size, angle=angle)
+        corners = polygon_to_obb(poly, angle)
+        # Express vertices in the box's own edge basis; containment is a per-axis interval check.
+        u = corners[1] - corners[0]
+        v = corners[3] - corners[0]
+        rel = poly - corners[0]
+        for axis in (u, v):
+            along = rel @ axis / float(axis @ axis)
+            assert along.min() >= -1e-9, f"{shape} at {angle_deg} degrees"
+            assert along.max() <= 1.0 + 1e-9, f"{shape} at {angle_deg} degrees"
+
+
+def test_circle_obb_equals_aabb() -> None:
+    """A circle is rotation-invariant, is never rotated by the generator, and gets the plain AABB."""
     poly = shape_outline("circle", center=(20.0, 20.0), size=10.0)
     obb_area = _polygon_area(polygon_to_obb(poly))
     aabb_area = _rect_area(polygon_to_bbox_xyxy(poly))
-    assert obb_area == pytest.approx(aabb_area, rel=0.05)
-
-
-def _best_corner_set_distance(a: np.ndarray, b: np.ndarray) -> float:
-    """Max corner distance between two (4, 2) corner sets, treated as unordered point sets.
-
-    Both winding direction and starting corner are unconstrained — `polygon_to_obb` promises the four *corners* of a
-    box, not a canonical starting index — so this sorts each set by angle around its own centroid, then tries every
-    cyclic shift and both windings of ``b`` against ``a``, returning the best (smallest) achievable max-corner-distance.
-
-    """
-    a_sorted = a[np.argsort(np.arctan2(*(a - a.mean(axis=0)).T[::-1]))]
-    b_sorted = b[np.argsort(np.arctan2(*(b - b.mean(axis=0)).T[::-1]))]
-    best = np.inf
-    for candidate in (b_sorted, b_sorted[::-1]):
-        for shift in range(4):
-            distances = np.linalg.norm(a_sorted - np.roll(candidate, shift, axis=0), axis=1)
-            best = min(best, float(distances.max()))
-    return best
+    assert obb_area == pytest.approx(aabb_area, rel=1e-9)
 
 
 @pytest.mark.parametrize("shape", ALL_SHAPE_VALUES)
 def test_obb_places_the_reference_shape_back_onto_the_drawn_one(shape: str) -> None:
     """Turning the upright reference shape by what its OBB says lands it back on the drawn shape.
 
-    Every other OBB test here checks a property *of the box* — its area, its corner count, that it rotates rigidly.
-    None checks the thing the box actually promises a consumer: that it describes the pose of the object inside it.
-    This closes the loop by discarding the drawn polygon's own coordinates entirely, rebuilding it from the reference
-    outline plus the four box corners (see `_obb_pose.rebuild_error`), and requiring the rebuild to land on the original
-    to float precision. A tie-break that flips to a different equal-area candidate as the shape turns, a hull whose
-    vertex set shifts under rotation, a corner ordering that is not itself equivariant, or any drift between a polygon
-    and the box derived from it all break this and are invisible to a same-shape-only or unordered-corner-set check.
+    Every other OBB test here checks a property *of the box* — its corner count, that it rotates rigidly, that it
+    contains the outline. None checks the thing the box actually promises a consumer: that it describes the pose of the
+    object inside it. This closes the loop by discarding the drawn polygon's own coordinates entirely, rebuilding it
+    from the reference outline plus the four box corners (see `_obb_pose.rebuild_error`), and requiring the rebuild to
+    land on the original to float precision.
 
     """
     center, size = (200.0, 200.0), 100.0
     for angle_deg in (10, 47, 91, 133, 179, 250, 311):
-        drawn = shape_outline(shape, center=center, size=size, angle=np.radians(float(angle_deg)))
-        error = rebuild_error(shape, polygon_to_obb(drawn), drawn)
+        angle = np.radians(float(angle_deg))
+        drawn = shape_outline(shape, center=center, size=size, angle=angle)
+        error = rebuild_error(shape, polygon_to_obb(drawn, angle), drawn)
         assert error < 1e-9 * size, f"{shape} at {angle_deg} degrees is off by {error:.3g}px"
 
 
 @pytest.mark.parametrize("shape", ALL_SHAPE_VALUES)
 def test_obb_is_rotation_equivariant(shape: str) -> None:
-    """The chosen OBB rotates rigidly with the shape — it never flips to a different tied candidate.
+    """The box rotates rigidly with the shape: box(angle) is exactly box(0) turned by angle.
 
-    A shape with reflective symmetry (every animal and symbol here, plus the geometric square and rectangle) can have
-    more than one candidate box achieving the true minimum area — `kite` and `teardrop` were the two shapes that first
-    exposed this bug (see `polygon_to_obb`'s docstring for why a right or acute triangle would tie too, even though the
-    shipped `PrimitiveShape.TRIANGLE` is deliberately obtuse-scalene and does not). Before this was fixed, which tied
-    candidate won depended on `_convex_hull`'s rotated-frame lexicographic sort rather than the shape's own geometry, so
-    the box orientation "wobbled" between the tied candidates as an otherwise-identical shape rotated — even though
-    nothing about the shape changed relative to its own frame.
+    The minimum-area box this replaced could only promise this up to a tie-break between equal-area candidates; the
+    upright-frame box has no candidates to tie — the de-rotated outline is angle-independent to float precision, so the
+    corners match a rigid rotation of the upright box exactly, in the same corner order.
 
     """
     center, size = (0.0, 0.0), 100.0
     reference = polygon_to_obb(shape_outline(shape, center=center, size=size, angle=0.0))
     for angle_deg in (10, 47, 91, 133, 179, 250, 311):
         angle = np.radians(float(angle_deg))
-        actual = polygon_to_obb(shape_outline(shape, center=center, size=size, angle=angle))
+        actual = polygon_to_obb(shape_outline(shape, center=center, size=size, angle=angle), angle)
         expected = rotate_polygon(reference, angle, center=center)
-        assert _best_corner_set_distance(expected, actual) < 1e-3, f"{shape} at {angle_deg} degrees"
+        np.testing.assert_allclose(actual, expected, atol=1e-9, err_msg=f"{shape} at {angle_deg} degrees")
 
 
 def test_unknown_shape_raises() -> None:

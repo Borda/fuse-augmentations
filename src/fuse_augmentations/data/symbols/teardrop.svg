@@ -1,6 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:zoo="https://github.com/Borda/fuse-augmentations/ns/zoo" viewBox="0 0 1000 1000" width="1000" height="1000" zoo:archetype="analytic-symbol" zoo:title="teardrop" zoo:origin="hand-authored" zoo:license="https://creativecommons.org/publicdomain/zero/1.0/" zoo:note="Analytic outline, hand-authored (no source artwork to attribute). Converted from the former symbols.json literal; coordinates are the JSON values scaled by 400 about a 1000x1000 centre. Save as Plain SVG, never Optimized SVG (it strips the zoo: namespace).">
   <title>teardrop</title>
   <path id="outline" fill="#000000" d="M 360.000 160.000 L 500.000 120.000 L 640.000 160.000 L 720.000 280.000 L 700.000 440.000 L 500.000 860.000 L 300.000 440.000 L 280.000 280.000 Z" />
+  <g id="skeleton">
+  <line x1="500.000" y1="416.720" x2="500.000" y2="194.180" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="500.000" y1="416.720" x2="500.000" y2="749.180" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="500.000" y1="416.720" x2="350.000" y2="434.180" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="500.000" y1="416.720" x2="650.000" y2="434.180" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  </g>
   <g id="keypoints">
   <circle id="kp-center" zoo:name="center" cx="500.000" cy="416.720" r="8" fill="#e6194b" stroke="#ffffff" stroke-width="1.5" />
   <circle id="kp-apex" zoo:name="apex" cx="500.000" cy="194.180" r="8" fill="#ffe119" stroke="#ffffff" stroke-width="1.5" />

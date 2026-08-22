@@ -47,6 +47,10 @@ class Annotation:
         class_name: Human-readable class label.
         polygon: Filled-shape outline as a flat pixel-coordinate list.
         bbox_xyxy: Axis-aligned box ``(x_min, y_min, x_max, y_max)`` in pixels.
+        angle: Rotation in radians the shape was placed with (counter-clockwise, ``0.0`` for an
+            unrotated or rotation-invariant shape). Carried so :attr:`obb_corners` can derive the
+            oriented box in the shape's own upright frame instead of re-guessing the pose from the
+            polygon.
         keypoints: Landmarks as ``(x, y, visibility)`` triples in ``keypoint_schema`` order, or
             ``None`` for any task other than
             :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS`. Visibility follows COCO: ``2``
@@ -87,12 +91,18 @@ class Annotation:
     class_name: str
     polygon: list[float]
     bbox_xyxy: tuple[float, float, float, float]
+    angle: float = 0.0
     keypoints: tuple[tuple[float, float, int], ...] | None = None
     keypoint_schema: KeypointSchema | None = None
 
     @cached_property
     def obb_corners(self) -> list[float]:
-        """Return the minimum-area oriented box as four corners, flat ``[x1, y1, ..., x4, y4]``.
+        """Return the upright-frame oriented box as four corners, flat ``[x1, y1, ..., x4, y4]``.
+
+        The box is the shape's axis-aligned box in its own pre-rotation frame, rotated by
+        :attr:`angle` — its sides run along and across the shape's upright (symmetry) axis, not
+        the minimum-area rectangle's hull-edge direction (see
+        :func:`~fuse_augmentations.data.geometry.polygon_to_obb`).
 
         Derived from :attr:`polygon` on first access rather than stored. It used to be computed for
         every object at generation time, which meant every detection, segmentation and keypoint run
@@ -118,7 +128,7 @@ class Annotation:
         points = np.asarray(self.polygon, dtype=np.float64).reshape(-1, 2)
         if points.shape[0] < 3:
             return []
-        return [float(value) for value in polygon_to_obb(points).reshape(-1)]
+        return [float(value) for value in polygon_to_obb(points, self.angle).reshape(-1)]
 
     def __post_init__(self) -> None:
         """Reject a landmark table that does not match the schema it claims to follow.

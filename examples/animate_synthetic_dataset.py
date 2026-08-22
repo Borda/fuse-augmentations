@@ -90,7 +90,7 @@ SHAPE_SETS = {
     "symbols": tuple(SymbolShape),
     "letters": tuple(LetterShape),
 }
-#: Scene knobs per vocabulary. ``geometric`` reproduces the original clips byte-for-byte. The other
+#: Scene knobs per vocabulary. ``geometric`` keeps the original scene and seed. The other
 #: three size their objects against how many members they have to get through: the generator picks
 #: each object's shape uniformly, so a preview only shows a whole family if the stream draws enough
 #: objects to reach every member (see :func:`_covering_stream`). Counts therefore rise, and sizes

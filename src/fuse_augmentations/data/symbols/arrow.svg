@@ -1,6 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:zoo="https://github.com/Borda/fuse-augmentations/ns/zoo" viewBox="0 0 1000 1000" width="1000" height="1000" zoo:archetype="analytic-symbol" zoo:title="arrow" zoo:origin="hand-authored" zoo:license="https://creativecommons.org/publicdomain/zero/1.0/" zoo:note="Analytic outline, hand-authored (no source artwork to attribute). Converted from the former symbols.json literal; coordinates are the JSON values scaled by 400 about a 1000x1000 centre. Save as Plain SVG, never Optimized SVG (it strips the zoo: namespace).">
   <title>arrow</title>
   <path id="outline" fill="#000000" d="M 500.000 20.000 L 860.000 420.000 L 620.000 420.000 L 620.000 860.000 L 380.000 860.000 L 380.000 420.000 L 140.000 420.000 Z" />
+  <g id="skeleton">
+  <line x1="500.000" y1="436.152" x2="500.000" y2="124.040" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="500.000" y1="436.152" x2="500.000" y2="754.040" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="500.000" y1="436.152" x2="340.000" y2="286.668" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  <line x1="500.000" y1="436.152" x2="660.000" y2="286.668" stroke="#34c759" stroke-width="3" stroke-linecap="round" />
+  </g>
   <g id="keypoints">
   <circle id="kp-center" zoo:name="center" cx="500.000" cy="436.152" r="8" fill="#e6194b" stroke="#ffffff" stroke-width="1.5" />
   <circle id="kp-apex" zoo:name="apex" cx="500.000" cy="124.040" r="8" fill="#ffe119" stroke="#ffffff" stroke-width="1.5" />

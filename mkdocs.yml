@@ -122,7 +122,12 @@ nav:
       - Auxiliary targets: guides/auxiliary-targets.md
       - Introspection: guides/introspection.md
       - Reproducibility: guides/reproducibility.md
-      - Synthetic datasets: guides/synthetic-datasets.md
+  - Synthetic datasets:
+      - Overview: datasets/index.md
+      - Shape families: datasets/shapes.md
+      - Tasks and keypoints: datasets/tasks.md
+      - Output formats: datasets/outputs.md
+      - Customization and extension: datasets/customization.md
   - Applications: applications.md
   - Research:
       - Quality and fidelity: research/quality-and-fidelity.md
