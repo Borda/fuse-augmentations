@@ -22,7 +22,8 @@ theme:
     - content.tabs.link
     - navigation.footer
     - navigation.indexes
-    - navigation.sections
+    - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.top
     - search.highlight
     - search.share
@@ -98,6 +99,7 @@ extra_css:
   - assets/stylesheets/extra.css
 
 extra_javascript:
+  - javascripts/nav_dropdown.js
   - javascripts/pycon_copy.js
   - javascripts/mathjax.js
   - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
@@ -109,13 +111,16 @@ extra:
       name: fuse-augmentations on GitHub
 
 nav:
+  # `navigation.indexes` makes a section's `index.md` its landing page and the
+  # target of its top-bar tab. Sections without one send their tab to their
+  # first child page instead.
   - Overview: index.md
   - Get started:
       - Install: getting-started/installation.md
       - Quickstart: getting-started/quickstart.md
-  - Concepts:
       - How fusion works: concepts/how-fusion-works.md
       - Capabilities: concepts/capabilities.md
+      - Known limitations: known-limitations.md
   - Guides:
       - Backend pipelines: guides/backend-pipelines.md
       - Declarative configuration: guides/configuration.md
@@ -126,9 +131,15 @@ nav:
       - Overview: datasets/index.md
       - Shape families: datasets/shapes.md
       - Tasks and keypoints: datasets/tasks.md
-      - Output formats: datasets/outputs.md
+      - Annotation formats: datasets/outputs.md
       - Customization and extension: datasets/customization.md
-  - Applications: applications.md
+  - Applications:
+      - Overview: applications/index.md
+      - Classification: applications/classification.md
+      - Segmentation and dense targets: applications/segmentation.md
+      - Detection and keypoints: applications/detection-and-keypoints.md
+      - Test-time augmentation: applications/test-time-augmentation.md
+      - Performance planning: applications/performance-planning.md
   - Research:
       - Quality and fidelity: research/quality-and-fidelity.md
       - Benchmarks: research/benchmarks.md
@@ -138,5 +149,4 @@ nav:
       - Configuration: reference/configuration.md
       - Types and targets: reference/types-and-targets.md
       - Advanced internals: reference/advanced.md
-  - Known limitations: known-limitations.md
   - FAQ: faq.md

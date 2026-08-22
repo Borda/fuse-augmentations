@@ -49,14 +49,7 @@ The standard call accepts a BCHW tensor. Set `data_keys` when positional auxilia
 
 !!! danger "Use only explicitly supported spatial transforms with auxiliary targets"
 
-```text
-The runtime refusal policy is a finite class-name list. An unknown crop,
-resize, or custom spatial transform can modify the image while leaving
-masks, boxes, or keypoints stale. Treat every
-`Unknown ... SPATIAL_KERNEL barrier` warning as unsafe with `data_keys`.
-Read [Auxiliary targets](../guides/auxiliary-targets.md) before using this
-path for training data.
-```
+    The runtime refusal policy is a finite class-name list. An unknown crop, resize, or custom spatial transform can modify the image while leaving masks, boxes, or keypoints stale. Treat every `Unknown ... SPATIAL_KERNEL barrier` warning as unsafe with `data_keys`. Read [Auxiliary targets](../guides/auxiliary-targets.md) before using this path for training data.
 
 ```python
 import torch

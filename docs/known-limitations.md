@@ -9,23 +9,11 @@ description: Verified compatibility, target-safety, numerical-parity, randomness
 
 !!! danger "Auxiliary targets can silently desynchronize"
 
-```
-When `data_keys` contains a mask, boxes, or keypoints, treat any warning of
-the form `Unknown ... transform ... treating as SPATIAL_KERNEL barrier` as
-unsafe until you have proved that the transform leaves pixel coordinates
-unchanged.
+    When `data_keys` contains a mask, boxes, or keypoints, treat any warning of the form `Unknown ... transform ... treating as SPATIAL_KERNEL barrier` as unsafe until you have proved that the transform leaves pixel coordinates unchanged.
 
-Common TorchVision transforms such as `RandomCrop`, `CenterCrop`, and
-`Resize` are not registered target-aware operations. They can change the
-image while the mask remains at its original shape. The runtime refusal
-list catches several named distortions, but it is not a complete detector
-for every spatial transform or custom callable.
+    Common TorchVision transforms such as `RandomCrop`, `CenterCrop`, and `Resize` are not registered target-aware operations. They can change the image while the mask remains at its original shape. The runtime refusal list catches several named distortions, but it is not a complete detector for every spatial transform or custom callable.
 
-Use only explicitly supported geometric transforms in a multi-target
-pipeline. Otherwise, apply the operation through a native target-aware
-pipeline or transform every target yourself. See
-[Auxiliary targets](guides/auxiliary-targets.md).
-```
+    Use only explicitly supported geometric transforms in a multi-target pipeline. Otherwise, apply the operation through a native target-aware pipeline or transform every target yourself. See [Auxiliary targets](guides/auxiliary-targets.md).
 
 ## Compatibility at a glance
 

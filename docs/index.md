@@ -9,9 +9,13 @@ description: Learn where fuse-augmentations safely composes image transforms, wh
 
 The strongest use case is a BCHW tensor pipeline with several consecutive, registered geometric transforms. Reducing repeated resampling can preserve more image detail, lower peak tensor memory, and accelerate long CPU chains.
 
-!!! warning "This is not a general drop-in Compose replacement" Native PIL, CHW, Albumentations dictionary, target-processing, fill, center, random-number, and hook contracts are not preserved in general. Use the package as a tensor-first fusion engine and validate the exact pipeline you intend to ship.
+!!! tip "This is not a general drop-in Compose replacement"
 
-!!! critical "Auxiliary targets require an allowlisted pipeline" An unknown spatial transform can be passed through on the image while a mask, box, or keypoint tensor remains unchanged. Ordinary unsupported TorchVision crops and resize operations can therefore desynchronize targets. Treat every `Unknown ... SPATIAL_KERNEL barrier` warning as unsafe when `data_keys` is present. See [Known limitations](known-limitations.md).
+    Native PIL, CHW, Albumentations dictionary, target-processing, fill, center, random-number, and hook contracts are not preserved in general. Use the package as a tensor-first fusion engine and validate the exact pipeline you intend to ship.
+
+!!! warning "Auxiliary targets require an allowlisted pipeline"
+
+    An unknown spatial transform can be passed through on the image while a mask, box, or keypoint tensor remains unchanged. Ordinary unsupported TorchVision crops and resize operations can therefore desynchronize targets. Treat every `Unknown ... SPATIAL_KERNEL barrier` warning as unsafe when `data_keys` is present. See [Known limitations](known-limitations.md).
 
 ## What is verified
 

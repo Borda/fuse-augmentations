@@ -9,21 +9,11 @@ Use `data_keys` to route dense tensor targets through a supported fused geometri
 
 !!! danger "Stop on unknown spatial transforms"
 
-```
-Before using any example on this page, inspect construction warnings and
-`pipe.fusion_plan`.
+    Before using any example on this page, inspect construction warnings and `pipe.fusion_plan`.
 
-If you see `Unknown ... transform ... treating as SPATIAL_KERNEL barrier`,
-do not use that pipeline with masks, boxes, or keypoints until you have
-proved the transform preserves coordinates. `RandomCrop`, `CenterCrop`, and
-`Resize` can transform only the image and leave the mask at its old shape.
-The runtime refusal list catches several named distortions, but it is not a
-complete spatial-transform detector.
+    If you see `Unknown ... transform ... treating as SPATIAL_KERNEL barrier`, do not use that pipeline with masks, boxes, or keypoints until you have proved the transform preserves coordinates. `RandomCrop`, `CenterCrop`, and `Resize` can transform only the image and leave the mask at its old shape. The runtime refusal list catches several named distortions, but it is not a complete spatial-transform detector.
 
-Replace an unsupported spatial transform with a registered operation, run
-it through a native target-aware pipeline, or transform every target
-yourself. A warning is not a safety guarantee.
-```
+    Replace an unsupported spatial transform with a registered operation, run it through a native target-aware pipeline, or transform every target yourself. A warning is not a safety guarantee.
 
 ## Supported target contract
 

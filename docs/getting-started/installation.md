@@ -7,7 +7,9 @@ description: Install the PyTorch fusion engine alone or with Kornia, TorchVision
 
 The base package requires Python 3.10 or newer and PyTorch 2.2 or newer. Kornia, TorchVision, and Albumentations are optional because the native builder can create a useful pipeline without them.
 
-!!! note "Project maturity" The package is currently classified Alpha. Pin versions in production or research environments and validate the exact pipeline after upgrades.
+!!! note "Project maturity"
+
+    The package is currently classified Alpha. Pin versions in production or research environments and validate the exact pipeline after upgrades.
 
 ## Base installation
 
@@ -23,27 +25,27 @@ Install only the adapter ecosystems you use:
 
 === "Kornia"
 
-```bash
-python -m pip install "fuse-augmentations[kornia]"
-```
+    ```bash
+    python -m pip install "fuse-augmentations[kornia]"
+    ```
 
 === "TorchVision"
 
-```bash
-python -m pip install "fuse-augmentations[torchvision]"
-```
+    ```bash
+    python -m pip install "fuse-augmentations[torchvision]"
+    ```
 
 === "Albumentations"
 
-```bash
-python -m pip install "fuse-augmentations[albumentations]"
-```
+    ```bash
+    python -m pip install "fuse-augmentations[albumentations]"
+    ```
 
 === "All adapters"
 
-```bash
-python -m pip install "fuse-augmentations[all]"
-```
+    ```bash
+    python -m pip install "fuse-augmentations[all]"
+    ```
 
 The extras enable adapter support; they do not make every upstream transform or parameter combination fusible. Check the [capability tables](../concepts/capabilities.md).
 

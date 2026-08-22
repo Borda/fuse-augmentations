@@ -49,12 +49,7 @@ Not in a pipeline with masks, boxes, or keypoints.
 
 !!! danger "Unknown spatial transforms can corrupt training targets"
 
-```
-`RandomCrop`, `CenterCrop`, and `Resize` can change the image while an
-auxiliary mask remains unchanged. The runtime refusal list is not exhaustive.
-Treat every unknown transform as unsafe with `data_keys` until you have
-independently proved it preserves coordinates.
-```
+    `RandomCrop`, `CenterCrop`, and `Resize` can change the image while an auxiliary mask remains unchanged. The runtime refusal list is not exhaustive. Treat every unknown transform as unsafe with `data_keys` until you have independently proved it preserves coordinates.
 
 For image-only pipelines, the warning still means fusion stopped and native passthrough behavior applies.
 

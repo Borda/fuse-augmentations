@@ -76,6 +76,115 @@ fused ('_DirectParamTransform', '_DirectFlipTransform') None None
 
 Fewer planned resampling passes are structural. Faster execution is not: benchmark the exact device, image shape, batch size, dtype, and transform mix. See [Benchmarks](../research/benchmarks.md).
 
+## The full parameter palette
+
+`Compose.from_params` accepts every direct-path knob in one call: independent axis scaling, shear, both translations, both flips, photometric brightness and contrast, and the resampling controls.
+
+```python
+torch.manual_seed(11)
+
+full = Compose.from_params(
+    rotation=(-15.0, 15.0),
+    scale_x=(0.9, 1.1),
+    scale_y=(0.9, 1.1),
+    shear_x=(-5.0, 5.0),
+    shear_y=(-5.0, 5.0),
+    translate_x=(-8.0, 8.0),
+    translate_y=(-8.0, 8.0),
+    hflip_p=0.5,
+    vflip_p=0.2,
+    brightness=0.2,
+    contrast=0.2,
+    interpolation="bicubic",
+    padding_mode="reflection",
+    clip_policy="final",
+    reorder=ReorderPolicy.NONE,
+)
+
+full_out = full(images)
+
+print(full.fusion_plan)
+print(full.n_warps_saved)
+print(tuple(full_out.shape), full_out.dtype)
+```
+
+<details>
+<summary>Full-palette fusion plan, saved warps, and output shape</summary>
+
+```
+fused(_DirectParamTransform, _DirectFlipTransform, _DirectFlipTransform) → color(_DirectParamTransform, _DirectParamTransform)
+3
+(4, 3, 128, 128) torch.float32
+```
+
+</details>
+
+The geometry collapses into one fused segment; brightness and contrast form a separate pointwise colour segment because they are not matrix operations. `scale` and `scale_x`/`scale_y` are alternatives — pass the isotropic form or the two axis forms, not both.
+
+## Route a mask with the image
+
+Pass `data_keys` to carry auxiliary targets through the same fused geometry. The first key must be `"input"`, naming the image tensor.
+
+```python
+torch.manual_seed(13)
+
+targeted = Compose.from_params(
+    rotation=(-10.0, 10.0),
+    translate_x=(-4.0, 4.0),
+    hflip_p=0.5,
+    data_keys=["input", "mask"],
+    mask_interpolation="nearest",
+    reorder=ReorderPolicy.NONE,
+)
+
+masks = (torch.rand(4, 1, 128, 128) > 0.5).float()
+image_out, mask_out = targeted(images, masks)
+
+print(tuple(image_out.shape), tuple(mask_out.shape))
+print(sorted(set(mask_out.unique().tolist())))
+```
+
+<details>
+<summary>Routed image and mask shapes with preserved mask labels</summary>
+
+```
+(4, 3, 128, 128) (4, 1, 128, 128)
+[0.0, 1.0]
+```
+
+</details>
+
+`mask_interpolation="nearest"` keeps label values discrete. Read [Known limitations](../known-limitations.md) before routing targets through any pipeline that reports an unknown spatial transform — the direct-parameter path used here is safe, arbitrary backend transforms are not.
+
+## Hand back NumPy
+
+`output_backend` converts the result on the way out, so a torch-internal pipeline can serve a NumPy consumer.
+
+```python
+torch.manual_seed(17)
+
+as_numpy = Compose.from_params(
+    rotation=(-5.0, 5.0),
+    output_backend="numpy",
+    reorder=ReorderPolicy.NONE,
+)
+
+array = as_numpy(images)
+
+print(type(array).__name__, array.shape, array.dtype)
+```
+
+<details>
+<summary>NumPy output type, shape, and dtype</summary>
+
+```
+ndarray (4, 128, 128, 3) float32
+```
+
+</details>
+
+The `"numpy"` backend returns channel-last `NHWC`; use `"numpy_hwc"` or `"torch"` to select a different output contract.
+
 ## Next steps
 
 - Bring an existing library pipeline with [Backend pipelines](../guides/backend-pipelines.md).

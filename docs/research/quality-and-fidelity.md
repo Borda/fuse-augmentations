@@ -11,9 +11,7 @@ This distinction matters for training reproducibility, scientific comparisons, d
 
 !!! warning "Fusion fidelity is not native-backend equivalence"
 
-```
-A pipeline may use fewer resampling passes and still differ from its native backend because of coordinate conventions, interpolation, padding, clipping, transform order, or random-parameter sampling. Validate the complete pipeline you intend to use.
-```
+    A pipeline may use fewer resampling passes and still differ from its native backend because of coordinate conventions, interpolation, padding, clipping, transform order, or random-parameter sampling. Validate the complete pipeline you intend to use.
 
 ## What does fidelity mean?
 
@@ -237,9 +235,7 @@ Images and targets are aligned only when every coordinate-changing operation is 
 
 !!! danger "Unknown spatial passthroughs can desynchronize targets"
 
-```
-With `data_keys`, an unknown TorchVision crop or resize can transform the image while leaving the mask, boxes, or keypoints unchanged. `RandomCrop`, `CenterCrop`, and `Resize` reproduced this failure. Treat an `Unknown ... SPATIAL_KERNEL` warning as unsafe in a multi-target pipeline until the transform is explicitly supported or refused.
-```
+    With `data_keys`, an unknown TorchVision crop or resize can transform the image while leaving the mask, boxes, or keypoints unchanged. `RandomCrop`, `CenterCrop`, and `Resize` reproduced this failure. Treat an `Unknown ... SPATIAL_KERNEL` warning as unsafe in a multi-target pipeline until the transform is explicitly supported or refused.
 
 Additional target boundaries:
 

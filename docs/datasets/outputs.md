@@ -1,9 +1,9 @@
 ---
-title: Output formats
+title: Annotation formats
 description: COCO and YOLO dataset layouts, plus the in-memory streaming training feed.
 ---
 
-# Output formats
+# Annotation formats
 
 ## COCO output
 

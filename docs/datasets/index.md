@@ -7,7 +7,7 @@ description: Generate COCO and YOLO datasets of colored shapes for detection, se
 
 `fuse_augmentations.data` draws colored shapes on a canvas and writes ready-to-train datasets. It is a standalone generation utility: no file-backed dataset loader, no model, no training loop. Use it for pipeline smoke tests, augmentation demos, teaching material, and quick detector sanity checks where a real dataset is overkill.
 
-It supports two output formats — **COCO** and **YOLO** — across four tasks — **detection**, **segmentation**, **oriented bounding box (OBB)**, and **keypoints / pose**.
+It supports two annotation formats — **COCO** and **YOLO** — across four tasks — **detection**, **segmentation**, **oriented bounding box (OBB)**, and **keypoints / pose**.
 
 ## Install
 
@@ -52,5 +52,5 @@ Pass a real path instead of the temporary directory to keep the dataset. The sam
 
 - [Shape families](shapes.md) — the four vocabularies (geometric, animals, symbols, letters), the visual shape reference, and how to select shapes and colors.
 - [Tasks and keypoints](tasks.md) — the four annotation tasks and every family's keypoint schema.
-- [Output formats](outputs.md) — COCO and YOLO on-disk layouts, plus the in-memory streaming training feed.
+- [Annotation formats](outputs.md) — COCO and YOLO on-disk layouts, plus the in-memory streaming training feed.
 - [Customization and extension](customization.md) — reproducibility knobs, custom splits and fills, registering new families and writers, and editing the packaged assets.

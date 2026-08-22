@@ -124,4 +124,6 @@ Each transform is routed to its registered adapter. A backend change is a hard s
 
 An unregistered transform becomes a passthrough barrier when the adapter can safely call it. That does not mean the operation is transparent or target-safe.
 
-!!! danger Never ignore an `Unknown ... SPATIAL_KERNEL barrier` warning in a pipeline with `data_keys`. Unsupported spatial transforms can modify only the image and leave auxiliary targets stale. Replace the transform with a registered operation, split the pipeline and route every target yourself, or do not use this package for that pipeline.
+!!! danger
+
+    Never ignore an `Unknown ... SPATIAL_KERNEL barrier` warning in a pipeline with `data_keys`. Unsupported spatial transforms can modify only the image and leave auxiliary targets stale. Replace the transform with a registered operation, split the pipeline and route every target yourself, or do not use this package for that pipeline.
