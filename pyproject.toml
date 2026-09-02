@@ -218,13 +218,20 @@ ini_options.filterwarnings = [
   "error::FutureWarning",
   # Kornia calls torch.jit.script / script_method internally at import time.
   # Newer torch deprecates both and, on Python 3.14+, warns they are "not
-  # supported" (a different wording than "is deprecated"). Match each symbol
-  # with a trailing wildcard so either wording is ignored and collection of
-  # every Kornia-backed test is not aborted. script_method is matched
-  # separately from script so neither pattern shadows the other.
+  # supported" (a different wording than "is deprecated"). torch 2.10 raises
+  # these as DeprecationWarning while newer releases raise FutureWarning, so
+  # both categories are matched to keep the supported torch range collectable.
+  # Match each symbol with a trailing wildcard so either wording is ignored and
+  # collection of every Kornia-backed test is not aborted. script_method is
+  # matched separately from script so neither pattern shadows the other.
   "ignore:`torch.jit.script_method`.*:DeprecationWarning",
+  "ignore:`torch.jit.script_method`.*:FutureWarning",
   "ignore:`torch.jit.script`.*:DeprecationWarning",
-  # The fuse_augmentations.data.shapes compatibility shim warns at import time by design, and
+  "ignore:`torch.jit.script`.*:FutureWarning",
+  # TODO: torch.jit.script is on a removal path — once it is gone these ignores
+  # stop helping and kornia breaks at import. Track kornia for a torch.jit-free
+  # import path; if torch removes the symbol first, pin or drop the kornia leg
+  # of the CI matrix. Drop whichever warning category torch stops using.
 ]
 ini_options.junit_duration_report = "call"
 
