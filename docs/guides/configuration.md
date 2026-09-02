@@ -75,6 +75,42 @@ reorder = ReorderPolicy.NONE
 
 Only enable `POINTWISE` after measuring the output and performance trade-off. `AGGRESSIVE` currently follows the same implementation as `POINTWISE`; it is not a stronger optimizer today.
 
+## Letterbox with an exact inverse (`letterbox`)
+
+`letterbox=(height, width)` (or a single `int` for a square) appends an aspect-preserving fit: content is scaled by one ratio `r = min(height_out / H, width_out / W)` and the slack is padded with `fill`. Because the map is a pure scale plus translation, it inverts exactly — a prediction made on the letterboxed canvas maps back to source coordinates with no resampling, which is what makes it usable as an inference preprocessor and not only a training resize.
+
+```python
+import torch
+
+from fuse_augmentations import Compose, letterbox_matrix, transform_keypoints
+from fuse_augmentations.affine.matrix import inv3x3
+
+augment = Compose.from_params(
+    rotation=(20.0, 20.0), letterbox=(32, 32), fill=114.0 / 255.0
+)
+out, matrix = augment(torch.full((1, 3, 20, 40), 0.8), return_matrix=True)
+print(out.shape, len(augment.fusion_plan_descriptors))
+
+forward = letterbox_matrix(
+    height_in=20, width_in=40, height_out=32, width_out=32, dtype=torch.float64
+)
+point = torch.tensor([[[7.5, 3.25]]], dtype=torch.float64)
+recovered = transform_keypoints(transform_keypoints(point, forward), inv3x3(forward))
+print(recovered.tolist())
+```
+
+```
+torch.Size([1, 3, 32, 32]) 1
+[[[7.5, 3.25]]]
+```
+
+- **One resample, not two.** The letterbox is a `CROP_RESIZE_FIXED` op, so a geometric run in front of it composes into a single matrix warped once, straight from the source canvas to the letterboxed one — the `1` printed above is the segment count. `return_matrix=True` then hands back the whole chain (`M_letterbox @ M_geo`), not the letterbox alone.
+- **Ordering.** The letterbox is placed after the geometry and before any `brightness`/`contrast`, because the crop-resize category is a reorder barrier and a colour op buffered ahead of it would be flushed between the geometric run and the letterbox, splitting the fusion. A colour op in the same call therefore also acts on the pad region.
+- **`allow_upscale=False`** caps the ratio at `1.0`, so a source smaller than the canvas is padded rather than magnified.
+- **Padding is integer and floor-halved.** An odd slack puts the extra pixel on the right or the bottom, matching a resize-then-pad implementation pixel for pixel.
+- **`letterbox_matrix` / `letterbox_geometry`** expose the same fit as data, computed from sizes alone. An evaluation loop that no longer has the pipeline can recompute the matrix and invert it with `inv3x3`.
+- Backend-free mode only; `backend=` raises rather than accepting and ignoring the argument.
+
 ## Half-pixel convention (`align_corners`)
 
 Sampling runs with `align_corners=True`, and matrices are normalized with the sandwich derived for that same flag (`2 / (W - 1)` scale, `(W - 1) / 2` offset). Because the two agree, **a pixel-space matrix carries no convention**: the map this package applies is the one an `align_corners=False` implementation — TorchVision, Albumentations, most YOLO data pipelines — would apply for the same matrix. Only the normalization into `[-1, 1]` is convention-bound, and it cancels against the sampling flag.

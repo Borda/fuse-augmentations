@@ -19,6 +19,7 @@ from torch import nn
 from fuse_augmentations._random import uniform as _uniform
 from fuse_augmentations.affine.matrix import (
     hflip_matrix,
+    letterbox_matrix,
     matmul3x3,
     rotation_matrix,
     scale_matrix,
@@ -356,6 +357,8 @@ class FactoriesMixin:
         pipeline_dtype: PipelineDtypeStr | None = None,
         generator: torch.Generator | None = None,
         fill: FillValue | None = None,
+        letterbox: tuple[int, int] | int | None = None,
+        allow_upscale: bool = True,
         *,
         specs: list[TransformSpec] | None = None,
         backend: BackendStr | None = None,
@@ -435,6 +438,16 @@ class FactoriesMixin:
                 float); a scalar fills every channel, a sequence one channel each.
                 ``None`` (default) keeps the plain zero border. Images only — auxiliary
                 masks keep zero padding. Requires ``padding_mode="zeros"``.
+            letterbox: Output canvas as ``(height, width)``, or one ``int`` for a square.
+                Appends a deterministic aspect-preserving fit: content is scaled by
+                ``r = min(height_out / H, width_out / W)`` and the slack is padded with
+                ``fill``. It sits after the geometry and before any brightness/contrast, so
+                the affine and the letterbox compose into a single matrix and one resample
+                — which also means a colour op in the same call acts on the padded canvas,
+                pad region included. Backend-free mode only. ``None`` (default) adds nothing.
+            allow_upscale: Whether ``letterbox`` may enlarge content past its native size
+                when the output canvas is larger than the source. ``False`` caps the ratio
+                at ``1.0``, padding instead of magnifying. Ignored without ``letterbox``.
             route_coords_via_grid: Force coordinate auxiliary targets through
                 the grid path for direct-param construction.
             specs: List of :class:`TransformSpec` objects. When provided,
@@ -515,6 +528,7 @@ class FactoriesMixin:
             # checks so invalid falsey values (e.g. empty tuple/list) are still
             # treated as "provided" and rejected in specs mode.
             has_keyword_params = any((
+                letterbox is not None,
                 rotation is not None,
                 scale is not None,
                 scale_x is not None,
@@ -568,6 +582,11 @@ class FactoriesMixin:
         # When backend is set and geometric kwargs are provided (no specs),
         # convert the kwargs to TransformSpec objects and delegate to from_config.
         if backend is not None:
+            if letterbox is not None:
+                raise NotImplementedError(
+                    "letterbox= is only available in backend-free mode (backend=None); the backend= path routes "
+                    "through from_config, whose canonical op vocabulary has no letterbox op."
+                )
             if backend != "native" and (brightness is not None or contrast is not None):
                 raise NotImplementedError("brightness and contrast from_params require backend='native'")
             config_specs = cls._geometric_kwargs_to_specs(
@@ -626,11 +645,12 @@ class FactoriesMixin:
         has_affine = bool(param_specs)
         has_flips = hflip_p > 0.0 or vflip_p > 0.0
         has_color = bool(color_specs)
+        has_letterbox = letterbox is not None
 
         # NOTE: The identity path (all params None) returns a normal __init__ instance
         # with _adapter=None. The non-identity path uses _DirectParamAdapter.
         # Both handle empty _segments correctly; do not branch on isinstance(_adapter, ...).
-        if not has_affine and not has_flips and not has_color:
+        if not has_affine and not has_flips and not has_color and not has_letterbox:
             constructor = cast(Callable[..., object], cls)
             return constructor(
                 transforms=[],
@@ -659,6 +679,13 @@ class FactoriesMixin:
 
         if vflip_p > 0.0:
             transforms.append(_DirectFlipTransform(flip_type="vflip", prob=vflip_p))
+
+        if letterbox is not None:
+            height_out, width_out = (letterbox, letterbox) if isinstance(letterbox, int) else letterbox
+            # Placed after the geometry and before any colour op: the crop-resize category is
+            # a reorder barrier, so a colour op buffered ahead of it would be flushed between
+            # the geometric run and the letterbox and break the single-segment fusion.
+            transforms.append(_DirectLetterboxTransform(height_out, width_out, allow_upscale))
 
         transforms.extend(_DirectParamTransform(param_specs={key: value}, prob=1.0) for key, value in color_specs)
 
@@ -963,6 +990,25 @@ class _DirectFlipTransform:
         self.same_on_batch = False
 
 
+class _DirectLetterboxTransform:
+    """Internal deterministic letterbox op for from_params().
+
+    Not exported. Classified ``CROP_RESIZE_FIXED`` so it reuses the shape-changing warp
+    machinery: standalone it becomes a ``CropResizeSegment``, and after a geometric run it
+    fuses into a ``_FusedGeoCropSegment`` -- one composed matrix, one resample from the
+    source canvas straight to the letterboxed one.
+
+    """
+
+    def __init__(self, height_out: int, width_out: int, allow_upscale: bool = True) -> None:
+        self.height_out = int(height_out)
+        self.width_out = int(width_out)
+        self.allow_upscale = bool(allow_upscale)
+        #: Deterministic: applied to every sample, identically across the batch.
+        self.prob = 1.0
+        self.same_on_batch = True
+
+
 class _DirectParamAdapter:
     """Internal adapter for from_params() that samples directly from param ranges.
 
@@ -983,6 +1029,8 @@ class _DirectParamAdapter:
             return TransformCategory.GEOMETRIC_INTERP
         if isinstance(transform, _DirectFlipTransform):
             return TransformCategory.GEOMETRIC_EXACT
+        if isinstance(transform, _DirectLetterboxTransform):
+            return TransformCategory.CROP_RESIZE_FIXED
         return TransformCategory.SPATIAL_KERNEL
 
     @staticmethod
@@ -1008,6 +1056,14 @@ class _DirectParamAdapter:
 
         if isinstance(transform, _DirectFlipTransform):
             return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
+
+        if isinstance(transform, _DirectLetterboxTransform):
+            # Deterministic op: the output size is configuration, not a draw, so the
+            # generator is deliberately unused here rather than silently consumed.
+            return {
+                "target_h": torch.full((batch_size,), transform.height_out, device=device, dtype=torch.int64),
+                "target_w": torch.full((batch_size,), transform.width_out, device=device, dtype=torch.int64),
+            }
 
         if isinstance(transform, _DirectParamTransform):
             specs = transform.param_specs
@@ -1084,6 +1140,17 @@ class _DirectParamAdapter:
     ) -> torch.Tensor:
         """Build a (batch_size, 3, 3) forward affine matrix from sampled params."""
         batch_size: int | None = None
+        if isinstance(transform, _DirectLetterboxTransform):
+            reference = params["target_h"]
+            return letterbox_matrix(
+                height_in=height,
+                width_in=width,
+                height_out=transform.height_out,
+                width_out=transform.width_out,
+                allow_upscale=transform.allow_upscale,
+                batch_size=int(reference.shape[0]),
+                device=reference.device,
+            )
         if isinstance(transform, _DirectFlipTransform):
             batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device

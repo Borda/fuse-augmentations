@@ -88,10 +88,9 @@ class TestSurvivalRules:
     def test_zero_thresholds_drop_nothing_at_all(self) -> None:
         """With both thresholds at zero every instance survives, clipped away or not.
 
-        Zero means "no opinion", not "a sensible minimum": a fully clipped-away box has
-        width, height and visibility of exactly zero, and zero clears a zero threshold. The
-        defaults therefore encode no recipe, and a caller who wants off-canvas instances
-        dropped states the threshold that does it — as the drop test above does.
+        Zero means "no opinion", not "a sensible minimum": a fully clipped-away box has width, height and visibility of
+        exactly zero, and zero clears a zero threshold. The defaults therefore encode no recipe, and a caller who wants
+        off-canvas instances dropped states the threshold that does it — as the drop test above does.
 
         """
         warped = torch.tensor([[[7.9, 7.9, 12.0, 12.0], [-5.0, -5.0, -1.0, -1.0]]])

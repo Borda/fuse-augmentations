@@ -20,6 +20,11 @@ import os
 from typing import Any
 
 from fuse_augmentations.__about__ import *  # noqa: F403
+from fuse_augmentations.affine.matrix import (
+    LetterboxGeometry,
+    letterbox_geometry,
+    letterbox_matrix,
+)
 from fuse_augmentations.affine.segment import (
     CropResizeSegment,
     ExactAffineSegment,
@@ -73,6 +78,7 @@ __all__ = [
     "FusedCompose",
     "FusedLUTSegment",
     "InterpolationMode",
+    "LetterboxGeometry",
     "NumpyToTorchConverter",
     "PaddingMode",
     "ProjectiveSegment",
@@ -87,6 +93,8 @@ __all__ = [
     "clip_bbox_xyxy",
     "generate_dataset",  # noqa: F405 - provided lazily via module __getattr__
     "instance_keep_mask",
+    "letterbox_geometry",
+    "letterbox_matrix",
     "transform_bbox_xywh",
     "transform_bbox_xyxy",
     "transform_keypoints",
