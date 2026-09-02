@@ -42,7 +42,7 @@ from torch import Tensor, nn
 
 from fuse_augmentations._backend import Backend, detect_backends_per_transform
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
-from fuse_augmentations._random import reject_backend_randomness
+from fuse_augmentations._random import GeneratorPicklingMixin, reject_backend_randomness
 from fuse_augmentations.affine.matrix import (
     hflip_matrix,
     inv3x3,
@@ -196,7 +196,7 @@ def _reject_generator_with_backend_transforms(
     reject_backend_randomness(generator, f"backend transform(s) {', '.join(names)}")
 
 
-class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
+class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, nn.Module):
     """Fused augmentation pipeline that replaces the backend's native Compose.
 
     Segments the transform list into fused geometric segments and passthrough transforms, then executes them
@@ -807,7 +807,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
             ```
 
         """
-        super().__setstate__(state)  # type: ignore[no-untyped-call]
+        super().__setstate__(state)
         # Config/core fields default to their backward-compatible values on pickles
         # that predate them, so the shared builder below has everything it reads.
         if not hasattr(self, "execution"):
@@ -847,6 +847,14 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
         # Rebuild every derived dispatch attribute so a pre-attr pickle cannot raise
         # AttributeError on the first forward.
         self._build_derived_state()
+        # Pipeline and segments each restored an independent copy of the generator
+        # (GeneratorPicklingMixin snapshots by value; identity does not survive pickle).
+        # Independent copies advance separate streams while looking correct, so every
+        # segment is rebound to the single pipeline-owned instance.
+        if self.generator is not None:
+            for seg in self._segments:
+                if hasattr(seg, "generator"):
+                    seg.generator = self.generator
 
     def __call__(self, *args: object, return_matrix: bool = False, **kwargs: object) -> object:
         """Route to the Albumentations native dict path or the standard tensor path.

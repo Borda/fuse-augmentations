@@ -242,6 +242,18 @@ class TestPipelineIntegration:
         peak = out[0, 0].flatten().argmax().item()
         assert (peak // 32, peak % 32) == (round(mapped[1].item()), round(mapped[0].item()))
 
+    def test_a_letterbox_alone_reports_no_matrix(self) -> None:
+        """``return_matrix=True`` on a letterbox-only pipeline returns ``None``, not a partial chain.
+
+        A crop-resize segment reports no matrix, so the standalone case has nothing to hand back — pinned here because
+        the fused case *does* return the whole chain, and a caller who saw that first would reasonably expect a matrix
+        from both. `letterbox_matrix()` is the answer for the standalone case, and it needs no pipeline at all.
+
+        """
+        _, matrix = FusedCompose.from_params(letterbox=(32, 32))(_image(20, 40), return_matrix=True)
+
+        assert matrix is None
+
     def test_boxes_route_through_the_same_letterbox_map(self) -> None:
         """A routed box equals the box mapped by the public ``letterbox_matrix``.
 

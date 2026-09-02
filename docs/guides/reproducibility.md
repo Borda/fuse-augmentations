@@ -92,7 +92,7 @@ Scope and limits:
 - Kornia, TorchVision, and Albumentations transforms sample inside their own libraries, and none of those samplers accept a `torch.Generator`. Passing one together with backend transforms raises at construction instead of falling back to the global stream, because a silent fallback would look reproducible without being reproducible. Seed those backends as described in the sections below.
 - `generator=None` (the default) keeps the historical global-stream behaviour unchanged, so existing pipelines need no edit.
 - A generator on any device seeds a pipeline on any device: the draw happens on the generator's device and is copied to the tensors' device.
-- Pickling a pipeline (which is what a DataLoader worker receives) carries the generator's state as of pickling, so every worker would otherwise replay one identical stream. Give each worker its own seed.
+- Pickling a pipeline (which is what a DataLoader worker receives) carries the generator's state as of pickling, so every worker would otherwise replay one identical stream. Give each worker its own seed. The state travels by value — the unpickled pipeline holds a *new* generator at the same state, so re-seeding the original object leaves the restored pipeline untouched; seed `pipe.generator` on the pipeline the worker actually holds.
 
 ## Seed Albumentations' two RNG domains
 

@@ -109,6 +109,7 @@ torch.Size([1, 3, 32, 32]) 1
 - **`allow_upscale=False`** caps the ratio at `1.0`, so a source smaller than the canvas is padded rather than magnified.
 - **Padding is integer and floor-halved.** An odd slack puts the extra pixel on the right or the bottom, matching a resize-then-pad implementation pixel for pixel.
 - **`letterbox_matrix` / `letterbox_geometry`** expose the same fit as data, computed from sizes alone. An evaluation loop that no longer has the pipeline can recompute the matrix and invert it with `inv3x3`.
+- **A letterbox on its own returns no matrix.** `return_matrix=True` gives `None` for a letterbox-only pipeline — a crop-resize segment reports no matrix — so use `letterbox_matrix()` there. With a geometric run in front, the fused segment does report the composed chain.
 - Backend-free mode only; `backend=` raises rather than accepting and ignoring the argument.
 
 ## Half-pixel convention (`align_corners`)

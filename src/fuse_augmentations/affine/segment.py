@@ -36,8 +36,8 @@ from numpy.typing import NDArray
 from torch import Tensor, nn
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fuse_augmentations._random import GeneratorPicklingMixin, reject_backend_randomness
 from fuse_augmentations._random import rand as _rand
-from fuse_augmentations._random import reject_backend_randomness
 from fuse_augmentations.affine.matrix import (
     _singularity_threshold,
     apply_d4_image,
@@ -768,7 +768,7 @@ def _kornia_gaussian_blur(image: Tensor, sigma_x: float | Tensor, sigma_y: float
     return gaussian_blur2d(image, kernel_size=(ksize_y, ksize_x), sigma=sigma, border_type="reflect")
 
 
-class ExactAffineSegment(nn.Module):
+class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
     """Lossless segment for GEOMETRIC_EXACT-only chains.
 
     Used when a run of consecutive geometric transforms consists entirely of ``GEOMETRIC_EXACT`` operations, such as
@@ -1031,7 +1031,7 @@ class ExactAffineSegment(nn.Module):
                 aux_targets[key] = _flip_rboxes(val, active, is_hflip, is_vflip, height, width)
 
 
-class _BaseAffineSegment(nn.Module):
+class _BaseAffineSegment(GeneratorPicklingMixin, nn.Module):
     """Shared matrix-composition engine for the torch-backed fused segments.
 
     Holds the single copy of the per-sample matrix accumulation loop and the
@@ -3266,7 +3266,7 @@ class AlbuProjectiveSegment(nn.Module):
         return warped
 
 
-class FusedColorSegment(nn.Module):
+class FusedColorSegment(GeneratorPicklingMixin, nn.Module):
     """Fused colour-space segment that composes POINTWISE_LINEAR transforms into one matrix multiply.
 
     Accumulates per-sample ``(B, 4, 4)`` homogeneous colour-space affine matrices for every transform in the
@@ -3332,7 +3332,7 @@ class FusedColorSegment(nn.Module):
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Restore state; back-compat: add missing fields from older pickles."""
-        super().__setstate__(state)  # type: ignore[no-untyped-call]
+        super().__setstate__(state)
         if "_eye4" not in self._buffers:
             self.register_buffer("_eye4", torch.eye(4, dtype=torch.float32))
         # clip_output added in v0.7; default True preserves pre-existing behaviour.

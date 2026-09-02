@@ -9,7 +9,9 @@ which would report a reproducibility they do not have.
 
 from __future__ import annotations
 
+import io
 import pickle
+from typing import Any
 
 import pytest
 import torch
@@ -265,3 +267,75 @@ class TestGeneratorDeviceHop:
             return FusedCompose.from_params(rotation=(-30.0, 30.0), hflip_p=0.5, generator=gen)(mps_image)
 
         assert torch.equal(run(), run())
+
+
+class _GeneratorRefusingPickler(pickle.Pickler):
+    """A pickler that refuses ``torch.Generator`` the way torch at the 2.2 floor does.
+
+    The pickling support this test exercises only matters on torch versions that cannot serialise
+    ``torch._C.Generator``; the installed torch may be new enough to pickle one directly and hide a regression. Refusing
+    the type here reproduces the old-torch failure on any version.
+
+    """
+
+    def reducer_override(self, obj: Any) -> Any:
+        """Raise on a live generator, delegate everything else to the default reducer."""
+        if isinstance(obj, torch.Generator):
+            msg = "cannot pickle 'torch._C.Generator' object"
+            raise TypeError(msg)
+        return NotImplemented
+
+
+def _dumps_as_old_torch(obj: object) -> bytes:
+    """Serialise ``obj`` under a pickler that rejects any live ``torch.Generator``."""
+    buffer = io.BytesIO()
+    _GeneratorRefusingPickler(buffer).dump(obj)
+    return buffer.getvalue()
+
+
+class TestPicklingWithoutGeneratorSupport:
+    """The generator crosses a pickle boundary by value, not by reference.
+
+    ``torch._C.Generator`` is unpicklable at the supported torch floor (2.2), which is exactly the version a
+    ``DataLoader`` worker may run on. The pipeline snapshots the generator's state instead of the object.
+
+    """
+
+    def test_a_seeded_pipeline_pickles_where_a_generator_cannot(self, image: torch.Tensor) -> None:
+        """No live generator reaches the pickler, and the restored stream resumes."""
+        pipe = _pipeline(33)
+        pipe(image)
+
+        restored = pickle.loads(_dumps_as_old_torch(pipe))  # noqa: S301 -- trusted, self-produced bytes
+
+        assert restored.generator is not None
+        assert torch.equal(restored(image), pipe(image))
+
+    def test_every_segment_shares_the_restored_generator(self, image: torch.Tensor) -> None:
+        """All segments are rebound to the single pipeline-owned generator.
+
+        Each segment restores its own snapshot, so without the rebind the pipeline would hold several generators at the
+        same state: every segment would then replay the same numbers instead of advancing one shared stream, and the
+        divergence only shows up after the first draw.
+
+        """
+        pipe = _pipeline(34)
+        pipe(image)
+
+        restored = pickle.loads(_dumps_as_old_torch(pipe))  # noqa: S301 -- trusted, self-produced bytes
+
+        seeded = [seg for seg in restored._segments if getattr(seg, "generator", None) is not None]
+        assert seeded, "expected at least one generator-driven segment"
+        assert all(seg.generator is restored.generator for seg in seeded)
+
+    def test_an_unseeded_pipeline_round_trips_unchanged(self, image: torch.Tensor) -> None:
+        """Without a generator the snapshot key is absent and the global stream still drives the draws."""
+        pipe = _pipeline(None)
+
+        restored = pickle.loads(_dumps_as_old_torch(pipe))  # noqa: S301 -- trusted, self-produced bytes
+
+        assert restored.generator is None
+        torch.manual_seed(5)
+        expected = pipe(image)
+        torch.manual_seed(5)
+        assert torch.equal(restored(image), expected)
