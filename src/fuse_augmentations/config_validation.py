@@ -223,3 +223,39 @@ def _validate_fill(
             raise ValueError(f"fill values must be finite, got {value!r}.")
         numbers.append(number)
     return tuple(numbers)
+
+
+def _validate_keypoint_flip_index(flip_index: Sequence[int] | None) -> tuple[int, ...] | None:
+    """Normalize the keypoint pair permutation applied when a transform mirrors.
+
+    Args:
+        flip_index: Sequence where slot ``i`` takes its value from slot ``flip_index[i]``
+            after a mirror, or ``None``.
+
+    Returns:
+        The permutation as a tuple of ints, or ``None``.
+
+    Raises:
+        ValueError: If the entries are not a permutation of ``range(len(flip_index))``.
+
+    Examples:
+        ```pycon
+        >>> _validate_keypoint_flip_index([0, 2, 1])
+        (0, 2, 1)
+        >>> _validate_keypoint_flip_index(None) is None
+        True
+
+        ```
+
+    """
+    if flip_index is None:
+        return None
+    indices = tuple(int(value) for value in flip_index)
+    if sorted(indices) != list(range(len(indices))):
+        msg = (
+            f"keypoint_flip_index must be a permutation of range({len(indices)}), got {indices}. "
+            "Each slot has to receive exactly one other slot's value, or the mirrored labels would "
+            "duplicate one landmark and drop another."
+        )
+        raise ValueError(msg)
+    return indices

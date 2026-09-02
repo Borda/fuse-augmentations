@@ -169,6 +169,36 @@ For each pipeline used in training or evaluation:
 
 See [Known limitations](../known-limitations.md) for parity, randomness, and device constraints.
 
+## Keypoint pairs under a mirror (`keypoint_flip_index`)
+
+A mirrored image has its left and right anatomy swapped. The warp already puts the coordinates in the right places; what has to follow is the *identity* of each keypoint slot — "left elbow" now sits where the right elbow is. `keypoint_flip_index` is that permutation: slot `i` takes its value from slot `flip_index[i]`.
+
+```python
+import torch
+
+from fuse_augmentations import Compose
+
+points = torch.tensor([[[4.0, 4.0], [8.0, 6.0], [12.0, 10.0]]])
+augment = Compose.from_params(
+    hflip_p=1.0,
+    data_keys=["input", "keypoints"],
+    keypoint_flip_index=(0, 2, 1),
+)
+
+_, swapped = augment(torch.zeros(1, 3, 16, 16), points)
+print(swapped[0].tolist())
+```
+
+```
+[[11.0, 4.0], [3.0, 10.0], [7.0, 6.0]]
+```
+
+- **When it fires is decided by the composed matrix's determinant**, never by whether a flip transform appears in the pipeline. After fusion the mirror is part of a larger matrix and is no longer a discrete op, and two mirrors compose back to a rotation — which must *not* swap. A rotation past 90 degrees looks like a flip and is not one; the determinant is what tells them apart.
+- **Every path applies it**, including the ones that never build a warp grid: the exact-flip route and the D4 fast path (a pure flip is applied by tensor reversal, skipping `grid_sample` entirely). A permutation wired only into the interpolating route would leave those images mirrored with unswapped labels, and nothing about the shapes would say so.
+- **The pair table is dataset schema and stays with you.** This package validates only that it is a permutation of `range(len(flip_index))` — a table that repeated or dropped a slot would duplicate one landmark and silently delete another.
+- `None` (the default) leaves the keypoint axis in input order, unchanged.
+- The same decision is available directly: `orientation_reversed(matrix)` and `permute_keypoint_pairs(points, flip_index, reversed_mask)`.
+
 ## Rotated boxes (`rboxes`)
 
 `"rboxes"` is a data key like any other: `(B, N, 5)` as `(cx, cy, w, h, theta)`, `theta` in radians, routed by every path that routes plain boxes — fused affine, exact flip, crop-resize, letterbox, and the Albumentations tensor path.

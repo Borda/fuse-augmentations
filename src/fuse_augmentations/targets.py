@@ -708,3 +708,81 @@ def rbox_envelopes(rboxes: Tensor) -> Tensor:
     minimum = corners.amin(dim=-2)
     maximum = corners.amax(dim=-2)
     return torch.cat([minimum, maximum], dim=-1)
+
+
+def orientation_reversed(mtx_forward: Tensor) -> Tensor:
+    """Return which samples' transforms reverse orientation, from the matrix determinant.
+
+    A mirror is not visible as a discrete operation once it has been composed into a larger
+    matrix -- "is there a flip in the transform list" is unanswerable after fusion, and
+    wrong whenever two mirrors compose back to a rotation. The determinant of the linear
+    part answers it exactly: negative means the map turns the plane over.
+
+    Args:
+        mtx_forward: ``(batch_size, 3, 3)`` forward pixel matrices.
+
+    Returns:
+        ``(batch_size,)`` boolean tensor, ``True`` where the sample's transform mirrors.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> from fuse_augmentations.targets import orientation_reversed
+        >>> mirror = torch.tensor([[[-1.0, 0.0, 7.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]])
+        >>> orientation_reversed(mirror).tolist()
+        [True]
+        >>> orientation_reversed(mirror @ mirror).tolist()
+        [False]
+
+        ```
+
+    """
+    linear = mtx_forward[..., :2, :2]
+    determinant = linear[..., 0, 0] * linear[..., 1, 1] - linear[..., 0, 1] * linear[..., 1, 0]
+    return determinant < 0
+
+
+def permute_keypoint_pairs(keypoints: Tensor, flip_index: Tensor, reversed_mask: Tensor) -> Tensor:
+    """Reorder the keypoint axis for samples whose transform reversed orientation.
+
+    A mirrored image has its left and right anatomy swapped, so a "left elbow" landmark now
+    sits where the right elbow is. The coordinates are already correct after the warp -- it
+    is the *identity* of each slot that has to follow, which is what this permutation does.
+
+    Which slots pair with which is dataset schema, not geometry, so ``flip_index`` comes
+    from the caller. This package only decides *when* to apply it, and decides that from the
+    composed matrix rather than from the presence of a flip transform.
+
+    Args:
+        keypoints: ``(batch_size, num_points, 2)`` keypoints, already warped.
+        flip_index: ``(num_points,)`` integer permutation: slot ``i`` takes its value from
+            slot ``flip_index[i]`` after a mirror.
+        reversed_mask: ``(batch_size,)`` boolean, ``True`` for samples to permute.
+
+    Returns:
+        ``(batch_size, num_points, 2)`` keypoints with the permutation applied to the
+        selected samples and the others untouched.
+
+    Raises:
+        ValueError: If ``flip_index`` does not have one entry per keypoint slot.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> from fuse_augmentations.targets import permute_keypoint_pairs
+        >>> points = torch.tensor([[[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]])
+        >>> pairs = torch.tensor([0, 2, 1])
+        >>> permute_keypoint_pairs(points, pairs, torch.tensor([True]))[0].tolist()
+        [[1.0, 1.0], [3.0, 3.0], [2.0, 2.0]]
+
+        ```
+
+    """
+    if flip_index.shape[0] != keypoints.shape[-2]:
+        msg = (
+            f"keypoint_flip_index has {flip_index.shape[0]} entries but the keypoints carry "
+            f"{keypoints.shape[-2]} slots."
+        )
+        raise ValueError(msg)
+    permuted = keypoints.index_select(-2, flip_index.to(device=keypoints.device))
+    return torch.where(reversed_mask[:, None, None], permuted, keypoints)

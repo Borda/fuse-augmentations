@@ -817,6 +817,7 @@ class ExactAffineSegment(nn.Module):
         adapter: TransformAdapter,
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
         generator: torch.Generator | None = None,
+        keypoint_flip_index: tuple[int, ...] | None = None,
     ) -> None:
         """Initialize ``ExactAffineSegment``."""
         super().__init__()
@@ -824,6 +825,7 @@ class ExactAffineSegment(nn.Module):
         self.adapter = adapter
         self.randomness = randomness
         self.generator = generator
+        self.keypoint_flip_index = keypoint_flip_index
 
     @property
     def last_matrix(self) -> Tensor | None:
@@ -1014,7 +1016,16 @@ class ExactAffineSegment(nn.Module):
                 aux_targets[key] = _xyxy_to_xywh(xyxy)
                 continue
             if key == "keypoints":
-                aux_targets[key] = _flip_keypoints(val, active, is_hflip, is_vflip, height, width)
+                flipped_points = _flip_keypoints(val, active, is_hflip, is_vflip, height, width)
+                # One mirror turns the plane over; two perpendicular mirrors are a half turn,
+                # which does not — so the pair swap fires on exactly one of the two flips.
+                if self.keypoint_flip_index is not None and (is_hflip != is_vflip):
+                    from fuse_augmentations.targets import permute_keypoint_pairs
+
+                    flipped_points = permute_keypoint_pairs(
+                        flipped_points, _flip_index_tensor(self.keypoint_flip_index, val.device), active
+                    )
+                aux_targets[key] = flipped_points
                 continue
             if key == "rboxes":
                 aux_targets[key] = _flip_rboxes(val, active, is_hflip, is_vflip, height, width)
@@ -1064,6 +1075,7 @@ class _BaseAffineSegment(nn.Module):
         mask_interpolation: MaskInterpolationStr = "nearest",
         generator: torch.Generator | None = None,
         fill: tuple[float, ...] | None = None,
+        keypoint_flip_index: tuple[int, ...] | None = None,
     ) -> None:
         """Initialize the shared matrix-composition state."""
         super().__init__()
@@ -1075,6 +1087,7 @@ class _BaseAffineSegment(nn.Module):
         self.mask_interpolation = mask_interpolation
         self.generator = generator
         self.fill = fill
+        self.keypoint_flip_index = keypoint_flip_index
         self._last_matrix: Tensor | None = None
         # Opt-in torch.compile of the warp core. Enabled only when the flag is set
         # AND the installed torch is new enough; otherwise the eager path runs
@@ -1203,6 +1216,7 @@ class _BaseAffineSegment(nn.Module):
         grid: Tensor,
         acc_img: Tensor,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        keypoint_flip_index: tuple[int, ...] | None = None,
     ) -> None:
         """Route auxiliary targets through the warp grid and composed pixel matrix.
 
@@ -1216,12 +1230,13 @@ class _BaseAffineSegment(nn.Module):
             grid: The sampling grid produced by :meth:`_apply_grid`.
             acc_img: ``(batch_size, 3, 3)`` composed forward pixel matrix in the image dtype.
             mask_interpolation: Mask sampling mode for the ``"mask"`` target.
+            keypoint_flip_index: Optional caller-supplied keypoint pair permutation, applied
+                where the composed matrix reverses orientation.
 
         """
         from fuse_augmentations.targets import (
             transform_bbox_xywh,
             transform_bbox_xyxy,
-            transform_keypoints,
             transform_mask,
             transform_rboxes,
         )
@@ -1238,7 +1253,7 @@ class _BaseAffineSegment(nn.Module):
                 aux_targets[key] = transform_bbox_xywh(val, acc_img)
                 continue
             if key == "keypoints":
-                aux_targets[key] = transform_keypoints(val, acc_img)
+                aux_targets[key] = _route_keypoints(val, acc_img, keypoint_flip_index)
                 continue
             if key == "rboxes":
                 aux_targets[key] = transform_rboxes(val, acc_img)
@@ -1275,6 +1290,7 @@ class FusedAffineSegment(_BaseAffineSegment):
         mask_interpolation: MaskInterpolationStr = "nearest",
         generator: torch.Generator | None = None,
         fill: tuple[float, ...] | None = None,
+        keypoint_flip_index: tuple[int, ...] | None = None,
     ) -> None:
         """Initialize ``FusedAffineSegment``."""
         super().__init__(
@@ -1287,6 +1303,7 @@ class FusedAffineSegment(_BaseAffineSegment):
             compile_warp=compile_warp,
             generator=generator,
             fill=fill,
+            keypoint_flip_index=keypoint_flip_index,
         )
         # Pre-compute fast-path selector once at construction to avoid repeated
         # isinstance checks on every forward call.
@@ -1579,7 +1596,7 @@ class FusedAffineSegment(_BaseAffineSegment):
         if d4_op is not None:
             image = apply_d4_image(image, d4_op)
             if aux_targets:
-                self._route_d4_aux(aux_targets, d4_op, acc_img)
+                self._route_d4_aux(aux_targets, d4_op, acc_img, self.keypoint_flip_index)
             if not _has_aux:
                 return image
             return image, aux_targets
@@ -1588,7 +1605,7 @@ class FusedAffineSegment(_BaseAffineSegment):
 
         # Transform auxiliary targets using the composed forward matrix
         if aux_targets:
-            self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation)
+            self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation, self.keypoint_flip_index)
 
         if not _has_aux:
             return image
@@ -1619,7 +1636,12 @@ class FusedAffineSegment(_BaseAffineSegment):
         )
 
     @staticmethod
-    def _route_d4_aux(aux_targets: dict[str, Tensor], d4_op: str, acc_img: Tensor) -> None:
+    def _route_d4_aux(
+        aux_targets: dict[str, Tensor],
+        d4_op: str,
+        acc_img: Tensor,
+        keypoint_flip_index: tuple[int, ...] | None = None,
+    ) -> None:
         """Route aux targets through an exact D4 op with zero interpolation.
 
         The mask is transformed by the same lossless ``flip``/``rot90`` op applied to
@@ -1632,12 +1654,13 @@ class FusedAffineSegment(_BaseAffineSegment):
                 ``"bbox_xywh"``, ``"keypoints"``).
             d4_op: The D4 op name from :func:`classify_d4_batch`.
             acc_img: ``(B, 3, 3)`` composed forward pixel matrix in the image dtype.
+            keypoint_flip_index: Optional caller-supplied keypoint pair permutation, applied
+                where the composed matrix reverses orientation.
 
         """
         from fuse_augmentations.targets import (
             transform_bbox_xywh,
             transform_bbox_xyxy,
-            transform_keypoints,
             transform_rboxes,
         )
 
@@ -1653,7 +1676,7 @@ class FusedAffineSegment(_BaseAffineSegment):
                 aux_targets[key] = transform_bbox_xywh(val, acc_img)
                 continue
             if key == "keypoints":
-                aux_targets[key] = transform_keypoints(val, acc_img)
+                aux_targets[key] = _route_keypoints(val, acc_img, keypoint_flip_index)
                 continue
             if key == "rboxes":
                 aux_targets[key] = transform_rboxes(val, acc_img)
@@ -1720,6 +1743,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         mask_interpolation: MaskInterpolationStr = "nearest",
         generator: torch.Generator | None = None,
         fill: tuple[float, ...] | None = None,
+        keypoint_flip_index: tuple[int, ...] | None = None,
     ) -> None:
         """Initialize ``_FusedGeoCropSegment``."""
         # nn.Module state only; skip FusedAffineSegment.__init__'s cv2/numpy
@@ -1734,6 +1758,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         self.transforms: list[object] = [*geo_transforms, crop_transform]
         self.generator = generator
         self.fill = fill
+        self.keypoint_flip_index = keypoint_flip_index
         self.adapter = adapter
         self.interpolation = interpolation
         self.padding_mode = padding_mode
@@ -1826,7 +1851,13 @@ class _FusedGeoCropSegment(FusedAffineSegment):
             out = out + fill_value
 
         if aux_targets:
-            self._warp_aux(aux_targets, grid, acc_full.to(dtype=_matrix_public_dtype(dtype)), self.mask_interpolation)
+            self._warp_aux(
+                aux_targets,
+                grid,
+                acc_full.to(dtype=_matrix_public_dtype(dtype)),
+                self.mask_interpolation,
+                self.keypoint_flip_index,
+            )
 
         if not _has_aux:
             return out
@@ -1866,12 +1897,12 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         grid: Tensor,
         mtx: Tensor,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        keypoint_flip_index: tuple[int, ...] | None = None,
     ) -> None:
         """Warp auxiliary targets in place: mask via the output grid, coords via ``mtx``."""
         from fuse_augmentations.targets import (
             transform_bbox_xywh,
             transform_bbox_xyxy,
-            transform_keypoints,
             transform_mask,
             transform_rboxes,
         )
@@ -1885,7 +1916,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
             elif key == "bbox_xywh":
                 aux_targets[key] = transform_bbox_xywh(val, mtx)
             elif key == "keypoints":
-                aux_targets[key] = transform_keypoints(val, mtx)
+                aux_targets[key] = _route_keypoints(val, mtx, keypoint_flip_index)
             elif key == "rboxes":
                 aux_targets[key] = transform_rboxes(val, mtx)
 
@@ -1998,7 +2029,9 @@ class FusedGaussianBlurSegment(nn.Module):
         if commutable:
             warped, grid = self._geometric._apply_grid(image, acc)
             if aux_targets:
-                self._geometric._route_grid_aux(aux_targets, grid, acc_img, self._geometric.mask_interpolation)
+                self._geometric._route_grid_aux(
+                    aux_targets, grid, acc_img, self._geometric.mask_interpolation, self._geometric.keypoint_flip_index
+                )
             if _is_axis_aligned_gaussian_matrix(suffix):
                 sigma = _transform_gaussian_sigma(sigma, suffix)
                 result = _apply_folded_gaussian(warped, sigma)
@@ -2020,7 +2053,13 @@ class FusedGaussianBlurSegment(nn.Module):
             result = working
             if aux_targets:
                 _, aux_grid = self._geometric._apply_grid(image, acc)
-                self._geometric._route_grid_aux(aux_targets, aux_grid, acc_img, self._geometric.mask_interpolation)
+                self._geometric._route_grid_aux(
+                    aux_targets,
+                    aux_grid,
+                    acc_img,
+                    self._geometric.mask_interpolation,
+                    self._geometric.keypoint_flip_index,
+                )
         if aux_targets is None:
             return result
         return result, aux_targets
@@ -2319,6 +2358,7 @@ class AlbuFusedAffineSegment(nn.Module):
         execution: ExecutionStr = "cv2",
         mask_interpolation: MaskInterpolationStr = "nearest",
         fill: tuple[float, ...] | None = None,
+        keypoint_flip_index: tuple[int, ...] | None = None,
     ) -> None:
         """Initialize ``AlbuFusedAffineSegment``."""
         super().__init__()
@@ -2329,6 +2369,7 @@ class AlbuFusedAffineSegment(nn.Module):
         self.execution: ExecutionStr = _validate_execution(execution)
         self.mask_interpolation = mask_interpolation
         self.fill = fill
+        self.keypoint_flip_index = keypoint_flip_index
         self._last_matrix: Tensor | None = None
         # Pre-compute cv2 flags once instead of dict-lookups per call.
         self._interp_flag: int = _CV2_INTERP.get(self.interpolation, _CV2_INTERP.get("bilinear", 1))
@@ -2472,7 +2513,7 @@ class AlbuFusedAffineSegment(nn.Module):
                 [mask.shape[0], mask.shape[1], mask.shape[-2], mask.shape[-1]],
                 align_corners=True,
             )
-        self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation)
+        self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation, self.keypoint_flip_index)
 
     @staticmethod
     def _route_grid_aux(
@@ -2480,6 +2521,7 @@ class AlbuFusedAffineSegment(nn.Module):
         grid: Tensor | None,
         acc_img: Tensor,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        keypoint_flip_index: tuple[int, ...] | None = None,
     ) -> None:
         """Route auxiliary targets through the warp grid and composed pixel matrix.
 
@@ -2492,12 +2534,13 @@ class AlbuFusedAffineSegment(nn.Module):
             grid: Sampling grid for the mask, or ``None`` when no mask is present.
             acc_img: ``(B, 3, 3)`` composed forward pixel matrix in the image dtype.
             mask_interpolation: Mask sampling mode for the ``"mask"`` target.
+            keypoint_flip_index: Optional caller-supplied keypoint pair permutation, applied
+                where the composed matrix reverses orientation.
 
         """
         from fuse_augmentations.targets import (
             transform_bbox_xywh,
             transform_bbox_xyxy,
-            transform_keypoints,
             transform_mask,
             transform_rboxes,
         )
@@ -2511,7 +2554,7 @@ class AlbuFusedAffineSegment(nn.Module):
             elif key == "bbox_xywh":
                 aux_targets[key] = transform_bbox_xywh(val, acc_img)
             elif key == "keypoints":
-                aux_targets[key] = transform_keypoints(val, acc_img)
+                aux_targets[key] = _route_keypoints(val, acc_img, keypoint_flip_index)
             elif key == "rboxes":
                 aux_targets[key] = transform_rboxes(val, acc_img)
 
@@ -2905,7 +2948,7 @@ class ProjectiveSegment(_BaseAffineSegment):
 
         # Transform auxiliary targets using the composed forward matrix
         if aux_targets:
-            self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation)
+            self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation, self.keypoint_flip_index)
 
         if not _has_aux:
             return image
@@ -4519,6 +4562,7 @@ def build_segments(
     mask_interpolation: MaskInterpolationStr = "nearest",
     generator: torch.Generator | None = None,
     fill: tuple[float, ...] | None = None,
+    keypoint_flip_index: tuple[int, ...] | None = None,
 ) -> list[object]:
     """Split a transform list into fused segments and passthrough transforms.
 
@@ -4589,6 +4633,9 @@ def build_segments(
         fill: Validated constant border value written outside the source canvas of every
             resampling segment (image only; routed masks keep zero padding), or ``None``
             for the historical zero border.
+        keypoint_flip_index: Validated keypoint pair permutation applied wherever a segment's
+            composed transform reverses orientation, or ``None`` to leave the keypoint axis
+            in input order.
         generator: Caller-owned ``torch.Generator`` forwarded to every torch-side segment
             that owns a draw (probability gates and direct parameter sampling), or ``None``
             for the global torch stream. Only the direct-parameter adapter can honour it;
@@ -4645,12 +4692,19 @@ def build_segments(
                         execution=execution,
                         mask_interpolation=mask_interpolation,
                         fill=fill,
+                        keypoint_flip_index=keypoint_flip_index,
                     ),
                     split_reason,
                 )
             else:
                 _append_segment(
-                    ExactAffineSegment(geo_transforms, adapter, randomness=randomness, generator=generator),
+                    ExactAffineSegment(
+                        geo_transforms,
+                        adapter,
+                        randomness=randomness,
+                        generator=generator,
+                        keypoint_flip_index=keypoint_flip_index,
+                    ),
                     split_reason,
                 )
             return
@@ -4667,13 +4721,20 @@ def build_segments(
                     mask_interpolation=mask_interpolation,
                     generator=generator,
                     fill=fill,
+                    keypoint_flip_index=keypoint_flip_index,
                 ),
                 split_reason,
             )
             return
 
         _append_segment(
-            ExactAffineSegment(geo_transforms, adapter, randomness=randomness, generator=generator),
+            ExactAffineSegment(
+                geo_transforms,
+                adapter,
+                randomness=randomness,
+                generator=generator,
+                keypoint_flip_index=keypoint_flip_index,
+            ),
             split_reason,
         )
 
@@ -4853,6 +4914,7 @@ def build_segments(
                         mask_interpolation=mask_interpolation,
                         generator=generator,
                         fill=fill,
+                        keypoint_flip_index=keypoint_flip_index,
                     )
                 )
                 current_geo.clear()
@@ -5009,6 +5071,31 @@ def _flip_rboxes(
         flipped[..., 1] = (height - 1) - rboxes[..., 1]
         flipped[..., 4] = -flipped[..., 4]
     return torch.where(active[:, None, None], flipped, rboxes)
+
+
+def _route_keypoints(keypoints: Tensor, mtx: Tensor, flip_index: tuple[int, ...] | None) -> Tensor:
+    """Transport keypoints by ``mtx`` and swap the caller's pairs where the map mirrors.
+
+    The swap is decided by the sign of the composed matrix's determinant, never by whether a
+    flip transform appears in the pipeline: after fusion the mirror is part of a larger
+    matrix and is no longer visible as a discrete op, and two mirrors compose back to a
+    rotation that must *not* swap.
+
+    """
+    from fuse_augmentations.targets import orientation_reversed, permute_keypoint_pairs, transform_keypoints
+
+    warped = transform_keypoints(keypoints, mtx)
+    if flip_index is None:
+        return warped
+    reversed_mask = orientation_reversed(mtx)
+    if reversed_mask.shape[0] != warped.shape[0]:
+        reversed_mask = reversed_mask.expand(warped.shape[0])
+    return permute_keypoint_pairs(warped, _flip_index_tensor(flip_index, keypoints.device), reversed_mask)
+
+
+def _flip_index_tensor(flip_index: tuple[int, ...], device: torch.device) -> Tensor:
+    """Return the caller's keypoint pair permutation as an index tensor on ``device``."""
+    return torch.tensor(flip_index, device=device, dtype=torch.int64)
 
 
 def _flip_keypoints(

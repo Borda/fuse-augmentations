@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextlib
 import math
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import torch
@@ -29,7 +29,12 @@ from fuse_augmentations.affine.matrix import (
     vflip_matrix,
 )
 from fuse_augmentations.affine.segment import build_segments
-from fuse_augmentations.config_validation import _coerce_randomness_policy, _has_coord_aux, _validate_fill
+from fuse_augmentations.config_validation import (
+    _coerce_randomness_policy,
+    _has_coord_aux,
+    _validate_fill,
+    _validate_keypoint_flip_index,
+)
 from fuse_augmentations.types import (
     ClipPolicyStr,
     ComposePaddingModeStr,
@@ -72,6 +77,7 @@ class FactoriesMixin:
         pipeline_dtype: PipelineDtypeStr | None = None,
         generator: torch.Generator | None = None,
         fill: FillValue | None = None,
+        keypoint_flip_index: Sequence[int] | None = None,
     ) -> object:
         """Create a FusedCompose pipeline from a list of TransformSpec objects.
 
@@ -108,6 +114,8 @@ class FactoriesMixin:
                 seeded from a ``torch.Generator`` (see :meth:`from_params`).
             fill: Constant out-of-canvas image border in the image's own value range,
                 forwarded to :meth:`__init__`; requires ``padding_mode="zeros"``.
+            keypoint_flip_index: Keypoint pair permutation forwarded to :meth:`__init__`,
+                applied whenever the composed transform reverses orientation.
             on_unsupported: Policy for specs whose op the backend cannot build.
                 ``"raise"`` (default) aggregates all offenders into one
                 ``ValueError``; ``"warn_skip"`` drops each unsupported spec with
@@ -157,6 +165,7 @@ class FactoriesMixin:
                 native=True,
                 generator=generator,
                 fill=fill,
+                keypoint_flip_index=keypoint_flip_index,
             )
         transforms = [cls._build_transform(spec, backend) for spec in kept_specs]
 
@@ -165,6 +174,7 @@ class FactoriesMixin:
             transforms,
             generator=generator,
             fill=fill,
+            keypoint_flip_index=keypoint_flip_index,
             interpolation=interpolation,
             padding_mode=padding_mode,
             data_keys=data_keys,
@@ -357,6 +367,7 @@ class FactoriesMixin:
         pipeline_dtype: PipelineDtypeStr | None = None,
         generator: torch.Generator | None = None,
         fill: FillValue | None = None,
+        keypoint_flip_index: Sequence[int] | None = None,
         letterbox: tuple[int, int] | int | None = None,
         allow_upscale: bool = True,
         *,
@@ -438,6 +449,10 @@ class FactoriesMixin:
                 float); a scalar fills every channel, a sequence one channel each.
                 ``None`` (default) keeps the plain zero border. Images only — auxiliary
                 masks keep zero padding. Requires ``padding_mode="zeros"``.
+            keypoint_flip_index: Keypoint pair permutation applied whenever the composed
+                transform reverses orientation, forwarded to :meth:`__init__`; slot ``i``
+                takes its value from slot ``flip_index[i]``. The pair table is dataset
+                schema and stays with the caller.
             letterbox: Output canvas as ``(height, width)``, or one ``int`` for a square.
                 Appends a deterministic aspect-preserving fit: content is scaled by
                 ``r = min(height_out / H, width_out / W)`` and the slack is padded with
@@ -552,6 +567,7 @@ class FactoriesMixin:
                     backend=backend,
                     generator=generator,
                     fill=fill,
+                    keypoint_flip_index=keypoint_flip_index,
                     interpolation=interpolation,
                     padding_mode=padding_mode,
                     reorder=reorder,
@@ -567,6 +583,7 @@ class FactoriesMixin:
                 specs=specs,
                 generator=generator,
                 fill=fill,
+                keypoint_flip_index=keypoint_flip_index,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 reorder=reorder,
@@ -611,6 +628,7 @@ class FactoriesMixin:
                 backend=backend,
                 generator=generator,
                 fill=fill,
+                keypoint_flip_index=keypoint_flip_index,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 reorder=reorder,
@@ -656,6 +674,7 @@ class FactoriesMixin:
                 transforms=[],
                 generator=generator,
                 fill=fill,
+                keypoint_flip_index=keypoint_flip_index,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 data_keys=data_keys,
@@ -691,6 +710,7 @@ class FactoriesMixin:
 
         # Build instance bypassing detect_backend
         fill_values = _validate_fill(fill, padding_mode)
+        flip_index = _validate_keypoint_flip_index(keypoint_flip_index)
         instance = cls.__new__(cls)
         nn.Module.__init__(cast(nn.Module, instance))
 
@@ -707,6 +727,7 @@ class FactoriesMixin:
             per_transform_padding=padding_mode == "per_transform",
             generator=generator,
             fill=fill_values,
+            keypoint_flip_index=flip_index,
         )
         cast(Any, instance)._setup_instance(
             transforms=transforms,
@@ -723,6 +744,7 @@ class FactoriesMixin:
             pipeline_dtype=pipeline_dtype,
             generator=generator,
             fill=fill_values,
+            keypoint_flip_index=flip_index,
         )
 
         return instance
@@ -744,6 +766,7 @@ class FactoriesMixin:
         native: bool = False,
         generator: torch.Generator | None = None,
         fill: FillValue | None = None,
+        keypoint_flip_index: Sequence[int] | None = None,
     ) -> object:
         """Build a from_params pipeline from a list of TransformSpec objects.
 
@@ -805,6 +828,7 @@ class FactoriesMixin:
                 transforms=[],
                 generator=generator,
                 fill=fill,
+                keypoint_flip_index=keypoint_flip_index,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 data_keys=data_keys,
@@ -817,6 +841,7 @@ class FactoriesMixin:
             )
 
         fill_values = _validate_fill(fill, padding_mode)
+        flip_index = _validate_keypoint_flip_index(keypoint_flip_index)
         instance = cls.__new__(cls)
         nn.Module.__init__(cast(nn.Module, instance))
 
@@ -832,6 +857,7 @@ class FactoriesMixin:
             per_transform_padding=padding_mode == "per_transform",
             generator=generator,
             fill=fill_values,
+            keypoint_flip_index=flip_index,
         )
         cast(Any, instance)._setup_instance(
             transforms=transforms,
@@ -848,6 +874,7 @@ class FactoriesMixin:
             pipeline_dtype=pipeline_dtype,
             generator=generator,
             fill=fill_values,
+            keypoint_flip_index=flip_index,
         )
 
         return instance
