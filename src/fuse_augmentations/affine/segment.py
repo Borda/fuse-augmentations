@@ -295,11 +295,77 @@ def _validate_execution(execution: str) -> ExecutionStr:
     return cast(ExecutionStr, execution)
 
 
+#: cv2 reads ``borderValue`` as a ``Scalar``, which carries exactly four components.
+_CV2_SCALAR_SLOTS = 4
+
+
+def _fill_tensor(
+    fill: tuple[float, ...] | None, num_channels: int, device: torch.device, dtype: torch.dtype
+) -> Tensor | None:
+    """Shape a validated fill into a ``(1, channels, 1, 1)`` tensor for the warp helpers.
+
+    Args:
+        fill: Validated fill tuple (length 1 for a scalar), or ``None``.
+        num_channels: Channel count of the image being warped.
+        device: Device of the image being warped.
+        dtype: Dtype of the image being warped.
+
+    Returns:
+        A broadcastable ``(1, channels, 1, 1)`` tensor, or ``None`` when there is no fill.
+
+    Raises:
+        ValueError: If a per-channel fill's length matches neither 1 nor ``num_channels``.
+
+    """
+    if fill is None:
+        return None
+    if len(fill) not in (1, num_channels):
+        msg = f"fill has {len(fill)} value(s) but the image has {num_channels} channel(s)."
+        raise ValueError(msg)
+    values = fill * num_channels if len(fill) == 1 else fill
+    return torch.tensor(values, device=device, dtype=dtype).reshape(1, num_channels, 1, 1)
+
+
+def _cv2_border_value(fill: tuple[float, ...] | None, num_channels: int) -> tuple[float, ...]:
+    """Return the cv2 ``borderValue`` scalar tuple for a validated fill.
+
+    cv2 reads ``borderValue`` as a 4-component ``Scalar``, so a bare number fills only
+    channel 0 and leaves the rest black — the tuple is always built out to the image's
+    channel count rather than passed through as a scalar.
+
+    Args:
+        fill: Validated fill tuple (length 1 for a scalar), or ``None``.
+        num_channels: Channel count of the image being warped.
+
+    Returns:
+        A ``borderValue`` tuple of length ``num_channels``; all zeros when there is no fill.
+
+    Raises:
+        ValueError: If a per-channel fill's length matches neither 1 nor ``num_channels``,
+            or if the image has more than the four channels a cv2 ``Scalar`` can carry.
+
+    """
+    if fill is None:
+        return (0.0,) * min(num_channels, _CV2_SCALAR_SLOTS)
+    if len(fill) not in (1, num_channels):
+        msg = f"fill has {len(fill)} value(s) but the image has {num_channels} channel(s)."
+        raise ValueError(msg)
+    if num_channels > _CV2_SCALAR_SLOTS:
+        msg = (
+            f"fill is not expressible on the cv2 warp path for a {num_channels}-channel image: "
+            f"cv2 borderValue carries at most {_CV2_SCALAR_SLOTS} components. "
+            "Use execution='torch' for this image."
+        )
+        raise ValueError(msg)
+    return fill * num_channels if len(fill) == 1 else fill
+
+
 def _grid_sample_affine_batched(
     image: Tensor,
     acc: Tensor,
     interpolation: InterpolationStr,
     padding_mode: PaddingModeStr,
+    fill: Tensor | None = None,
     *,
     compiling: bool | None = None,
 ) -> tuple[Tensor, Tensor]:
@@ -317,6 +383,11 @@ def _grid_sample_affine_batched(
             and float32 on MPS (which has no float64).
         interpolation: ``grid_sample`` interpolation mode.
         padding_mode: ``grid_sample`` padding mode.
+        fill: Optional ``(1, channels, 1, 1)`` constant written outside the source
+            canvas. ``grid_sample`` has no constant padding mode, so the fill is
+            subtracted before sampling and added back after: an out-of-canvas sample
+            reads the zero padding and comes back as exactly the fill, while a boundary
+            sample blends the interior with the fill the way a constant border does.
         compiling: Forwarded to :func:`~fuse_augmentations.affine.matrix.inv3x3`
             to select the compile-safe branch explicitly; ``None`` falls back to
             ambient ``torch.compile`` detection for ordinary eager calls.
@@ -331,8 +402,9 @@ def _grid_sample_affine_batched(
     mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
 
     grid = F.affine_grid(mtx_norm[:, :2, :], [batch_size, num_channels, height, width], align_corners=True)
-    warped = F.grid_sample(image, grid, mode=interpolation, padding_mode=padding_mode, align_corners=True)
-    return warped, grid
+    sampled = image if fill is None else image - fill
+    warped = F.grid_sample(sampled, grid, mode=interpolation, padding_mode=padding_mode, align_corners=True)
+    return (warped if fill is None else warped + fill), grid
 
 
 def _grid_sample_perspective_batched(
@@ -340,6 +412,7 @@ def _grid_sample_perspective_batched(
     acc: Tensor,
     interpolation: InterpolationStr,
     padding_mode: PaddingModeStr,
+    fill: Tensor | None = None,
     *,
     compiling: bool | None = None,
 ) -> tuple[Tensor, Tensor]:
@@ -356,6 +429,9 @@ def _grid_sample_perspective_batched(
             CPU/CUDA, float32 on MPS).
         interpolation: ``grid_sample`` interpolation mode.
         padding_mode: ``grid_sample`` padding mode.
+        fill: Optional ``(1, channels, 1, 1)`` constant written outside the source
+            canvas, applied by the same subtract/add construction as
+            :func:`_grid_sample_affine_batched`.
         compiling: Forwarded to :func:`~fuse_augmentations.affine.matrix.inv3x3`;
             see :func:`_grid_sample_affine_batched`.
 
@@ -369,8 +445,9 @@ def _grid_sample_perspective_batched(
     mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
 
     grid = perspective_grid(mtx_norm, height, width)
-    warped = F.grid_sample(image, grid, mode=interpolation, padding_mode=padding_mode, align_corners=True)
-    return warped, grid
+    sampled = image if fill is None else image - fill
+    warped = F.grid_sample(sampled, grid, mode=interpolation, padding_mode=padding_mode, align_corners=True)
+    return (warped if fill is None else warped + fill), grid
 
 
 def _compiling_grid_sample_affine_batched(
@@ -378,6 +455,7 @@ def _compiling_grid_sample_affine_batched(
     acc: Tensor,
     interpolation: InterpolationStr,
     padding_mode: PaddingModeStr,
+    fill: Tensor | None = None,
 ) -> tuple[Tensor, Tensor]:
     """``_grid_sample_affine_batched`` with the compile-safe inversion branch pinned on.
 
@@ -387,7 +465,7 @@ def _compiling_grid_sample_affine_batched(
     torch 2.2).
 
     """
-    return _grid_sample_affine_batched(image, acc, interpolation, padding_mode, compiling=True)
+    return _grid_sample_affine_batched(image, acc, interpolation, padding_mode, fill, compiling=True)
 
 
 def _compiling_grid_sample_perspective_batched(
@@ -395,13 +473,14 @@ def _compiling_grid_sample_perspective_batched(
     acc: Tensor,
     interpolation: InterpolationStr,
     padding_mode: PaddingModeStr,
+    fill: Tensor | None = None,
 ) -> tuple[Tensor, Tensor]:
     """``_grid_sample_perspective_batched`` with the compile-safe inversion branch pinned on.
 
     See :func:`_compiling_grid_sample_affine_batched`.
 
     """
-    return _grid_sample_perspective_batched(image, acc, interpolation, padding_mode, compiling=True)
+    return _grid_sample_perspective_batched(image, acc, interpolation, padding_mode, fill, compiling=True)
 
 
 def _torch_supports_compile() -> bool:
@@ -436,7 +515,7 @@ def _torch_supports_compile() -> bool:
 
 # Signature shared by both warp cores: (image, matrix, interpolation, padding) ->
 # (warped_image, sampling_grid). Used to type the compiled-warp cache/selectors.
-WarpFn = Callable[[Tensor, Tensor, InterpolationStr, PaddingModeStr], tuple[Tensor, Tensor]]
+WarpFn = Callable[[Tensor, Tensor, InterpolationStr, PaddingModeStr, Tensor | None], tuple[Tensor, Tensor]]
 
 # Module-level compiled warp cores, built lazily on first use so importing the
 # module never triggers a compile. ``dynamic=True`` keeps a single guarded graph
@@ -962,6 +1041,9 @@ class _BaseAffineSegment(nn.Module):
             preserves hard labels; ``"bilinear"`` supports float soft masks.
         generator: Caller-owned generator driving parameter sampling and the
             per-transform probability gates, or ``None`` for the global torch stream.
+        fill: Validated constant written outside the source canvas, in the image's own
+            value range, or ``None`` for plain zero padding. Applies to the image only;
+            auxiliary masks keep their zero padding.
 
     """
 
@@ -978,6 +1060,7 @@ class _BaseAffineSegment(nn.Module):
         compile_warp: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
         generator: torch.Generator | None = None,
+        fill: tuple[float, ...] | None = None,
     ) -> None:
         """Initialize the shared matrix-composition state."""
         super().__init__()
@@ -988,6 +1071,7 @@ class _BaseAffineSegment(nn.Module):
         self.randomness = randomness
         self.mask_interpolation = mask_interpolation
         self.generator = generator
+        self.fill = fill
         self._last_matrix: Tensor | None = None
         # Opt-in torch.compile of the warp core. Enabled only when the flag is set
         # AND the installed torch is new enough; otherwise the eager path runs
@@ -1183,6 +1267,7 @@ class FusedAffineSegment(_BaseAffineSegment):
         compile_warp: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
         generator: torch.Generator | None = None,
+        fill: tuple[float, ...] | None = None,
     ) -> None:
         """Initialize ``FusedAffineSegment``."""
         super().__init__(
@@ -1194,6 +1279,7 @@ class FusedAffineSegment(_BaseAffineSegment):
             mask_interpolation=mask_interpolation,
             compile_warp=compile_warp,
             generator=generator,
+            fill=fill,
         )
         # Pre-compute fast-path selector once at construction to avoid repeated
         # isinstance checks on every forward call.
@@ -1457,10 +1543,12 @@ class FusedAffineSegment(_BaseAffineSegment):
             m_inv_np = _inv3x3_affine_np(acc_np)
             img_np = image[0].detach().permute(1, 2, 0).contiguous().numpy()  # detach: no grad through cv2 segments
             if num_channels == 1:
-                warped = _warp(img_np[:, :, 0], m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag)
+                warped = _warp(
+                    img_np[:, :, 0], m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag, self.fill
+                )
                 warped = warped[:, :, np.newaxis]
             else:
-                warped = _warp(img_np, m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag)
+                warped = _warp(img_np, m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag, self.fill)
             image = torch.from_numpy(warped).permute(2, 0, 1).unsqueeze(0)
             return image.to(device=device, dtype=dtype)
 
@@ -1520,6 +1608,7 @@ class FusedAffineSegment(_BaseAffineSegment):
             acc,
             self.interpolation or "bilinear",
             self.padding_mode or "zeros",
+            _fill_tensor(self.fill, image.shape[1], image.device, image.dtype),
         )
 
     @staticmethod
@@ -1619,6 +1708,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         antialias: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
         generator: torch.Generator | None = None,
+        fill: tuple[float, ...] | None = None,
     ) -> None:
         """Initialize ``_FusedGeoCropSegment``."""
         # nn.Module state only; skip FusedAffineSegment.__init__'s cv2/numpy
@@ -1632,6 +1722,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         # (n_warps_saved = n-1, fusion_plan naming) counts the crop as fused.
         self.transforms: list[object] = [*geo_transforms, crop_transform]
         self.generator = generator
+        self.fill = fill
         self.adapter = adapter
         self.interpolation = interpolation
         self.padding_mode = padding_mode
@@ -1712,13 +1803,16 @@ class _FusedGeoCropSegment(FusedAffineSegment):
             [batch_size, num_channels, target_h, target_w],
             align_corners=True,
         )
+        fill_value = _fill_tensor(self.fill, num_channels, device, dtype)
         out = F.grid_sample(
-            image,
+            image if fill_value is None else image - fill_value,
             grid,
             mode=self.interpolation or "bilinear",
             padding_mode=self.padding_mode or "zeros",
             align_corners=True,
         )
+        if fill_value is not None:
+            out = out + fill_value
 
         if aux_targets:
             self._warp_aux(aux_targets, grid, acc_full.to(dtype=_matrix_public_dtype(dtype)), self.mask_interpolation)
@@ -2071,6 +2165,7 @@ def _warp(
     height: int,
     interp_flag: int,
     border_flag: int,
+    fill: tuple[float, ...] | None = None,
 ) -> ImageArray:
     """Apply cv2.warpAffine with the dst->src 3x3 pixel-space matrix.
 
@@ -2086,6 +2181,8 @@ def _warp(
         height: Output height in pixels.
         interp_flag: cv2 interpolation constant (e.g. ``1`` for ``INTER_LINEAR``).
         border_flag: cv2 border mode constant (e.g. ``0`` for ``BORDER_CONSTANT``).
+        fill: Optional validated constant border value in the image's own value range;
+            ``None`` keeps the historical all-zero border.
 
     Returns:
         Warped image array with the same dtype and channel count as ``img``.
@@ -2094,6 +2191,7 @@ def _warp(
     import cv2
 
     m_2x3 = matrix_dst2src_3x3[:2, :].astype(np.float64)
+    num_channels = 1 if img.ndim == 2 else img.shape[2]
     warp_affine = cast(Any, cv2.warpAffine)
     return cast(
         MatrixArray,
@@ -2103,7 +2201,7 @@ def _warp(
             (width, height),
             flags=interp_flag | _CV2_WARP_INVERSE_MAP,
             borderMode=border_flag,
-            borderValue=0,
+            borderValue=_cv2_border_value(fill, num_channels),
         ),
     )
 
@@ -2206,6 +2304,7 @@ class AlbuFusedAffineSegment(nn.Module):
         padding_mode: PaddingModeStr | None = None,
         execution: ExecutionStr = "cv2",
         mask_interpolation: MaskInterpolationStr = "nearest",
+        fill: tuple[float, ...] | None = None,
     ) -> None:
         """Initialize ``AlbuFusedAffineSegment``."""
         super().__init__()
@@ -2215,6 +2314,7 @@ class AlbuFusedAffineSegment(nn.Module):
         self.padding_mode = padding_mode or "zeros"
         self.execution: ExecutionStr = _validate_execution(execution)
         self.mask_interpolation = mask_interpolation
+        self.fill = fill
         self._last_matrix: Tensor | None = None
         # Pre-compute cv2 flags once instead of dict-lookups per call.
         self._interp_flag: int = _CV2_INTERP.get(self.interpolation, _CV2_INTERP.get("bilinear", 1))
@@ -2510,10 +2610,10 @@ class AlbuFusedAffineSegment(nn.Module):
             m_dst2src = np.linalg.inv(accs[b_idx])
             if num_channels == 1:
                 img_np = img_np[:, :, 0]
-                warped = _warp(img_np, m_dst2src, width, height, interp_flag, border_flag)
+                warped = _warp(img_np, m_dst2src, width, height, interp_flag, border_flag, self.fill)
                 warped = warped[:, :, np.newaxis]
             else:
-                warped = _warp(img_np, m_dst2src, width, height, interp_flag, border_flag)
+                warped = _warp(img_np, m_dst2src, width, height, interp_flag, border_flag, self.fill)
             output_np.append(warped)
 
         return torch.stack([torch.as_tensor(np.ascontiguousarray(img)).permute(2, 0, 1) for img in output_np]).to(
@@ -2539,7 +2639,13 @@ class AlbuFusedAffineSegment(nn.Module):
         # MPS has no float64; invert/normalize in float32 there (mirrors the torch twins).
         acc_dtype = _matrix_compose_dtype(image.dtype, image.device, len(self.transforms))
         acc = composed_batch.to(device=image.device, dtype=acc_dtype)
-        warped, _ = _grid_sample_affine_batched(image, acc, self.interpolation, self.padding_mode)
+        warped, _ = _grid_sample_affine_batched(
+            image,
+            acc,
+            self.interpolation,
+            self.padding_mode,
+            _fill_tensor(self.fill, image.shape[1], image.device, image.dtype),
+        )
         return warped
 
     def forward_numpy(self, img_hwc: NDArray[Any]) -> NDArray[Any]:
@@ -2716,11 +2822,11 @@ class AlbuFusedAffineSegment(nn.Module):
         m_dst2src: MatrixArray = _inv3x3_affine_np(acc)
 
         if original_2d:
-            return _warp(img_hwc, m_dst2src, width, height, self._interp_flag, self._border_flag)
+            return _warp(img_hwc, m_dst2src, width, height, self._interp_flag, self._border_flag, self.fill)
         if n_ch == 1:
-            warped = _warp(img_hwc[:, :, 0], m_dst2src, width, height, self._interp_flag, self._border_flag)
+            warped = _warp(img_hwc[:, :, 0], m_dst2src, width, height, self._interp_flag, self._border_flag, self.fill)
             return warped[:, :, np.newaxis]
-        return _warp(img_hwc, m_dst2src, width, height, self._interp_flag, self._border_flag)
+        return _warp(img_hwc, m_dst2src, width, height, self._interp_flag, self._border_flag, self.fill)
 
 
 # ---------------------------------------------------------------------------
@@ -2810,6 +2916,7 @@ class ProjectiveSegment(_BaseAffineSegment):
             acc,
             self.interpolation or "bilinear",
             self.padding_mode or "zeros",
+            _fill_tensor(self.fill, image.shape[1], image.device, image.dtype),
         )
 
 
@@ -2846,6 +2953,7 @@ class AlbuProjectiveSegment(nn.Module):
         padding_mode: PaddingModeStr | None = None,
         execution: ExecutionStr = "cv2",
         mask_interpolation: MaskInterpolationStr = "nearest",
+        fill: tuple[float, ...] | None = None,
     ) -> None:
         """Initialize ``AlbuProjectiveSegment``."""
         super().__init__()
@@ -2864,6 +2972,7 @@ class AlbuProjectiveSegment(nn.Module):
         self._last_matrix: Tensor | None = None
         self._interp_flag: int = _CV2_INTERP.get(self.interpolation, 1)
         self._border_flag: int = _CV2_BORDER.get(self.padding_mode, 0)
+        self.fill = fill
 
     @property
     def last_matrix(self) -> Tensor | None:
@@ -3040,7 +3149,7 @@ class AlbuProjectiveSegment(nn.Module):
             The warped ``(B, C, H, W)`` tensor on the input device and dtype.
 
         """
-        batch_size, _, height, width = image.shape
+        batch_size, num_channels, height, width = image.shape
         device = image.device
         dtype = image.dtype
         cv2_interp = self._interp_flag
@@ -3060,7 +3169,7 @@ class AlbuProjectiveSegment(nn.Module):
                 (width, height),  # dsize = (W, H)
                 flags=cv2_interp | _CV2_WARP_INVERSE_MAP,
                 borderMode=cv2_border,
-                borderValue=(0,),
+                borderValue=_cv2_border_value(self.fill, num_channels),
             )
             if warped.ndim == 2:
                 warped = warped[..., None]
@@ -3087,7 +3196,13 @@ class AlbuProjectiveSegment(nn.Module):
         """
         acc_dtype = _matrix_compose_dtype(image.dtype, image.device, len(self.transforms))
         acc = composed_batch.to(device=image.device, dtype=acc_dtype)
-        warped, _ = _grid_sample_perspective_batched(image, acc, self.interpolation, self.padding_mode)
+        warped, _ = _grid_sample_perspective_batched(
+            image,
+            acc,
+            self.interpolation,
+            self.padding_mode,
+            _fill_tensor(self.fill, image.shape[1], image.device, image.dtype),
+        )
         return warped
 
 
@@ -4042,6 +4157,9 @@ class CropResizeSegment(nn.Module):
             Defaults to ``"zeros"`` when ``None``.
         mask_interpolation: Sampling mode for auxiliary masks. ``"nearest"``
             preserves hard labels; ``"bilinear"`` supports float soft masks.
+        fill: Validated constant written outside the source canvas, in the image's own
+            value range, or ``None`` for plain zero padding. Image only; the routed mask
+            keeps its zero padding.
 
     """
 
@@ -4055,6 +4173,7 @@ class CropResizeSegment(nn.Module):
         *,
         antialias: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        fill: tuple[float, ...] | None = None,
     ) -> None:
         """Initialize ``CropResizeSegment``."""
         super().__init__()
@@ -4069,6 +4188,7 @@ class CropResizeSegment(nn.Module):
         # default → output bit-identical to the plain single grid_sample warp.
         self._antialias: bool = antialias
         self.mask_interpolation = mask_interpolation
+        self.fill = fill
 
     def forward(
         self,
@@ -4130,13 +4250,16 @@ class CropResizeSegment(nn.Module):
             [batch_size, num_channels, target_h, target_w],
             align_corners=True,
         )
+        fill_value = _fill_tensor(self.fill, num_channels, device, dtype)
         out = F.grid_sample(
-            image,
+            image if fill_value is None else image - fill_value,
             grid,
             mode=self.interpolation or "bilinear",
             padding_mode=self.padding_mode or "zeros",
             align_corners=True,
         )
+        if fill_value is not None:
+            out = out + fill_value
 
         if aux_targets:
             from fuse_augmentations.targets import (
@@ -4374,6 +4497,7 @@ def build_segments(
     clip_policy: ClipPolicyStr = "final",
     mask_interpolation: MaskInterpolationStr = "nearest",
     generator: torch.Generator | None = None,
+    fill: tuple[float, ...] | None = None,
 ) -> list[object]:
     """Split a transform list into fused segments and passthrough transforms.
 
@@ -4441,6 +4565,9 @@ def build_segments(
             ``"per_op_parity"`` clamps at each op that could leave ``[0, 1]``.
         mask_interpolation: Sampling mode for routed masks. ``"nearest"`` preserves
             the historical hard-label behavior; ``"bilinear"`` supports float soft masks.
+        fill: Validated constant border value written outside the source canvas of every
+            resampling segment (image only; routed masks keep zero padding), or ``None``
+            for the historical zero border.
         generator: Caller-owned ``torch.Generator`` forwarded to every torch-side segment
             that owns a draw (probability gates and direct parameter sampling), or ``None``
             for the global torch stream. Only the direct-parameter adapter can honour it;
@@ -4496,6 +4623,7 @@ def build_segments(
                         padding_mode=geo_padding_mode,
                         execution=execution,
                         mask_interpolation=mask_interpolation,
+                        fill=fill,
                     ),
                     split_reason,
                 )
@@ -4517,6 +4645,7 @@ def build_segments(
                     compile_warp=compile_warp,
                     mask_interpolation=mask_interpolation,
                     generator=generator,
+                    fill=fill,
                 ),
                 split_reason,
             )
@@ -4562,6 +4691,7 @@ def build_segments(
                     padding_mode=projective_padding_mode,
                     execution=execution,
                     mask_interpolation=mask_interpolation,
+                    fill=fill,
                 ),
                 split_reason,
             )
@@ -4575,6 +4705,7 @@ def build_segments(
                 randomness=randomness,
                 compile_warp=compile_warp,
                 mask_interpolation=mask_interpolation,
+                fill=fill,
             ),
             split_reason,
         )
@@ -4665,6 +4796,7 @@ def build_segments(
                             randomness=randomness,
                             antialias=antialias,
                             mask_interpolation=mask_interpolation,
+                            fill=fill,
                         )
                     )
                 continue
@@ -4680,6 +4812,7 @@ def build_segments(
                             randomness=randomness,
                             antialias=antialias,
                             mask_interpolation=mask_interpolation,
+                            fill=fill,
                         )
                     )
                 else:
@@ -4698,6 +4831,7 @@ def build_segments(
                         antialias=antialias,
                         mask_interpolation=mask_interpolation,
                         generator=generator,
+                        fill=fill,
                     )
                 )
                 current_geo.clear()
@@ -4711,6 +4845,7 @@ def build_segments(
                         randomness=randomness,
                         antialias=antialias,
                         mask_interpolation=mask_interpolation,
+                        fill=fill,
                     )
                 )
             continue

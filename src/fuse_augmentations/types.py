@@ -192,6 +192,13 @@ PaddingModeStr = Literal["zeros", "border", "reflection"]
 #: opt-in segmentation policy rather than a ``grid_sample`` padding value.
 ComposePaddingModeStr = PaddingModeStr | Literal["per_transform"]
 
+#: Constant value written into the out-of-canvas region of a warped **image**, in
+#: the image's own value range (``114`` for a uint8 grey, ``114 / 255`` for the same
+#: grey as float). A scalar fills every channel; a sequence fills one channel each.
+#: ``None`` keeps the plain zero padding. Auxiliary masks are never filled -- an
+#: out-of-canvas mask region means "no instance", not "the fill colour".
+FillValue = float | Sequence[float]
+
 #: String literal type for the ``kind`` field of :class:`SegmentDescriptor`.
 SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color", "lut", "crop_resize", "gaussian_blur"]
 

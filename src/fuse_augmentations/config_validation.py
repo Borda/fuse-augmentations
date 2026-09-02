@@ -7,11 +7,19 @@ so those layers do not import one another.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Sequence
 from typing import cast
 
 import torch
 
-from fuse_augmentations.types import ClipPolicyStr, MaskInterpolationStr, PipelineDtypeStr, RandomnessPolicy
+from fuse_augmentations.types import (
+    ClipPolicyStr,
+    FillValue,
+    MaskInterpolationStr,
+    PipelineDtypeStr,
+    RandomnessPolicy,
+)
 
 _COORD_DATA_KEYS = {"bbox_xyxy", "bbox_xywh", "keypoints"}
 _PIPELINE_TORCH_DTYPES: dict[PipelineDtypeStr, torch.dtype] = {
@@ -157,3 +165,61 @@ def _validate_pipeline_dtype(pipeline_dtype: PipelineDtypeStr | None) -> Pipelin
         return pipeline_dtype
     msg = "pipeline_dtype must be 'bfloat16', 'float16', or None"
     raise ValueError(msg)
+
+
+def _validate_fill(
+    fill: FillValue | None,
+    padding_mode: str | None,
+) -> tuple[float, ...] | None:
+    """Normalize the constant image fill and reject it against an incompatible padding mode.
+
+    A fill is a *constant* border value, so it only means anything where the border is
+    a constant. ``"border"`` replicates the edge pixel and ``"reflection"`` mirrors the
+    image; neither has a constant to replace, and ``"per_transform"`` picks a mode per
+    transform, so a single fill cannot describe the result. All three are refused rather
+    than silently ignored on part of the pipeline.
+
+    Args:
+        fill: Scalar or per-channel constant in the image's own value range, or ``None``.
+        padding_mode: The pipeline's padding mode, or ``None`` for the ``"zeros"`` default.
+
+    Returns:
+        The fill as a tuple of floats (length 1 for a scalar), or ``None``.
+
+    Raises:
+        ValueError: If ``fill`` is combined with a non-constant padding mode, is empty,
+            or holds a non-finite or non-numeric value.
+
+    Examples:
+        ```pycon
+        >>> _validate_fill(114.0, "zeros")
+        (114.0,)
+        >>> _validate_fill((114.0, 110.0, 100.0), None)
+        (114.0, 110.0, 100.0)
+        >>> _validate_fill(None, "reflection") is None
+        True
+
+        ```
+
+    """
+    if fill is None:
+        return None
+    if padding_mode is not None and padding_mode != "zeros":
+        msg = (
+            f"fill={fill!r} needs a constant border, but padding_mode={padding_mode!r} has none "
+            "(border replicates the edge pixel, reflection mirrors the image, and per_transform "
+            "chooses a mode per transform). Use padding_mode='zeros' with fill, or drop fill."
+        )
+        raise ValueError(msg)
+    values = tuple(fill) if isinstance(fill, Sequence) and not isinstance(fill, (str, bytes)) else (fill,)
+    if not values:
+        raise ValueError("fill must hold at least one value, got an empty sequence.")
+    numbers: list[float] = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"fill values must be real numbers, got {value!r}.")
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"fill values must be finite, got {value!r}.")
+        numbers.append(number)
+    return tuple(numbers)

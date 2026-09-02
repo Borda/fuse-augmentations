@@ -82,6 +82,7 @@ from fuse_augmentations.config_validation import (
     _has_aux_target,
     _has_coord_aux,
     _validate_clip_policy,
+    _validate_fill,
     _validate_mask_interpolation,
     _validate_pipeline_dtype,
 )
@@ -103,6 +104,7 @@ from fuse_augmentations.types import (
     ClipPolicyStr,
     ComposePaddingModeStr,
     ExecutionStr,
+    FillValue,
     InterpolationStr,
     MaskInterpolationStr,
     PipelineDtypeStr,
@@ -306,6 +308,14 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
             returned image keeps its input dtype. CPU ignores this option and uses
             the existing float32/float64 path. MPS supports both requested dtypes
             for ``affine_grid`` and ``grid_sample`` on PyTorch 2.10.
+        fill: Constant value written outside the source canvas of every resampling
+            warp, in the image's own value range (``114`` for a uint8 grey, ``114 / 255``
+            for the same grey as float). A scalar fills every channel; a sequence fills
+            one channel each. ``None`` (default) keeps the plain zero border, so existing
+            pipelines are unchanged. The fill applies to the **image** only — an
+            out-of-canvas auxiliary mask region keeps its zero, because there it means
+            "no instance" rather than a colour. Requires ``padding_mode="zeros"``: the
+            other modes have no constant to replace, and the combination raises.
         generator: Caller-owned ``torch.Generator`` driving every pipeline-owned
             draw. ``None`` (default) keeps the global torch stream, leaving existing
             pipelines bit-for-bit unchanged. Backend transform objects sample through
@@ -336,11 +346,13 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
         mask_interpolation: MaskInterpolationStr = "nearest",
         pipeline_dtype: PipelineDtypeStr | None = None,
         generator: torch.Generator | None = None,
+        fill: FillValue | None = None,
         **backend_kwargs: object,
     ) -> None:
         """Initialize ``FusedCompose``."""
         super().__init__()
         _reject_generator_with_backend_transforms(generator, transforms)
+        fill = _validate_fill(fill, padding_mode)
         randomness_policy = _coerce_randomness_policy(randomness)
         execution = _validate_execution(execution)
         clip_policy = _validate_clip_policy(clip_policy)
@@ -415,6 +427,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
                     clip_policy=clip_policy,
                     mask_interpolation=mask_interpolation,
                     generator=generator,
+                    fill=fill,
                 )
             else:
                 # Mixed-backend path: group by backend, build segments per group
@@ -452,6 +465,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
             mask_interpolation=mask_interpolation,
             pipeline_dtype=pipeline_dtype,
             generator=generator,
+            fill=fill,
         )
 
     def _setup_instance(
@@ -473,6 +487,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
         mask_interpolation: MaskInterpolationStr = "nearest",
         pipeline_dtype: PipelineDtypeStr | None = None,
         generator: torch.Generator | None = None,
+        fill: tuple[float, ...] | None = None,
     ) -> None:
         """Assign all instance attributes.
 
@@ -495,6 +510,8 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
         #: The segments hold the same object; unpickling resumes its state as of pickling,
         #: so DataLoader workers must be seeded per worker rather than sharing one stream.
         self.generator: torch.Generator | None = generator
+        #: Validated constant image border, or ``None`` for the plain zero border.
+        self.fill: tuple[float, ...] | None = fill
         self._adapter: TransformAdapter | None = adapter
         # Heterogeneous by design: fused/color/exact/crop segments, passthrough wrappers, or raw
         # legacy transforms — dispatched at runtime via _seg_dispatch_tags, so elements stay Any.
@@ -790,6 +807,9 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
         if not hasattr(self, "generator"):
             # Pickles predating caller-owned randomness drew from the global stream.
             self.generator = None
+        if not hasattr(self, "fill"):
+            # Pickles predating the constant border padded with zeros.
+            self.fill = None
         if not hasattr(self, "data_keys"):
             self.data_keys = None
         if not hasattr(self, "_transform_adapters"):

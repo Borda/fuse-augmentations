@@ -28,10 +28,11 @@ from fuse_augmentations.affine.matrix import (
     vflip_matrix,
 )
 from fuse_augmentations.affine.segment import build_segments
-from fuse_augmentations.config_validation import _coerce_randomness_policy, _has_coord_aux
+from fuse_augmentations.config_validation import _coerce_randomness_policy, _has_coord_aux, _validate_fill
 from fuse_augmentations.types import (
     ClipPolicyStr,
     ComposePaddingModeStr,
+    FillValue,
     InterpolationStr,
     MaskInterpolationStr,
     PipelineDtypeStr,
@@ -69,6 +70,7 @@ class FactoriesMixin:
         mask_interpolation: MaskInterpolationStr = "nearest",
         pipeline_dtype: PipelineDtypeStr | None = None,
         generator: torch.Generator | None = None,
+        fill: FillValue | None = None,
     ) -> object:
         """Create a FusedCompose pipeline from a list of TransformSpec objects.
 
@@ -103,6 +105,8 @@ class FactoriesMixin:
                 parameter. Supported for ``backend="native"`` only — the other
                 backends sample through their own libraries, which cannot be
                 seeded from a ``torch.Generator`` (see :meth:`from_params`).
+            fill: Constant out-of-canvas image border in the image's own value range,
+                forwarded to :meth:`__init__`; requires ``padding_mode="zeros"``.
             on_unsupported: Policy for specs whose op the backend cannot build.
                 ``"raise"`` (default) aggregates all offenders into one
                 ``ValueError``; ``"warn_skip"`` drops each unsupported spec with
@@ -151,6 +155,7 @@ class FactoriesMixin:
                 route_coords_via_grid=_has_coord_aux(data_keys),
                 native=True,
                 generator=generator,
+                fill=fill,
             )
         transforms = [cls._build_transform(spec, backend) for spec in kept_specs]
 
@@ -158,6 +163,7 @@ class FactoriesMixin:
         return constructor(
             transforms,
             generator=generator,
+            fill=fill,
             interpolation=interpolation,
             padding_mode=padding_mode,
             data_keys=data_keys,
@@ -349,6 +355,7 @@ class FactoriesMixin:
         mask_interpolation: MaskInterpolationStr = "nearest",
         pipeline_dtype: PipelineDtypeStr | None = None,
         generator: torch.Generator | None = None,
+        fill: FillValue | None = None,
         *,
         specs: list[TransformSpec] | None = None,
         backend: BackendStr | None = None,
@@ -423,6 +430,11 @@ class FactoriesMixin:
                 ``backend="native"``; every other backend samples through its own
                 library and rejects a generator at construction rather than
                 silently falling back to the global stream.
+            fill: Constant value written outside the source canvas of every warp, in
+                the image's own value range (``114`` for a uint8 grey, ``114 / 255`` as
+                float); a scalar fills every channel, a sequence one channel each.
+                ``None`` (default) keeps the plain zero border. Images only — auxiliary
+                masks keep zero padding. Requires ``padding_mode="zeros"``.
             route_coords_via_grid: Force coordinate auxiliary targets through
                 the grid path for direct-param construction.
             specs: List of :class:`TransformSpec` objects. When provided,
@@ -525,6 +537,7 @@ class FactoriesMixin:
                     specs=specs,
                     backend=backend,
                     generator=generator,
+                    fill=fill,
                     interpolation=interpolation,
                     padding_mode=padding_mode,
                     reorder=reorder,
@@ -539,6 +552,7 @@ class FactoriesMixin:
             return cls._from_param_specs(
                 specs=specs,
                 generator=generator,
+                fill=fill,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 reorder=reorder,
@@ -577,6 +591,7 @@ class FactoriesMixin:
                 specs=config_specs,
                 backend=backend,
                 generator=generator,
+                fill=fill,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 reorder=reorder,
@@ -620,6 +635,7 @@ class FactoriesMixin:
             return constructor(
                 transforms=[],
                 generator=generator,
+                fill=fill,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 data_keys=data_keys,
@@ -647,6 +663,7 @@ class FactoriesMixin:
         transforms.extend(_DirectParamTransform(param_specs={key: value}, prob=1.0) for key, value in color_specs)
 
         # Build instance bypassing detect_backend
+        fill_values = _validate_fill(fill, padding_mode)
         instance = cls.__new__(cls)
         nn.Module.__init__(cast(nn.Module, instance))
 
@@ -662,6 +679,7 @@ class FactoriesMixin:
             route_coords_via_grid=route_coords_via_grid or _has_coord_aux(data_keys),
             per_transform_padding=padding_mode == "per_transform",
             generator=generator,
+            fill=fill_values,
         )
         cast(Any, instance)._setup_instance(
             transforms=transforms,
@@ -677,6 +695,7 @@ class FactoriesMixin:
             mask_interpolation=mask_interpolation,
             pipeline_dtype=pipeline_dtype,
             generator=generator,
+            fill=fill_values,
         )
 
         return instance
@@ -697,6 +716,7 @@ class FactoriesMixin:
         route_coords_via_grid: bool = False,
         native: bool = False,
         generator: torch.Generator | None = None,
+        fill: FillValue | None = None,
     ) -> object:
         """Build a from_params pipeline from a list of TransformSpec objects.
 
@@ -757,6 +777,7 @@ class FactoriesMixin:
             return constructor(
                 transforms=[],
                 generator=generator,
+                fill=fill,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 data_keys=data_keys,
@@ -768,6 +789,7 @@ class FactoriesMixin:
                 pipeline_dtype=pipeline_dtype,
             )
 
+        fill_values = _validate_fill(fill, padding_mode)
         instance = cls.__new__(cls)
         nn.Module.__init__(cast(nn.Module, instance))
 
@@ -782,6 +804,7 @@ class FactoriesMixin:
             route_coords_via_grid=route_coords_via_grid or _has_coord_aux(data_keys),
             per_transform_padding=padding_mode == "per_transform",
             generator=generator,
+            fill=fill_values,
         )
         cast(Any, instance)._setup_instance(
             transforms=transforms,
@@ -797,6 +820,7 @@ class FactoriesMixin:
             mask_interpolation=mask_interpolation,
             pipeline_dtype=pipeline_dtype,
             generator=generator,
+            fill=fill_values,
         )
 
         return instance
