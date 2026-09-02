@@ -75,6 +75,22 @@ reorder = ReorderPolicy.NONE
 
 Only enable `POINTWISE` after measuring the output and performance trade-off. `AGGRESSIVE` currently follows the same implementation as `POINTWISE`; it is not a stronger optimizer today.
 
+## Half-pixel convention (`align_corners`)
+
+Sampling runs with `align_corners=True`, and matrices are normalized with the sandwich derived for that same flag (`2 / (W - 1)` scale, `(W - 1) / 2` offset). Because the two agree, **a pixel-space matrix carries no convention**: the map this package applies is the one an `align_corners=False` implementation — TorchVision, Albumentations, most YOLO data pipelines — would apply for the same matrix. Only the normalization into `[-1, 1]` is convention-bound, and it cancels against the sampling flag.
+
+Practically, for anyone porting matrices in or out:
+
+- A forward pixel matrix (`transform_matrix`, or one you build yourself) transfers unchanged in both directions. This is measured, not assumed: `tests/test_unit/affine/test_coordinate_convention.py` warps against an independently built `align_corners=False` reference for integer, half- and quarter-pixel shifts, up- and downscales, rotation, a non-square canvas, and differing input/output sizes, and matches to float32 rounding.
+- Coordinate targets carry no convention either. Boxes and keypoints are multiplied by the pixel matrix directly, with no normalization step anywhere; masks are resampled on the image's own grid. The invariant that ties the three together — a keypoint on a bright pixel still sits on that pixel after any warp — is pinned by test.
+
+Two exceptions, both tested:
+
+- **`padding_mode="reflection"` is convention-bound.** `align_corners=True` reflects about the outer pixel *centres* (OpenCV's `BORDER_REFLECT_101`); `align_corners=False` reflects about the outer pixel *edges* (`BORDER_REFLECT`). The mirrored band differs by a pixel of phase. `"zeros"` and `"border"` agree between conventions; only reflection does not.
+- **A canvas thinner than two pixels is refused.** The `True` normalization divides by `L - 1`, which is singular for a one-pixel axis, so a `(H, 1)` or `(1, W)` input raises naming the offending axis rather than warping through an infinite scale.
+
+There is deliberately no `align_corners` parameter. It would change nothing for every case above except reflection padding, and a flag that alters one padding mode while claiming to select a coordinate convention is worse than the documented behaviour it replaces.
+
 ## Constant border colour (`fill`)
 
 `padding_mode` chooses *how* the region outside the source canvas is produced — `"zeros"` writes black, `"border"` replicates the edge pixel, `"reflection"` mirrors the image. `fill` replaces the constant that `"zeros"` writes, in the image's own value range:

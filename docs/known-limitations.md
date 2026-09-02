@@ -54,6 +54,8 @@ TorchVision `RandomRotation(expand=True)` is explicitly unsupported. The fused T
 Masks and coordinates have additional contracts:
 
 - Nearest-neighbor mask sampling uses zero padding even when the image uses `padding_mode="border"` or `"reflection"`. Label `0` must therefore be an acceptable out-of-bounds fill value.
+- `padding_mode="reflection"` reflects about the outer pixel *centres* (OpenCV `BORDER_REFLECT_101`), following this package's `align_corners=True` sampling. An implementation sampling with `align_corners=False` reflects about the outer pixel *edges* (`BORDER_REFLECT`) and its mirrored band differs by a pixel of phase. `"zeros"` and `"border"` are convention-free; see "Half-pixel convention" in `guides/configuration.md`.
+- A canvas thinner than two pixels on either axis is refused: the `align_corners=True` normalization divides by `L - 1`. A `(H, 1)` or `(1, W)` image raises naming the axis rather than warping through an infinite scale.
 - The nearest mask path is deliberately executed without autograd. This removes gradients with respect to both the mask values and sampling grid. Bilinear sampling is available for floating soft masks, mixes values at boundaries, and keeps an autograd path.
 - Boxes are dense `(B, N, 4)` tensors and keypoints are dense `(B, N, 2)` tensors. The package does not clip them to image bounds, filter invisible or zero-area boxes, calculate visibility, carry labels, or manage variable `N`.
 - Rotated boxes are returned as axis-aligned bounding boxes, which can be larger than the rotated object.
