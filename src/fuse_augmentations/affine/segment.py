@@ -36,6 +36,8 @@ from numpy.typing import NDArray
 from torch import Tensor, nn
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fuse_augmentations._random import rand as _rand
+from fuse_augmentations._random import reject_backend_randomness
 from fuse_augmentations.affine.matrix import (
     _singularity_threshold,
     apply_d4_image,
@@ -225,12 +227,35 @@ def _sample_transform_params(
     input_shape: tuple[int, int, int, int],
     device: torch.device,
     randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+    generator: torch.Generator | None = None,
 ) -> dict[str, Tensor]:
-    """Sample params, preferring adapter-provided per-sample sampling when requested."""
+    """Sample params, preferring adapter-provided per-sample sampling when requested.
+
+    Args:
+        adapter: The adapter owning parameter sampling for ``transform``.
+        transform: The transform to sample parameters for.
+        input_shape: ``(batch_size, channels, height, width)`` shape tuple.
+        device: Target device for the returned tensors.
+        randomness: Batch randomness policy.
+        generator: Caller-owned generator, or ``None`` for the global stream.
+
+    Returns:
+        Dict of canonical parameter tensors.
+
+    """
+    if generator is not None and not getattr(adapter, "supports_generator", False):
+        # Backstop: construction already rejects a generator on backend pipelines.
+        # Degrading to the global stream here would look reproducible and not be.
+        reject_backend_randomness(generator, f"{type(adapter).__name__} sampling for {type(transform).__name__}")
     if randomness is RandomnessPolicy.PER_SAMPLE:
         sample_params_per_sample = getattr(adapter, "sample_params_per_sample", None)
         if callable(sample_params_per_sample):
             return cast(dict[str, Tensor], sample_params_per_sample(transform, input_shape, device))
+    if generator is not None:
+        # Only an adapter advertising supports_generator reaches this line (the guard above),
+        # and its sample_params takes the extra keyword the protocol does not declare.
+        seeded_sampler = cast(Callable[..., dict[str, Tensor]], adapter.sample_params)
+        return seeded_sampler(transform, input_shape, device, generator=generator)
     return adapter.sample_params(transform, input_shape, device)
 
 
@@ -688,6 +713,8 @@ class ExactAffineSegment(nn.Module):
             updates and, when auxiliary targets are used, ``exact_flip_dims`` for flip-compatible target routing.
         randomness: Batch randomness policy. ``BACKEND`` preserves native
             backend semantics; ``PER_SAMPLE`` draws probability masks per item.
+        generator: Caller-owned generator driving the per-transform probability
+            gates, or ``None`` for the global torch stream.
 
     Examples:
         ```pycon
@@ -710,12 +737,14 @@ class ExactAffineSegment(nn.Module):
         transforms: list[object],
         adapter: TransformAdapter,
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+        generator: torch.Generator | None = None,
     ) -> None:
         """Initialize ``ExactAffineSegment``."""
         super().__init__()
         self.transforms = transforms
         self.adapter = adapter
         self.randomness = randomness
+        self.generator = generator
 
     @property
     def last_matrix(self) -> Tensor | None:
@@ -761,10 +790,10 @@ class ExactAffineSegment(nn.Module):
             same_on_batch = _shares_randomness_across_batch(self.adapter, tfm, self.randomness)
             if not same_on_batch:
                 # Independent Bernoulli draw per sample.
-                active = torch.rand(batch_size, device=device) < prob
+                active = _rand(batch_size, device=device, generator=self.generator) < prob
             else:
                 # Single Bernoulli draw shared across the entire batch.
-                active_scalar = torch.rand((), device=device) < prob
+                active_scalar = _rand((), device=device, generator=self.generator) < prob
                 active = active_scalar.repeat(batch_size)
 
             # Skip this transform entirely if no samples are active.
@@ -931,6 +960,8 @@ class _BaseAffineSegment(nn.Module):
         randomness: Batch randomness policy for the fused run.
         mask_interpolation: Sampling mode for auxiliary masks. ``"nearest"``
             preserves hard labels; ``"bilinear"`` supports float soft masks.
+        generator: Caller-owned generator driving parameter sampling and the
+            per-transform probability gates, or ``None`` for the global torch stream.
 
     """
 
@@ -946,6 +977,7 @@ class _BaseAffineSegment(nn.Module):
         *,
         compile_warp: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        generator: torch.Generator | None = None,
     ) -> None:
         """Initialize the shared matrix-composition state."""
         super().__init__()
@@ -955,6 +987,7 @@ class _BaseAffineSegment(nn.Module):
         self.padding_mode = padding_mode
         self.randomness = randomness
         self.mask_interpolation = mask_interpolation
+        self.generator = generator
         self._last_matrix: Tensor | None = None
         # Opt-in torch.compile of the warp core. Enabled only when the flag is set
         # AND the installed torch is new enough; otherwise the eager path runs
@@ -1014,12 +1047,14 @@ class _BaseAffineSegment(nn.Module):
             prob = _transform_prob(tfm)
             same_on_batch = _shares_randomness_across_batch(self.adapter, tfm, self.randomness)
             if same_on_batch:
-                active_scalar = torch.rand((), device=device) < prob
+                active_scalar = _rand((), device=device, generator=self.generator) < prob
                 active = active_scalar.repeat(batch_size)
             else:
-                active = torch.rand(batch_size, device=device) < prob
+                active = _rand(batch_size, device=device, generator=self.generator) < prob
 
-            params = _sample_transform_params(self.adapter, tfm, input_shape, device, self.randomness)
+            params = _sample_transform_params(
+                self.adapter, tfm, input_shape, device, self.randomness, generator=self.generator
+            )
             mtx_i = self.adapter.build_matrix(tfm, params, height, width)
 
             # Expand to batch if adapter returned (1, 3, 3)
@@ -1147,6 +1182,7 @@ class FusedAffineSegment(_BaseAffineSegment):
         *,
         compile_warp: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        generator: torch.Generator | None = None,
     ) -> None:
         """Initialize ``FusedAffineSegment``."""
         super().__init__(
@@ -1157,6 +1193,7 @@ class FusedAffineSegment(_BaseAffineSegment):
             randomness,
             mask_interpolation=mask_interpolation,
             compile_warp=compile_warp,
+            generator=generator,
         )
         # Pre-compute fast-path selector once at construction to avoid repeated
         # isinstance checks on every forward call.
@@ -1385,7 +1422,7 @@ class FusedAffineSegment(_BaseAffineSegment):
                 # params for inactive transforms (vectorized, masked via
                 # torch.where) while this path skips them, so RNG stream positions
                 # diverge after the first inactive transform.
-                active = bool((torch.rand(()) < prob).item())
+                active = bool((_rand((), device=torch.device("cpu"), generator=self.generator) < prob).item())
                 if not active:
                     continue
                 if _np_fused is not None:
@@ -1393,7 +1430,9 @@ class FusedAffineSegment(_BaseAffineSegment):
                     if mtx_np is not None:
                         acc_np = mtx_np @ acc_np
                         continue
-                params = _sample_transform_params(self.adapter, tfm, input_shape, device, self.randomness)
+                params = _sample_transform_params(
+                    self.adapter, tfm, input_shape, device, self.randomness, generator=self.generator
+                )
                 if _np_builder is not None:
                     mtx_np = _np_builder(tfm, params, height, width)
                     acc_np = mtx_np @ acc_np
@@ -1579,6 +1618,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         compile_warp: bool = False,
         antialias: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        generator: torch.Generator | None = None,
     ) -> None:
         """Initialize ``_FusedGeoCropSegment``."""
         # nn.Module state only; skip FusedAffineSegment.__init__'s cv2/numpy
@@ -1591,6 +1631,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         # transforms holds the full fused run so inherited fusion-plan machinery
         # (n_warps_saved = n-1, fusion_plan naming) counts the crop as fused.
         self.transforms: list[object] = [*geo_transforms, crop_transform]
+        self.generator = generator
         self.adapter = adapter
         self.interpolation = interpolation
         self.padding_mode = padding_mode
@@ -1639,10 +1680,12 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         for tfm in self.geo_transforms:
             prob = _transform_prob(tfm)
             if _shares_randomness_across_batch(self.adapter, tfm, self.randomness):
-                active = (torch.rand((), device=device) < prob).repeat(batch_size)
+                active = (_rand((), device=device, generator=self.generator) < prob).repeat(batch_size)
             else:
-                active = torch.rand(batch_size, device=device) < prob
-            params = _sample_transform_params(self.adapter, tfm, input_shape, device, self.randomness)
+                active = _rand(batch_size, device=device, generator=self.generator) < prob
+            params = _sample_transform_params(
+                self.adapter, tfm, input_shape, device, self.randomness, generator=self.generator
+            )
             mtx_i = self.adapter.build_matrix(tfm, params, height, width)
             if mtx_i.shape[0] == 1 and batch_size > 1:
                 mtx_i = mtx_i.expand(batch_size, -1, -1)
@@ -1694,7 +1737,9 @@ class _FusedGeoCropSegment(FusedAffineSegment):
     ) -> tuple[int, int, Tensor]:
         """Sample the crop and return ``(target_h, target_w, (B, 3, 3) crop matrix)``."""
         batch_size, _, height, width = input_shape
-        params = _sample_transform_params(self.adapter, self.crop_transform, input_shape, device, self.randomness)
+        params = _sample_transform_params(
+            self.adapter, self.crop_transform, input_shape, device, self.randomness, generator=self.generator
+        )
         if not (
             torch.all(params["target_h"] == params["target_h"][0])
             and torch.all(params["target_w"] == params["target_w"][0])
@@ -3078,6 +3123,7 @@ class FusedColorSegment(nn.Module):
         clip_policy: ClipPolicyStr = "final",
         *,
         compile_color: bool = False,
+        generator: torch.Generator | None = None,
     ) -> None:
         """Initialize ``FusedColorSegment``.
 
@@ -3090,6 +3136,8 @@ class FusedColorSegment(nn.Module):
                 ``"per_op_parity"`` clamps at each op whose intermediate could leave ``[0, 1]``,
                 matching a native per-op clamped chain.
             compile_color: Compile only the pure color matrix application on non-CPU devices.
+            generator: Caller-owned generator driving factor sampling and the per-transform
+                probability gates, or ``None`` for the global torch stream.
 
         """
         super().__init__()
@@ -3097,6 +3145,7 @@ class FusedColorSegment(nn.Module):
         self._adapter = adapter
         self.clip_output = clip_output
         self.randomness = randomness
+        self.generator = generator
         if clip_policy not in ("final", "per_op_parity"):
             msg = "unknown clip policy {!r}; expected 'final' or 'per_op_parity'"
             raise ValueError(msg.format(clip_policy))
@@ -3189,12 +3238,14 @@ class FusedColorSegment(nn.Module):
             prob = _transform_prob(tfm)
             same_on_batch = _shares_randomness_across_batch(self._adapter, tfm, self.randomness)
             if same_on_batch:
-                active_scalar = torch.rand((), device=device) < prob
+                active_scalar = _rand((), device=device, generator=self.generator) < prob
                 active = active_scalar.expand(batch_size)
             else:
-                active = torch.rand(batch_size, device=device) < prob
+                active = _rand(batch_size, device=device, generator=self.generator) < prob
 
-            params = _sample_transform_params(self._adapter, tfm, input_shape, device, self.randomness)
+            params = _sample_transform_params(
+                self._adapter, tfm, input_shape, device, self.randomness, generator=self.generator
+            )
             # Contrast-like ops take their midpoint from the per-image luminance of their input;
             # pass it so the fused matrix reproduces the native mean-relative contrast exactly.
             # Only thread `mean` when a mean-relative op actually needs it, so adapters whose
@@ -3424,6 +3475,7 @@ def _flush_color(
     randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     clip_policy: ClipPolicyStr = "final",
     compile_color: bool = False,
+    generator: torch.Generator | None = None,
 ) -> None:
     """Flush a run of ``POINTWISE_LINEAR`` transforms into segments.
 
@@ -3438,6 +3490,7 @@ def _flush_color(
         randomness: Batch randomness policy passed to the color segment.
         clip_policy: Clamp policy forwarded to :class:`FusedColorSegment`.
         compile_color: Whether non-CPU color matrix applications may use ``torch.compile``.
+        generator: Caller-owned generator forwarded to :class:`FusedColorSegment`.
 
     """
     if not transforms:
@@ -3459,6 +3512,7 @@ def _flush_color(
             randomness=randomness,
             clip_policy=clip_policy,
             compile_color=compile_color,
+            generator=generator,
         )
     )
     # Intentionally clears the caller-owned run buffer.
@@ -4319,6 +4373,7 @@ def build_segments(
     antialias: bool = False,
     clip_policy: ClipPolicyStr = "final",
     mask_interpolation: MaskInterpolationStr = "nearest",
+    generator: torch.Generator | None = None,
 ) -> list[object]:
     """Split a transform list into fused segments and passthrough transforms.
 
@@ -4386,6 +4441,10 @@ def build_segments(
             ``"per_op_parity"`` clamps at each op that could leave ``[0, 1]``.
         mask_interpolation: Sampling mode for routed masks. ``"nearest"`` preserves
             the historical hard-label behavior; ``"bilinear"`` supports float soft masks.
+        generator: Caller-owned ``torch.Generator`` forwarded to every torch-side segment
+            that owns a draw (probability gates and direct parameter sampling), or ``None``
+            for the global torch stream. Only the direct-parameter adapter can honour it;
+            backend adapters are rejected at pipeline construction.
 
     Returns:
         Flat list where each element is a :class:`FusedAffineSegment`
@@ -4441,7 +4500,10 @@ def build_segments(
                     split_reason,
                 )
             else:
-                _append_segment(ExactAffineSegment(geo_transforms, adapter, randomness=randomness), split_reason)
+                _append_segment(
+                    ExactAffineSegment(geo_transforms, adapter, randomness=randomness, generator=generator),
+                    split_reason,
+                )
             return
 
         if has_interp or route_coords_via_grid:
@@ -4454,12 +4516,16 @@ def build_segments(
                     randomness=randomness,
                     compile_warp=compile_warp,
                     mask_interpolation=mask_interpolation,
+                    generator=generator,
                 ),
                 split_reason,
             )
             return
 
-        _append_segment(ExactAffineSegment(geo_transforms, adapter, randomness=randomness), split_reason)
+        _append_segment(
+            ExactAffineSegment(geo_transforms, adapter, randomness=randomness, generator=generator),
+            split_reason,
+        )
 
     def _flush_geo() -> None:
         if not current_geo:
@@ -4539,13 +4605,13 @@ def build_segments(
         category = adapter.category(transform)
         if category in fusible:
             _flush_proj()  # flush any pending projective
-            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
             _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
             current_geo.append(transform)
             continue
         if category == projective_cat:
             _flush_geo()  # flush any pending affine
-            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
             _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
             current_proj.append(transform)
             continue
@@ -4560,7 +4626,7 @@ def build_segments(
             # run. Colour (matrix) and lookup (table) runs are mutually exclusive, so flush colour.
             _flush_geo()
             _flush_proj()
-            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
             current_lut.append(transform)
             continue
         if category == crop_resize_cat:
@@ -4575,7 +4641,7 @@ def build_segments(
             # CropResizeSegment (which the Albumentations adapter fully supports for
             # CROP_RESIZE_FIXED) is emitted instead to route aux to the output size.
             _flush_proj()
-            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
             _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
             if per_transform_padding:
                 _flush_geo()
@@ -4631,6 +4697,7 @@ def build_segments(
                         compile_warp=compile_warp,
                         antialias=antialias,
                         mask_interpolation=mask_interpolation,
+                        generator=generator,
                     )
                 )
                 current_geo.clear()
@@ -4662,7 +4729,9 @@ def build_segments(
                 and _can_commute_gaussian_blur(following_geo, adapter)
             ):
                 _flush_proj()
-                _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+                _flush_color(
+                    current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator
+                )
                 _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
                 blur_transforms = transforms[index:blur_end]
                 segments.append(
@@ -4684,7 +4753,9 @@ def build_segments(
             if blur_end > index + 1:
                 _flush_geo()
                 _flush_proj()
-                _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+                _flush_color(
+                    current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator
+                )
                 _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
                 blur_transforms = transforms[index:blur_end]
                 segments.append(
@@ -4705,13 +4776,13 @@ def build_segments(
         # SPATIAL_KERNEL / POINTWISE barrier (blur/noise, saturation/hue, equalize): flush all
         _flush_geo()
         _flush_proj()
-        _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+        _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
         _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
         segments.append(transform)
 
     _flush_geo()
     _flush_proj()
-    _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+    _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
     _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
     return segments
 

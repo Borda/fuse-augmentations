@@ -41,6 +41,7 @@ from torch import Tensor, nn
 
 from fuse_augmentations._backend import Backend, detect_backends_per_transform
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fuse_augmentations._random import reject_backend_randomness
 from fuse_augmentations.affine.matrix import (
     hflip_matrix,
     inv3x3,
@@ -166,6 +167,31 @@ _HISTORICAL_IMPORTS = (
 # all-exact geometric run is routed through the (still-lossless for D4) grid path.
 
 
+def _reject_generator_with_backend_transforms(
+    generator: torch.Generator | None,
+    transforms: list[object],
+) -> None:
+    """Reject a caller-owned generator on a pipeline whose parameters a backend samples.
+
+    Every backend adapter delegates parameter sampling to its own library, and none of
+    those samplers accept a ``torch.Generator``. Accepting the generator and drawing from
+    the global stream anyway would report reproducibility the pipeline does not have, so
+    the combination is refused at construction instead of at the first activated draw.
+
+    Args:
+        generator: The caller-owned generator, or ``None``.
+        transforms: The transform list the pipeline was constructed with.
+
+    Raises:
+        ValueError: If ``generator`` is not ``None`` and ``transforms`` is non-empty.
+
+    """
+    if generator is None or not transforms:
+        return
+    names = sorted({type(tfm).__name__ for tfm in transforms})
+    reject_backend_randomness(generator, f"backend transform(s) {', '.join(names)}")
+
+
 class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
     """Fused augmentation pipeline that replaces the backend's native Compose.
 
@@ -280,6 +306,15 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
             returned image keeps its input dtype. CPU ignores this option and uses
             the existing float32/float64 path. MPS supports both requested dtypes
             for ``affine_grid`` and ``grid_sample`` on PyTorch 2.10.
+        generator: Caller-owned ``torch.Generator`` driving every pipeline-owned
+            draw. ``None`` (default) keeps the global torch stream, leaving existing
+            pipelines bit-for-bit unchanged. Backend transform objects sample through
+            their own libraries (Kornia's samplers, Albumentations' ``py_random`` and
+            ``np.random``, TorchVision's parameter hooks), none of which accept a
+            ``torch.Generator``; passing one together with backend transforms raises
+            rather than silently falling back to the global stream. Use
+            :meth:`from_params` (or ``backend="native"``) for a fully caller-seeded
+            pipeline.
         **backend_kwargs: Reserved for backend-specific options (currently unused).
 
     """
@@ -300,10 +335,12 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
         clip_policy: ClipPolicyStr = "final",
         mask_interpolation: MaskInterpolationStr = "nearest",
         pipeline_dtype: PipelineDtypeStr | None = None,
+        generator: torch.Generator | None = None,
         **backend_kwargs: object,
     ) -> None:
         """Initialize ``FusedCompose``."""
         super().__init__()
+        _reject_generator_with_backend_transforms(generator, transforms)
         randomness_policy = _coerce_randomness_policy(randomness)
         execution = _validate_execution(execution)
         clip_policy = _validate_clip_policy(clip_policy)
@@ -377,6 +414,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
                     antialias=antialias,
                     clip_policy=clip_policy,
                     mask_interpolation=mask_interpolation,
+                    generator=generator,
                 )
             else:
                 # Mixed-backend path: group by backend, build segments per group
@@ -413,6 +451,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
             pipeline_dtype=pipeline_dtype,
+            generator=generator,
         )
 
     def _setup_instance(
@@ -433,6 +472,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
         clip_policy: ClipPolicyStr = "final",
         mask_interpolation: MaskInterpolationStr = "nearest",
         pipeline_dtype: PipelineDtypeStr | None = None,
+        generator: torch.Generator | None = None,
     ) -> None:
         """Assign all instance attributes.
 
@@ -451,6 +491,10 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
         self.clip_policy: ClipPolicyStr = clip_policy
         self.mask_interpolation: MaskInterpolationStr = _validate_mask_interpolation(mask_interpolation)
         self.pipeline_dtype: PipelineDtypeStr | None = _validate_pipeline_dtype(pipeline_dtype)
+        #: Caller-owned generator, or ``None`` when draws come from the global torch stream.
+        #: The segments hold the same object; unpickling resumes its state as of pickling,
+        #: so DataLoader workers must be seeded per worker rather than sharing one stream.
+        self.generator: torch.Generator | None = generator
         self._adapter: TransformAdapter | None = adapter
         # Heterogeneous by design: fused/color/exact/crop segments, passthrough wrappers, or raw
         # legacy transforms — dispatched at runtime via _seg_dispatch_tags, so elements stay Any.
@@ -743,6 +787,9 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
             self.pipeline_dtype = None
         if not hasattr(self, "randomness"):
             self.randomness = RandomnessPolicy.BACKEND
+        if not hasattr(self, "generator"):
+            # Pickles predating caller-owned randomness drew from the global stream.
+            self.generator = None
         if not hasattr(self, "data_keys"):
             self.data_keys = None
         if not hasattr(self, "_transform_adapters"):

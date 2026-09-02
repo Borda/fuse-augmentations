@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import torch
 from torch import nn
 
+from fuse_augmentations._random import uniform as _uniform
 from fuse_augmentations.affine.matrix import (
     hflip_matrix,
     matmul3x3,
@@ -67,6 +68,7 @@ class FactoriesMixin:
         on_unsupported: Literal["raise", "warn_skip"] = "raise",
         mask_interpolation: MaskInterpolationStr = "nearest",
         pipeline_dtype: PipelineDtypeStr | None = None,
+        generator: torch.Generator | None = None,
     ) -> object:
         """Create a FusedCompose pipeline from a list of TransformSpec objects.
 
@@ -97,6 +99,10 @@ class FactoriesMixin:
                 :meth:`__init__`.
             pipeline_dtype: Optional fused GPU image-operation dtype forwarded to
                 :meth:`__init__`.
+            generator: Caller-owned ``torch.Generator`` driving every sampled
+                parameter. Supported for ``backend="native"`` only — the other
+                backends sample through their own libraries, which cannot be
+                seeded from a ``torch.Generator`` (see :meth:`from_params`).
             on_unsupported: Policy for specs whose op the backend cannot build.
                 ``"raise"`` (default) aggregates all offenders into one
                 ``ValueError``; ``"warn_skip"`` drops each unsupported spec with
@@ -144,12 +150,14 @@ class FactoriesMixin:
                 pipeline_dtype=pipeline_dtype,
                 route_coords_via_grid=_has_coord_aux(data_keys),
                 native=True,
+                generator=generator,
             )
         transforms = [cls._build_transform(spec, backend) for spec in kept_specs]
 
         constructor = cast(Callable[..., object], cls)
         return constructor(
             transforms,
+            generator=generator,
             interpolation=interpolation,
             padding_mode=padding_mode,
             data_keys=data_keys,
@@ -340,6 +348,7 @@ class FactoriesMixin:
         clip_policy: ClipPolicyStr = "final",
         mask_interpolation: MaskInterpolationStr = "nearest",
         pipeline_dtype: PipelineDtypeStr | None = None,
+        generator: torch.Generator | None = None,
         *,
         specs: list[TransformSpec] | None = None,
         backend: BackendStr | None = None,
@@ -407,6 +416,13 @@ class FactoriesMixin:
                 :meth:`__init__` or :meth:`from_config`.
             pipeline_dtype: Optional fused GPU image-operation dtype forwarded to
                 :meth:`__init__` or :meth:`from_config`.
+            generator: Caller-owned ``torch.Generator`` driving every sampled
+                parameter and every per-transform probability gate. ``None``
+                (default) keeps the global torch stream, so existing pipelines
+                are unchanged. Supported in backend-free mode and with
+                ``backend="native"``; every other backend samples through its own
+                library and rejects a generator at construction rather than
+                silently falling back to the global stream.
             route_coords_via_grid: Force coordinate auxiliary targets through
                 the grid path for direct-param construction.
             specs: List of :class:`TransformSpec` objects. When provided,
@@ -459,6 +475,23 @@ class FactoriesMixin:
 
             ```
 
+            Caller-owned randomness: two identically seeded generators give
+            identical output, independent of the global torch stream.
+
+            ```pycon
+            >>> import torch
+            >>> from fuse_augmentations.compose import FusedCompose
+            >>> image = torch.rand(2, 3, 32, 32)
+            >>> def run(seed):
+            ...     gen = torch.Generator().manual_seed(seed)
+            ...     return FusedCompose.from_params(rotation=(-30, 30), generator=gen)(image)
+            >>> bool(torch.equal(run(0), run(0)))
+            True
+            >>> bool(torch.equal(run(0), run(1)))
+            False
+
+            ```
+
         """
         # --- specs= overload path ---
         # Note: specs= is a convenience alias for declarative pipeline construction.
@@ -491,6 +524,7 @@ class FactoriesMixin:
                 return cls.from_config(
                     specs=specs,
                     backend=backend,
+                    generator=generator,
                     interpolation=interpolation,
                     padding_mode=padding_mode,
                     reorder=reorder,
@@ -504,6 +538,7 @@ class FactoriesMixin:
 
             return cls._from_param_specs(
                 specs=specs,
+                generator=generator,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 reorder=reorder,
@@ -541,6 +576,7 @@ class FactoriesMixin:
             return cls.from_config(
                 specs=config_specs,
                 backend=backend,
+                generator=generator,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 reorder=reorder,
@@ -583,6 +619,7 @@ class FactoriesMixin:
             constructor = cast(Callable[..., object], cls)
             return constructor(
                 transforms=[],
+                generator=generator,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 data_keys=data_keys,
@@ -624,6 +661,7 @@ class FactoriesMixin:
             mask_interpolation=mask_interpolation,
             route_coords_via_grid=route_coords_via_grid or _has_coord_aux(data_keys),
             per_transform_padding=padding_mode == "per_transform",
+            generator=generator,
         )
         cast(Any, instance)._setup_instance(
             transforms=transforms,
@@ -638,6 +676,7 @@ class FactoriesMixin:
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
             pipeline_dtype=pipeline_dtype,
+            generator=generator,
         )
 
         return instance
@@ -657,6 +696,7 @@ class FactoriesMixin:
         pipeline_dtype: PipelineDtypeStr | None = None,
         route_coords_via_grid: bool = False,
         native: bool = False,
+        generator: torch.Generator | None = None,
     ) -> object:
         """Build a from_params pipeline from a list of TransformSpec objects.
 
@@ -716,6 +756,7 @@ class FactoriesMixin:
             constructor = cast(Callable[..., object], cls)
             return constructor(
                 transforms=[],
+                generator=generator,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 data_keys=data_keys,
@@ -740,6 +781,7 @@ class FactoriesMixin:
             mask_interpolation=mask_interpolation,
             route_coords_via_grid=route_coords_via_grid or _has_coord_aux(data_keys),
             per_transform_padding=padding_mode == "per_transform",
+            generator=generator,
         )
         cast(Any, instance)._setup_instance(
             transforms=transforms,
@@ -754,6 +796,7 @@ class FactoriesMixin:
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
             pipeline_dtype=pipeline_dtype,
+            generator=generator,
         )
 
         return instance
@@ -903,6 +946,10 @@ class _DirectParamAdapter:
 
     """
 
+    #: Marks this adapter as able to draw from a caller-supplied ``torch.Generator``.
+    #: The backend adapters sample through their own libraries and leave it unset.
+    supports_generator = True
+
     @staticmethod
     def category(transform: object) -> TransformCategory:
         """Return the TransformCategory for a direct-param transform."""
@@ -919,8 +966,20 @@ class _DirectParamAdapter:
         transform: object,
         input_shape: tuple[int, int, int, int],
         device: torch.device,
+        generator: torch.Generator | None = None,
     ) -> dict[str, torch.Tensor]:
-        """Sample random parameters from the stored ranges."""
+        """Sample random parameters from the stored ranges.
+
+        Args:
+            transform: A ``_DirectParamTransform`` or ``_DirectFlipTransform``.
+            input_shape: ``(batch_size, channels, height, width)`` shape tuple.
+            device: Target device for the returned tensors.
+            generator: Caller-owned generator driving every draw, or ``None`` for the global stream.
+
+        Returns:
+            Dict of canonical parameter tensors; a ``_batch_size`` sentinel for flips.
+
+        """
         batch_size = input_shape[0]
 
         if isinstance(transform, _DirectFlipTransform):
@@ -933,7 +992,7 @@ class _DirectParamAdapter:
             if "rotation" in specs:
                 low, high = specs["rotation"]
                 low_rad, high_rad = math.radians(low), math.radians(high)
-                result["angle_rad"] = torch.empty(batch_size, device=device).uniform_(low_rad, high_rad)
+                result["angle_rad"] = _uniform(batch_size, low_rad, high_rad, device=device, generator=generator)
 
             # Scale: if uniform 'scale' is set, use it for both axes
             # Individual scale_x/scale_y override uniform scale
@@ -942,45 +1001,51 @@ class _DirectParamAdapter:
             if scale_x_range is not None and scale_y_range is not None:
                 if "scale_x" not in specs and "scale_y" not in specs:
                     # Uniform 'scale' promises isotropic scaling: one draw shared by both axes
-                    scale = torch.empty(batch_size, device=device).uniform_(*scale_x_range)
+                    scale = _uniform(batch_size, *scale_x_range, device=device, generator=generator)
                     result["scale_x"] = scale
                     result["scale_y"] = scale.clone()
                 else:
-                    result["scale_x"] = torch.empty(batch_size, device=device).uniform_(*scale_x_range)
-                    result["scale_y"] = torch.empty(batch_size, device=device).uniform_(*scale_y_range)
+                    result["scale_x"] = _uniform(batch_size, *scale_x_range, device=device, generator=generator)
+                    result["scale_y"] = _uniform(batch_size, *scale_y_range, device=device, generator=generator)
             if scale_x_range is not None and scale_y_range is None:
-                result["scale_x"] = torch.empty(batch_size, device=device).uniform_(*scale_x_range)
+                result["scale_x"] = _uniform(batch_size, *scale_x_range, device=device, generator=generator)
                 result["scale_y"] = torch.ones(batch_size, device=device)
             if scale_y_range is not None and scale_x_range is None:
                 result["scale_x"] = torch.ones(batch_size, device=device)
-                result["scale_y"] = torch.empty(batch_size, device=device).uniform_(*scale_y_range)
+                result["scale_y"] = _uniform(batch_size, *scale_y_range, device=device, generator=generator)
 
             if "shear_x" in specs:
                 low, high = specs["shear_x"]
-                result["shear_x_rad"] = torch.empty(batch_size, device=device).uniform_(
-                    math.radians(low), math.radians(high)
+                result["shear_x_rad"] = _uniform(
+                    batch_size, math.radians(low), math.radians(high), device=device, generator=generator
                 )
 
             if "shear_y" in specs:
                 low, high = specs["shear_y"]
-                result["shear_y_rad"] = torch.empty(batch_size, device=device).uniform_(
-                    math.radians(low), math.radians(high)
+                result["shear_y_rad"] = _uniform(
+                    batch_size, math.radians(low), math.radians(high), device=device, generator=generator
                 )
 
             if "translate_x" in specs or "translate_y" in specs:
                 if "translate_x" in specs:
-                    result["translate_x"] = torch.empty(batch_size, device=device).uniform_(*specs["translate_x"])
+                    result["translate_x"] = _uniform(
+                        batch_size, *specs["translate_x"], device=device, generator=generator
+                    )
                 else:
                     result["translate_x"] = torch.zeros(batch_size, device=device)
                 if "translate_y" in specs:
-                    result["translate_y"] = torch.empty(batch_size, device=device).uniform_(*specs["translate_y"])
+                    result["translate_y"] = _uniform(
+                        batch_size, *specs["translate_y"], device=device, generator=generator
+                    )
                 else:
                     result["translate_y"] = torch.zeros(batch_size, device=device)
 
             if "brightness" in specs:
-                result["brightness_factor"] = torch.empty(batch_size, device=device).uniform_(*specs["brightness"])
+                result["brightness_factor"] = _uniform(
+                    batch_size, *specs["brightness"], device=device, generator=generator
+                )
             if "contrast" in specs:
-                result["contrast_factor"] = torch.empty(batch_size, device=device).uniform_(*specs["contrast"])
+                result["contrast_factor"] = _uniform(batch_size, *specs["contrast"], device=device, generator=generator)
 
             return result
 
