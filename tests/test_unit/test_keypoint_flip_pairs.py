@@ -154,10 +154,10 @@ class TestPipelineBehaviour:
     def test_the_d4_fast_path_permutes_like_the_interpolating_path(self) -> None:
         """A pure flip (D4 fast path, no grid_sample) swaps like a flip inside a real warp.
 
-        A pure flip is classified as a D4 element and applied by tensor reversal, skipping the sampling grid entirely;
-        a flip composed with an oblique rotation goes through the interpolating warp instead. The permutation has to
-        fire on both, or a mirrored image trains with unswapped left/right labels on whichever path the pipeline
-        happened to take — with no shape error anywhere.
+        A pure flip is classified as a D4 element and applied by tensor reversal, skipping the sampling grid entirely; a
+        flip composed with an oblique rotation goes through the interpolating warp instead. The permutation has to fire
+        on both, or a mirrored image trains with unswapped left/right labels on whichever path the pipeline happened to
+        take — with no shape error anywhere.
 
         """
         for params in ({"hflip_p": 1.0}, {"hflip_p": 1.0, "rotation": (17.0, 17.0)}):

@@ -109,6 +109,18 @@ The generator scans `README.md` and all Markdown files below `docs/`, removes st
 
 The [pull request template](PULL_REQUEST_TEMPLATE.md) carries the full checklist; complete it when you open a PR. Use a descriptive branch name such as `fix/123-short-description`, `feat/123-short-description`, `docs/update-examples`, or `test/add-regression-case`.
 
+## Cutting a release
+
+Releases are cut from a tag, never from a branch push, so publishing is always a deliberate act:
+
+1. Move the `## [Unreleased]` entries in `CHANGELOG.md` under a `## [X.Y.Z] - YYYY-MM-DD` heading.
+2. Set `__version__` in `src/fuse_augmentations/__about__.py` to `X.Y.Z` and commit both.
+3. Tag that commit `vX.Y.Z` (annotated) and push the tag.
+
+`.github/workflows/release.yml` then builds the distributions, checks the manifest, verifies that the tag and `__version__` agree — a mismatch fails the run before anything is uploaded — runs `twine check`, and publishes through PyPI Trusted Publishing. No API token is stored: PyPI verifies the workflow's OIDC identity, which requires a one-time trusted publisher configured for this repository and this workflow file, and the `pypi` GitHub environment gates the upload behind whatever protection rules the repository sets.
+
+Pre-release tags (`vX.Y.Za1`, `vX.Y.Zrc1`) are accepted by the same workflow. Note that a `dev` version is not: a `>=X.Y,<X.Y+1` pin cannot resolve one without `--pre`, which is why versions below `0.12.0` — published only as `dev0` snapshots — are not usable as ordinary dependencies.
+
 ## Review expectations
 
 Review comments should explain why an issue matters and distinguish required changes from suggestions. Reviewers should check correctness, tests, documentation, reproducibility, compatibility, performance, and security as applicable. Defer automatically fixable style issues to `ruff` or pre-commit.

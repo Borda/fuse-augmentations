@@ -4,9 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-All `0.x` versions below were published to PyPI as `dev0` snapshots on 2026-07-11 (batch-uploaded from their respective `bump vX` commits); no stable release has shipped yet.
+Versions below `0.12.0` were published to PyPI as `dev0` snapshots on 2026-07-11 (batch-uploaded from their respective `bump vX` commits). `0.12.0` is the first stable release and the first cut from a `vX.Y.Z` tag.
 
-## [Unreleased]
+## [0.12.0] - 2026-09-02
+
+First release published from a tag rather than a batch upload, and the first non-`dev0` version: every `0.x` below shipped only as a `dev0` snapshot, which a `>=X.Y,<X.Y+1` pin cannot resolve without `--pre`.
 
 ### Changed
 
