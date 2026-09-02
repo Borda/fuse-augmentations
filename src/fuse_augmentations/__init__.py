@@ -41,6 +41,8 @@ from fuse_augmentations.pipeline import (
     FusedCompose,
 )
 from fuse_augmentations.targets import (
+    clip_bbox_xyxy,
+    instance_keep_mask,
     transform_bbox_xywh,
     transform_bbox_xyxy,
     transform_keypoints,
@@ -82,7 +84,9 @@ __all__ = [
     "TransformCategory",
     "TransformSpec",
     "build_segments",
+    "clip_bbox_xyxy",
     "generate_dataset",  # noqa: F405 - provided lazily via module __getattr__
+    "instance_keep_mask",
     "transform_bbox_xywh",
     "transform_bbox_xyxy",
     "transform_keypoints",

@@ -168,3 +168,34 @@ For each pipeline used in training or evaluation:
 6. Compare a small fixed-seed batch with an independently trusted geometric reference before accepting a new transform or backend version.
 
 See [Known limitations](../known-limitations.md) for parity, randomness, and device constraints.
+
+## Deciding which instances survive a warp
+
+A warp pushes some instances off the canvas and clips others to slivers. This package supplies the geometry for that decision and leaves the decision itself to the caller:
+
+```python
+import torch
+
+from fuse_augmentations import Compose, clip_bbox_xyxy, instance_keep_mask
+
+image = torch.rand(1, 3, 32, 32)
+boxes = torch.tensor([[[2.0, 2.0, 10.0, 10.0], [26.0, 26.0, 31.0, 31.0]]])
+augment = Compose.from_params(
+    translate_x=(12.0, 12.0), data_keys=["input", "bbox_xyxy"]
+)
+
+warped_image, warped_boxes = augment(image, boxes)
+clipped = clip_bbox_xyxy(warped_boxes, height=32, width=32)
+keep = instance_keep_mask(warped_boxes, clipped, min_size=2.0, min_visibility=0.25)
+print(keep.tolist())
+```
+
+```
+[[True, False]]
+```
+
+- `clip_bbox_xyxy` clamps boxes to the `[0, width] x [0, height]` canvas extent — geometry, not policy.
+- `instance_keep_mask` keeps an instance whose clipped box is at least `min_size` on both axes **and** retains at least `min_visibility` of its unclipped area. Both thresholds are yours; the defaults are `0.0`, which drops nothing.
+- **It returns the mask, not filtered boxes.** Labels, keypoints, rotated boxes, polygon rings and any per-instance flag live on the same instance axis, and only you hold all of them. Filter every one of them with this single mask: a pipeline that filtered boxes but not the keypoints on the same instances is corrupt while every shape still lines up and nothing raises.
+
+Do not confuse this with `clip_policy`, which decides when a fused *colour* chain clamps to `[0, 1]`. The names are close; the concepts share nothing.

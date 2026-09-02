@@ -36,6 +36,9 @@ from torch import Tensor
 
 from fuse_augmentations.types import MaskInterpolationStr
 
+#: Guards the visibility division for a box whose unclipped area underflows to zero.
+_AREA_EPS = 1e-12
+
 
 def transform_mask(mask: Tensor, grid: Tensor, mode: MaskInterpolationStr = "nearest") -> Tensor:
     """Apply a precomputed affine grid to a segmentation mask.
@@ -299,3 +302,114 @@ def transform_keypoints(keypoints: Tensor, mtx_forward: Tensor) -> Tensor:
     sign_homogeneous_w = torch.where(sign_homogeneous_w == 0, torch.ones_like(sign_homogeneous_w), sign_homogeneous_w)
     safe_homogeneous_w = torch.where(abs_homogeneous_w < eps, sign_homogeneous_w * eps, homogeneous_w)
     return (transformed[:, :2, :] / safe_homogeneous_w).transpose(1, 2)  # (B, N, 2)
+
+
+def clip_bbox_xyxy(boxes: Tensor, height: float, width: float) -> Tensor:
+    """Clamp ``xyxy`` boxes to the ``[0, width] x [0, height]`` canvas extent.
+
+    Clipping is geometry, not policy: it says where the canvas ends, not which instances
+    deserve to survive. Pair it with :func:`instance_keep_mask`, which compares the clipped
+    extent against the unclipped one to decide survival.
+
+    The canvas is the pixel *extent*, so a box covering the whole image spans ``[0, width]``
+    -- one unit wider than the ``width - 1`` distance between the outer pixel centres. Both
+    conventions appear in the wild; this one matches the area interpretation the visibility
+    ratio needs.
+
+    Args:
+        boxes: ``(..., 4)`` boxes as ``(x1, y1, x2, y2)`` in pixels.
+        height: Canvas height in pixels.
+        width: Canvas width in pixels.
+
+    Returns:
+        A new tensor of the same shape with every coordinate clamped to the canvas.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> from fuse_augmentations.targets import clip_bbox_xyxy
+        >>> boxes = torch.tensor([[[-4.0, -4.0, 6.0, 6.0]]])
+        >>> clip_bbox_xyxy(boxes, height=8.0, width=8.0).tolist()
+        [[[0.0, 0.0, 6.0, 6.0]]]
+
+        ```
+
+    """
+    clipped = boxes.clone()
+    clipped[..., 0::2] = boxes[..., 0::2].clamp(0.0, float(width))
+    clipped[..., 1::2] = boxes[..., 1::2].clamp(0.0, float(height))
+    return clipped
+
+
+def instance_keep_mask(
+    boxes: Tensor,
+    clipped_boxes: Tensor,
+    min_size: float = 0.0,
+    min_visibility: float = 0.0,
+) -> Tensor:
+    """Return which instances survive a warp, by clipped size and kept-area fraction.
+
+    An instance is kept when its clipped box is at least ``min_size`` on both axes **and**
+    retains at least ``min_visibility`` of its unclipped area. Both thresholds come from the
+    caller: they are a training recipe's numbers, and this package does not have an opinion
+    about them.
+
+    The return value is the **mask**, never a filtered box tensor. Every other modality on
+    the same instance axis -- labels, keypoints, rotated boxes, polygon rings, per-instance
+    flags -- has to be filtered by this same mask, and the caller is the only one holding
+    all of them. A helper that returned filtered boxes would leave a pipeline whose boxes
+    and keypoints describe different instances while every shape still lines up and nothing
+    raises.
+
+    Not to be confused with ``clip_policy``, which decides when a *colour* chain clamps to
+    ``[0, 1]`` during fusion. This is instance survival after a geometric warp; the names
+    are close and the concepts share nothing.
+
+    Args:
+        boxes: ``(..., 4)`` warped ``xyxy`` boxes **before** clipping to the canvas.
+        clipped_boxes: ``(..., 4)`` the same boxes after clipping (see :func:`clip_bbox_xyxy`).
+        min_size: Minimum clipped width *and* height, in pixels. ``0.0`` keeps every size.
+        min_visibility: Minimum clipped-area / unclipped-area fraction, in ``[0, 1]``.
+            ``0.0`` keeps everything the size rule keeps.
+
+    Returns:
+        A boolean tensor of shape ``boxes.shape[:-1]`` -- one flag per input instance, in
+        input order, always the full length.
+
+    Raises:
+        ValueError: If the two box tensors have different shapes, or either lacks a
+            trailing dimension of 4.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> from fuse_augmentations.targets import clip_bbox_xyxy, instance_keep_mask
+        >>> warped = torch.tensor([[[2.0, 2.0, 6.0, 6.0], [-9.0, -9.0, -1.0, -1.0]]])
+        >>> clipped = clip_bbox_xyxy(warped, height=8.0, width=8.0)
+        >>> instance_keep_mask(warped, clipped, min_size=1.0, min_visibility=0.25).tolist()
+        [[True, False]]
+
+        ```
+
+    """
+    if boxes.shape != clipped_boxes.shape:
+        msg = (
+            f"boxes and clipped_boxes must have the same shape, got "
+            f"{tuple(boxes.shape)} and {tuple(clipped_boxes.shape)}."
+        )
+        raise ValueError(msg)
+    if boxes.shape[-1] != 4:
+        msg = f"boxes must have a trailing dimension of 4 (x1, y1, x2, y2), got {boxes.shape[-1]}."
+        raise ValueError(msg)
+
+    widths = (clipped_boxes[..., 2] - clipped_boxes[..., 0]).clamp(min=0.0)
+    heights = (clipped_boxes[..., 3] - clipped_boxes[..., 1]).clamp(min=0.0)
+    area_before = (boxes[..., 2] - boxes[..., 0]).clamp(min=0.0) * (boxes[..., 3] - boxes[..., 1]).clamp(min=0.0)
+    area_after = widths * heights
+    # A degenerate pre-clip box has no area to keep a fraction of; calling its visibility
+    # zero drops it under any positive threshold and keeps it under min_visibility=0.0,
+    # which is the same treatment a fully clipped-away instance gets.
+    visibility = torch.where(
+        area_before > 0.0, area_after / area_before.clamp(min=_AREA_EPS), torch.zeros_like(area_before)
+    )
+    return (widths >= min_size) & (heights >= min_size) & (visibility >= min_visibility)
