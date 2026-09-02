@@ -169,6 +169,39 @@ For each pipeline used in training or evaluation:
 
 See [Known limitations](../known-limitations.md) for parity, randomness, and device constraints.
 
+## Rotated boxes (`rboxes`)
+
+`"rboxes"` is a data key like any other: `(B, N, 5)` as `(cx, cy, w, h, theta)`, `theta` in radians, routed by every path that routes plain boxes — fused affine, exact flip, crop-resize, letterbox, and the Albumentations tensor path.
+
+```python
+import torch
+
+from fuse_augmentations import Compose, rbox_envelopes
+
+image = torch.rand(1, 3, 16, 32)
+rboxes = torch.tensor([[[16.0, 8.0, 8.0, 4.0, 0.0]]])
+augment = Compose.from_params(rotation=(90.0, 90.0), data_keys=["input", "rboxes"])
+
+_, warped = augment(image, rboxes)
+print([round(value, 3) for value in warped[0, 0].tolist()])
+print([round(value, 3) for value in rbox_envelopes(warped)[0, 0].tolist()])
+```
+
+```
+[15.0, 8.0, 8.0, 4.0, 1.571]
+[13.0, 4.0, 17.0, 12.0]
+```
+
+What the transport does and does not promise:
+
+- **A general affine does not map a rectangle to a rectangle** — only a similarity does. Shear sends a rectangle to a parallelogram, which no `(cx, cy, w, h, theta)` describes. So the box is expanded to four corners, those are mapped, and a box is re-fitted to them. Under rotation, uniform scale, translation and mirroring the fit is exact; under a shear of angle `s` the fitted corners sit `(h / 2) * sqrt(tan(s)**2 + (1 - 1/cos(s))**2)` from the warped ones, where `h` is the extent across the shear. The first-order form of that is the familiar `h * sin(s / 2)`.
+- **No canonical form is imposed.** The package returns whatever the fit produced: no `w >= h` swap, no angle range. The long-edge convention is one reading of the literature among several and belongs with the assigner, the loss and the evaluation kernel that share it. `transform_rboxes`, `mirror_rboxes` and `shift_rboxes` take an optional `canonicalize=` callable if you want yours applied in one place.
+- **Mirroring uses this package's flip axis**, `(width - 1) / 2`, matching the image flip under `align_corners=True` — not the `width / 2` an extent-convention implementation uses.
+- **Clipping is not provided**, because a rotated box clipped to the canvas is generally a polygon rather than a rotated box. Use `rbox_envelopes` with `clip_bbox_xyxy` and `instance_keep_mask` to decide survival on the axis-aligned envelope.
+- Helpers: `rboxes_to_corners`, `corners_to_rboxes`, `transform_rboxes`, `mirror_rboxes`, `shift_rboxes`, `rbox_envelopes`.
+
+The Albumentations *native NumPy* dict path (`pipe(image=<ndarray>)`) transforms the image only and already refuses auxiliary targets, so rotated boxes never reach it.
+
 ## Deciding which instances survive a warp
 
 A warp pushes some instances off the canvas and clips others to slivers. This package supplies the geometry for that decision and leaves the decision itself to the caller:

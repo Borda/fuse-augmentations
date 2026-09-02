@@ -30,6 +30,9 @@ Examples:
 
 from __future__ import annotations
 
+import math
+from collections.abc import Callable
+
 import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import Tensor
@@ -38,6 +41,25 @@ from fuse_augmentations.types import MaskInterpolationStr
 
 #: Guards the visibility division for a box whose unclipped area underflows to zero.
 _AREA_EPS = 1e-12
+
+#: Trailing size of a rotated box: ``(cx, cy, w, h, theta)``.
+_RBOX_DIM = 5
+#: Corners per quadrilateral, and coordinates per point.
+_QUAD_CORNERS = 4
+_POINT_DIM = 2
+#: A corner table is at least ``(num_boxes, 4, 2)``.
+_RBOX_CORNER_NDIM = 3
+
+#: Optional caller-supplied convention applied to fitted rotated boxes. This package
+#: imposes none of its own -- see :func:`transform_rboxes`.
+RBoxCanonicalizer = Callable[[Tensor], Tensor]
+
+
+def _check_rboxes(rboxes: Tensor) -> None:
+    """Raise when ``rboxes`` does not carry a trailing ``(cx, cy, w, h, theta)``."""
+    if rboxes.shape[-1] != _RBOX_DIM:
+        msg = f"rboxes must have a trailing dimension of 5 (cx, cy, w, h, theta), got {rboxes.shape[-1]}."
+        raise ValueError(msg)
 
 
 def transform_mask(mask: Tensor, grid: Tensor, mode: MaskInterpolationStr = "nearest") -> Tensor:
@@ -413,3 +435,276 @@ def instance_keep_mask(
         area_before > 0.0, area_after / area_before.clamp(min=_AREA_EPS), torch.zeros_like(area_before)
     )
     return (widths >= min_size) & (heights >= min_size) & (visibility >= min_visibility)
+
+
+def rboxes_to_corners(rboxes: Tensor) -> Tensor:
+    """Expand ``(cx, cy, w, h, theta)`` rotated boxes into their four corners.
+
+    ``theta`` rotates the box's own ``w`` axis away from ``+x``; the corners run from the
+    local ``(-w/2, -h/2)`` corner around the rectangle. The angle is used exactly as given
+    -- no canonicalization -- so ``theta`` and ``theta + pi`` produce the same rectangle
+    with its corner slots rolled by two.
+
+    Args:
+        rboxes: ``(batch_size, num_boxes, 5)`` rotated boxes ``(cx, cy, w, h, theta)``,
+            ``theta`` in radians.
+
+    Returns:
+        ``(batch_size, num_boxes, 4, 2)`` corner coordinates in pixels.
+
+    Raises:
+        ValueError: If the trailing dimension is not 5.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> from fuse_augmentations.targets import rboxes_to_corners
+        >>> box = torch.tensor([[[5.0, 3.0, 4.0, 2.0, 0.0]]])
+        >>> rboxes_to_corners(box)[0, 0].tolist()
+        [[3.0, 2.0], [7.0, 2.0], [7.0, 4.0], [3.0, 4.0]]
+
+        ```
+
+    """
+    _check_rboxes(rboxes)
+    centre = rboxes[..., :2]
+    cos, sin = torch.cos(rboxes[..., 4]), torch.sin(rboxes[..., 4])
+    half_w, half_h = rboxes[..., 2] / 2, rboxes[..., 3] / 2
+    along_w = torch.stack([cos * half_w, sin * half_w], dim=-1)
+    along_h = torch.stack([-sin * half_h, cos * half_h], dim=-1)
+    return torch.stack(
+        [
+            centre - along_w - along_h,
+            centre + along_w - along_h,
+            centre + along_w + along_h,
+            centre - along_w + along_h,
+        ],
+        dim=-2,
+    )
+
+
+def corners_to_rboxes(corners: Tensor) -> Tensor:
+    """Fit ``(cx, cy, w, h, theta)`` rotated boxes to quadrilaterals.
+
+    No single vertex decides an output: the centre is the vertex centroid, each extent is
+    the mean of its pair of opposite side lengths, and the direction is the mean of that
+    pair's two antiparallel edge vectors. On an exact rectangle all three reduce to the
+    exact values; on a quad within ``eps`` of a rectangle the extents land within ``eps``.
+
+    The result is **not** canonicalized: no ``w >= h`` swap and no angle range is imposed,
+    because which representative of a rectangle is the right one is a downstream convention
+    (long-edge, or otherwise) rather than a geometric fact.
+
+    Args:
+        corners: ``(batch_size, num_boxes, 4, 2)`` quadrilateral corners in pixels, each
+            ring in order around its quad (either winding).
+
+    Returns:
+        ``(batch_size, num_boxes, 5)`` rotated boxes, un-canonicalized.
+
+    Raises:
+        ValueError: If the trailing dimensions are not ``(4, 2)``.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> from fuse_augmentations.targets import corners_to_rboxes
+        >>> quad = torch.tensor([[[[3.0, 2.0], [7.0, 2.0], [7.0, 4.0], [3.0, 4.0]]]])
+        >>> [round(value, 4) for value in corners_to_rboxes(quad)[0, 0].tolist()]
+        [5.0, 3.0, 4.0, 2.0, 0.0]
+
+        ```
+
+    """
+    if corners.ndim < _RBOX_CORNER_NDIM or corners.shape[-2:] != (_QUAD_CORNERS, _POINT_DIM):
+        msg = f"corners must have trailing dimensions (4, 2), got {tuple(corners.shape)}."
+        raise ValueError(msg)
+    edges = corners.roll(-1, dims=-2) - corners
+    lengths = edges.norm(dim=-1)
+    # Opposite sides of a rectangle are the (0, 2) and (1, 3) edge pairs under any cyclic
+    # ordering, and are antiparallel -- hence the difference, not the sum, for direction.
+    width = (lengths[..., 0] + lengths[..., 2]) / 2
+    height = (lengths[..., 1] + lengths[..., 3]) / 2
+    direction = (edges[..., 0, :] - edges[..., 2, :]) / 2
+    theta = torch.atan2(direction[..., 1], direction[..., 0])
+    centre = corners.mean(dim=-2)
+    return torch.stack([centre[..., 0], centre[..., 1], width, height, theta], dim=-1)
+
+
+def transform_rboxes(rboxes: Tensor, mtx_forward: Tensor, canonicalize: RBoxCanonicalizer | None = None) -> Tensor:
+    """Transform ``(batch_size, num_boxes, 5)`` rotated boxes by a ``(batch_size, 3, 3)`` forward matrix.
+
+    A general affine does **not** map a rectangle to a rectangle: only a similarity does.
+    Shear sends a rectangle to a parallelogram, which no ``(cx, cy, w, h, theta)`` can
+    describe. So the box is expanded to the four corners the warp actually moves, those
+    corners are mapped, and a box is re-fitted to them (:func:`corners_to_rboxes`).
+
+    Under a similarity -- rotation, uniform scale, translation, mirror, or any composition
+    of them -- the fit reproduces the warped rectangle exactly. Under a shear of angle ``s``
+    the warped quad is a parallelogram whose sides meet at ``pi / 2 - s``, and the fitted
+    corners sit ``(h / 2) * sqrt(tan(s)**2 + (1 - 1 / cos(s))**2)`` from the warped ones,
+    where ``h`` is the extent across the shear. To first order in ``s`` that is the
+    often-quoted ``h * sin(s / 2)``; the exact value exceeds it from the third order on, so
+    the short form is an estimate rather than a bound (measured in
+    ``tests/test_unit/test_rboxes.py``). The returned box is that fit, not a lossless
+    re-parameterization, and this function does not pretend otherwise.
+
+    Args:
+        rboxes: ``(batch_size, num_boxes, 5)`` rotated boxes ``(cx, cy, w, h, theta)``.
+        mtx_forward: ``(batch_size, 3, 3)`` forward pixel matrix, the same one the image
+            was warped by.
+        canonicalize: Optional callable applied to the fitted boxes. This package imposes
+            no convention of its own -- the long-edge form (``w >= h`` with a bounded
+            ``theta``) is one reading of the literature among several, and belongs to the
+            caller that also owns the assigner, the loss and the evaluation kernel.
+
+    Returns:
+        ``(batch_size, num_boxes, 5)`` transformed boxes; un-canonicalized unless a
+        ``canonicalize`` callable was supplied.
+
+    Raises:
+        ValueError: If the trailing dimension is not 5.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> from fuse_augmentations.targets import transform_rboxes
+        >>> double = torch.eye(3).unsqueeze(0) * 2.0
+        >>> double[0, 2, 2] = 1.0
+        >>> box = torch.tensor([[[1.0, 2.0, 4.0, 2.0, 0.0]]])
+        >>> [round(value, 4) for value in transform_rboxes(box, double)[0, 0].tolist()]
+        [2.0, 4.0, 8.0, 4.0, 0.0]
+
+        ```
+
+    """
+    corners = rboxes_to_corners(rboxes)
+    batch_size, num_boxes = corners.shape[0], corners.shape[1]
+    flat = corners.reshape(batch_size, num_boxes * _QUAD_CORNERS, _POINT_DIM)
+    warped = transform_keypoints(flat, mtx_forward).reshape(batch_size, num_boxes, _QUAD_CORNERS, _POINT_DIM)
+    fitted = corners_to_rboxes(warped)
+    return fitted if canonicalize is None else canonicalize(fitted)
+
+
+def mirror_rboxes(rboxes: Tensor, width: int, canonicalize: RBoxCanonicalizer | None = None) -> Tensor:
+    """Mirror rotated boxes about this package's horizontal-flip axis.
+
+    The mirror line sits at ``(width - 1) / 2``, the axis a horizontal image flip uses under
+    the ``align_corners=True`` convention this package samples with -- **not** ``width / 2``,
+    which an extent-convention implementation would use. Boxes and image therefore stay in
+    step; a caller matching a ``width / 2`` implementation is off by half a pixel.
+
+    The centre reflects and the long-edge direction reflects with it: ``(cos t, sin t)``
+    maps to ``(-cos t, sin t)``, the direction of ``pi - t``. That is ``-t`` plus a half
+    turn, and a rectangle is invariant under a half turn, so either value describes the same
+    rectangle -- ``pi - t`` is returned because it is what fitting the mirrored corners
+    yields, which keeps this helper and the pipeline's matrix path parameter-identical
+    rather than merely geometrically equal. Extents are unchanged, a mirror being an
+    isometry.
+
+    Args:
+        rboxes: ``(batch_size, num_boxes, 5)`` rotated boxes ``(cx, cy, w, h, theta)``.
+        width: Canvas width in pixels.
+        canonicalize: Optional callable applied to the mirrored boxes; see
+            :func:`transform_rboxes`.
+
+    Returns:
+        ``(batch_size, num_boxes, 5)`` mirrored boxes.
+
+    Raises:
+        ValueError: If the trailing dimension is not 5.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> from fuse_augmentations.targets import mirror_rboxes
+        >>> box = torch.tensor([[[3.0, 5.0, 8.0, 4.0, 0.25]]])
+        >>> [round(value, 4) for value in mirror_rboxes(box, width=10)[0, 0].tolist()]
+        [6.0, 5.0, 8.0, 4.0, 2.8916]
+
+        ```
+
+    """
+    _check_rboxes(rboxes)
+    mirrored = rboxes.clone()
+    mirrored[..., 0] = (width - 1) - rboxes[..., 0]
+    mirrored[..., 4] = math.pi - rboxes[..., 4]
+    return mirrored if canonicalize is None else canonicalize(mirrored)
+
+
+def shift_rboxes(
+    rboxes: Tensor,
+    offset_x: float,
+    offset_y: float,
+    canonicalize: RBoxCanonicalizer | None = None,
+) -> Tensor:
+    """Translate rotated boxes by a pixel offset.
+
+    A translation moves the centre and touches nothing else, so unlike
+    :func:`transform_rboxes` this needs no corner round trip and introduces no fitting
+    residual at all -- worth having as its own path for the placement-only cases.
+
+    Args:
+        rboxes: ``(batch_size, num_boxes, 5)`` rotated boxes ``(cx, cy, w, h, theta)``.
+        offset_x: Horizontal offset in pixels, added to ``cx``.
+        offset_y: Vertical offset in pixels, added to ``cy``.
+        canonicalize: Optional callable applied to the shifted boxes; see
+            :func:`transform_rboxes`.
+
+    Returns:
+        ``(batch_size, num_boxes, 5)`` translated boxes.
+
+    Raises:
+        ValueError: If the trailing dimension is not 5.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> from fuse_augmentations.targets import shift_rboxes
+        >>> box = torch.tensor([[[2.0, 3.0, 6.0, 4.0, 0.5]]])
+        >>> [round(value, 4) for value in shift_rboxes(box, 10.0, -1.0)[0, 0].tolist()]
+        [12.0, 2.0, 6.0, 4.0, 0.5]
+
+        ```
+
+    """
+    _check_rboxes(rboxes)
+    shifted = rboxes.clone()
+    shifted[..., 0] = rboxes[..., 0] + offset_x
+    shifted[..., 1] = rboxes[..., 1] + offset_y
+    return shifted if canonicalize is None else canonicalize(shifted)
+
+
+def rbox_envelopes(rboxes: Tensor) -> Tensor:
+    """Return each rotated box's tight axis-aligned ``xyxy`` envelope.
+
+    This is the bridge to the axis-aligned machinery: pair it with
+    :func:`clip_bbox_xyxy` and :func:`instance_keep_mask` to decide which rotated instances
+    survive a warp. A rotated box clipped to the canvas is in general no longer a rotated
+    box -- the clipped shape is a polygon -- so this package deliberately supplies the
+    envelope rather than a clip that would have to invent a rectangle.
+
+    Args:
+        rboxes: ``(batch_size, num_boxes, 5)`` rotated boxes ``(cx, cy, w, h, theta)``.
+
+    Returns:
+        ``(batch_size, num_boxes, 4)`` axis-aligned ``(x1, y1, x2, y2)`` envelopes.
+
+    Raises:
+        ValueError: If the trailing dimension is not 5.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> from fuse_augmentations.targets import rbox_envelopes
+        >>> box = torch.tensor([[[5.0, 3.0, 4.0, 2.0, 0.0]]])
+        >>> rbox_envelopes(box)[0, 0].tolist()
+        [3.0, 2.0, 7.0, 4.0]
+
+        ```
+
+    """
+    corners = rboxes_to_corners(rboxes)
+    minimum = corners.amin(dim=-2)
+    maximum = corners.amax(dim=-2)
+    return torch.cat([minimum, maximum], dim=-1)

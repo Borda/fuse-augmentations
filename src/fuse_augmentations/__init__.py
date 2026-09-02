@@ -47,11 +47,17 @@ from fuse_augmentations.pipeline import (
 )
 from fuse_augmentations.targets import (
     clip_bbox_xyxy,
+    corners_to_rboxes,
     instance_keep_mask,
+    mirror_rboxes,
+    rbox_envelopes,
+    rboxes_to_corners,
+    shift_rboxes,
     transform_bbox_xywh,
     transform_bbox_xyxy,
     transform_keypoints,
     transform_mask,
+    transform_rboxes,
 )
 from fuse_augmentations.types import (
     BackendConverter,
@@ -91,14 +97,20 @@ __all__ = [
     "TransformSpec",
     "build_segments",
     "clip_bbox_xyxy",
+    "corners_to_rboxes",
     "generate_dataset",  # noqa: F405 - provided lazily via module __getattr__
     "instance_keep_mask",
     "letterbox_geometry",
     "letterbox_matrix",
+    "mirror_rboxes",
+    "rbox_envelopes",
+    "rboxes_to_corners",
+    "shift_rboxes",
     "transform_bbox_xywh",
     "transform_bbox_xyxy",
     "transform_keypoints",
     "transform_mask",
+    "transform_rboxes",
 ]
 
 

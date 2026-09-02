@@ -126,7 +126,7 @@ if not _ALBUMENTATIONS_AVAILABLE:
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-_KNOWN_DATA_KEYS = {"input", "mask", "bbox_xyxy", "bbox_xywh", "keypoints"}
+_KNOWN_DATA_KEYS = {"input", "mask", "bbox_xyxy", "bbox_xywh", "keypoints", "rboxes"}
 # Albumentations-style keyword aliases accepted by the dict-output call form
 # (``pipe(image=..., mask=..., bboxes=...)``). ``image`` maps to the ``"input"``
 # data key; ``bboxes`` maps to whichever box key the pipeline declared. Exact
@@ -233,7 +233,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
             ``"zeros"`` when ``None``.
         data_keys: List of key names describing positional arguments to
             :meth:`forward`. The first key should be ``"input"`` (the image).
-            Auxiliary keys (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``,
+            Auxiliary keys (``"mask"``, ``"bbox_xyxy"``, ``"bbox_xywh"``, ``"rboxes"``,
             ``"keypoints"``) are routed through segments and transformed alongside the image. Unknown keys are passed
             through unchanged with a ``UserWarning``. ``None`` preserves backward-compatible single-tensor input/output.
             Albumentations fused segments route auxiliary targets through the composed pixel matrix, matching the
@@ -1150,7 +1150,10 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, nn.Module):
                 channel-first. Auxiliary args follow in ``data_keys[1:]``
                 order: ``"mask"`` as ``(B, C, H, W)`` float/int;
                 ``"bbox_xyxy"`` / ``"bbox_xywh"`` as ``(B, N, 4)`` float32;
-                ``"keypoints"`` as ``(B, N, 2)`` float32.
+                ``"keypoints"`` as ``(B, N, 2)`` float32; ``"rboxes"`` as
+                ``(B, N, 5)`` float32 ``(cx, cy, w, h, theta)``, theta in radians,
+                returned un-canonicalized (this package imposes no long-edge or
+                angle-range convention -- see :func:`~fuse_augmentations.targets.transform_rboxes`).
             return_matrix: When ``True``, return the output and its last fused
                 geometric pixel matrix.
 

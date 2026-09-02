@@ -21,7 +21,7 @@ from fuse_augmentations.types import (
     RandomnessPolicy,
 )
 
-_COORD_DATA_KEYS = {"bbox_xyxy", "bbox_xywh", "keypoints"}
+_COORD_DATA_KEYS = {"bbox_xyxy", "bbox_xywh", "keypoints", "rboxes"}
 _PIPELINE_TORCH_DTYPES: dict[PipelineDtypeStr, torch.dtype] = {
     "bfloat16": torch.bfloat16,
     "float16": torch.float16,

@@ -1015,6 +1015,9 @@ class ExactAffineSegment(nn.Module):
                 continue
             if key == "keypoints":
                 aux_targets[key] = _flip_keypoints(val, active, is_hflip, is_vflip, height, width)
+                continue
+            if key == "rboxes":
+                aux_targets[key] = _flip_rboxes(val, active, is_hflip, is_vflip, height, width)
 
 
 class _BaseAffineSegment(nn.Module):
@@ -1220,6 +1223,7 @@ class _BaseAffineSegment(nn.Module):
             transform_bbox_xyxy,
             transform_keypoints,
             transform_mask,
+            transform_rboxes,
         )
 
         for key in list(aux_targets.keys()):
@@ -1235,6 +1239,9 @@ class _BaseAffineSegment(nn.Module):
                 continue
             if key == "keypoints":
                 aux_targets[key] = transform_keypoints(val, acc_img)
+                continue
+            if key == "rboxes":
+                aux_targets[key] = transform_rboxes(val, acc_img)
 
 
 class FusedAffineSegment(_BaseAffineSegment):
@@ -1631,6 +1638,7 @@ class FusedAffineSegment(_BaseAffineSegment):
             transform_bbox_xywh,
             transform_bbox_xyxy,
             transform_keypoints,
+            transform_rboxes,
         )
 
         for key in list(aux_targets.keys()):
@@ -1646,6 +1654,9 @@ class FusedAffineSegment(_BaseAffineSegment):
                 continue
             if key == "keypoints":
                 aux_targets[key] = transform_keypoints(val, acc_img)
+                continue
+            if key == "rboxes":
+                aux_targets[key] = transform_rboxes(val, acc_img)
 
 
 class _FusedGeoCropSegment(FusedAffineSegment):
@@ -1862,6 +1873,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
             transform_bbox_xyxy,
             transform_keypoints,
             transform_mask,
+            transform_rboxes,
         )
 
         for key in list(aux_targets.keys()):
@@ -1874,6 +1886,8 @@ class _FusedGeoCropSegment(FusedAffineSegment):
                 aux_targets[key] = transform_bbox_xywh(val, mtx)
             elif key == "keypoints":
                 aux_targets[key] = transform_keypoints(val, mtx)
+            elif key == "rboxes":
+                aux_targets[key] = transform_rboxes(val, mtx)
 
 
 class FusedGaussianBlurSegment(nn.Module):
@@ -2485,6 +2499,7 @@ class AlbuFusedAffineSegment(nn.Module):
             transform_bbox_xyxy,
             transform_keypoints,
             transform_mask,
+            transform_rboxes,
         )
 
         for key in list(aux_targets.keys()):
@@ -2497,6 +2512,8 @@ class AlbuFusedAffineSegment(nn.Module):
                 aux_targets[key] = transform_bbox_xywh(val, acc_img)
             elif key == "keypoints":
                 aux_targets[key] = transform_keypoints(val, acc_img)
+            elif key == "rboxes":
+                aux_targets[key] = transform_rboxes(val, acc_img)
 
     def _compose_matrices(self, image: Tensor) -> tuple[list[MatrixArray], list[bool]]:
         """Compose the per-sample forward affine matrices via Albumentations sampling.
@@ -4267,6 +4284,7 @@ class CropResizeSegment(nn.Module):
                 transform_bbox_xyxy,
                 transform_keypoints,
                 transform_mask,
+                transform_rboxes,
             )
 
             for key in list(aux_targets.keys()):
@@ -4282,6 +4300,9 @@ class CropResizeSegment(nn.Module):
                     continue
                 if key == "keypoints":
                     aux_targets[key] = transform_keypoints(val, mtx)
+                    continue
+                if key == "rboxes":
+                    aux_targets[key] = transform_rboxes(val, mtx)
 
         if not _has_aux:
             return out
@@ -4958,6 +4979,36 @@ def _flip_bbox_xyxy(
     # active shape: (batch_size,) -> (batch_size, 1, 1) for broadcasting with (batch_size, num_boxes, 4)
     mask = active[:, None, None]
     return torch.where(mask, flipped, boxes)
+
+
+def _flip_rboxes(
+    rboxes: Tensor,
+    active: Tensor,
+    is_hflip: bool,
+    is_vflip: bool,
+    height: int,
+    width: int,
+) -> Tensor:
+    """Mirror ``(batch_size, num_boxes, 5)`` rotated boxes on the exact-flip path.
+
+    Centres reflect about the same axes the image flip uses (``(width - 1) / 2``,
+    ``(height - 1) / 2``) and the extents are unchanged, a mirror being an isometry. The
+    angle follows the direction vector: a horizontal mirror sends ``(cos t, sin t)`` to
+    ``(-cos t, sin t)``, the direction of ``pi - t``; a vertical one sends it to
+    ``(cos t, -sin t)``, the direction of ``-t``. Both flips together give ``t - pi``, a
+    half turn, under which a rectangle is invariant. These are the same values fitting the
+    mirrored corners yields, so this path and the fused-matrix path agree parameter for
+    parameter rather than only geometrically.
+
+    """
+    flipped = rboxes.clone()
+    if is_hflip:
+        flipped[..., 0] = (width - 1) - rboxes[..., 0]
+        flipped[..., 4] = math.pi - flipped[..., 4]
+    if is_vflip:
+        flipped[..., 1] = (height - 1) - rboxes[..., 1]
+        flipped[..., 4] = -flipped[..., 4]
+    return torch.where(active[:, None, None], flipped, rboxes)
 
 
 def _flip_keypoints(
