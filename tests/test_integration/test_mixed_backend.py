@@ -148,6 +148,59 @@ class TestMixedBackendDuplicateTransform:
             Compose([shared_flip, kornia_aug.ColorJitter(brightness=0.2, p=1.0), shared_flip])
 
 
+class TestMixedBackendFillAndFlipIndex:
+    def test_fill_and_flip_index_match_single_backend(self):
+        """``fill`` and ``keypoint_flip_index`` reach a mixed-backend pipeline like a single-backend one.
+
+        Regression for the mixed-backend path silently dropping both parameters:
+        ``_build_mixed_segments``'s per-group ``build_segments`` calls never received either, so a
+        mixed pipeline fell back to the zero border and left keypoint identities unswapped after a
+        mirror while an otherwise-identical single-backend pipeline, built from the same
+        constructor arguments, applied both correctly.
+
+        """
+        fill = (0.5, 0.5, 0.5)
+        flip_index = (0, 2, 1)
+        points = torch.tensor([[[2.0, 2.0], [4.0, 3.0], [6.0, 5.0]]])
+        img = torch.ones(1, CHANNELS, HEIGHT, WIDTH)
+        rotation = tv_trans.RandomRotation(degrees=(45.0, 45.0))
+        hflip = tv_trans.RandomHorizontalFlip(p=1.0)
+        # p=0.0 never fires; it is here only to force the mixed-backend split.
+        inert_color = kornia_aug.ColorJitter(brightness=0.2, p=0.0)
+
+        single_backend = Compose(
+            [rotation, hflip],
+            data_keys=["input", "keypoints"],
+            fill=fill,
+            keypoint_flip_index=flip_index,
+        )
+        mixed_backend = Compose(
+            [rotation, hflip, inert_color],
+            data_keys=["input", "keypoints"],
+            fill=fill,
+            keypoint_flip_index=flip_index,
+        )
+        mixed_backend_without_both = Compose(
+            [rotation, hflip, inert_color],
+            data_keys=["input", "keypoints"],
+        )
+
+        assert mixed_backend.fill == fill
+        assert mixed_backend.keypoint_flip_index == flip_index
+
+        single_img_out, single_points_out = single_backend(img.clone(), points.clone())
+        mixed_img_out, mixed_points_out = mixed_backend(img.clone(), points.clone())
+        bare_img_out, bare_points_out = mixed_backend_without_both(img.clone(), points.clone())
+
+        # Parity with the single-backend path is the regression this guards.
+        torch.testing.assert_close(mixed_img_out, single_img_out, rtol=1e-4, atol=1e-6)
+        torch.testing.assert_close(mixed_points_out, single_points_out, rtol=1e-4, atol=1e-6)
+
+        # And both parameters must be load-bearing, not coincidentally identical to the no-op case.
+        assert not torch.allclose(mixed_img_out, bare_img_out, atol=1e-4)
+        assert not torch.allclose(mixed_points_out, bare_points_out, atol=1e-4)
+
+
 class TestMixedBackendSerialization:
     def test_pickle_roundtrip_preserves_passthrough_adapter_dispatch(self):
         """Pickle round-trip keeps mixed-backend passthrough dispatch bound to the right adapter."""

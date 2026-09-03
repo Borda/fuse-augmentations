@@ -460,6 +460,8 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                     antialias=antialias,
                     clip_policy=clip_policy,
                     mask_interpolation=mask_interpolation,
+                    fill=fill,
+                    keypoint_flip_index=flip_index,
                 )
 
         self._setup_instance(
