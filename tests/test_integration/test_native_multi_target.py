@@ -24,9 +24,8 @@ pytestmark = pytest.mark.integration
 HEIGHT = WIDTH = 48
 ALL_KEYS = ["input", "bbox_xyxy", "keypoints", "mask", "rboxes"]
 
-#: A single affine with fixed parameters: the two paths draw from the NumPy RNG a different number of
-#: times (the NumPy path skips the Bernoulli draw for a ``p=1.0`` transform), so a comparison between
-#: them is only meaningful when the sampled geometry cannot vary.
+#: A single affine with fixed parameters, so a comparison between the two entry points is about how
+#: each renders and routes rather than about what either sampled.
 FIXED_AFFINE = [albu.Affine(rotate=(13.0, 13.0), scale=(1.07, 1.07), p=1.0)]
 
 
@@ -191,3 +190,87 @@ class TestCallForms:
         assert isinstance(out_image, torch.Tensor)
         assert isinstance(out_boxes, torch.Tensor)
         assert out_image.shape == image.shape
+
+
+#: How far the two entry points' composed matrices may differ. The NumPy path multiplies the float64
+#: matrices Albumentations itself produces, while the adapter path rounds each factor through float32 --
+#: matrices ride alongside tensors, and MPS has no float64 -- so a multi-op chain accumulates up to one
+#: float32 epsilon of difference. Rounding the NumPy path down to match was tried and reverted: it cost
+#: bit-exactness against native Albumentations on the uint8 single-op parity rows, which is the more
+#: valuable of the two agreements. At this magnitude the difference moves a 1024-pixel coordinate by
+#: 1e-04 of a pixel.
+_MATRIX_EPSILON = 2.0**-23
+
+
+class TestEntryPointAgreement:
+    """The array and tensor entry points compose the same chain from the same draws.
+
+    Two things could make them disagree in ways nothing in the configuration explained. One is fixed
+    outright: the NumPy path used to skip the Bernoulli draw for a transform whose probability was
+    exactly 0.0 or 1.0, leaving the global stream in a different place, so a caller who seeded once and
+    switched input type got different sampled geometry. The other is bounded rather than eliminated --
+    see ``_MATRIX_EPSILON``.
+
+    """
+
+    @staticmethod
+    def _chain() -> list[albu.BasicTransform]:
+        """Return a chain that exercises both defects: two composed affines, and a gated transform.
+
+        A single transform cannot show the precision defect -- there is nothing to compose it with -- and a chain of
+        only sub-1.0 probabilities cannot show the draw-count defect, since both paths already drew for those.
+
+        """
+        return [
+            albu.Affine(rotate=(13.0, 13.0), scale=(1.07, 1.07), p=1.0),
+            albu.Affine(shear=(4.0, 4.0), translate_px=(3, 3), p=1.0),
+            albu.HorizontalFlip(p=0.5),
+        ]
+
+    def test_composed_matrix_agrees_to_float32_epsilon(self, targets: dict[str, np.ndarray]) -> None:
+        """Both entry points report the same composed matrix to within one float32 epsilon.
+
+        The bound is the assertion, not a formality: it says the two differ only by where each rounds, never by what
+        either sampled or by how either composes. A failure at a larger magnitude would mean one path had drawn
+        different parameters or accumulated in a different order, which no tolerance should absorb.
+
+        """
+        import torch
+
+        image = targets["image"]
+        tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+        array_pipe = Compose(self._chain(), execution="cv2")
+        tensor_pipe = Compose(self._chain(), execution="cv2")
+
+        np.random.seed(0)
+        array_pipe(image=image)
+        np.random.seed(0)
+        tensor_pipe(tensor)
+
+        difference = np.abs(
+            array_pipe.transform_matrix.double().numpy() - tensor_pipe.transform_matrix.double().numpy()
+        ).max()
+        assert difference <= _MATRIX_EPSILON
+
+    def test_global_numpy_stream_advances_identically(self, targets: dict[str, np.ndarray]) -> None:
+        """Both entry points leave the global NumPy stream in the same place.
+
+        This is what makes a seed portable across input types. The next value drawn after the call is
+        the cheapest way to observe it: if the two paths consumed different counts, the streams have
+        diverged and every later transform in the epoch samples differently.
+
+        """
+        import torch
+
+        image = targets["image"]
+        tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+
+        np.random.seed(0)
+        Compose(self._chain(), execution="cv2")(image=image)
+        after_array = float(np.random.rand())
+
+        np.random.seed(0)
+        Compose(self._chain(), execution="cv2")(tensor)
+        after_tensor = float(np.random.rand())
+
+        assert after_array == after_tensor

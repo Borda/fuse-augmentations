@@ -2814,17 +2814,16 @@ class AlbuFusedAffineSegment(nn.Module):
             _set_current_call_matrix(self._identity_1x3x3.detach().clone())
             return img_hwc
 
-        # Draw per-transform active masks for bsz=1 (mirrors forward() logic).
-        # For prob=1.0 transforms, skip the RNG draw and use a constant True.
+        # Draw per-transform active masks for bsz=1, one draw per transform whatever its probability.
+        # Skipping the draw for prob 0.0 or 1.0 would give the same activation for ~1 us less work, and
+        # would leave the global NumPy stream in a different place than the same chain reached through
+        # forward(): a caller who seeded once and switched between array and tensor input would then get
+        # different sampled geometry from an identical pipeline, with nothing in the configuration
+        # explaining it. Entry-point agreement is worth more than the draw.
         active_masks: list[bool] = []
         for tfm in self.transforms:
             prob = _transform_prob(tfm)
-            if prob >= 1.0:
-                active_masks.append(True)
-            elif prob <= 0.0:
-                active_masks.append(False)
-            else:
-                active_masks.append(bool(np.random.rand() < prob))
+            active_masks.append(bool(np.random.rand() < prob))
 
         acc: MatrixArray = np.eye(3, dtype=np.float64)
         any_active = False
