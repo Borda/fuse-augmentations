@@ -87,7 +87,7 @@ augment = Compose(
 output = augment(torch.rand(4, 3, 224, 224))
 ```
 
-`execution="cv2"` is the default CPU path. `execution="torch"` applies the composed matrices through a batched torch sampling grid and can remain on a torch device, but its border and subpixel numerics differ from OpenCV.
+`execution="cv2"` is the default CPU path. `execution="torch"` applies the composed matrices through a batched torch sampling grid and can remain on a torch device, but its border and subpixel numerics differ from OpenCV. `execution="auto"` resolves per call — host data to cv2, accelerator data to torch — and `pipeline.resolved_execution` reports which one ran; it trades cross-environment bit-reproducibility for that convenience, so [Reproducibility](reproducibility.md) covers when it is the wrong choice.
 
 An HWC NumPy path also exists. Without `data_keys` it transforms the image only:
 
@@ -102,11 +102,11 @@ assert result["image"].shape == image.shape
 Declare `data_keys` and the same call carries masks, boxes, keypoints and rotated boxes:
 
 ```python
-augment = Compose(
-    [albu.Affine(rotate=(-10.0, 10.0), p=1.0)],
+with_boxes = Compose(
+    [A.Affine(rotate=(-10.0, 10.0), p=1.0)],
     data_keys=["input", "bbox_xyxy"],
 )
-out = augment(image=image, bboxes=np.zeros((4, 4), dtype=np.float32))
+out = with_boxes(image=image, bboxes=np.zeros((4, 4), dtype=np.float32))
 assert out["image"].dtype == np.uint8
 ```
 

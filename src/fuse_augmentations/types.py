@@ -208,7 +208,11 @@ SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color", "l
 #: ``"torch"`` composes the same per-sample matrices but applies one batched
 #: ``grid_sample`` for the whole batch, giving batch-size-independent throughput and
 #: a native GPU/MPS warp; its border/bilinear numerics differ slightly from cv2.
-ExecutionStr = Literal["cv2", "torch"]
+#: ``"auto"`` resolves per call by a fixed, documented rule -- host input to cv2,
+#: accelerator input to torch -- and is never the default. Choosing it opts out of
+#: bit-reproducibility across environments, because the engine is then a function of
+#: where the data happens to live rather than of the recorded configuration.
+ExecutionStr = Literal["cv2", "torch", "auto"]
 
 #: String literal type for the ``clip_policy`` of the fused color segment.
 #: ``"final"`` (default) applies the whole color chain as one 4x4 matmul and clamps

@@ -285,28 +285,60 @@ def _validate_execution(execution: str) -> ExecutionStr:
     """Validate and return an Albumentations execution-strategy value.
 
     Args:
-        execution: The requested strategy; must be ``"cv2"`` or ``"torch"``.
+        execution: The requested strategy; must be ``"cv2"``, ``"torch"`` or ``"auto"``.
 
     Returns:
         The validated strategy string.
 
     Raises:
-        ValueError: If ``execution`` is neither ``"cv2"`` nor ``"torch"``.
+        ValueError: If ``execution`` is not one of the three accepted values.
 
     Examples:
         ```pycon
         >>> _validate_execution("cv2")
         'cv2'
-        >>> _validate_execution("torch")
+        >>> _validate_execution("auto")
+        'auto'
+
+        ```
+
+    """
+    if execution not in ("cv2", "torch", "auto"):
+        msg = f"execution must be 'cv2', 'torch' or 'auto', got {execution!r}."
+        raise ValueError(msg)
+    return cast(ExecutionStr, execution)
+
+
+def _resolve_execution(execution: ExecutionStr, device: torch.device) -> ExecutionStr:
+    """Resolve ``"auto"`` to a concrete engine for one call; pass the other values through.
+
+    The rule is fixed and documented rather than adaptive or measured at runtime: host data goes to
+    OpenCV, accelerator data goes to ``grid_sample``. That matches where each engine can actually run --
+    ``cv2.warpAffine`` requires a host array, and moving a CUDA batch to the host to warp it would cost
+    more than the warp -- and it is simple enough to state in one sentence, which is the property a
+    routing rule needs if a caller is to predict it.
+
+    Args:
+        execution: The configured strategy.
+        device: Device the image being warped lives on.
+
+    Returns:
+        ``"cv2"`` or ``"torch"``; never ``"auto"``.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> _resolve_execution("auto", torch.device("cpu"))
+        'cv2'
+        >>> _resolve_execution("torch", torch.device("cpu"))
         'torch'
 
         ```
 
     """
-    if execution not in ("cv2", "torch"):
-        msg = f"execution must be 'cv2' or 'torch', got {execution!r}."
-        raise ValueError(msg)
-    return cast(ExecutionStr, execution)
+    if execution != "auto":
+        return execution
+    return "cv2" if device.type == "cpu" else "torch"
 
 
 #: cv2 reads ``borderValue`` as a ``Scalar``, which carries exactly four components.
@@ -2385,6 +2417,10 @@ class AlbuFusedAffineSegment(nn.Module):
         self.interpolation = interpolation or "bilinear"
         self.padding_mode = padding_mode or "zeros"
         self.execution: ExecutionStr = _validate_execution(execution)
+        #: Engine the most recent call actually used. Equal to ``execution`` unless that is
+        #: ``"auto"``, in which case it records what the routing rule chose. ``None`` before the
+        #: first call, and before any call that warps nothing.
+        self._last_execution: ExecutionStr | None = None
         self.mask_interpolation = mask_interpolation
         self.fill = fill
         self.keypoint_flip_index = keypoint_flip_index
@@ -2494,7 +2530,8 @@ class AlbuFusedAffineSegment(nn.Module):
         if batch_size == 0 or len(self.transforms) == 0:
             return (image, aux_targets) if _has_aux else image
 
-        if self.execution == "torch":
+        self._last_execution = _resolve_execution(self.execution, image.device)
+        if self._last_execution == "torch":
             image = self._warp_torch(image, composed_batch)
         else:
             image = self._warp_cv2(image, accs, any_active)
@@ -2862,6 +2899,9 @@ class AlbuFusedAffineSegment(nn.Module):
         # so a bare reference would let call N+1 mutate call N's returned matrix.
         self._last_matrix = self._last_matrix_buffer.clone()
         _set_current_call_matrix(torch.from_numpy(np.asarray(acc, dtype=np.float32)).unsqueeze(0).clone())
+        # This path is cv2 by construction -- it never builds a tensor to hand grid_sample -- so an
+        # "auto" pipeline reached through NumPy reports the engine that actually drew the pixels.
+        self._last_execution = "cv2"
 
         if not any_active:
             return img_hwc
@@ -3072,9 +3112,13 @@ class AlbuProjectiveSegment(nn.Module):
         """Initialize ``AlbuProjectiveSegment``."""
         super().__init__()
         self.execution: ExecutionStr = _validate_execution(execution)
+        #: Engine the most recent call actually used. Equal to ``execution`` unless that is
+        #: ``"auto"``, in which case it records what the routing rule chose. ``None`` before the
+        #: first call, and before any call that warps nothing.
+        self._last_execution: ExecutionStr | None = None
         # cv2 is only required for the default cv2 warp strategy; the torch
         # strategy warps with grid_sample and needs no OpenCV.
-        if _cv2 is None and self.execution == "cv2":
+        if _cv2 is None and self.execution in ("cv2", "auto"):
             raise ImportError(
                 "AlbuProjectiveSegment requires opencv-python because it uses cv2.warpPerspective under the hood."
             )
@@ -3139,7 +3183,8 @@ class AlbuProjectiveSegment(nn.Module):
         if batch_size == 0 or len(self.transforms) == 0:
             return (image, aux_targets) if _has_aux else image
 
-        if self.execution == "torch":
+        self._last_execution = _resolve_execution(self.execution, image.device)
+        if self._last_execution == "torch":
             image = self._warp_torch(image, composed_batch)
         else:
             image = self._warp_cv2(image, accs, any_active)

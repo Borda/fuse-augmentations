@@ -814,6 +814,8 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         # ``execution="torch"`` also opts out, even though the NumPy path would be far faster on CPU:
         # execution is a documented reproducibility axis fixed at construction, and a caller who asked
         # for grid_sample must not be handed a cv2 render because the input happened to be an array.
+        # ``execution="auto"`` is eligible: a NumPy array is host data, which is exactly the case its
+        # routing rule sends to cv2.
         self._native_multi_ok: bool = bool(
             self._is_albu_native
             and self._multi_target
@@ -821,7 +823,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             and getattr(self, "_output_backend", None) is None
             and self._albu_seg_tags is not None
             and all(tag in _AUX_SAFE_NATIVE_TAGS for tag in self._albu_seg_tags)
-            and all(getattr(seg, "execution", "cv2") == "cv2" for seg in self._segments)
+            and all(getattr(seg, "execution", "cv2") in ("cv2", "auto") for seg in self._segments)
         )
 
         # Resolve the output-backend converter. On a legacy pickle that predates the

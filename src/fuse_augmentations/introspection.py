@@ -89,6 +89,30 @@ class IntrospectionMixin:
         return self._last_transform_matrix
 
     @property
+    def resolved_execution(self) -> str | None:
+        """Return the warp engine the most recent call actually used.
+
+        Equal to the configured ``execution`` unless that is ``"auto"``, whose routing rule picks
+        ``"cv2"`` for host data and ``"torch"`` for accelerator data. ``"auto"`` is the only setting
+        under which this can differ from the recorded configuration, which is why it is readable at
+        all: a run that cannot say which engine drew its pixels cannot explain its own numerics.
+
+        Returns:
+            ``"cv2"``, ``"torch"``, or ``None`` when no fused geometric segment has warped anything yet
+            -- before the first call, or after one whose segments were all passthrough.
+
+        Note:
+            Per-instance mutable state written on every ``forward``, with the same threading caveat as
+            :attr:`transform_matrix`.
+
+        """
+        for segment in reversed(self._segments):
+            resolved = getattr(segment, "_last_execution", None)
+            if resolved is not None:
+                return str(resolved)
+        return None
+
+    @property
     def n_warps_saved(self) -> int:
         """Return the number of interpolation passes eliminated vs sequential execution.
 

@@ -181,12 +181,13 @@ class TestExecutionValidation:
     """Invalid strategy values are rejected at construction."""
 
     def test_bad_execution_raises(self) -> None:
-        with pytest.raises(ValueError, match="execution must be 'cv2' or 'torch'"):
+        with pytest.raises(ValueError, match="execution must be 'cv2', 'torch' or 'auto'"):
             Compose(_affine_chain(), execution="numpy")  # type: ignore[arg-type]
 
     def test_valid_values_accepted(self) -> None:
         assert Compose(_affine_chain(), execution="cv2").execution == "cv2"
         assert Compose(_affine_chain(), execution="torch").execution == "torch"
+        assert Compose(_affine_chain(), execution="auto").execution == "auto"
 
     def test_default_is_cv2(self) -> None:
         assert Compose(_affine_chain()).execution == "cv2"
