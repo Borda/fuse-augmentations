@@ -2908,6 +2908,40 @@ class AlbuFusedAffineSegment(nn.Module):
             return warped[:, :, np.newaxis]
         return _warp(img_hwc, m_dst2src, width, height, self._interp_flag, self._border_flag, self.fill)
 
+    def route_numpy_aux(self, aux_targets: dict[str, Tensor]) -> None:
+        """Route auxiliary targets through the matrix left behind by :meth:`forward_numpy`.
+
+        The NumPy-native path warps the image in cv2 space and never builds the BCHW tensor that
+        :meth:`forward` routes auxiliary targets from. Coordinate targets are small enough that
+        routing them as tensors costs nothing measurable, so this reuses the same
+        :meth:`_route_grid_aux` the tensor path uses rather than restating the AABB and keypoint
+        conventions in NumPy, where they would drift.
+
+        Call it immediately after :meth:`forward_numpy` on the same segment -- it reads that call's
+        composed matrix. Mutates ``aux_targets`` in place; a segment that composed nothing leaves
+        every target untouched.
+
+        Args:
+            aux_targets: Auxiliary targets as tensors, keyed as in :meth:`_route_grid_aux`.
+
+        """
+        composed = self._last_matrix
+        if composed is None or not aux_targets:
+            return
+
+        grid: Tensor | None = None
+        if "mask" in aux_targets:
+            mask = aux_targets["mask"]
+            acc_mask = composed.to(device=mask.device, dtype=torch.float32)
+            mtx_inv = inv3x3(acc_mask)
+            mtx_norm = normalize_matrix(mtx_inv, mask.shape[-2], mask.shape[-1]).to(dtype=torch.float32)
+            grid = F.affine_grid(
+                mtx_norm[:, :2, :],
+                [mask.shape[0], mask.shape[1], mask.shape[-2], mask.shape[-1]],
+                align_corners=True,
+            )
+        self._route_grid_aux(aux_targets, grid, composed, self.mask_interpolation, self.keypoint_flip_index)
+
 
 # ---------------------------------------------------------------------------
 # ProjectiveSegment — PyTorch backend for perspective transforms

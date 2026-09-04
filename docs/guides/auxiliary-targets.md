@@ -153,7 +153,8 @@ Apply `valid_boxes` to the corresponding class labels, scores, instance masks, a
 | Blur, noise, or color passthrough known to preserve coordinates | Use with backend-domain validation | Coordinate targets may remain unchanged legitimately   |
 | Named elastic/grid/optical distortion refused at runtime        | Do not expect support              | Raising prevents known target desynchronization        |
 | Unknown crop, resize, spatial transform, or custom callable     | Do not use with targets            | It can transform only the image                        |
-| Albumentations HWC NumPy call with `image` and `mask` keywords  | Do not use                         | The native NumPy compatibility path is image-only      |
+| Albumentations HWC NumPy call with no `data_keys`               | Do not use with targets            | Without `data_keys` the NumPy path is image-only       |
+| HWC NumPy call with supported `data_keys`                       | Use                                | Targets route through the same matrix as tensors       |
 | BCHW tensor call with supported `data_keys`                     | Use                                | This is the intended multi-target API                  |
 
 ## Validate every production pipeline
@@ -230,7 +231,7 @@ What the transport does and does not promise:
 - **Clipping is not provided**, because a rotated box clipped to the canvas is generally a polygon rather than a rotated box. Use `rbox_envelopes` with `clip_bbox_xyxy` and `instance_keep_mask` to decide survival on the axis-aligned envelope.
 - Helpers: `rboxes_to_corners`, `corners_to_rboxes`, `transform_rboxes`, `mirror_rboxes`, `shift_rboxes`, `rbox_envelopes`.
 
-The Albumentations *native NumPy* dict path (`pipe(image=<ndarray>)`) transforms the image only and already refuses auxiliary targets, so rotated boxes never reach it.
+The Albumentations *native NumPy* dict path without `data_keys` (`pipe(image=<ndarray>)`) transforms the image only and refuses auxiliary targets outright. Declare `data_keys` and rotated boxes route through the same composed matrix the tensor path uses, in NumPy or in tensors alike.
 
 ## Deciding which instances survive a warp
 

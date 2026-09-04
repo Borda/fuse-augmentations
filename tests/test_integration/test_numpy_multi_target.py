@@ -148,11 +148,12 @@ class TestNumpyImageLayouts:
 
         assert out["image"].shape == (HEIGHT, WIDTH)
 
-    def test_uint8_input_is_normalised_to_float32(self, boxes_xyxy: np.ndarray) -> None:
-        """``uint8`` images are scaled to float32 in ``[0, 1]``, matching the output-backend path.
+    def test_uint8_input_comes_back_as_uint8(self, boxes_xyxy: np.ndarray) -> None:
+        """A ``uint8`` image round-trips as ``uint8``, matching what Albumentations returns.
 
-        Callers coming from Albumentations pass ``uint8`` and would otherwise be surprised by the dtype change, so this
-        pins the documented behaviour rather than leaving it incidental.
+        Callers coming from Albumentations pass ``uint8`` and expect it back; returning float32 in ``[0, 1]`` instead
+        forced a rescale at every call site. It also cost real time -- the normalisation and the four-times-wider warp
+        it implies were most of why a detection-shaped step ran at half the speed of native Albumentations.
 
         """
         image = np.full((HEIGHT, WIDTH, 3), 255, dtype=np.uint8)
@@ -160,8 +161,25 @@ class TestNumpyImageLayouts:
 
         out = pipe(image=image, bboxes=boxes_xyxy)
 
-        assert out["image"].dtype == np.float32
-        assert out["image"].max() <= 1.0
+        assert out["image"].dtype == np.uint8
+        assert out["image"].max() == 255
+
+    def test_uint8_dtype_is_preserved_on_the_tensor_fallback_too(self, boxes_xyxy: np.ndarray) -> None:
+        """The dtype contract does not depend on whether the fast NumPy path was eligible.
+
+        ``execution="torch"`` opts out of the NumPy-native path deliberately, so this call normalises to float32
+        internally and converts back on the way out. A contract that changed with fast-path eligibility would be the
+        worst of both: the same code returning different dtypes depending on which transforms happen to be in the
+        chain.
+
+        """
+        image = np.full((HEIGHT, WIDTH, 3), 255, dtype=np.uint8)
+        pipe = _flip_pipeline("torch", ["input", "bbox_xyxy"])
+
+        out = pipe(image=image, bboxes=boxes_xyxy)
+
+        assert out["image"].dtype == np.uint8
+        assert out["image"].max() == 255
 
 
 class TestMixedCallSignature:

@@ -17,7 +17,7 @@ The standard pipeline contract is:
 - auxiliary targets: positional tensors declared with `data_keys`;
 - supported coordinate systems: pixel-space boxes and keypoints.
 
-An image-only Albumentations pipeline also has a native-style `pipe(image=<HWC ndarray>) -> {"image": ndarray}` path. That path does not accept auxiliary keys. Use tensor inputs with `data_keys` for masks, boxes, or keypoints.
+An Albumentations pipeline also has a native-style `pipe(image=<HWC ndarray>) -> {"image": ndarray}` path. Declared `data_keys` extend it to masks, boxes, keypoints and rotated boxes passed as arrays; without them the path is image-only and rejects auxiliary keys.
 
 The package is therefore Compose-like for supported tensor pipelines, not a universal behavioral replacement for each backend's native container. PIL input, arbitrary tv-tensors, arbitrary backend dictionaries, and every native Compose option are not part of the general contract.
 

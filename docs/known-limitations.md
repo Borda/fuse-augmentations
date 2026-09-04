@@ -17,22 +17,22 @@ description: Verified compatibility, target-safety, numerical-parity, randomness
 
 ## Compatibility at a glance
 
-| Question                                          | Honest answer                                                                                                                                                         |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Is `Compose` a drop-in native compose class?      | No. It accepts transform objects from supported backends through its own tensor-first contract.                                                                       |
-| What is the normal image format?                  | A floating PyTorch tensor shaped `(B, C, H, W)`. Fused geometry does not generally accept PIL images or unbatched `(C, H, W)` tensors.                                |
-| Is Albumentations NumPy input supported?          | An image-only Albumentations pipeline has a native `image=HWC_array` path. NumPy auxiliary dictionaries such as `image=..., mask=...` are not supported by that path. |
-| Are all upstream transforms fused?                | No. Built-in adapters use finite registries. Unknown transforms become passthrough barriers or are refused.                                                           |
-| Does fused output equal native output?            | Not universally. Sampling, coordinate conventions, interpolation, padding, clipping, and operation order can differ.                                                  |
-| Does `transform_matrix` cover the whole pipeline? | No. It is the last matrix-producing affine or projective segment from the most recent call.                                                                           |
-| Is every GPU or MPS configuration faster?         | No. Speed depends on device, batch, image size, operation mix, warmup, and passthrough transfers. Benchmark your exact pipeline.                                      |
+| Question                                          | Honest answer                                                                                                                                                                                      |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Is `Compose` a drop-in native compose class?      | No. It accepts transform objects from supported backends through its own tensor-first contract.                                                                                                    |
+| What is the normal image format?                  | A floating PyTorch tensor shaped `(B, C, H, W)`. Fused geometry does not generally accept PIL images or unbatched `(C, H, W)` tensors.                                                             |
+| Is Albumentations NumPy input supported?          | Yes. `image=HWC_array` works on its own, and with `data_keys` declared the same call carries masks, boxes, keypoints and rotated boxes. Albumentations' label processors are still not replicated. |
+| Are all upstream transforms fused?                | No. Built-in adapters use finite registries. Unknown transforms become passthrough barriers or are refused.                                                                                        |
+| Does fused output equal native output?            | Not universally. Sampling, coordinate conventions, interpolation, padding, clipping, and operation order can differ.                                                                               |
+| Does `transform_matrix` cover the whole pipeline? | No. It is the last matrix-producing affine or projective segment from the most recent call.                                                                                                        |
+| Is every GPU or MPS configuration faster?         | No. Speed depends on device, batch, image size, operation mix, warmup, and passthrough transfers. Benchmark your exact pipeline.                                                                   |
 
 ## Input and backend limits
 
 The main fused path expects BCHW tensors. Native compose classes accept broader families of inputs and metadata that this package does not reproduce:
 
 - TorchVision pipelines may accept PIL images, unbatched tensors, TVTensors, and nested sample structures. Fused geometric segments require BCHW tensors.
-- Albumentations' image-only HWC NumPy keyword path is separate from the tensor `data_keys` path. It does not provide native multi-target dictionary parity.
+- Albumentations' HWC NumPy keyword path accepts auxiliary targets only when the pipeline declares `data_keys`, and only for chains whose every segment publishes a matrix; a crop, an exact affine or an opaque passthrough sends the call back through tensors. Either way the targets are this package's contract, not Albumentations' label-processor semantics.
 - Kornia's `AugmentationSequential` has container behavior and metadata contracts beyond the transform-object compatibility provided here.
 - Multi-backend pipelines are supported for BCHW tensors, but a backend change creates a segment boundary. Transforms from different backends do not share one fused matrix.
 

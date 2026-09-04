@@ -24,7 +24,9 @@ Reproducibility requires more than one seed. Record the pipeline definition, bac
 | Kornia transforms                              | PyTorch                       | Kornia through PyTorch      | `torch.manual_seed`; record Kornia version and `same_on_batch` settings |
 | TorchVision transforms                         | PyTorch                       | TorchVision through PyTorch | `torch.manual_seed`; record v1/v2, batch shape, and randomness policy   |
 | Albumentations transforms on fused tensor path | Global NumPy                  | Transform-internal RNG      | Seed `numpy.random` and call the transform's supported seed method      |
-| Albumentations image-only native NumPy path    | Albumentations/native path    | Transform-internal RNG      | Use Albumentations' supported seeding API and record its version        |
+| Albumentations native NumPy path (HWC in)      | Albumentations/native path    | Transform-internal RNG      | Use Albumentations' supported seeding API and record its version        |
+
+The native NumPy path draws from `numpy.random` a different number of times than the tensor path does: it skips the Bernoulli draw for a transform whose probability is exactly `0.0` or `1.0`, where the tensor path draws and discards. A pipeline switched between array and tensor input under the same seed therefore produces a different sampled chain, not merely a different render. This applies to multi-target calls too, since a `data_keys` call on array input takes the same native path -- see [Auxiliary targets](auxiliary-targets.md). Fix the input type alongside the seed when comparing runs.
 
 ## A deterministic backend-free run
 

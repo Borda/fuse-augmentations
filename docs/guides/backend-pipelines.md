@@ -89,7 +89,7 @@ output = augment(torch.rand(4, 3, 224, 224))
 
 `execution="cv2"` is the default CPU path. `execution="torch"` applies the composed matrices through a batched torch sampling grid and can remain on a torch device, but its border and subpixel numerics differ from OpenCV.
 
-An image-only HWC NumPy compatibility path also exists:
+An HWC NumPy path also exists. Without `data_keys` it transforms the image only:
 
 ```python
 import numpy as np
@@ -99,7 +99,18 @@ result = augment(image=image)
 assert result["image"].shape == image.shape
 ```
 
-This is not a full Albumentations dictionary replacement: NumPy masks, boxes, keypoints, labels, and processor behavior are not supported through that special path. Tensor passthrough converts images into float32 `[0, 1]`; native Albumentations transforms that expect uint8 ranges can behave incorrectly.
+Declare `data_keys` and the same call carries masks, boxes, keypoints and rotated boxes:
+
+```python
+augment = Compose(
+    [albu.Affine(rotate=(-10.0, 10.0), p=1.0)],
+    data_keys=["input", "bbox_xyxy"],
+)
+out = augment(image=image, bboxes=np.zeros((4, 4), dtype=np.float32))
+assert out["image"].dtype == np.uint8
+```
+
+A NumPy image comes back in the dtype it was passed in, as Albumentations returns it. Labels and Albumentations' own processor behaviour are still not replicated — filtering instances after a warp is the caller's, and [Auxiliary targets](auxiliary-targets.md) covers the helpers for it. Tensor input is a separate contract: it stays float32 `[0, 1]` throughout, and native Albumentations transforms that expect uint8 ranges can behave incorrectly on it.
 
 ## Mixed backends
 

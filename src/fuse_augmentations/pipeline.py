@@ -138,6 +138,13 @@ _KWARG_ALIASES: dict[str, str | tuple[str, ...]] = {
     "bboxes": ("bbox_xyxy", "bbox_xywh"),
 }
 
+#: Segment tags (see the tag table in ``__init__``) a NumPy-native multi-target call can serve.
+#: ``0`` is the fused affine segment, which leaves behind the matrix its auxiliary targets are
+#: routed through; ``2``, ``6`` and ``7`` are colour, LUT and blur segments, which cannot move a
+#: coordinate at all. Every other tag either changes geometry without publishing a matrix or is
+#: opaque, and sends the call back to the tensor path.
+_AUX_SAFE_NATIVE_TAGS = frozenset({0, 2, 6, 7})
+
 
 class _NumpyRoundTrip(NamedTuple):
     """Input layout of a NumPy multi-target call, used to return outputs in the caller's own layout.
@@ -146,10 +153,32 @@ class _NumpyRoundTrip(NamedTuple):
     4 for a batch). ``aux_ndims`` holds the same for each auxiliary target that arrived as an array; auxiliary targets
     passed as tensors are absent from it and are returned as tensors.
 
+    ``image_dtype`` and ``mask_dtype`` carry the input dtypes so the intensity normalisation the converter applies on
+    the way in is undone on the way out. ``mask_dtype`` is ``None`` when no mask arrived as an array.
+
     """
 
     image_ndim: int
     aux_ndims: dict[str, int]
+    image_dtype: np.dtype[Any]
+    mask_dtype: np.dtype[Any] | None = None
+
+
+def _denormalize_numpy_image(array: NDArray[Any], dtype: np.dtype[Any]) -> NDArray[Any]:
+    """Undo the converter's intensity normalisation, returning the caller's own dtype.
+
+    ``NumpyToTorchConverter`` scales ``uint8`` by 1/255 and ``uint16`` by 1/65535 on the way in; both are inverted here
+    with a round-then-clip so a value that drifted marginally outside ``[0, 1]`` during the warp does not wrap around
+    the integer range. Every other dtype was cast without rescaling, so restoring it is a plain cast.
+
+    """
+    if array.dtype == dtype:
+        return array
+    if dtype == np.uint8:
+        return (np.clip(array, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+    if dtype == np.uint16:
+        return (np.clip(array, 0.0, 1.0) * 65535.0).round().astype(np.uint16)
+    return array.astype(dtype)
 
 
 def _tensor_to_numpy_image(tensor: Tensor, input_ndim: int) -> NDArray[Any]:
@@ -777,6 +806,24 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                     tags.append(-1)
             self._albu_seg_tags = tags
 
+        # Multi-target calls can stay in NumPy/cv2 space only when every segment either carries a
+        # composed matrix to route the targets through (tag 0) or cannot move them at all (colour,
+        # LUT, blur). A crop, an exact affine or an opaque passthrough changes the geometry without
+        # exposing a matrix, so those pipelines keep taking the tensor path.
+        #
+        # ``execution="torch"`` also opts out, even though the NumPy path would be far faster on CPU:
+        # execution is a documented reproducibility axis fixed at construction, and a caller who asked
+        # for grid_sample must not be handed a cv2 render because the input happened to be an array.
+        self._native_multi_ok: bool = bool(
+            self._is_albu_native
+            and self._multi_target
+            and self._aux_keys
+            and getattr(self, "_output_backend", None) is None
+            and self._albu_seg_tags is not None
+            and all(tag in _AUX_SAFE_NATIVE_TAGS for tag in self._albu_seg_tags)
+            and all(getattr(seg, "execution", "cv2") == "cv2" for seg in self._segments)
+        )
+
         # Resolve the output-backend converter. On a legacy pickle that predates the
         # stored backend flag, keep whatever converter was restored (it cannot be
         # re-derived without the flag) rather than silently dropping it.
@@ -1206,10 +1253,16 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             raise ValueError(msg)
 
         ordered_args = tuple(cast("torch.Tensor", kwargs[key_to_kwarg[key]]) for key in data_keys)
-        result = self._forward_multi(ordered_args, return_matrix=return_matrix)
         matrix = None
-        if return_matrix:
-            result, matrix = cast("tuple[object, Tensor | None]", result)
+        if self._native_multi_ok and all(isinstance(value, np.ndarray) for value in ordered_args):
+            self._last_transform_matrix = None
+            _clear_current_call_matrix()
+            result: object = self._forward_albu_native_multi(ordered_args)
+            matrix = _current_call_matrix()
+        else:
+            result = self._forward_multi(ordered_args, return_matrix=return_matrix)
+            if return_matrix:
+                result, matrix = cast("tuple[object, Tensor | None]", result)
         outputs = result if isinstance(result, tuple) else (result,)
         output = {key_to_kwarg[key]: outputs[idx] for idx, key in enumerate(data_keys)}
         return (output, matrix) if return_matrix else output
@@ -1427,9 +1480,17 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         data_keys = cast("list[str]", self.data_keys)
         aux_ndims: dict[str, int] = {}
         normalized: list[Any] = [NumpyToTorchConverter().convert(args[0])]
+        mask_dtype: np.dtype[Any] | None = None
         for key, value in zip(data_keys[1:], args[1:], strict=True):
+            if key == "mask" and isinstance(value, np.ndarray):
+                mask_dtype = value.dtype
             normalized.append(self._normalize_aux_input(key, value, aux_ndims))
-        return tuple(normalized), _NumpyRoundTrip(image_ndim=args[0].ndim, aux_ndims=aux_ndims)
+        return tuple(normalized), _NumpyRoundTrip(
+            image_ndim=args[0].ndim,
+            aux_ndims=aux_ndims,
+            image_dtype=args[0].dtype,
+            mask_dtype=mask_dtype,
+        )
 
     @staticmethod
     def _normalize_aux_input(key: str, value: object, aux_ndims: dict[str, int]) -> Any:  # noqa: ANN401
@@ -1454,9 +1515,12 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         """Return multi-target outputs in the NumPy layout the caller used for its inputs.
 
         Applied only when no explicit ``output_backend`` converter is configured — an explicit ``output_backend`` is the
-        caller stating what it wants back, and it wins over the inferred round-trip. Note that NumPy image input is
-        normalised on the way in (``uint8`` is scaled to ``float32`` in ``[0, 1]``), so the returned image is float32
-        rather than the input dtype.
+        caller stating what it wants back, and it wins over the inferred round-trip.
+
+        The image and any array mask come back in the dtype they were passed in: the converter's ``uint8``/``uint16``
+        normalisation is undone here so the same call returns the same dtype whether or not it was eligible for the
+        NumPy-native path, which never normalises at all. Coordinate targets stay ``float32`` — a warp puts boxes and
+        keypoints at fractional positions, so restoring an integer input dtype would quantise them.
 
         """
         if self._output_converter is not None:
@@ -1467,14 +1531,71 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         for idx, key in enumerate(data_keys):
             value = outputs[idx]
             if idx == 0:
-                restored.append(_tensor_to_numpy_image(cast("Tensor", value), round_trip.image_ndim))
+                image_out = _tensor_to_numpy_image(cast("Tensor", value), round_trip.image_ndim)
+                restored.append(_denormalize_numpy_image(image_out, round_trip.image_dtype))
             elif key not in round_trip.aux_ndims:
                 restored.append(value)
             elif key == "mask":
-                restored.append(_tensor_to_numpy_image(cast("Tensor", value), round_trip.aux_ndims[key]))
+                mask_out = _tensor_to_numpy_image(cast("Tensor", value), round_trip.aux_ndims[key])
+                if round_trip.mask_dtype is not None:
+                    mask_out = _denormalize_numpy_image(mask_out, round_trip.mask_dtype)
+                restored.append(mask_out)
             else:
                 restored.append(_tensor_to_numpy_coords(cast("Tensor", value), round_trip.aux_ndims[key]))
         return tuple(restored) if isinstance(result, tuple) else restored[0]
+
+    def _forward_albu_native_multi(self, ordered_args: tuple[object, ...]) -> tuple[object, ...]:
+        """Run a multi-target call without leaving NumPy/cv2 space.
+
+        The tensor path normalises the image to ``float32`` ``(batch_size, channels, height, width)``, warps it, and
+        converts it back — three full-image layout copies and a four-times-wider warp that Albumentations never pays.
+        Nothing about auxiliary targets requires any of that: coordinate tables are small enough that routing them as
+        tensors is free, and the fused matrix the NumPy image path already composes is the same matrix the tensor path
+        routes them through. So the image stays in the caller's own dtype and layout, and only the targets round-trip.
+
+        Eligibility is decided once at construction (``_native_multi_ok``); a pipeline holding a crop, an exact affine
+        or an opaque passthrough is not eligible and never reaches here.
+
+        Args:
+            ordered_args: The call's targets in ``data_keys`` order, image first, every one a NumPy array.
+
+        Returns:
+            The transformed targets in ``data_keys`` order. The image keeps its input dtype and layout; coordinate
+            targets come back as ``float32`` arrays, matching the tensor path.
+
+        """
+        data_keys = cast("list[str]", self.data_keys)
+        img_hwc = cast("NDArray[Any]", ordered_args[0])
+        aux_ndims: dict[str, int] = {}
+        mask_dtype: np.dtype[Any] | None = None
+        aux_targets: dict[str, Any] = {}
+        for key, value in zip(data_keys[1:], ordered_args[1:], strict=True):
+            if key == "mask" and isinstance(value, np.ndarray):
+                mask_dtype = value.dtype
+            aux_targets[key] = self._normalize_aux_input(key, value, aux_ndims)
+
+        tags = cast("list[int]", self._albu_seg_tags)
+        for idx_segment, seg in enumerate(self._segments):
+            if tags[idx_segment] == 2:  # FusedColorSegment — cannot move a coordinate
+                for tfm in seg._transforms:
+                    img_hwc = tfm(image=img_hwc)["image"]
+                continue
+            img_hwc = seg.forward_numpy(img_hwc)
+            if tags[idx_segment] == 0:  # AlbuFusedAffineSegment — carries the matrix to route through
+                self._last_transform_matrix = seg.last_matrix
+                seg.route_numpy_aux(aux_targets)
+
+        outputs: list[object] = [img_hwc]
+        for key in data_keys[1:]:
+            value = aux_targets[key]
+            if key not in aux_ndims:
+                outputs.append(value)
+            elif key == "mask":
+                mask_out = _tensor_to_numpy_image(cast("Tensor", value), aux_ndims[key])
+                outputs.append(_denormalize_numpy_image(mask_out, mask_dtype) if mask_dtype is not None else mask_out)
+            else:
+                outputs.append(_tensor_to_numpy_coords(cast("Tensor", value), aux_ndims[key]))
+        return tuple(outputs)
 
     def _forward_multi(self, args: tuple[torch.Tensor, ...], *, return_matrix: bool = False) -> object:
         """Run the pipeline in multi-target mode (``data_keys`` is set)."""

@@ -73,7 +73,7 @@ No. Boxes are transformed and axis-aligned, but coordinates can remain negative 
 
 ## Can I pass Albumentations `image=...`, `mask=...` NumPy dictionaries?
 
-No. The native HWC NumPy compatibility path is image-only. For auxiliary targets, use BCHW tensors with `data_keys`, and accept the package's target contract. Use native Albumentations when its dictionary target processors are a requirement.
+Yes, when the pipeline declares `data_keys`: masks, boxes, keypoints and rotated boxes route through the same composed matrix as the tensor path, and a NumPy image comes back in the dtype it was passed in. Without `data_keys` the NumPy path stays image-only. Either way the targets follow this package's contract -- use native Albumentations when its dictionary label processors are a requirement.
 
 ## What does `output_backend="numpy"` return?
 
