@@ -371,6 +371,8 @@ class FactoriesMixin:
         letterbox: tuple[int, int] | int | None = None,
         allow_upscale: bool = True,
         *,
+        rotation_p: float = 1.0,
+        scale_p: float = 1.0,
         specs: list[TransformSpec] | None = None,
         backend: BackendStr | None = None,
         route_coords_via_grid: bool = False,
@@ -411,6 +413,15 @@ class FactoriesMixin:
                 or ``None``. Per-axis only in backend-free mode -- see note below.
             hflip_p: Probability of horizontal flip per sample. Default 0.0.
             vflip_p: Probability of vertical flip per sample. Default 0.0.
+            rotation_p: Probability of applying ``rotation`` per sample, keyword-only.
+                Default ``1.0``, which applies it to every sample — the historical
+                behaviour, so an existing call is unchanged. Ignored when
+                ``rotation`` is ``None``.
+            scale_p: Probability of applying the scale family (``scale``,
+                ``scale_x``, ``scale_y``) per sample, keyword-only. The three share
+                one probability because they describe one scaling of the same
+                sample; use ``specs=`` or :meth:`from_config` for finer control.
+                Default ``1.0``. Ignored when no scale range is set.
             brightness: Maximum multiplicative brightness deviation. A value
                 of ``0.1`` samples factors in ``[0.9, 1.1]``.
             contrast: Maximum multiplicative contrast deviation. A value of
@@ -533,6 +544,9 @@ class FactoriesMixin:
             ```
 
         """
+        _validate_geometric_probability("rotation_p", rotation_p)
+        _validate_geometric_probability("scale_p", scale_p)
+
         # --- specs= overload path ---
         # Note: specs= is a convenience alias for declarative pipeline construction.
         # In a future minor version this dual-path may be split into a from_specs()
@@ -554,6 +568,8 @@ class FactoriesMixin:
                 translate_y is not None,
                 hflip_p != 0.0,
                 vflip_p != 0.0,
+                rotation_p != 1.0,
+                scale_p != 1.0,
                 brightness is not None,
                 contrast is not None,
             ))
@@ -617,6 +633,8 @@ class FactoriesMixin:
                 translate_y=translate_y,
                 hflip_p=hflip_p,
                 vflip_p=vflip_p,
+                rotation_p=rotation_p,
+                scale_p=scale_p,
             )
             if backend == "native":
                 config_specs.extend(
@@ -691,7 +709,7 @@ class FactoriesMixin:
         transforms: list[object] = []
 
         if has_affine:
-            transforms.append(_DirectParamTransform(param_specs, prob=1.0))
+            transforms.extend(_geometric_param_transforms(param_specs, rotation_p, scale_p))
 
         if hflip_p > 0.0:
             transforms.append(_DirectFlipTransform(flip_type="hflip", prob=hflip_p))
@@ -941,11 +959,14 @@ class FactoriesMixin:
         translate_y: tuple[float, float] | None = None,
         hflip_p: float = 0.0,
         vflip_p: float = 0.0,
+        rotation_p: float = 1.0,
+        scale_p: float = 1.0,
     ) -> list[TransformSpec]:
         """Convert geometric keyword arguments to a list of TransformSpec objects.
 
         Used internally by :meth:`from_params` when ``backend`` is set and geometric kwargs (rather than ``specs``) are
-        provided.
+        provided. ``rotation_p`` and ``scale_p`` become the corresponding spec's ``prob``, the same field the flip
+        probabilities already use.
 
         """
         if scale_x is not None or scale_y is not None:
@@ -967,10 +988,10 @@ class FactoriesMixin:
 
         specs: list[TransformSpec] = []
 
-        # Map geometric tuple params to their canonical op and param key
-        _kwarg_to_op: dict[str, tuple[str, str]] = {
-            "rotation": ("rotation", "degrees"),
-            "scale": ("scale", "factor"),
+        # Map geometric tuple params to their canonical op, param key, and per-op probability
+        _kwarg_to_op: dict[str, tuple[str, str, float]] = {
+            "rotation": ("rotation", "degrees", rotation_p),
+            "scale": ("scale", "factor", scale_p),
         }
 
         # Geometric tuple params
@@ -979,8 +1000,8 @@ class FactoriesMixin:
             ("scale", scale),
         ]:
             if value is not None:
-                op_name, param_key = _kwarg_to_op[kwarg_name]
-                specs.append(TransformSpec(operation=op_name, params={param_key: value}, prob=1.0))
+                op_name, param_key, probability = _kwarg_to_op[kwarg_name]
+                specs.append(TransformSpec(operation=op_name, params={param_key: value}, prob=probability))
 
         # Flip params
         if hflip_p > 0.0:
@@ -989,6 +1010,58 @@ class FactoriesMixin:
             specs.append(TransformSpec(operation="vflip", params={}, prob=vflip_p))
 
         return specs
+
+
+#: Geometric kwargs that describe one scaling of the same sample and therefore share ``scale_p``.
+_SCALE_PARAM_KEYS = ("scale", "scale_x", "scale_y")
+
+
+def _validate_geometric_probability(name: str, value: float) -> None:
+    """Reject an out-of-range per-op probability at construction rather than at the first draw.
+
+    Mirrors the bound :class:`~fuse_augmentations.types.TransformSpec` enforces, so the backend-free engine and the
+    spec-building path refuse the same values.
+
+    """
+    if not (0.0 <= value <= 1.0):
+        msg = f"{name} must be in [0.0, 1.0], got {value!r}"
+        raise ValueError(msg)
+
+
+def _geometric_param_transforms(
+    param_specs: dict[str, tuple[float, float]],
+    rotation_p: float,
+    scale_p: float,
+) -> list[_DirectParamTransform]:
+    """Split geometric parameter ranges into direct-parameter transforms by per-op probability.
+
+    With both probabilities at their ``1.0`` default every range stays in a single transform, which is the historical
+    layout — the split would otherwise change how many probability draws the generator makes per call and move seeded
+    output for pipelines that never asked for per-op probabilities. A range whose probability is below one moves into
+    its own transform so its gate is sampled independently of the rest of the geometry.
+
+    """
+    if rotation_p == 1.0 and scale_p == 1.0:
+        return [_DirectParamTransform(param_specs, prob=1.0)]
+
+    gated: list[tuple[dict[str, tuple[float, float]], float]] = []
+    always: dict[str, tuple[float, float]] = {}
+    for key, value in param_specs.items():
+        probability = rotation_p if key == "rotation" else scale_p if key in _SCALE_PARAM_KEYS else 1.0
+        if probability == 1.0:
+            always[key] = value
+        else:
+            gated.append(({key: value}, probability))
+
+    # One transform per distinct gated probability keeps the scale family under a single draw
+    # rather than sampling scale_x and scale_y against the same probability independently.
+    merged: dict[float, dict[str, tuple[float, float]]] = {}
+    for params, probability in gated:
+        merged.setdefault(probability, {}).update(params)
+
+    transforms = [_DirectParamTransform(always, prob=1.0)] if always else []
+    transforms.extend(_DirectParamTransform(params, prob=probability) for probability, params in merged.items())
+    return transforms
 
 
 class _DirectParamTransform:
