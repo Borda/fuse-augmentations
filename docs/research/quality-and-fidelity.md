@@ -158,6 +158,8 @@ Animated WebP does not play in macOS Preview or Finder Quick Look. Open the file
 
 Render the whole grid at once with `--all_cases`.
 
+The numeric companion to this page is [Measured tolerances](parity-tolerances.md): a generated table of the maximum absolute per-pixel difference between each backend's own compose and this package's, per operation, produced by `.github/scripts/measure_parity_tolerances.py` and gated in CI. This page says what is verified and where the boundaries are; that one says by how much the two renders currently differ.
+
 ## Native-backend parity
 
 The package recognizes transform objects from several backends, but recognition does not guarantee identical native execution semantics.

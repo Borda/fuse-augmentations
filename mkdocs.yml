@@ -142,6 +142,7 @@ nav:
       - Performance planning: applications/performance-planning.md
   - Research:
       - Quality and fidelity: research/quality-and-fidelity.md
+      - Measured tolerances: research/parity-tolerances.md
       - Benchmarks: research/benchmarks.md
       - Methodology: research/methodology.md
   - API reference:

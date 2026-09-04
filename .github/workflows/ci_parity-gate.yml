@@ -1,0 +1,72 @@
+name: CI parity gate
+
+# Fails when the measured fused-vs-native pixel difference for any backend/operation drifts past its
+# recorded bound in .github/parity_baseline/parity_bounds.json. The prose parity claims in
+# docs/research/quality-and-fidelity.md carry no numbers, so nothing previously contradicted a
+# resampling change on any adapter; this gate is the numeric half.
+#
+# Also verifies that docs/research/parity-tolerances.md is up to date, since it is a generated file
+# and a stale committed copy would state tolerances the code no longer produces.
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - ".github/scripts/measure_parity_tolerances.py"
+      - ".github/parity_baseline/**"
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  parity-gate:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    env:
+      UV_TORCH_BACKEND: cpu
+      PYTHON_VERSION: "3.12"
+    timeout-minutes: 25
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+
+      - name: 🐍 Install uv
+        uses: astral-sh/setup-uv@v7.2.0
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+          activate-environment: true
+
+      # All three backends: a missing backend silently drops its rows rather than failing, so the
+      # gate would pass while measuring nothing.
+      - name: 📦 Install package with all extras
+        timeout-minutes: 10
+        run: |
+          uv pip install -e ".[all]"
+          uv pip list
+
+      - name: 🔍 Check measured tolerances against the recorded bounds
+        run: uv run python .github/scripts/measure_parity_tolerances.py --check
+
+      # The generated table is committed, so a change that moves a tolerance has to move the table
+      # in the same commit. Regenerating and diffing is what enforces that.
+      - name: 📄 Check the generated table is current
+        run: |
+          uv run python .github/scripts/measure_parity_tolerances.py --write-doc
+          git diff --exit-code -- docs/research/parity-tolerances.md || {
+            echo "::error::docs/research/parity-tolerances.md is stale; regenerate it with: python .github/scripts/measure_parity_tolerances.py --write-doc"
+            exit 1
+          }
