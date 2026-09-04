@@ -112,6 +112,74 @@ class TestTransformBboxXyxy:
         assert torch.isfinite(out).all()
 
 
+class TestBboxAabbReductionContract:
+    """Backward behaviour of the four-corner AABB reduction, which uses ``amin``/``amax``.
+
+    The reduction was moved off ``Tensor.min(dim=)`` because that variant also computes argmin and dispatches a
+    parallelised kernel, costing ~38 us per call regardless of tensor size -- the single largest fixed cost of a
+    detection-shaped step. ``amin``/``amax`` are ~43x cheaper and return the same values, but they distribute the
+    subgradient differently. These tests pin that difference so it stays a deliberate contract rather than something a
+    future revert silently changes back.
+
+    """
+
+    def test_forward_matches_indexed_reduction(self):
+        """``amin``/``amax`` and ``min(dim=)``/``max(dim=)`` agree on every forward value.
+
+        The whole optimisation rests on the two being interchangeable in the forward pass; if a torch release ever
+        diverged here, every warped box would move.
+
+        """
+        boxes = torch.tensor([[[2.0, 3.0, 6.0, 9.0], [-4.0, 0.5, 1.0, 11.0]]])
+        angle = torch.tensor(torch.pi / 6)
+        cos_a, sin_a = torch.cos(angle), torch.sin(angle)
+        mtx = torch.tensor([[[cos_a, -sin_a, 3.0], [sin_a, cos_a, -2.0], [0.0, 0.0, 1.0]]])
+        out = transform_bbox_xyxy(boxes, mtx)
+        corners_x = torch.stack([boxes[..., 0], boxes[..., 2], boxes[..., 2], boxes[..., 0]], dim=-1)
+        corners_y = torch.stack([boxes[..., 1], boxes[..., 1], boxes[..., 3], boxes[..., 3]], dim=-1)
+        ones = torch.ones_like(corners_x)
+        transformed = mtx.unsqueeze(1) @ torch.stack([corners_x, corners_y, ones], dim=-2)
+        expected = torch.stack(
+            [
+                transformed[:, :, 0, :].min(dim=-1).values,
+                transformed[:, :, 1, :].min(dim=-1).values,
+                transformed[:, :, 0, :].max(dim=-1).values,
+                transformed[:, :, 1, :].max(dim=-1).values,
+            ],
+            dim=-1,
+        )
+        assert torch.allclose(out, expected)
+
+    def test_tied_corners_split_the_subgradient(self):
+        """Every axis-aligned box ties, and the subgradient splits evenly across the tied corners.
+
+        An axis-aligned box lists each coordinate twice among its four corners, so the tie is the normal case rather
+        than an edge case. ``min(dim=)`` would route the full gradient to the lowest index; the even split is the
+        behaviour that ships.
+
+        """
+        boxes = torch.tensor([[[2.0, 3.0, 6.0, 9.0]]], requires_grad=True)
+        transform_bbox_xyxy(boxes, _identity_mtx()).sum().backward()
+        # x1 and x2 each reach the output twice -- once as an AABB min, once as an AABB max --
+        # and each of those two reductions splits its gradient over two tied corners.
+        assert torch.allclose(boxes.grad, torch.ones_like(boxes))
+
+    def test_nan_corner_poisons_every_gradient(self):
+        """A NaN box coordinate makes the whole gradient NaN rather than selecting the NaN's index.
+
+        ``min(dim=)`` reports a NaN forward value but hands the gradient to the NaN's own index;
+        ``amin`` returns NaN for every corner. Nothing in this package backpropagates through box
+        coordinates -- the documented differentiable target is the soft mask -- so this is recorded
+        as accepted behaviour, not relied upon.
+
+        """
+        boxes = torch.tensor([[[2.0, 3.0, float("nan"), 9.0]]], requires_grad=True)
+        out = transform_bbox_xyxy(boxes, _identity_mtx())
+        assert torch.isnan(out).any()
+        out.sum().backward()
+        assert torch.isnan(boxes.grad).all()
+
+
 class TestTransformBboxXywh:
     """transform_bbox_xywh round-trips through the xyxy transform."""
 

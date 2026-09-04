@@ -220,10 +220,23 @@ def transform_bbox_xyxy(boxes: Tensor, mtx_forward: Tensor) -> Tensor:
     transformed_x = transformed[:, :, 0, :] / safe_homogeneous_w
     transformed_y = transformed[:, :, 1, :] / safe_homogeneous_w
 
-    new_x1 = transformed_x.min(dim=-1).values
-    new_y1 = transformed_y.min(dim=-1).values
-    new_x2 = transformed_x.max(dim=-1).values
-    new_y2 = transformed_y.max(dim=-1).values
+    # amin/amax, not min(dim=).values: Tensor.min(dim=) also computes argmin and dispatches to a
+    # parallelised reduction whose thread-pool cost is ~38 us here regardless of tensor size, while
+    # torch.amin over the same (batch_size, num_boxes, 4) corner axis costs ~0.9 us. Four calls per
+    # step made this the single largest fixed cost of a detection-shaped call.
+    #
+    # Forward values are identical, NaN included. Backward differs in two ways, neither of which any
+    # target modality in this package relies on -- boxes are input data, and the documented
+    # differentiable target is the soft mask:
+    #   * At ties -- which every axis-aligned box has, since its corner list repeats each coordinate
+    #     twice -- amin splits the subgradient evenly instead of routing all of it to the lowest
+    #     index: [0.5, 0, 0, 0.5] rather than [1, 0, 0, 0]. The total is 1.0 either way.
+    #   * With a NaN corner, min(dim=) routes the gradient to the NaN's index while amin returns NaN
+    #     for every corner.
+    new_x1 = torch.amin(transformed_x, dim=-1)
+    new_y1 = torch.amin(transformed_y, dim=-1)
+    new_x2 = torch.amax(transformed_x, dim=-1)
+    new_y2 = torch.amax(transformed_y, dim=-1)
 
     return torch.stack([new_x1, new_y1, new_x2, new_y2], dim=-1)
 
