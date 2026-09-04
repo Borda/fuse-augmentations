@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Versions below `0.12.0` are `dev0` snapshots, each cut from its own `bump vX` commit's tree. `0.1.0.dev0` through `0.9.0.dev0` were batch-uploaded to PyPI together on 2026-07-11, catching up nine commits at once; `0.10.0.dev0` followed separately on 2026-08-02. `0.11.0.dev0` was never published to PyPI — only `0.12.0` and later exist there next to it. `0.12.0` is the first stable release and the first cut from a `vX.Y.Z` tag.
 
+## [Unreleased]
+
+### Added
+
+- The multi-target path accepts channel-last NumPy images. `Compose(..., data_keys=["input", "bbox_xyxy"])` previously required tensors for every target, so a caller holding an Albumentations-shaped `(height, width, channels)` array and an `(num_instances, 4)` box table had to convert both by hand before the call and convert the results back afterwards. Passing arrays now normalises the image through the same `NumpyToTorchConverter` the `output_backend` path uses, adds the batch axis coordinate targets need, and returns every result in the caller's own layout — a `(height, width)` grayscale image comes back without a trailing singleton channel axis, and unbatched boxes come back unbatched. Because the input normalisation is the shared one, `uint8` images are scaled to float32 in `[0, 1]` on the way in and the returned image is float32 rather than the input dtype. Tensor and array inputs may not be mixed within one call: an array auxiliary target alongside a tensor image raises `TypeError`, since an unbatched array and a batched tensor have no common batch-dimension reading.
+- A multi-target pipeline accepts the image positionally alongside auxiliary keywords — `pipe(image, bboxes=...)` — returning the same dict as the all-keyword form. Only that one mixed shape is accepted; two or more positional arguments combined with keywords still raise, because once some data keys are passed by name there is no unambiguous mapping of the remaining positional arguments onto the rest.
+
+### Fixed
+
+- A raw NumPy image on the multi-target path no longer crashes with a shape-unpacking error. `_forward_kwargs_dict` built its argument tuple with a `cast` to the tensor type, which is a typing assertion with no runtime effect, so the untouched `(height, width, channels)` array flowed through to a four-way `batch_size, num_channels, height, width = image.shape` unpack inside the fused affine segment and raised there rather than at the call. Nothing exercised raw NumPy plus an auxiliary target through the `execution="cv2"` engine, which is why the combination stayed broken; the new integration tests cover it on both engines and compare the results against the equivalent tensor call so the two entry points cannot drift apart again.
+
 ## [0.12.0] - 2026-09-02
 
 First release published from a tag rather than a batch upload, and the first non-`dev0` version: every `0.x` below shipped only as a `dev0` snapshot, which a `>=X.Y,<X.Y+1` pin cannot resolve without `--pre`.

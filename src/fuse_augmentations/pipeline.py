@@ -33,7 +33,7 @@ import contextlib
 import math
 import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 import numpy as np
 import torch
@@ -137,6 +137,49 @@ _KWARG_ALIASES: dict[str, str | tuple[str, ...]] = {
     "image": "input",
     "bboxes": ("bbox_xyxy", "bbox_xywh"),
 }
+
+
+class _NumpyRoundTrip(NamedTuple):
+    """Input layout of a NumPy multi-target call, used to return outputs in the caller's own layout.
+
+    ``image_ndim`` is the rank of the input image array (2 for ``(height, width)``, 3 for ``(height, width, channels)``,
+    4 for a batch). ``aux_ndims`` holds the same for each auxiliary target that arrived as an array; auxiliary targets
+    passed as tensors are absent from it and are returned as tensors.
+
+    """
+
+    image_ndim: int
+    aux_ndims: dict[str, int]
+
+
+def _tensor_to_numpy_image(tensor: Tensor, input_ndim: int) -> NDArray[Any]:
+    """Convert a ``(batch_size, channels, height, width)`` tensor back to the caller's array rank.
+
+    A grayscale ``(height, width)`` input round-trips without a trailing singleton channel axis; every other rank
+    follows the standard converter, which squeezes a single-image batch to ``(height, width, channels)``.
+
+    """
+    from fuse_augmentations.converters import TorchToNumpyConverter
+
+    array = TorchToNumpyConverter().convert(tensor)
+    if input_ndim == 2 and array.ndim == 3 and array.shape[-1] == 1:
+        return array[:, :, 0]
+    return array
+
+
+def _tensor_to_numpy_coords(tensor: Tensor, input_ndim: int) -> NDArray[Any]:
+    """Convert a ``(batch_size, num_instances, ...)`` coordinate tensor back to the caller's rank.
+
+    Coordinate targets have no channel layout to restore, so this only drops the batch axis that
+    :meth:`FusedCompose._normalize_aux_input` added for an unbatched input.
+
+    """
+    array = cast("NDArray[Any]", tensor.detach().cpu().numpy())
+    if input_ndim == 2 and array.ndim == 3 and array.shape[0] == 1:
+        return cast("NDArray[Any]", array[0])
+    return array
+
+
 # Plan-time segment dispatch tags. Computed once per pipeline at construction and
 # stored on the instance so ``forward`` loops over integer tags instead of running
 # an isinstance chain per segment per call. Kept as plain ints (not bound methods)
@@ -867,6 +910,17 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         tensor round-trips and returns a ``{"image": ndarray}`` dict matching the
         :class:`albumentations.Compose` calling convention.
 
+        A multi-target pipeline (``data_keys`` with auxiliary entries) also accepts the image
+        positionally alongside auxiliary keywords — ``pipe(image, bboxes=...)`` — and returns the same
+        dict as the all-keyword form. Only that one mixed shape is accepted: a single positional
+        argument, with no conflicting ``image=`` keyword.
+
+        On the multi-target path the image may be a channel-last NumPy array
+        (``(height, width)``, ``(height, width, channels)`` or a batch) instead of a tensor. Auxiliary
+        targets then have to be arrays too, and results come back as arrays in the caller's own
+        layout. NumPy image input is normalised the way ``output_backend`` normalises it — ``uint8``
+        is scaled to float32 in ``[0, 1]`` — so the returned image is float32.
+
         All other invocations fall through to the standard
         :meth:`~torch.nn.Module.__call__` → :meth:`forward` path.
 
@@ -954,6 +1008,14 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 result = self._convert_primary_output(image)
                 return (result, _current_call_matrix()) if return_matrix else result
 
+        # Mixed call: the image positionally, auxiliary targets by keyword -- pipe(img, bboxes=...).
+        # Accepted on multi-target pipelines only, and only in this one shape: exactly one positional
+        # argument, no "image" keyword to conflict with it. Every other mix still raises below,
+        # because with two or more positional arguments there is no unambiguous mapping onto
+        # data_keys once some of those keys are also being passed by name.
+        if len(args) == 1 and kwargs and self._multi_target and self._aux_keys and "image" not in kwargs:
+            return self._forward_kwargs_dict({"image": args[0], **kwargs}, return_matrix=return_matrix)
+
         # Any keyword arguments still present were not consumed by the keyword-image dispatch above
         # and would reach forward() -- whose signature is (*args, return_matrix) and accepts no data
         # keywords -- yielding an opaque "unexpected keyword argument" TypeError whose exact wording
@@ -966,7 +1028,9 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 f"Unexpected keyword argument(s) {misrouted} for a tensor pipeline. Pass the image "
                 "positionally -- pipe(image_tensor), not pipe(image=image_tensor). The image=... keyword "
                 "call is only supported for Albumentations native (NumPy image) pipelines, or for "
-                "multi-target pipelines built with data_keys (image=..., mask=..., ...)."
+                "multi-target pipelines built with data_keys (image=..., mask=..., ...). A multi-target "
+                "pipeline also accepts the image positionally alongside auxiliary keywords -- "
+                "pipe(image, bboxes=...) -- but only with a single positional argument."
             )
         return super().__call__(*args, return_matrix=return_matrix, **kwargs)
 
@@ -1324,6 +1388,94 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         result = self._convert_primary_output(image)
         return (result, call_matrix) if return_matrix else result
 
+    def _normalize_multi_inputs(
+        self,
+        args: tuple[object, ...],
+    ) -> tuple[tuple[Any, ...], _NumpyRoundTrip | None]:
+        """Convert NumPy inputs on the multi-target path to the tensor layout the segments expect.
+
+        The multi-target path operates on ``(batch_size, channels, height, width)`` image tensors and
+        ``(batch_size, num_instances, ...)`` coordinate tensors. A caller passing channel-last NumPy
+        arrays (the Albumentations convention) is normalised here so both call styles reach the same
+        code, and the returned round-trip record lets :meth:`_restore_numpy_outputs` hand results back
+        in the caller's own layout.
+
+        Args:
+            args: Positional targets in ``data_keys`` order. Mixed tensor/array input is allowed for
+                the auxiliary targets; only the image decides whether this is a NumPy call.
+
+        Returns:
+            The normalised arguments, and a :class:`_NumpyRoundTrip` recording the input layout — or
+            ``None`` when the image was already a tensor, in which case nothing was converted.
+
+        Raises:
+            TypeError: If an auxiliary target is a NumPy array but the image is a tensor. Mixing the
+                two layouts in one call has no unambiguous batch-dimension interpretation.
+
+        """
+        if not isinstance(args[0], np.ndarray):
+            if any(isinstance(value, np.ndarray) for value in args[1:]):
+                msg = (
+                    "Auxiliary targets were passed as NumPy arrays alongside a tensor image. Pass "
+                    "every target in the same layout: all tensors, or all NumPy arrays."
+                )
+                raise TypeError(msg)
+            return args, None
+
+        from fuse_augmentations.converters import NumpyToTorchConverter
+
+        data_keys = cast("list[str]", self.data_keys)
+        aux_ndims: dict[str, int] = {}
+        normalized: list[Any] = [NumpyToTorchConverter().convert(args[0])]
+        for key, value in zip(data_keys[1:], args[1:], strict=True):
+            normalized.append(self._normalize_aux_input(key, value, aux_ndims))
+        return tuple(normalized), _NumpyRoundTrip(image_ndim=args[0].ndim, aux_ndims=aux_ndims)
+
+    @staticmethod
+    def _normalize_aux_input(key: str, value: object, aux_ndims: dict[str, int]) -> Any:  # noqa: ANN401
+        """Normalise one auxiliary target and record its input rank in *aux_ndims*.
+
+        Masks share the image's channel-last layout and go through the same converter. Coordinate targets are already
+        numeric ``(num_instances, ...)`` tables, so they only gain the leading batch axis and the float32 dtype the
+        target transforms operate on.
+
+        """
+        if not isinstance(value, np.ndarray):
+            return value
+        aux_ndims[key] = value.ndim
+        if key == "mask":
+            from fuse_augmentations.converters import NumpyToTorchConverter
+
+            return NumpyToTorchConverter().convert(value)
+        tensor = torch.as_tensor(np.ascontiguousarray(value), dtype=torch.float32)
+        return tensor.unsqueeze(0) if tensor.ndim == 2 else tensor
+
+    def _restore_numpy_outputs(self, result: object, round_trip: _NumpyRoundTrip) -> object:
+        """Return multi-target outputs in the NumPy layout the caller used for its inputs.
+
+        Applied only when no explicit ``output_backend`` converter is configured — an explicit ``output_backend`` is the
+        caller stating what it wants back, and it wins over the inferred round-trip. Note that NumPy image input is
+        normalised on the way in (``uint8`` is scaled to ``float32`` in ``[0, 1]``), so the returned image is float32
+        rather than the input dtype.
+
+        """
+        if self._output_converter is not None:
+            return result
+        data_keys = cast("list[str]", self.data_keys)
+        outputs = result if isinstance(result, tuple) else (result,)
+        restored: list[object] = []
+        for idx, key in enumerate(data_keys):
+            value = outputs[idx]
+            if idx == 0:
+                restored.append(_tensor_to_numpy_image(cast("Tensor", value), round_trip.image_ndim))
+            elif key not in round_trip.aux_ndims:
+                restored.append(value)
+            elif key == "mask":
+                restored.append(_tensor_to_numpy_image(cast("Tensor", value), round_trip.aux_ndims[key]))
+            else:
+                restored.append(_tensor_to_numpy_coords(cast("Tensor", value), round_trip.aux_ndims[key]))
+        return tuple(restored) if isinstance(result, tuple) else restored[0]
+
     def _forward_multi(self, args: tuple[torch.Tensor, ...], *, return_matrix: bool = False) -> object:
         """Run the pipeline in multi-target mode (``data_keys`` is set)."""
         self._last_transform_matrix = None
@@ -1333,6 +1485,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         if len(args) != len(data_keys):
             msg = f"Expected {len(data_keys)} arguments for data_keys={self.data_keys}, got {len(args)}"
             raise TypeError(msg)
+        args, numpy_round_trip = self._normalize_multi_inputs(args)
         image = args[0]
         aux_targets = self._build_aux_targets(args)
 
@@ -1351,7 +1504,10 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 if aux_targets:
                     self._check_passthrough_aux_policy(seg)
                 image = self._legacy_passthrough(seg, image)
-        result = self._assemble_multi_output(image, aux_targets, args)
+        assembled = self._assemble_multi_output(image, aux_targets, args)
+        result: object = assembled
+        if numpy_round_trip is not None:
+            result = self._restore_numpy_outputs(assembled, numpy_round_trip)
         return (result, call_matrix) if return_matrix else result
 
     @staticmethod
