@@ -138,6 +138,7 @@ try:
     from albumentations import RandomGamma as _RandomGamma
     from albumentations import RandomResizedCrop as _RandomResizedCrop
     from albumentations import RandomRotate90 as _RandomRotate90
+    from albumentations import RandomSizedCrop as _RandomSizedCrop
     from albumentations import Rotate as _Rotate
     from albumentations import SafeRotate as _SafeRotate
     from albumentations import ShiftScaleRotate as _ShiftScaleRotate
@@ -168,6 +169,12 @@ try:
         # but neither linearly composable into a FusedColorSegment matrix nor a per-channel LUT.
         _HueSaturationValue: TransformCategory.POINTWISE,
         _RandomResizedCrop: TransformCategory.CROP_RESIZE_FIXED,
+        # RandomSizedCrop shares RandomResizedCrop's _BaseRandomSizedCrop parameter surface --
+        # a `size` attribute and a `crop_coords` result -- so the same extraction applies.
+        # RandomSizedBBoxSafeCrop is deliberately absent: it derives its crop window from the
+        # sample's bounding boxes, and parameters here are sampled against a dummy image the
+        # caller's boxes never reach, so a fused window would ignore the boxes it must respect.
+        _RandomSizedCrop: TransformCategory.CROP_RESIZE_FIXED,
     }
 
     # Canonical base classes for fast isinstance dispatch in the adapter paths below.
@@ -185,7 +192,7 @@ try:
     _POSTERIZE_TYPES: frozenset[type] = frozenset({_Posterize})
     _EQUALIZE_TYPES: frozenset[type] = frozenset({_Equalize})
     _LUT_TYPES: frozenset[type] = _GAMMA_TYPES | _SOLARIZE_TYPES | _POSTERIZE_TYPES | _EQUALIZE_TYPES
-    _CROP_RESIZE_TYPES: frozenset[type] = frozenset({_RandomResizedCrop})
+    _CROP_RESIZE_TYPES: frozenset[type] = frozenset({_RandomResizedCrop, _RandomSizedCrop})
     _GAUSSIAN_BLUR_TYPES: frozenset[type] = frozenset({_GaussianBlur})
     # POINTWISE (non-linear color): reorderable but no matrix — return identity.
     _POINTWISE_TYPES: frozenset[type] = frozenset({_HueSaturationValue})

@@ -146,6 +146,13 @@ try:
     _LUT_TYPES.add(_V2RandomPosterize)
     _LUT_TYPES.add(_V2RandomEqualize)
     _CROP_RESIZE_TYPES.add(_V2RandomResizedCrop)
+    # v2.RandomResize is deliberately absent from the crop-resize category. CROP_RESIZE_FIXED means
+    # the output size is known at construction, which is what lets a segment allocate one output
+    # tensor for the batch. RandomResize draws its size per call and preserves the aspect ratio, so
+    # its output shape varies from call to call (measured: a 64x80 input returned 31x38, 23x28 and
+    # 19x23 across consecutive calls of RandomResize(16, 32)) and differs per sample under this
+    # package's per-sample parameter sampling. Registering it here would make a pipeline's output
+    # shape non-deterministic rather than merely its contents.
 except ImportError:
     pass
 
