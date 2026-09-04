@@ -196,10 +196,10 @@ These values demonstrate the remaining convention difference, not behavioral equ
 
 Albumentations has two materially different execution contexts:
 
-- The CPU/OpenCV path accepts the supported image-only HWC NumPy convention and applies composed matrices through OpenCV.
+- The CPU/OpenCV path accepts the HWC NumPy convention and applies composed matrices through OpenCV. With `data_keys` declared it carries masks, boxes, keypoints and rotated boxes alongside the image, and returns the image in the dtype it was passed.
 - The torch path accepts batched tensors and applies a fused `grid_sample`, enabling device execution.
 
-The same sampled geometry does not make these rasterizers bit-identical. Border modes and bilinear sub-pixel weights can differ. Multi-target NumPy dictionaries are not a drop-in replacement for native `albumentations.Compose`.
+The same sampled geometry does not make these rasterizers bit-identical. Border modes and bilinear sub-pixel weights can differ. On a `uint8` array warped by a single operation the OpenCV path currently measures zero difference from native Albumentations — both call the same OpenCV kernel on the same integer array — while the float32 tensor path differs by a few millionths on the same operation; the [measured tolerances](parity-tolerances.md) record both. A multi-target NumPy call is still not a drop-in replacement for native `albumentations.Compose`: the label processors and the instance-survival policy are the caller's here.
 
 ## Reordering changes semantics
 

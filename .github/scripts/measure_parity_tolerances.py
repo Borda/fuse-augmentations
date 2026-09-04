@@ -50,8 +50,14 @@ BATCH, CHANNELS, HEIGHT, WIDTH = 2, 3, 48, 64
 
 #: Absolute slack added to a recorded bound before a measurement counts as drift. Renderer versions
 #: differ slightly across platforms, so an exact-equality gate would fail on the runner rather than
-#: on a real change.
+#: on a real change. In float32 units, where the whole range is `[0, 1]`.
 CHECK_SLACK = 5e-3
+
+#: The same allowance for the ``uint8`` cases, whose measurements are in intensity levels rather than
+#: in `[0, 1]`. It is deliberately not `CHECK_SLACK` rescaled: `5e-3` is wider than one 8-bit level
+#: (1/255 = 3.9e-3), so reusing it would let a whole level of drift through unnoticed on exactly the
+#: cases added to catch it. One level is the smallest difference a ``uint8`` render can express.
+CHECK_SLACK_UINT8 = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,11 +72,24 @@ class ParityCase:
     #: once per op natively and exactly once when fused, so the difference is the fusion itself
     #: rather than a defect -- the number still has to stay stable, which is what the gate checks.
     native_passes: int = 1
+    #: ``"uint8"`` cases warp the integer array directly on both sides, as an Albumentations caller
+    #: does, and are measured in intensity levels. ``"float32"`` cases are measured in `[0, 1]`.
+    dtype: str = "float32"
 
     @property
     def key(self) -> str:
         """Return the stable identifier used in the bounds file."""
         return f"{self.backend}/{self.operation}"
+
+    @property
+    def unit(self) -> str:
+        """Return the unit this case's measurement is expressed in."""
+        return "levels" if self.dtype == "uint8" else "[0, 1]"
+
+    @property
+    def slack(self) -> float:
+        """Return the drift allowance for this case, in its own unit."""
+        return CHECK_SLACK_UINT8 if self.dtype == "uint8" else CHECK_SLACK
 
 
 def _image() -> torch.Tensor:
@@ -85,6 +104,77 @@ def _image() -> torch.Tensor:
     rows = torch.arange(HEIGHT).reshape(1, 1, HEIGHT, 1)
     columns = torch.arange(WIDTH).reshape(1, 1, 1, WIDTH)
     return (base + ((rows + columns) % 2).float()).clamp(0.0, 1.0)
+
+
+def _image_uint8() -> torch.Tensor:
+    """Return the same deterministic batch as :func:`_image`, quantised to ``uint8``.
+
+    Quantising the float fixture rather than drawing a new one keeps the two dtypes comparing the same structure, so a
+    difference between their rows is the dtype and nothing else.
+
+    """
+    return (_image() * 255.0).round().clamp(0.0, 255.0).to(torch.uint8)
+
+
+def _albumentations_uint8_cases() -> list[ParityCase]:
+    """Return the ``uint8`` Albumentations cases, or an empty list when the backend is absent.
+
+    These are the path an Albumentations caller actually takes: a ``uint8`` HWC array in, the same out.
+    The fused side warps the integer array directly through its NumPy path, while the float32 cases
+    warp a float copy -- ``cv2`` rounds those differently, which is exactly what needs a recorded bound
+    rather than an assumption.
+
+    """
+    try:
+        import albumentations as albu
+    except ImportError:
+        return []
+
+    def to_hwc(image: torch.Tensor) -> np.ndarray:
+        return np.ascontiguousarray(image.permute(1, 2, 0).numpy())
+
+    def native(transforms: list[object]) -> Callable[[torch.Tensor], torch.Tensor]:
+        pipeline = albu.Compose(transforms)
+
+        def run(image: torch.Tensor) -> torch.Tensor:
+            arrays = [pipeline(image=to_hwc(sample))["image"] for sample in image]
+            return torch.from_numpy(np.stack(arrays)).permute(0, 3, 1, 2)
+
+        return run
+
+    def fused(transforms: list[object]) -> Callable[[torch.Tensor], torch.Tensor]:
+        pipeline = Compose(transforms)
+
+        def run(image: torch.Tensor) -> torch.Tensor:
+            arrays = [pipeline(image=to_hwc(sample))["image"] for sample in image]
+            return torch.from_numpy(np.stack(arrays)).permute(0, 3, 1, 2)
+
+        return run
+
+    specs: list[tuple[str, Callable[[], list[object]]]] = [
+        ("hflip", lambda: [albu.HorizontalFlip(p=1.0)]),
+        ("rotate", lambda: [albu.Affine(rotate=(15.0, 15.0), p=1.0)]),
+        ("scale", lambda: [albu.Affine(scale=(1.15, 1.15), p=1.0)]),
+        ("translate", lambda: [albu.Affine(translate_px=(3, 3), p=1.0)]),
+        (
+            "affine_chain",
+            lambda: [
+                albu.Affine(rotate=(15.0, 15.0), p=1.0),
+                albu.Affine(translate_px=(3, 3), p=1.0),
+            ],
+        ),
+    ]
+    return [
+        ParityCase(
+            backend="albumentations_uint8",
+            operation=name,
+            native=native(build()),
+            fused=fused(build()),
+            native_passes=len(build()),
+            dtype="uint8",
+        )
+        for name, build in specs
+    ]
 
 
 def _albumentations_cases() -> list[ParityCase]:
@@ -221,14 +311,20 @@ def _torchvision_cases() -> list[ParityCase]:
     ]
 
 
-def _measure(case: ParityCase, image: torch.Tensor) -> float:
-    """Return the maximum absolute per-pixel difference between the native and fused renders."""
+def _measure(case: ParityCase, image: torch.Tensor, image_uint8: torch.Tensor) -> float:
+    """Return the maximum absolute per-pixel difference between the native and fused renders.
+
+    A ``uint8`` case is differenced in intensity levels, not rescaled to `[0, 1]`: levels are the unit its renders can
+    actually express, and its bound is written in the same unit.
+
+    """
+    source = image_uint8 if case.dtype == "uint8" else image
     torch.manual_seed(0)
     np.random.seed(0)
-    native_out = case.native(image.clone()).float()
+    native_out = case.native(source.clone()).float()
     torch.manual_seed(0)
     np.random.seed(0)
-    fused_out = case.fused(image.clone()).float()
+    fused_out = case.fused(source.clone()).float()
     if native_out.shape != fused_out.shape:
         msg = f"{case.key}: shape mismatch {tuple(native_out.shape)} vs {tuple(fused_out.shape)}"
         raise RuntimeError(msg)
@@ -237,7 +333,7 @@ def _measure(case: ParityCase, image: torch.Tensor) -> float:
 
 def _cases() -> list[ParityCase]:
     """Return every case whose backend is installed, refusing to run with none of them."""
-    cases = _albumentations_cases() + _kornia_cases() + _torchvision_cases()
+    cases = _albumentations_cases() + _albumentations_uint8_cases() + _kornia_cases() + _torchvision_cases()
     if not cases:
         msg = "no backends installed; install at least one of albumentations, kornia, torchvision"
         raise RuntimeError(msg)
@@ -247,7 +343,8 @@ def _cases() -> list[ParityCase]:
 def _collect() -> dict[str, float]:
     """Run every available case and return the measured tolerance per case key."""
     image = _image()
-    return {case.key: _measure(case, image) for case in _cases()}
+    image_uint8 = _image_uint8()
+    return {case.key: _measure(case, image, image_uint8) for case in _cases()}
 
 
 def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
@@ -272,8 +369,16 @@ def _render_doc(measured: dict[str, float]) -> str:
     them, and a hand-wrapped generated file would be rewritten on commit.
 
     """
-    passes = {case.key: case.native_passes for case in _cases()}
-    rows = [[*key.split("/", 1), str(passes.get(key, 1)), f"{measured[key]:.6f}"] for key in sorted(measured)]
+    cases = {case.key: case for case in _cases()}
+    rows = [
+        [
+            *key.split("/", 1),
+            str(cases[key].native_passes if key in cases else 1),
+            cases[key].unit if key in cases else "[0, 1]",
+            f"{measured[key]:.6f}",
+        ]
+        for key in sorted(measured)
+    ]
     lines = [
         "<!-- GENERATED FILE -- do not edit by hand.",
         "     Regenerate with: python .github/scripts/measure_parity_tolerances.py --write-doc -->",
@@ -288,9 +393,13 @@ def _render_doc(measured: dict[str, float]) -> str:
         ),
         "",
         (
-            "Images are float32 in `[0, 1]`, so a tolerance of `0.004` is roughly one step of an 8-bit"
-            " level. These are measurements, not promises: they record what the current implementations do,"
-            " and `.github/workflows/ci_parity-gate.yml` fails when one drifts past its recorded bound."
+            "Most rows use a float32 image in `[0, 1]`, where a tolerance of `0.004` is roughly one step of"
+            " an 8-bit level. The `albumentations_uint8` rows instead warp the integer array directly on both"
+            " sides -- the path an Albumentations caller takes, and the one this package's NumPy multi-target"
+            " calls take -- and are measured in intensity levels, so their numbers are not comparable to the"
+            " float rows and are gated with their own one-level allowance. These are measurements, not"
+            " promises: they record what the current implementations do, and"
+            " `.github/workflows/ci_parity-gate.yml` fails when one drifts past its recorded bound."
         ),
         "",
         (
@@ -307,7 +416,7 @@ def _render_doc(measured: dict[str, float]) -> str:
             " -- is `quality-and-fidelity.md`."
         ),
         "",
-        *_table(["Backend", "Operation", "Native passes", "Max abs difference"], rows),
+        *_table(["Backend", "Operation", "Native passes", "Unit", "Max abs difference"], rows),
         "",
     ]
     return "\n".join(lines)
@@ -320,10 +429,11 @@ def _check(measured: dict[str, float]) -> int:
         return 0
 
     bounds: dict[str, float] = json.loads(BOUNDS_PATH.read_text())["bounds"]
+    slack = {case.key: case.slack for case in _cases()}
     failures: list[str] = []
     missing = sorted(set(measured) - set(bounds))
     for key in sorted(set(measured) & set(bounds)):
-        limit = bounds[key] + CHECK_SLACK
+        limit = bounds[key] + slack.get(key, CHECK_SLACK)
         if measured[key] > limit:
             failures.append(f"  {key}: measured {measured[key]:.6f} > bound {bounds[key]:.6f} + slack")
 
@@ -355,7 +465,14 @@ def main() -> int:
 
     if args.write_bounds:
         BOUNDS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        BOUNDS_PATH.write_text(json.dumps({"slack": CHECK_SLACK, "bounds": measured}, indent=2, sort_keys=True) + "\n")
+        BOUNDS_PATH.write_text(
+            json.dumps(
+                {"slack": CHECK_SLACK, "slack_uint8": CHECK_SLACK_UINT8, "bounds": measured},
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
         print(f"written: {BOUNDS_PATH}")
 
     if args.check:
