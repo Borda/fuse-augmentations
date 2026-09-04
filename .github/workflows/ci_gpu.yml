@@ -1,0 +1,90 @@
+name: CI GPU tests
+
+# The CUDA-gated tests (test_segment_parity.py, test_compile.py and the CUDA cases scattered
+# through the suite) skip on every runner this repository uses today, so they have never executed.
+# This workflow is what makes them run.
+#
+# NOT YET VERIFIED: no GPU runner is currently attached to this repository, so this file has never
+# been executed as written. `runs-on` names a self-hosted GPU label that has to exist before the
+# workflow can do anything; until then a manual dispatch queues and eventually times out rather
+# than reporting a result. Running the steps below by hand on any CUDA machine -- or in a Colab GPU
+# runtime -- is the interim way to get the first signal.
+#
+# Triggers are deliberately manual and scheduled only -- not on pull requests -- because a queued
+# job against a runner that may not exist should never block a merge.
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "41 4 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gpu-tests:
+    permissions:
+      contents: read
+    # Replace with the label of an attached CUDA runner. GitHub-hosted runners have no GPU.
+    runs-on: [self-hosted, gpu]
+    env:
+      PYTHON_VERSION: "3.12"
+    # These tests have never run, so the first execution may be slow or may fail outright;
+    # treat a first-run failure as a finding rather than a regression.
+    timeout-minutes: 45
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+
+      - name: 🐍 Install uv
+        uses: astral-sh/setup-uv@v7.2.0
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+          activate-environment: true
+
+      # No UV_TORCH_BACKEND=cpu here, unlike every other workflow in this directory: the point is
+      # to install a CUDA build of torch.
+      - name: 📦 Install package with all extras
+        timeout-minutes: 20
+        run: |
+          uv pip install -e ".[all]" --group dev
+          uv pip list
+
+      - name: 🔍 Report the visible device
+        run: |
+          nvidia-smi || echo "nvidia-smi unavailable"
+          python -c "import torch; print('cuda available:', torch.cuda.is_available()); print('device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none')"
+
+      # Fail loudly rather than silently skipping: a green run that skipped everything is the exact
+      # failure mode this workflow exists to end.
+      - name: 🛑 Require a CUDA device
+        run: python -c "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 'no CUDA device visible; the GPU tests would all skip')"
+
+      - name: 🧪 Run the CUDA-gated tests
+        timeout-minutes: 30
+        run: |
+          pytest tests/ -v -m gpu
+          pytest tests/test_integration/test_segment_parity.py tests/test_integration/test_compile.py -v
+
+      - name: 🏃 Run the GPU batch benchmark
+        timeout-minutes: 20
+        run: uv run python experiments/bench_gpu_batch.py
+
+      - name: 📤 Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-bench-${{ github.run_id }}-${{ github.run_attempt }}
+          path: experiments/results/
+          retention-days: 90
+          if-no-files-found: ignore
