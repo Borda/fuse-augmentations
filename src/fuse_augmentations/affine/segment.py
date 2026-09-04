@@ -109,6 +109,20 @@ def _matrix_public_dtype(image_dtype: torch.dtype) -> torch.dtype:
     return image_dtype
 
 
+def _matrix_geometry_dtype(dtype: torch.dtype) -> torch.dtype:
+    """Return the dtype auxiliary-target geometry is computed in.
+
+    Coordinate routing is geometry, not image storage. A composed matrix that inherited a low-precision or integer image
+    dtype would truncate the affine coefficients that place the image's own boxes and keypoints -- an integer matrix
+    rounds every translation and scale to a whole pixel, and silently, because the shapes still line up. Only
+    ``float64`` keeps the wider dtype; everything else routes through ``float32``.
+
+    """
+    if dtype == torch.float64:
+        return torch.float64
+    return torch.float32
+
+
 _CURRENT_CALL_MATRIX: ContextVar[Tensor | None] = ContextVar("fuse_current_call_matrix", default=None)
 
 
@@ -1228,7 +1242,7 @@ class _BaseAffineSegment(GeneratorPicklingMixin, nn.Module):
             aux_targets: Auxiliary targets to transform (``"mask"``, ``"bbox_xyxy"``,
                 ``"bbox_xywh"``, ``"keypoints"``).
             grid: The sampling grid produced by :meth:`_apply_grid`.
-            acc_img: ``(batch_size, 3, 3)`` composed forward pixel matrix in the image dtype.
+            acc_img: ``(batch_size, 3, 3)`` composed forward pixel matrix; recast to the geometry dtype here.
             mask_interpolation: Mask sampling mode for the ``"mask"`` target.
             keypoint_flip_index: Optional caller-supplied keypoint pair permutation, applied
                 where the composed matrix reverses orientation.
@@ -1240,6 +1254,8 @@ class _BaseAffineSegment(GeneratorPicklingMixin, nn.Module):
             transform_mask,
             transform_rboxes,
         )
+
+        acc_img = acc_img.to(dtype=_matrix_geometry_dtype(acc_img.dtype))
 
         for key in list(aux_targets.keys()):
             val = aux_targets[key]
@@ -1653,7 +1669,7 @@ class FusedAffineSegment(_BaseAffineSegment):
             aux_targets: Auxiliary targets to transform (``"mask"``, ``"bbox_xyxy"``,
                 ``"bbox_xywh"``, ``"keypoints"``).
             d4_op: The D4 op name from :func:`classify_d4_batch`.
-            acc_img: ``(B, 3, 3)`` composed forward pixel matrix in the image dtype.
+            acc_img: ``(B, 3, 3)`` composed forward pixel matrix; recast to the geometry dtype here.
             keypoint_flip_index: Optional caller-supplied keypoint pair permutation, applied
                 where the composed matrix reverses orientation.
 
@@ -1663,6 +1679,8 @@ class FusedAffineSegment(_BaseAffineSegment):
             transform_bbox_xyxy,
             transform_rboxes,
         )
+
+        acc_img = acc_img.to(dtype=_matrix_geometry_dtype(acc_img.dtype))
 
         for key in list(aux_targets.keys()):
             val = aux_targets[key]
@@ -2501,7 +2519,7 @@ class AlbuFusedAffineSegment(nn.Module):
             image: The warped image tensor, used to resolve the mask device/dtype.
 
         """
-        acc_img = composed_batch.to(device=image.device, dtype=image.dtype)
+        acc_img = composed_batch.to(device=image.device, dtype=_matrix_geometry_dtype(image.dtype))
         grid: Tensor | None = None
         if "mask" in aux_targets:
             mask = aux_targets["mask"]
@@ -2532,7 +2550,7 @@ class AlbuFusedAffineSegment(nn.Module):
         Args:
             aux_targets: Auxiliary targets to transform.
             grid: Sampling grid for the mask, or ``None`` when no mask is present.
-            acc_img: ``(B, 3, 3)`` composed forward pixel matrix in the image dtype.
+            acc_img: ``(B, 3, 3)`` composed forward pixel matrix; recast to the geometry dtype here.
             mask_interpolation: Mask sampling mode for the ``"mask"`` target.
             keypoint_flip_index: Optional caller-supplied keypoint pair permutation, applied
                 where the composed matrix reverses orientation.
@@ -2544,6 +2562,8 @@ class AlbuFusedAffineSegment(nn.Module):
             transform_mask,
             transform_rboxes,
         )
+
+        acc_img = acc_img.to(dtype=_matrix_geometry_dtype(acc_img.dtype))
 
         for key in list(aux_targets.keys()):
             val = aux_targets[key]
@@ -3109,7 +3129,7 @@ class AlbuProjectiveSegment(nn.Module):
             image: The warped image tensor, used to resolve the box/keypoint dtype.
 
         """
-        acc_img = composed_batch.to(device=image.device, dtype=image.dtype)
+        acc_img = composed_batch.to(device=image.device, dtype=_matrix_geometry_dtype(image.dtype))
         grid: Tensor | None = None
         if "mask" in aux_targets:
             mask = aux_targets["mask"]

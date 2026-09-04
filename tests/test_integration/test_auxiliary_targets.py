@@ -336,3 +336,61 @@ class TestTransformMask:
 
         out = transform_mask(mask, grid)
         assert out.dtype == torch.float32, f"Expected float32 output dtype, got {out.dtype}"
+
+
+class TestAuxGeometryDtype:
+    """Auxiliary coordinate routing keeps full geometric precision regardless of image dtype.
+
+    The composed matrix used to place boxes, keypoints and rotated boxes used to inherit the
+    image's own dtype. That is fine while images are float32, and quietly wrong the moment they are
+    not: a half-precision image rounds the affine coefficients that position its own targets, and an
+    integer image would truncate them to whole pixels. Nothing raises -- every shape still lines up
+    -- so these tests pin the decoupling rather than the symptom.
+
+    """
+
+    @staticmethod
+    def _rotation_pipeline() -> Compose:
+        """Build a multi-target pipeline whose matrix has deliberately non-representable entries.
+
+        A flip or a 90-degree rotation would not catch anything: their matrices are integer-valued
+        and survive any dtype exactly. The fractional angle and scale here produce coefficients that
+        float16 cannot hold. ``execution="torch"`` because ``cv2.warpAffine`` rejects a float16
+        image outright, and the point of the test is the coordinate routing, not the image warp.
+
+        """
+        import albumentations as albu
+
+        return Compose(
+            [albu.Affine(rotate=(17.0, 17.0), scale=(1.13, 1.13), p=1.0)],
+            data_keys=["input", "bbox_xyxy"],
+            execution="torch",
+        )
+
+    def test_half_precision_image_does_not_round_box_geometry(self):
+        """A float16 image routes its boxes through the same geometry a float32 image would.
+
+        A half-precision training pipeline is the realistic way to hit this: the image dtype is
+        chosen for memory, and there is no reason the box coordinates that ride along with it should
+        inherit that choice.
+
+        """
+        boxes = torch.tensor([[[5.0, 10.0, 20.0, 25.0]]])
+        pipe = self._rotation_pipeline()
+
+        _, boxes_f32 = pipe(torch.rand(1, CHANNELS, HEIGHT, WIDTH), boxes)
+        _, boxes_f16 = pipe(torch.rand(1, CHANNELS, HEIGHT, WIDTH, dtype=torch.float16), boxes)
+
+        assert boxes_f16.dtype == torch.float32
+        torch.testing.assert_close(boxes_f16, boxes_f32)
+
+    def test_geometry_dtype_maps_low_precision_to_float32(self):
+        """The geometry dtype keeps float64 and sends every narrower dtype to float32."""
+        from fuse_augmentations.affine.segment import _matrix_geometry_dtype
+
+        assert _matrix_geometry_dtype(torch.float64) is torch.float64
+        assert _matrix_geometry_dtype(torch.float32) is torch.float32
+        assert _matrix_geometry_dtype(torch.float16) is torch.float32
+        assert _matrix_geometry_dtype(torch.bfloat16) is torch.float32
+        assert _matrix_geometry_dtype(torch.uint8) is torch.float32
+        assert _matrix_geometry_dtype(torch.int64) is torch.float32
