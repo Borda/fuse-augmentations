@@ -26,6 +26,10 @@ Check the current measurements against the recorded bounds (used by CI)::
 
     python .github/scripts/measure_parity_tolerances.py --check
 
+Check that the generated table still describes what the code measures (also used by CI)::
+
+    python .github/scripts/measure_parity_tolerances.py --check-doc
+
 """
 
 from __future__ import annotations
@@ -45,6 +49,10 @@ from fuse_augmentations import Compose
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BOUNDS_PATH = REPO_ROOT / ".github" / "parity_baseline" / "parity_bounds.json"
 DOC_PATH = REPO_ROOT / "docs" / "research" / "parity-tolerances.md"
+
+#: Column headers of the generated table, shared by the renderer and the staleness check that parses
+#: the committed file back.
+DOC_COLUMNS = ["Backend", "Operation", "Native passes", "Unit", "Max abs difference"]
 
 BATCH, CHANNELS, HEIGHT, WIDTH = 2, 3, 48, 64
 
@@ -416,7 +424,7 @@ def _render_doc(measured: dict[str, float]) -> str:
             " -- is `quality-and-fidelity.md`."
         ),
         "",
-        *_table(["Backend", "Operation", "Native passes", "Unit", "Max abs difference"], rows),
+        *_table(DOC_COLUMNS, rows),
         "",
     ]
     return "\n".join(lines)
@@ -449,12 +457,68 @@ def _check(measured: dict[str, float]) -> int:
     return 0
 
 
+def _doc_values() -> dict[str, float]:
+    """Return the measurements recorded in the committed table, keyed as the bounds file keys them."""
+    values: dict[str, float] = {}
+    for line in DOC_PATH.read_text().splitlines():
+        cells = [cell.strip() for cell in line.split("|")[1:-1]]
+        if len(cells) != len(DOC_COLUMNS) or set(cells[0]) <= {"-"}:
+            continue
+        try:
+            measurement = float(cells[-1])
+        except ValueError:  # the header row, whose last cell is a column name
+            continue
+        values[f"{cells[0]}/{cells[1]}"] = measurement
+    return values
+
+
+def _check_doc(measured: dict[str, float]) -> int:
+    """Compare the committed table against the current measurements; return a process exit code.
+
+    Deliberately not an equality check. The table is a measurement, and a measurement moves in its
+    last digits with the renderer and BLAS builds a given machine happens to have: ``albumentations
+    scale`` reads 0.000007 on macOS and 0.000006 on the Linux runner, so regenerating the file and
+    diffing it byte-for-byte fails on whichever platform did not write the committed copy rather
+    than on a change in behaviour. Each row is checked against the same slack ``--check`` allows,
+    which is what the numbers are gated on everywhere else.
+
+    The row set is still compared exactly: a case added, removed or renamed without regenerating the
+    file leaves the committed table describing something the code no longer measures, and no
+    tolerance covers that.
+
+    """
+    if not DOC_PATH.exists():
+        print(f"no generated table at {DOC_PATH}; write it with --write-doc")
+        return 1
+
+    documented = _doc_values()
+    slack = {case.key: case.slack for case in _cases()}
+    failures = [f"  {key}: table has no row" for key in sorted(set(measured) - set(documented))]
+    failures += [f"  {key}: row is not a case any more" for key in sorted(set(documented) - set(measured))]
+    failures += [
+        f"  {key}: measured {measured[key]:.6f}, table says {documented[key]:.6f}"
+        f" (drift {abs(measured[key] - documented[key]):.6f} > slack {slack.get(key, CHECK_SLACK):.6f})"
+        for key in sorted(set(measured) & set(documented))
+        if abs(measured[key] - documented[key]) > slack.get(key, CHECK_SLACK)
+    ]
+
+    if failures:
+        print(f"{DOC_PATH.relative_to(REPO_ROOT)} no longer describes what the code measures:")
+        print("\n".join(failures))
+        print("\nregenerate it with: python .github/scripts/measure_parity_tolerances.py --write-doc")
+        return 1
+
+    print(f"ok   {DOC_PATH.relative_to(REPO_ROOT)}: {len(documented)} rows within slack")
+    return 0
+
+
 def main() -> int:
     """Parse arguments, measure, and write or check as requested."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write-doc", action="store_true", help="regenerate the markdown table")
     parser.add_argument("--write-bounds", action="store_true", help="record current values as bounds")
     parser.add_argument("--check", action="store_true", help="fail when a measurement drifts past its bound")
+    parser.add_argument("--check-doc", action="store_true", help="fail when the generated table is stale")
     args = parser.parse_args()
 
     measured = _collect()
@@ -475,8 +539,8 @@ def main() -> int:
         )
         print(f"written: {BOUNDS_PATH}")
 
-    if args.check:
-        return _check(measured)
+    if args.check or args.check_doc:
+        return (_check(measured) if args.check else 0) or (_check_doc(measured) if args.check_doc else 0)
 
     if not (args.write_doc or args.write_bounds):
         for key in sorted(measured):

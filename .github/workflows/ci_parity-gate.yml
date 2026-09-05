@@ -62,11 +62,11 @@ jobs:
         run: uv run python .github/scripts/measure_parity_tolerances.py --check
 
       # The generated table is committed, so a change that moves a tolerance has to move the table
-      # in the same commit. Regenerating and diffing is what enforces that.
+      # in the same commit. This step is what enforces that.
+      #
+      # Not a byte-for-byte diff of a regenerated file: the table records measurements, and a
+      # measurement moves in its last digits with the renderer build a machine happens to have, so
+      # an exact comparison fails on whichever platform did not write the committed copy. The check
+      # compares each row within the same slack the bounds check allows, and the row set exactly.
       - name: 📄 Check the generated table is current
-        run: |
-          uv run python .github/scripts/measure_parity_tolerances.py --write-doc
-          git diff --exit-code -- docs/research/parity-tolerances.md || {
-            echo "::error::docs/research/parity-tolerances.md is stale; regenerate it with: python .github/scripts/measure_parity_tolerances.py --write-doc"
-            exit 1
-          }
+        run: uv run python .github/scripts/measure_parity_tolerances.py --check-doc
