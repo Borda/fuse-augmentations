@@ -91,12 +91,12 @@ def _sample(resolution: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 def _albu_transforms(chain: str) -> list[albu.BasicTransform]:
     """Return one of the two geometric chains, shared by every benchmarked implementation.
 
-    ``"two_op"`` is a flip plus one affine. It is the honest floor rather than a showcase: Albumentations
-    executes it as one array flip and one warp, so there is no second resampling pass for fusion to
-    remove, and any win has to come from per-call overhead alone.
+    ``"two_op"`` is a flip plus one affine. It is the honest floor rather than a showcase: Albumentations executes it as
+    one array flip and one warp, so there is no second resampling pass for fusion to remove, and any win has to come
+    from per-call overhead alone.
 
-    ``"four_op"`` is what a detection recipe actually stacks. Albumentations resamples once per affine;
-    the fused pipeline still resamples exactly once, which is the property the package exists for.
+    ``"four_op"`` is what a detection recipe actually stacks. Albumentations resamples once per affine; the fused
+    pipeline still resamples exactly once, which is the property the package exists for.
 
     """
     if chain == "two_op":
@@ -115,9 +115,9 @@ def _albu_transforms(chain: str) -> list[albu.BasicTransform]:
 def _albu_step(resolution: int, chain: str) -> Callable[[], object]:
     """Build the native Albumentations detection step, boxes and labels included.
 
-    ``min_width``/``min_height``/``min_visibility`` are set rather than left at their defaults so
-    Albumentations drops exactly the instances the fused variants drop. With the defaults it keeps every
-    sliver, which would have it doing less work than the side it is being compared against.
+    ``min_width``/``min_height``/``min_visibility`` are set rather than left at their defaults so Albumentations drops
+    exactly the instances the fused variants drop. With the defaults it keeps every sliver, which would have it doing
+    less work than the side it is being compared against.
 
     """
     pipeline = albu.Compose(
@@ -221,11 +221,10 @@ def _time(run: Callable[[], object], pipeline: str, chain: str, resolution: int)
 def _seed_everything() -> None:
     """Seed every RNG domain the benchmarked pipelines draw from.
 
-    ``torch.manual_seed`` alone leaves the augmentation parameters unseeded: Albumentations samples
-    through ``numpy.random`` and its own per-transform ``py_random``, and the fused NumPy path draws its
-    activation gates from ``numpy.random`` too. An unseeded run still produces valid timings, but the two
-    sides then warp by different angles, which makes the comparison unrepeatable rather than merely
-    noisy.
+    ``torch.manual_seed`` alone leaves the augmentation parameters unseeded: Albumentations samples through
+    ``numpy.random`` and its own per-transform ``py_random``, and the fused NumPy path draws its activation gates from
+    ``numpy.random`` too. An unseeded run still produces valid timings, but the two sides then warp by different angles,
+    which makes the comparison unrepeatable rather than merely noisy.
 
     """
     random.seed(0)

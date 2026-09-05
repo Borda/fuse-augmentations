@@ -91,6 +91,8 @@ output = augment(torch.rand(4, 3, 224, 224))
 
 An HWC NumPy path also exists. Without `data_keys` it transforms the image only:
 
+<!--phmdoctest-share-names-->
+
 ```python
 import numpy as np
 

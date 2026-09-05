@@ -12,17 +12,27 @@ it.
 
 from __future__ import annotations
 
-import albumentations as albu
 import numpy as np
 import pytest
 import torch
 
 from fuse_augmentations import Compose
+from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
 
-pytestmark = pytest.mark.integration
+if _ALBUMENTATIONS_AVAILABLE:
+    import albumentations as albu
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="albumentations required"),
+]
 
 HEIGHT = WIDTH = 32
-FIXED_AFFINE = [albu.Affine(rotate=(13.0, 13.0), scale=(1.07, 1.07), p=1.0)]
+
+#: Constructed at import, so it needs the same guard the import does: a module-level ``skipif`` marks
+#: the tests skipped but does not stop the module body from running, and the empty fallback is never
+#: reached by a test that the marker lets execute.
+FIXED_AFFINE = [albu.Affine(rotate=(13.0, 13.0), scale=(1.07, 1.07), p=1.0)] if _ALBUMENTATIONS_AVAILABLE else []
 
 
 @pytest.fixture

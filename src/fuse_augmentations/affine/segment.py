@@ -235,6 +235,29 @@ def _shares_randomness_across_batch(
     return bool(getattr(transform, "same_on_batch", False))
 
 
+def _samples_on_the_matrix_device(transform: object) -> bool:
+    """Return whether this transform's matrix build may draw RNG on the sampling device.
+
+    Only Kornia's ``RandomRotation90`` does. Its ``build_matrix`` falls back to
+    ``torch.randint(..., device=params["_batch_size"].device)`` when the sampled parameters carry
+    no ``k90``, so moving its sampling to the host would move that draw to a different RNG stream
+    and change the quarter-turns a seeded pipeline produces. Every other adapter path derives its
+    parameters from host RNG, where the construction device of the resulting tensor is immaterial.
+
+    Detected by name so an absent or older Kornia does not make this an import-time dependency; the
+    check is a per-call guard on a small transform list, and a false positive only forgoes an
+    optimisation.
+
+    Args:
+        transform: A transform instance from a fused segment's chain.
+
+    Returns:
+        ``True`` when parameter sampling must stay on the image's device.
+
+    """
+    return type(transform).__name__ == "RandomRotation90"
+
+
 def _sample_transform_params(
     adapter: TransformAdapter,
     transform: object,
@@ -1188,6 +1211,22 @@ class _BaseAffineSegment(GeneratorPicklingMixin, nn.Module):
         eye = self._eye3.to(device=device, dtype=compose_dtype)
         eye_batch = eye[None].expand(batch_size, -1, -1)
         acc = eye_batch.clone()
+        sample_device = self._matrix_sample_device(device)
+
+        # Sample parameters and build each matrix on ``sample_device``, then move the whole
+        # stack across in one transfer. Adapters construct their parameter tensors with an
+        # explicit ``device=``, so sampling on an accelerator issues a separate host-to-device
+        # copy per parameter -- roughly ten per call for a five-transform chain. Profiled on
+        # MPS that dominated the call: 40% in ``Tensor.to`` and 26% in ``torch.tensor``,
+        # against about 1% in ``affine_grid`` and a ``grid_sample`` that did not reach the top
+        # of the profile. The 3x3 matmuls are free either way; only their placement mattered.
+        #
+        # Every RNG draw stays exactly where it was. The activation draws below still run on
+        # the image's device against the same generator, and parameter sampling reads host
+        # RNG on every adapter path -- see ``_matrix_sample_device`` for the one exception,
+        # which opts back out rather than moving a draw.
+        activations: list[Tensor] = []
+        sampled: list[Tensor] = []
 
         for tfm in self.transforms:
             prob = _transform_prob(tfm)
@@ -1199,7 +1238,7 @@ class _BaseAffineSegment(GeneratorPicklingMixin, nn.Module):
                 active = _rand(batch_size, device=device, generator=self.generator) < prob
 
             params = _sample_transform_params(
-                self.adapter, tfm, input_shape, device, self.randomness, generator=self.generator
+                self.adapter, tfm, input_shape, sample_device, self.randomness, generator=self.generator
             )
             mtx_i = self.adapter.build_matrix(tfm, params, height, width)
 
@@ -1207,13 +1246,51 @@ class _BaseAffineSegment(GeneratorPicklingMixin, nn.Module):
             if mtx_i.shape[0] == 1 and batch_size > 1:
                 mtx_i = mtx_i.expand(batch_size, -1, -1)
 
-            # Accumulate in the compose dtype; the adapter builds in float32.
-            mtx_i = mtx_i.to(device=device, dtype=compose_dtype)
+            activations.append(active)
+            sampled.append(mtx_i)
 
-            mtx_i = torch.where(active[:, None, None], mtx_i, eye_batch)
+        # One transfer for the whole chain, in the compose dtype; the adapter builds float32.
+        # An empty chain has nothing to stack -- a segment can legitimately hold no matrix-building
+        # transforms (a blur-only run, or a passthrough probed with aux targets) and must compose to
+        # the identity rather than raise out of ``torch.stack``.
+        if not sampled:
+            return acc, acc.to(dtype=_matrix_public_dtype(dtype))
+        stacked = torch.stack(sampled).to(device=device, dtype=compose_dtype)
+
+        for index, active in enumerate(activations):
+            mtx_i = torch.where(active[:, None, None], stacked[index], eye_batch)
             acc = matmul3x3(mtx_i, acc)
 
         return acc, acc.to(dtype=_matrix_public_dtype(dtype))
+
+    def _matrix_sample_device(self, device: torch.device) -> torch.device:
+        """Return the device to sample parameters and build per-transform matrices on.
+
+        The host, whenever that cannot move an RNG draw. Building on the host lets ``_compose``
+        collapse one host-to-device copy per parameter into a single copy for the whole chain,
+        which is the bulk of a fused call on an accelerator.
+
+        Kornia's ``RandomRotation90`` is the one opt-out. Its ``build_matrix`` falls back to
+        ``torch.randint(..., device=params["_batch_size"].device)`` when ``k90`` is absent from
+        the sampled parameters, so the sampling device decides which RNG stream that draw
+        consumes. Every other adapter path derives its parameters from host RNG and is
+        unaffected by where the resulting tensor is constructed. Rather than reason about when
+        the fallback fires, a chain containing that transform keeps sampling on the image's
+        device and forgoes the optimisation.
+
+        Args:
+            device: The device the image being composed lives on.
+
+        Returns:
+            ``device`` itself when it is already the host, or when the chain contains a
+            transform whose sampling device would change an RNG draw; the host otherwise.
+
+        """
+        if device.type == "cpu":
+            return device
+        if any(_samples_on_the_matrix_device(tfm) for tfm in self.transforms):
+            return device
+        return torch.device("cpu")
 
     def _apply_grid(self, image: Tensor, acc: Tensor) -> tuple[Tensor, Tensor]:
         """Warp ``image`` by the composed matrix and return the warped image and grid.
@@ -4965,11 +5042,11 @@ def build_segments(
             # host data on cv2, where the native crop is the right choice.
             #
             # This is a win at training batch sizes and a loss at small ones. Measured on
-            # MPS against the passthrough it runs 0.48x at batch 8, 1.11x at 32 and 1.33x
-            # at 64 -- the crossover sits near 24-32. The batch-8 regression is the segment
-            # paying its own per-call matrix assembly, the same host-side cost that makes a
-            # fused device call 66% transfers; fixing that should remove the regression
-            # rather than move the crossover.
+            # MPS against the passthrough it runs 0.83x at batch 8, 1.17x at 32 and 1.39x
+            # at 64, so the crossover sits somewhere below 32. The remaining batch-8
+            # regression is the segment paying its own per-call matrix assembly: batching
+            # that chain's transfers (see _matrix_sample_device) moved batch 8 from 0.48x to
+            # 0.83x, which narrowed the regression without closing it.
             _flush_proj()
             _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
             _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
