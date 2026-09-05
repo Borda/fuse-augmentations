@@ -36,11 +36,23 @@ Outputs two lines::
 
 from __future__ import annotations
 
+import os
+
+# Thread counts must be pinned before numpy/torch/cv2 size their internal pools at
+# import time -- setting them later (e.g. via torch.set_num_threads alone) leaves
+# OpenCV's and OpenBLAS's pools free to contend with other processes on shared
+# GitHub-hosted runners, which was a measured source of run-to-run score noise.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
 import copy
 import statistics
 import time
 
 import albumentations as A
+import cv2
 import kornia.augmentation as K
 import numpy as np
 import torch
@@ -49,30 +61,44 @@ import torchvision.transforms.v2 as tv
 from fuse_aug import Compose as FuseCompose
 from fuse_aug import ReorderPolicy
 
-WARMUP_REPS: int = 10
-NUM_REPEATS: int = 50
+cv2.setNumThreads(1)
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
+
+WARMUP_REPS: int = 20
+NUM_REPEATS: int = 100
 _IMAGE_TENSOR: torch.Tensor = torch.zeros(1, 3, 256, 256)
 _IMAGE_NDARRAY: np.ndarray = np.zeros((256, 256, 3), dtype=np.uint8)
 
 
 def _bench(func: object) -> float:
-    """Return mean ms per call for BCHW tensor input (warmup + REPS timed repetitions)."""
+    """Return median ms per call for BCHW tensor input (warmup + REPS timed repetitions).
+
+    Median (not mean) so a single scheduler-jitter outlier among REPS calls can't swing the reported time -- the failure
+    mode that made single-mean timings on shared runners noisy enough to trip the CI perf-regression gate on unrelated
+    PRs.
+
+    """
     for _ in range(WARMUP_REPS):
         func(_IMAGE_TENSOR)  # type: ignore[operator]
-    t_start = time.perf_counter()
+    timings_ms: list[float] = []
     for _ in range(NUM_REPEATS):
+        t_start = time.perf_counter()
         func(_IMAGE_TENSOR)  # type: ignore[operator]
-    return (time.perf_counter() - t_start) / NUM_REPEATS * 1000.0
+        timings_ms.append((time.perf_counter() - t_start) * 1000.0)
+    return statistics.median(timings_ms)
 
 
 def _bench_albu(func: object) -> float:
-    """Return mean ms per call for Albumentations dict-input (warmup + REPS timed repetitions)."""
+    """Return median ms per call for Albumentations dict-input (warmup + REPS timed repetitions)."""
     for _ in range(WARMUP_REPS):
         func(image=_IMAGE_NDARRAY)  # type: ignore[operator]
-    t_start = time.perf_counter()
+    timings_ms: list[float] = []
     for _ in range(NUM_REPEATS):
+        t_start = time.perf_counter()
         func(image=_IMAGE_NDARRAY)  # type: ignore[operator]
-    return (time.perf_counter() - t_start) / NUM_REPEATS * 1000.0
+        timings_ms.append((time.perf_counter() - t_start) * 1000.0)
+    return statistics.median(timings_ms)
 
 
 # ---------------------------------------------------------------------------
