@@ -17,6 +17,7 @@ recursive-include src/fuse_augmentations/data/letters *.svg
 # Exclude build configs
 exclude *.yml
 exclude *.yaml
+exclude Makefile
 
 prune .git
 prune .github
