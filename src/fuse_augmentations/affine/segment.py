@@ -4963,6 +4963,13 @@ def build_segments(
             # "auto" is deliberately left on the passthrough: it resolves per call, the
             # device is unknown when segments are built, and its documented common case is
             # host data on cv2, where the native crop is the right choice.
+            #
+            # This is a win at training batch sizes and a loss at small ones. Measured on
+            # MPS against the passthrough it runs 0.48x at batch 8, 1.11x at 32 and 1.33x
+            # at 64 -- the crossover sits near 24-32. The batch-8 regression is the segment
+            # paying its own per-call matrix assembly, the same host-side cost that makes a
+            # fused device call 66% transfers; fixing that should remove the regression
+            # rather than move the crossover.
             _flush_proj()
             _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
             _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
