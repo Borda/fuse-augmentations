@@ -10,7 +10,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
+from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
 from fuse_augmentations.compose import FusedCompose as Compose
 from fuse_augmentations.targets import transform_mask
 
@@ -18,6 +18,28 @@ if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
 
 pytestmark = pytest.mark.integration
+
+
+def _half_grid_sample_works_on_cpu() -> bool:
+    """Return whether this torch build can run ``grid_sample`` on a half-precision CPU tensor.
+
+    Probed rather than compared against a version number: support arrived in a minor release, and the
+    supported floor (torch 2.2) raises ``RuntimeError: grid_sampler_2d_cpu not implemented for Half``.
+
+    """
+    try:
+        F.grid_sample(
+            torch.zeros(1, 1, 2, 2, dtype=torch.float16),
+            torch.zeros(1, 2, 2, 2, dtype=torch.float16),
+            align_corners=False,
+        )
+    except RuntimeError:
+        return False
+    return True
+
+
+#: Whether the half-precision image path can be exercised at all on this build.
+_HALF_GRID_SAMPLE_ON_CPU = _half_grid_sample_works_on_cpu()
 
 BATCH, CHANNELS, HEIGHT, WIDTH = 2, 3, 32, 32
 
@@ -338,6 +360,7 @@ class TestTransformMask:
         assert out.dtype == torch.float32, f"Expected float32 output dtype, got {out.dtype}"
 
 
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestAuxGeometryDtype:
     """Auxiliary coordinate routing keeps full geometric precision regardless of image dtype.
 
@@ -367,6 +390,7 @@ class TestAuxGeometryDtype:
             execution="torch",
         )
 
+    @pytest.mark.skipif(not _HALF_GRID_SAMPLE_ON_CPU, reason="torch build has no half-precision CPU grid_sample")
     def test_half_precision_image_does_not_round_box_geometry(self):
         """A float16 image routes its boxes through the same geometry a float32 image would.
 

@@ -28,7 +28,7 @@ import pytest
 import torch
 from torch.nn.functional import affine_grid, grid_sample
 
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
+from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
 from fuse_augmentations.affine.matrix import (
     crop_resize_matrix,
     inv3x3,
@@ -260,6 +260,7 @@ class TestFusedGeoCropKorniaEndToEnd:
         assert pipe.transform_matrix.shape == torch.Size([2, 3, 3])
 
 
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestAlbumentationsImageOnlyCropRouting:
     """Which route an image-only Albumentations crop takes, per execution engine.
 

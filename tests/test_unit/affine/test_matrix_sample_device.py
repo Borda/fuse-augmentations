@@ -12,8 +12,10 @@ The optimisation is only safe while it cannot move an RNG draw, which is what th
 
 from __future__ import annotations
 
+import pytest
 import torch
 
+from fuse_augmentations._compat import _TORCHVISION_V2_AVAILABLE
 from fuse_augmentations.affine.segment import _samples_on_the_matrix_device
 
 pytest_plugins: list[str] = []
@@ -99,6 +101,7 @@ class TestMatrixSampleDevice:
 class TestComposeIsUnchangedOnCpu:
     """The host path composes exactly as before, so CPU output cannot have moved."""
 
+    @pytest.mark.skipif(not _TORCHVISION_V2_AVAILABLE, reason="missing torchvision.transforms.v2")
     def test_seeded_cpu_output_is_reproducible_across_calls(self) -> None:
         """Two seeded runs of the same CPU pipeline agree bit for bit.
 

@@ -29,6 +29,25 @@ _MIN_MPS_PSNR_DB: dict[PipelineDtypeStr, float] = {
 _MIN_CPU_REFERENCE_PSNR_DB = 20.0
 
 
+def _mps_bfloat16_runs() -> bool:
+    """Return whether this build can hold a bfloat16 tensor on MPS.
+
+    torch 2.2, the supported floor, raises ``TypeError: BFloat16 is not supported on MPS``; the dtype arrived on the
+    Metal backend later. Probed rather than version-compared, so the guard follows the capability wherever it landed.
+
+    """
+    if not torch.backends.mps.is_available():
+        return False
+    try:
+        torch.zeros(1, dtype=torch.bfloat16, device="mps")
+    except TypeError:
+        return False
+    return True
+
+
+_MPS_BFLOAT16_AVAILABLE = _mps_bfloat16_runs()
+
+
 def _representative_pipeline(*, pipeline_dtype: PipelineDtypeStr | None = None) -> Compose:
     """Build a deterministic fused geometric and color pipeline for precision checks."""
     return Compose.from_params(
@@ -102,7 +121,16 @@ def test_default_pipeline_dtype_is_bit_identical() -> None:
 
 
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS is required for GPU low-precision coverage")
-@pytest.mark.parametrize("pipeline_dtype", ["bfloat16", "float16"])
+@pytest.mark.parametrize(
+    "pipeline_dtype",
+    [
+        pytest.param(
+            "bfloat16",
+            marks=pytest.mark.skipif(not _MPS_BFLOAT16_AVAILABLE, reason="this torch build has no bfloat16 on MPS"),
+        ),
+        "float16",
+    ],
+)
 def test_mps_pipeline_dtype_meets_documented_psnr_and_keeps_matrix_float32(
     pipeline_dtype: PipelineDtypeStr,
 ) -> None:

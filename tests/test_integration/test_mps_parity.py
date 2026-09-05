@@ -87,6 +87,42 @@ def _mps_pipeline_runs() -> bool:
 _MPS_PIPELINE_AVAILABLE = _mps_pipeline_runs()
 
 
+def _mps_bfloat16_runs() -> bool:
+    """Return whether this build can hold a bfloat16 tensor on MPS.
+
+    torch 2.2, the supported floor, raises ``TypeError: BFloat16 is not supported on MPS``; the dtype arrived on the
+    Metal backend later. Probed rather than version-compared, so the guard follows the capability wherever it landed.
+
+    """
+    if not _MPS_PIPELINE_AVAILABLE:
+        return False
+    try:
+        torch.zeros(1, dtype=torch.bfloat16, device="mps")
+    except TypeError:
+        return False
+    return True
+
+
+def _mps_compile_runs() -> bool:
+    """Return whether the inductor backend compiles this pipeline for MPS.
+
+    On torch 2.2 compiling the fused pipeline for Metal fails in the backend rather than producing a slower-but-correct
+    result, so the comparison against eager has nothing to compare. Probe with the same construction the test uses.
+
+    """
+    if not _MPS_PIPELINE_AVAILABLE:
+        return False
+    try:
+        Compose(_affine_colour_transforms(), compile=True).to("mps")(torch.zeros(2, 3, 32, 32, device="mps"))
+    except Exception:
+        return False
+    return True
+
+
+_MPS_BFLOAT16_AVAILABLE = _mps_bfloat16_runs()
+_MPS_COMPILE_AVAILABLE = _mps_compile_runs()
+
+
 @pytest.fixture
 def image() -> torch.Tensor:
     """Return a deterministic (2, 3, 32, 32) float32 image on CPU."""
@@ -122,6 +158,7 @@ class TestMPSParity:
 
         assert _max_abs_diff(on_device, reference) < 1e-4
 
+    @pytest.mark.skipif(not _MPS_COMPILE_AVAILABLE, reason="inductor cannot compile this pipeline for MPS")
     def test_compile_region_matches_eager_on_mps(self, image: torch.Tensor) -> None:
         """The whole-pipeline compile region stays numerically identical to eager on MPS."""
         eager = Compose(_affine_colour_transforms()).to("mps")(image.to("mps"))
@@ -129,6 +166,7 @@ class TestMPSParity:
 
         assert _max_abs_diff(compiled, eager) < 1e-5
 
+    @pytest.mark.skipif(not _MPS_BFLOAT16_AVAILABLE, reason="this torch build has no bfloat16 on MPS")
     def test_bfloat16_pipeline_stays_within_psnr_bound_on_mps(self, image: torch.Tensor) -> None:
         """The bfloat16 pipeline dtype stays within a documented PSNR bound of float32 on MPS."""
         float32 = Compose(_affine_colour_transforms()).to("mps")(image.to("mps"))

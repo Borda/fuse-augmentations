@@ -21,6 +21,17 @@ from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as albu
+    import cv2
+
+#: How far the NumPy render may sit from the tensor render, in ``uint8`` levels.
+#:
+#: One level is the quantisation of warping a float32 copy instead of the integer array, and that is
+#: what the two agree to once OpenCV 5 is installed. OpenCV 4 resamples ``uint8`` differently enough
+#: that the same fixture measures 4 levels -- verified by holding torch at 2.2, 2.3, 2.4, 2.5 and 2.6
+#: (4 levels throughout) and then moving only OpenCV on a current torch: 4.11.0.86 measures 4 and
+#: 5.0.0.93 measures 1. The oldest supported environment cannot avoid it, since OpenCV 5 needs
+#: numpy 2 and the minimum pin is numpy 1.26.
+MAX_INTENSITY_LEVELS = 1 if _ALBUMENTATIONS_AVAILABLE and int(cv2.__version__.split(".")[0]) >= 5 else 4
 
 pytestmark = [
     pytest.mark.integration,
@@ -83,7 +94,8 @@ class TestTargetParityWithTensorPath:
 
         The two are not required to be identical: the NumPy path warps the ``uint8`` array directly, as Albumentations
         does, while the tensor path warps a float32 copy and quantises afterwards. One level is the rounding, and a
-        larger gap would mean a genuinely different resample.
+        larger gap would mean a genuinely different resample -- except under OpenCV 4, whose own ``uint8`` resampler
+        differs from the float one by more than the quantisation; see ``MAX_INTENSITY_LEVELS``.
 
         """
         native = Compose(FIXED_AFFINE, data_keys=ALL_KEYS, execution="cv2")
@@ -92,7 +104,7 @@ class TestTargetParityWithTensorPath:
         image_native = native(**targets)["image"].astype(np.int16)
         image_tensor = tensor(**targets)["image"].astype(np.int16)
 
-        assert np.abs(image_native - image_tensor).max() <= 1
+        assert np.abs(image_native - image_tensor).max() <= MAX_INTENSITY_LEVELS
 
     def test_reported_matrix_matches(self, targets: dict[str, np.ndarray]) -> None:
         """``transform_matrix`` is populated on the NumPy path and equals the tensor path's matrix."""

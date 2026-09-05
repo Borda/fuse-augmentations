@@ -96,18 +96,19 @@ forward = letterbox_matrix(
 )
 point = torch.tensor([[[7.5, 3.25]]], dtype=torch.float64)
 recovered = transform_keypoints(transform_keypoints(point, forward), inv3x3(forward))
-print(recovered.tolist())
+print([round(value, 12) for value in recovered.flatten().tolist()])
 ```
 
 ```
 torch.Size([1, 3, 32, 32]) 1
-[[[7.5, 3.25]]]
+[7.5, 3.25]
 ```
 
 - **One resample, not two.** The letterbox is a `CROP_RESIZE_FIXED` op, so a geometric run in front of it composes into a single matrix warped once, straight from the source canvas to the letterboxed one — the `1` printed above is the segment count. `return_matrix=True` then hands back the whole chain (`M_letterbox @ M_geo`), not the letterbox alone.
 - **Ordering.** The letterbox is placed after the geometry and before any `brightness`/`contrast`, because the crop-resize category is a reorder barrier and a colour op buffered ahead of it would be flushed between the geometric run and the letterbox, splitting the fusion. A colour op in the same call therefore also acts on the pad region.
 - **`allow_upscale=False`** caps the ratio at `1.0`, so a source smaller than the canvas is padded rather than magnified.
 - **Padding is integer and floor-halved.** An odd slack puts the extra pixel on the right or the bottom, matching a resize-then-pad implementation pixel for pixel.
+- **Rounded before printing.** Exact here means the map inverts without resampling, not that the float64 round trip is bit-identical: composing and inverting leaves the last bits to the linear algebra build in use, so the example rounds rather than printing a bit pattern that differs between PyTorch versions.
 - **`letterbox_matrix` / `letterbox_geometry`** expose the same fit as data, computed from sizes alone. An evaluation loop that no longer has the pipeline can recompute the matrix and invert it with `inv3x3`.
 - **A letterbox on its own returns no matrix.** `return_matrix=True` gives `None` for a letterbox-only pipeline — a crop-resize segment reports no matrix — so use `letterbox_matrix()` there. With a geometric run in front, the fused segment does report the composed chain.
 - Backend-free mode only; `backend=` raises rather than accepting and ignoring the argument.
