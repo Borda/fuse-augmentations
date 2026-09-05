@@ -4951,9 +4951,22 @@ def build_segments(
             # resizes the image only and silently desyncs masks/boxes/keypoints, so a
             # CropResizeSegment (which the Albumentations adapter fully supports for
             # CROP_RESIZE_FIXED) is emitted instead to route aux to the output size.
+            #
+            # The image-only passthrough exists to keep the crop bit-exact: it runs
+            # Albumentations' own crop rather than our resampler. That trade only pays while
+            # the rest of the chain is bit-exact too. Under execution="torch" the image is
+            # already warped by grid_sample, so a native crop buys parity the chain has
+            # given up -- and still costs a device-to-host round trip for the whole batch
+            # per call, measured at 2.95x against the cv2 engine on an L4 at batch 64. So
+            # "torch" routes the crop through the segment as well.
+            #
+            # "auto" is deliberately left on the passthrough: it resolves per call, the
+            # device is unknown when segments are built, and its documented common case is
+            # host data on cv2, where the native crop is the right choice.
             _flush_proj()
             _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
             _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
+            keep_crop_native = use_numpy and not route_crop_aux and execution != "torch"
             if per_transform_padding:
                 _flush_geo()
                 crop_padding_mode = _transform_border_mode(adapter, transform)
@@ -4964,7 +4977,7 @@ def build_segments(
                         stacklevel=3,
                     )
                     segments.append(_OpaqueBorderModeTransform(transform))
-                elif use_numpy and not route_crop_aux:
+                elif keep_crop_native:
                     segments.append(transform)
                 else:
                     segments.append(
@@ -4982,7 +4995,9 @@ def build_segments(
                 continue
             if use_numpy:
                 _flush_geo()
-                if route_crop_aux:
+                if keep_crop_native:
+                    segments.append(transform)
+                else:
                     segments.append(
                         CropResizeSegment(
                             transform=transform,
@@ -4995,8 +5010,6 @@ def build_segments(
                             fill=fill,
                         )
                     )
-                else:
-                    segments.append(transform)
                 continue
             if current_geo:
                 segments.append(

@@ -258,3 +258,89 @@ class TestFusedGeoCropKorniaEndToEnd:
         assert out.shape == torch.Size([2, 3, 48, 48])
         assert pipe.transform_matrix is not None
         assert pipe.transform_matrix.shape == torch.Size([2, 3, 3])
+
+
+class TestAlbumentationsImageOnlyCropRouting:
+    """Which route an image-only Albumentations crop takes, per execution engine.
+
+    The image-only fallback runs Albumentations' own crop instead of ``CropResizeSegment``, which keeps it
+    bit-exact against the reference. That trade only pays while the rest of the chain is bit-exact too. Under
+    ``execution="torch"`` the image is already warped by ``grid_sample``, so the native crop buys parity the
+    chain has given up -- and still pays a device-to-host round trip for the whole batch on every call, which
+    measured 2.95x against the cv2 engine on an L4 at batch 64.
+
+    """
+
+    @staticmethod
+    def _chain() -> list[object]:
+        """Return a rotate-then-crop chain, the shape the GPU benchmark exercises."""
+        import albumentations as albu
+
+        return [
+            albu.Rotate(limit=(20.0, 20.0), p=1.0),
+            albu.RandomResizedCrop(size=(48, 48), scale=(0.6, 0.6), ratio=(1.0, 1.0), p=1.0),
+        ]
+
+    @staticmethod
+    def _segment_names(pipe: object) -> list[str]:
+        """Return the class name of each planned segment."""
+        return [type(seg).__name__ for seg in pipe._segments]
+
+    def test_cv2_keeps_the_native_crop(self) -> None:
+        """``execution="cv2"`` leaves an image-only crop on the passthrough, staying bit-exact."""
+        from fuse_augmentations import Compose
+
+        names = self._segment_names(Compose(self._chain(), execution="cv2"))
+
+        assert names == ["AlbuFusedAffineSegment", "_PassthroughSegment"]
+
+    def test_torch_routes_the_crop_through_the_segment(self) -> None:
+        """``execution="torch"`` routes the crop, because that chain already resamples with grid_sample."""
+        from fuse_augmentations import Compose
+
+        names = self._segment_names(Compose(self._chain(), execution="torch"))
+
+        assert names == ["AlbuFusedAffineSegment", "CropResizeSegment"]
+
+    def test_auto_keeps_the_native_crop(self) -> None:
+        """``execution="auto"`` stays on the passthrough: the device is unknown when segments are built.
+
+        ``"auto"`` resolves per call, so a build-time decision cannot know whether this pipeline will see host
+        or accelerator data. Its documented common case is host data on cv2, where the native crop is right, so
+        the conservative branch is the one it takes -- an accelerator ``"auto"`` call still pays the round trip.
+
+        """
+        from fuse_augmentations import Compose
+
+        names = self._segment_names(Compose(self._chain(), execution="auto"))
+
+        assert names == ["AlbuFusedAffineSegment", "_PassthroughSegment"]
+
+    @pytest.mark.parametrize("execution", ["cv2", "torch", "auto"])
+    def test_an_auxiliary_target_routes_the_crop_on_every_engine(self, execution: str) -> None:
+        """Declaring an auxiliary target still routes the crop whatever the engine.
+
+        This is the pre-existing rule and the new engine branch must not narrow it: a passthrough crop resizes
+        the image only and silently desyncs boxes, so the segment is mandatory here regardless of execution.
+
+        """
+        from fuse_augmentations import Compose
+
+        names = self._segment_names(Compose(self._chain(), data_keys=["input", "bbox_xyxy"], execution=execution))
+
+        assert names == ["AlbuFusedAffineSegment", "CropResizeSegment"]
+
+    def test_the_routed_crop_still_produces_the_target_size(self) -> None:
+        """The rerouted crop is not merely planned differently -- it renders at the crop's output size."""
+        import numpy as np
+
+        from fuse_augmentations import Compose
+
+        image = torch.from_numpy(
+            np.random.default_rng(0).integers(0, 256, size=(96, 96, 3), dtype=np.uint8),
+        )
+        batch = image.permute(2, 0, 1).unsqueeze(0).float() / 255.0
+
+        out = Compose(self._chain(), execution="torch")(batch)
+
+        assert out.shape == torch.Size([1, 3, 48, 48])
