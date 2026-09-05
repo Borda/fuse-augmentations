@@ -13,20 +13,28 @@ different.
 
 from __future__ import annotations
 
-import albumentations as albu
 import numpy as np
 import pytest
 
 from fuse_augmentations import Compose
+from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
 
-pytestmark = pytest.mark.integration
+if _ALBUMENTATIONS_AVAILABLE:
+    import albumentations as albu
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="albumentations required"),
+]
 
 HEIGHT = WIDTH = 48
 ALL_KEYS = ["input", "bbox_xyxy", "keypoints", "mask", "rboxes"]
 
 #: A single affine with fixed parameters, so a comparison between the two entry points is about how
-#: each renders and routes rather than about what either sampled.
-FIXED_AFFINE = [albu.Affine(rotate=(13.0, 13.0), scale=(1.07, 1.07), p=1.0)]
+#: each renders and routes rather than about what either sampled. Constructed at import, so it needs
+#: the same guard the import does: a module-level ``skipif`` marks the tests skipped but does not stop
+#: the module body from running.
+FIXED_AFFINE = [albu.Affine(rotate=(13.0, 13.0), scale=(1.07, 1.07), p=1.0)] if _ALBUMENTATIONS_AVAILABLE else []
 
 
 @pytest.fixture

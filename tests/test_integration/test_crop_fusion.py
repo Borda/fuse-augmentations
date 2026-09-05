@@ -263,11 +263,11 @@ class TestFusedGeoCropKorniaEndToEnd:
 class TestAlbumentationsImageOnlyCropRouting:
     """Which route an image-only Albumentations crop takes, per execution engine.
 
-    The image-only fallback runs Albumentations' own crop instead of ``CropResizeSegment``, which keeps it
-    bit-exact against the reference. That trade only pays while the rest of the chain is bit-exact too. Under
-    ``execution="torch"`` the image is already warped by ``grid_sample``, so the native crop buys parity the
-    chain has given up -- and still pays a device-to-host round trip for the whole batch on every call, which
-    measured 2.95x against the cv2 engine on an L4 at batch 64.
+    The image-only fallback runs Albumentations' own crop instead of ``CropResizeSegment``, which keeps it bit-exact
+    against the reference. That trade only pays while the rest of the chain is bit-exact too. Under
+    ``execution="torch"`` the image is already warped by ``grid_sample``, so the native crop buys parity the chain has
+    given up -- and still pays a device-to-host round trip for the whole batch on every call, which measured 2.95x
+    against the cv2 engine on an L4 at batch 64.
 
     """
 
@@ -305,9 +305,9 @@ class TestAlbumentationsImageOnlyCropRouting:
     def test_auto_keeps_the_native_crop(self) -> None:
         """``execution="auto"`` stays on the passthrough: the device is unknown when segments are built.
 
-        ``"auto"`` resolves per call, so a build-time decision cannot know whether this pipeline will see host
-        or accelerator data. Its documented common case is host data on cv2, where the native crop is right, so
-        the conservative branch is the one it takes -- an accelerator ``"auto"`` call still pays the round trip.
+        ``"auto"`` resolves per call, so a build-time decision cannot know whether this pipeline will see host or
+        accelerator data. Its documented common case is host data on cv2, where the native crop is right, so the
+        conservative branch is the one it takes -- an accelerator ``"auto"`` call still pays the round trip.
 
         """
         from fuse_augmentations import Compose
