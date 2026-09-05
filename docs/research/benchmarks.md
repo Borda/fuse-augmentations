@@ -24,7 +24,7 @@ The figures are measurements for the environment below, not performance promises
     | CPU batch semantics  | Albumentations applies CPU images sequentially within each batch |
     | CUDA                 | Unavailable                                                      |
 
-    The CPU model string was not available inside the execution environment. The full latency-and-batch run detected CPU only, so this page makes no current MPS or CUDA latency claim. The separate memory script did execute MPS paths, but its MPS counter is not a reliable transient-peak measurement; see [Memory-counter boundaries](#memory-counter-boundaries).
+    The CPU model string was not available inside the execution environment. The full latency-and-batch run detected CPU only, so this page makes no MPS latency claim. The separate memory script did execute MPS paths, but its MPS counter is not a reliable transient-peak measurement; see [Memory-counter boundaries](#memory-counter-boundaries). CUDA was measured separately on **September 5, 2026** on different hardware; see [CUDA batch sweep](#cuda-batch-sweep-september-5-2026).
 
 ## Fixed-bank score: 1.7861x
 
@@ -129,6 +129,69 @@ Fusion reduced the profiler-reported peak tensor memory in every sampled CPU Kor
 - MPS reports an allocation delta, not a reliable transient peak. Its full-run records are preserved as diagnostics, not summarized as a memory claim.
 - CUDA was unavailable and has a different allocator counter.
 - Allocation counts depend on the profiler and dependency versions. They can increase even when peak tensor memory falls.
+
+## CUDA batch sweep (September 5, 2026)
+
+The July run had no GPU, so every figure above is CPU. This section is a separate, later run on different hardware and reports the first CUDA numbers this project has: `experiments/bench_gpu_batch.py --batch-sizes 1 8 32 64 --warmup 10 --measure 30`, 308 measured cases and 28 recorded skips.
+
+??? abstract "CUDA test environment"
+
+    | Component            | Value                                              |
+    | -------------------- | -------------------------------------------------- |
+    | Accelerator          | NVIDIA L4                                          |
+    | Operating system     | Linux x86_64 (Google Colab)                        |
+    | Python               | 3.13.15                                            |
+    | `fuse-augmentations` | 0.12.0.dev0                                        |
+    | PyTorch              | 2.11.0+cu128                                       |
+    | Input                | 256 x 256 images; tensor inputs are BCHW `float32` |
+    | Device residency     | Device tensors are allocated on the device         |
+
+    Native Albumentations has no GPU path and is recorded as a skip on CUDA rather than a slow row. The 28 skips are those cases.
+
+**Read the device-residency row before the numbers.** `torch.rand(..., device=cuda)` allocates the input on the GPU, so no host-to-device copy falls inside the timed region. These are the device path's best case; any workload that starts on the host pays a transfer on top.
+
+### Engine choice on device
+
+This package's CPU engine (`execution="cv2"`, NumPy) against its own device engine (`execution="torch"`, one batched `grid_sample`), median ms:
+
+| sequence            | b32 CPU | b32 CUDA | b64 CPU | b64 CUDA | b64 result       |
+| ------------------- | ------- | -------- | ------- | -------- | ---------------- |
+| `a01_rotate`        | 7.59    | 7.80     | 15.18   | 14.64    | tie              |
+| `b02_geom_3`        | 12.88   | 9.18     | 25.88   | 17.82    | CUDA 1.45x       |
+| `b04_geom_5`        | 13.20   | 12.86    | 25.82   | 25.23    | tie              |
+| `b05_geom_5_warp`   | 26.26   | 26.62    | 59.63   | 52.64    | CUDA 1.13x       |
+| `d02_mixed_g3c3`    | 49.33   | 107.07   | 97.90   | 197.88   | CUDA 2.02x worse |
+| `d03_mixed_g4c3`    | 49.24   | 112.51   | 99.46   | 206.75   | CUDA 2.08x worse |
+| `e01_geo_crop_fuse` | 18.61   | 38.85    | 36.33   | 107.24   | CUDA 2.95x worse |
+
+No batch size separates the wins from the losses; the split is by what the chain contains. This is the measurement behind ADR-005 keeping host data on cv2 rather than routing it to the device.
+
+### Fusion value on device, by backend
+
+Fused against that backend's own native implementation, on CUDA:
+
+| backend     | result                                                                               |
+| ----------- | ------------------------------------------------------------------------------------ |
+| Kornia      | 1.09x-2.79x faster on multi-op chains; 0.83x-0.89x on the single-op `a01_rotate`     |
+| TorchVision | 0.26x-0.93x — slower nearly everywhere, one exception at `b05_geom_5_warp` b64 1.23x |
+
+Fusion needs more than one operation to fuse, which is why the single-op rotate loses. The TorchVision device result is not explained by that and is an open item.
+
+### Why three sequences lose 2x-3x
+
+One cause. Every losing sequence contains exactly one **passthrough segment**; every tying sequence contains none.
+
+`AlbumentationsAdapter.call_nonfused` performs one device-to-host copy, `batch` sequential host-side transforms, and one host-to-device copy — per passthrough segment, per call. On CUDA that is a full round trip of the batch plus a device sync, which is why the penalty grows with batch while the fused warp gets cheaper per image.
+
+| sequence            | segments                                   | the passthrough is   |
+| ------------------- | ------------------------------------------ | -------------------- |
+| `b04_geom_5`        | 1: fused affine                            | none                 |
+| `d02` / `d03`       | 3: fused affine, fused colour, passthrough | `HueSaturationValue` |
+| `e01_geo_crop_fuse` | 2: fused affine, passthrough               | `RandomResizedCrop`  |
+
+Geometry and colour fuse correctly. Two Albumentations transforms have no fused segment, and one passthrough is enough to erase the warp's advantage.
+
+The crop case is backend-asymmetric rather than simply missing: the same rotate-then-`RandomResizedCrop` chain plans to a single `_FusedGeoCropSegment` on Kornia and TorchVision, but splits into a fused affine plus a passthrough on Albumentations. That is why `e01` shows Kornia fused winning 2.79x and Albumentations fused losing 2.95x on the same benchmark row.
 
 ## Reproduce this run
 
