@@ -189,9 +189,15 @@ One cause. Every losing sequence contains exactly one **passthrough segment**; e
 | `d02` / `d03`       | 3: fused affine, fused colour, passthrough | `HueSaturationValue` |
 | `e01_geo_crop_fuse` | 2: fused affine, passthrough               | `RandomResizedCrop`  |
 
-Geometry and colour fuse correctly. Two Albumentations transforms have no fused segment, and one passthrough is enough to erase the warp's advantage.
+Geometry and colour fuse correctly. One passthrough is enough to erase the warp's advantage — but the two passthroughs arrive for different reasons, and only one of them is a limitation of what can be fused.
 
-The crop case is backend-asymmetric rather than simply missing: the same rotate-then-`RandomResizedCrop` chain plans to a single `_FusedGeoCropSegment` on Kornia and TorchVision, but splits into a fused affine plus a passthrough on Albumentations. That is why `e01` shows Kornia fused winning 2.79x and Albumentations fused losing 2.95x on the same benchmark row.
+`HueSaturationValue` is registered `POINTWISE`: reorderable, but non-linear in RGB, so it composes into neither a `FusedColorSegment` colour matrix nor a per-channel LUT. It has no fused segment because it cannot have one in the current design. That is a documented limitation, not a gap.
+
+`RandomResizedCrop` is different, and the first version of this section got it wrong. It **is** registered (`CROP_RESIZE_FIXED`) and it **does** fuse — but only when the call carries an auxiliary target. The `route_crop_aux` path sends a crop through a `CropResizeSegment` when a mask, box or keypoint target is present, because routing those through the crop is the reason the segment exists; an image-only call falls back to the passthrough. This benchmark is image-only, so it measures the fallback. The same chain with `data_keys=["input", "mask"]` plans to `AlbuFusedAffineSegment` + `CropResizeSegment` with no passthrough at all.
+
+The backend asymmetry is real but narrower than "unregistered": Kornia and TorchVision fuse crop **into the preceding affine** as a single `_FusedGeoCropSegment` whether or not auxiliary targets are present, while Albumentations produces two segments at best and a passthrough when the call is image-only. That is why `e01` shows Kornia fused winning 2.79x and Albumentations fused losing 2.95x on the same benchmark row.
+
+Whether the image-only fallback should extend to the device path is an open question rather than a settled defect. The gating was chosen on CPU, where the passthrough is a copy; on CUDA the same fallback is a round trip, which is what the `e01` row costs.
 
 ## Reproduce this run
 

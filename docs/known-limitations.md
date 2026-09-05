@@ -70,6 +70,13 @@ An unregistered transform can execute through its native backend, but "passthrou
 - Albumentations passthrough on the tensor path receives HWC float data derived from the BCHW tensor. Operations designed around uint8 magnitude, including some noise, fog, and compression transforms, may behave differently or become ineffective.
 - `substitute_passthrough=True` is explicitly behavior-changing. The current substitution can replace Albumentations Gaussian blur with a Kornia blur that has different kernels, borders, and randomness.
 
+Two common Albumentations transforms produce a passthrough for reasons worth knowing before you plan a chain around them:
+
+- `HueSaturationValue` always does. It is registered `POINTWISE`: reorderable, but non-linear in RGB, so it composes into neither a color matrix nor a per-channel lookup table. There is no fused segment for it and, in the current design, cannot be one. A chain of geometry plus `HueSaturationValue` therefore fuses the geometry and then leaves the tensor for the color step.
+- `RandomResizedCrop` and `RandomSizedCrop` do so **only on image-only calls**. When the call carries a mask, box, or keypoint target, the crop routes through a `CropResizeSegment` and no passthrough appears. Without an auxiliary target the crop runs natively instead, which keeps it bit-exact against Albumentations at the cost of a segment break. This is a parity choice, not a missing registration — but it means the same chain plans differently depending on whether you declared `data_keys`, and the image-only plan is the slower one on an accelerator.
+
+Kornia and TorchVision fuse a crop into the preceding affine as a single segment regardless of auxiliary targets, so a plan comparison across backends is not a like-for-like comparison of the same chain.
+
 ## Reordering changes semantics
 
 `ReorderPolicy.POINTWISE` moves color and pointwise operations across geometric operations to create larger fusion groups. Pointwise math does not generally commute with finite-image warps because padding, interpolation, and clipping make order observable.
@@ -102,6 +109,10 @@ Fast paths and different batch sizes can consume random draws differently. For s
 `antialias=True` is limited to aggressive crop-resize downscaling. It depends on Kornia's Gaussian blur and silently falls back to the unfiltered warp when Kornia is absent. The decision and blur strength are batch-global: one strongly downscaled sample can cause the whole batch to be filtered. Scale estimation also reads device values into Python, which can synchronize accelerator work.
 
 Passthrough operations are particularly important on accelerators. A native CPU-only passthrough can erase the advantage of a fused GPU segment through device transfers. Inspect the plan and benchmark the complete pipeline, not only the fused warp.
+
+That cost is now measured rather than asserted. On an NVIDIA L4, chains carrying exactly one passthrough ran 2.0x to 3.0x slower on CUDA than the same chains on the CPU engine, while chains with no passthrough tied or won — and the penalty grew with batch size, because `call_nonfused` copies the whole batch to the host and back once per passthrough per call. One passthrough is enough to erase a fused warp's advantage.
+
+Fusion's value on an accelerator is also backend-dependent, and not in the direction the CPU results suggest. In the same run, fused Kornia beat native Kornia on multi-operation chains, while fused TorchVision lost to native TorchVision almost everywhere on CUDA despite planning to a single segment with no passthrough at all. The cause is fixed per-call host-side overhead rather than warp work: fused timings barely move with batch size (a single rotate cost 1.0 ms at batch 1 and 2.6 ms at batch 64), so on a device fast enough to make the warps nearly free, that fixed cost decides the comparison. Do not assume a CPU speedup transfers to a GPU; measure on the deployment device. See [Benchmarks](research/benchmarks.md#cuda-batch-sweep-september-5-2026).
 
 ## Introspection limits
 
