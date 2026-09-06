@@ -9,7 +9,7 @@ A segmentation pipeline transforms two tensors that must agree pixel for pixel a
 
 !!! danger "Only an allowlisted transform sequence is safe here"
 
-    An unregistered spatial transform can move the image while leaving the mask untouched, and the runtime warning list is not a complete detector. Read [Known limitations](../known-limitations.md) before routing any target. The direct-parameter path used on this page is safe; an arbitrary backend transform is not.
+    With `data_keys`, an unknown or unclassified spatial transform is refused before any segment executes, so the image and mask cannot silently diverge. Image-only passthroughs remain a separate native contract. Read [Known limitations](../known-limitations.md) before routing any target; the direct-parameter path used on this page is safe.
 
 <!--phmdoctest-share-names-->
 
@@ -52,9 +52,9 @@ print(sorted(set(mask_out.unique().tolist())))
 
 The first key must be `"input"`, naming the image. Remaining keys name the positional targets in order. `mask_interpolation="nearest"` is what keeps class indices discrete — bilinear sampling would invent label `1.5` on every boundary pixel.
 
-## Masks always pad with zero
+## Mask fill is independent of image padding
 
-Images can pad with zeros, border replication, or reflection. Masks do not follow that setting: they always pad with zero, regardless of the image padding mode.
+Images can pad with zeros, border replication, or reflection. Masks use their own scalar `mask_fill`, which defaults to `0`, regardless of the image padding mode. Set `mask_fill` to a finite dtype-compatible background or ignore value when zero is not valid.
 
 ```python
 torch.manual_seed(5)
@@ -82,9 +82,9 @@ print(sorted(set(rotated_mask.unique().tolist())))
 
 </details>
 
-The input mask was class `1` everywhere. After a 25-degree rotation the corners sample outside the original extent and come back as `0`, even though the image used reflection padding.
+The input mask was class `1` everywhere. With the default `mask_fill=0`, corners sample outside the original extent and come back as `0`, even though the image used reflection padding.
 
-That is correct when `0` is your background class. It is a silent labelling bug when `0` means something else. In that case remap your classes so background is zero, pad and crop outside the package, or avoid transforms that sample beyond the image extent.
+That is correct when `0` is your background class. If another value represents background or ignore, pass it as `mask_fill` and keep nearest interpolation for hard labels.
 
 ## Continuous image targets
 

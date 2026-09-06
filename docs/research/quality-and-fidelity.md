@@ -237,15 +237,15 @@ Images and targets are aligned only when every coordinate-changing operation is 
 
 !!! danger "Unknown spatial passthroughs can desynchronize targets"
 
-    With `data_keys`, an unknown TorchVision crop or resize can transform the image while leaving the mask, boxes, or keypoints unchanged. `RandomCrop`, `CenterCrop`, and `Resize` reproduced this failure. Treat an `Unknown ... SPATIAL_KERNEL` warning as unsafe in a multi-target pipeline until the transform is explicitly supported or refused.
+    With `data_keys`, an unknown or unclassified spatial transform is refused before any segment executes, preventing the image/target divergence that an unsupported crop or resize could cause. Image-only passthroughs remain a separate native contract; inspect an `Unknown ... SPATIAL_KERNEL` warning before relying on that path.
 
 Additional target boundaries:
 
-- Masks use the same geometric grid, but mask padding is fixed to zero even when image padding uses another mode.
+- Masks use the same geometric grid, but their independent `mask_fill` (default `0`) applies even when image padding uses another mode.
 - Nearest-neighbor masks preserve hard labels and are intentionally detached from autograd.
 - Bilinear masks require floating-point inputs and retain a gradient path; they mix values at boundaries.
 - Boxes and keypoints are dense fixed-size tensors. The package does not clip boxes, filter invalid or low-visibility instances, propagate labels, or manage visibility flags.
-- Unknown coordinate-changing transforms are guarded by a finite class-name list, not by a complete structural capability check.
+- Unknown or unclassified coordinate-changing transforms are refused during target-aware preflight; the image-only passthrough path still has no structural guarantee about an unknown operation.
 
 For segmentation and detection, test the image and every target together. Do not validate the image path in isolation.
 

@@ -18,7 +18,7 @@ You keep the readable pipeline: rotate, scale, shear, translate, flip. The engin
 
 > [!WARNING]
 >
-> Use auxiliary targets only with explicitly supported spatial transforms. An unknown crop, resize, or other spatial passthrough can modify the image while leaving a mask, box, or keypoint tensor stale. Treat every `Unknown ... SPATIAL_KERNEL barrier` warning as unsafe when `data_keys` is present.
+> Use auxiliary targets only with explicitly supported spatial transforms. With `data_keys` present, an unknown or unclassified spatial passthrough is rejected before any segment executes, so the image and targets cannot silently diverge. Image-only calls may still run such a transform as a native passthrough; inspect every `Unknown ... SPATIAL_KERNEL barrier` warning before relying on it.
 
 ## 🔄 The problem: every warp resamples the image
 
@@ -95,11 +95,14 @@ See [three fixed recipes for each of Kornia, TorchVision, and Albumentations](ht
 | Flexible construction  | Native numeric ranges, Kornia transforms, TorchVision transforms, Albumentations transforms, or a mixed-backend list.                                                                                                |
 | Portable configuration | Frozen `TransformSpec` values resolve a declarative pipeline against a chosen backend with strict unsupported-operation handling.                                                                                    |
 | Auxiliary coordinates  | Masks, dense xyxy/xywh boxes, and dense keypoints can follow supported fused matrices, subject to the safety limits below.                                                                                           |
+| Ragged detection       | `augment_detection_batch` adapts a `FusedCompose` with `data_keys=["input", "bbox_xyxy"]` to one TorchVision-style target mapping per image, including clipping and aligned filtering.                               |
 | NumPy bridges          | HWC/BHWC NumPy ↔ BCHW torch converters and NumPy output are available; conversion to NumPy detaches and moves data to CPU.                                                                                           |
 | Execution controls     | Albumentations cv2 or torch execution, Kornia-dependent downscale antialiasing, interpolation, padding, and color clipping policies.                                                                                 |
 | Precision and compile  | Optional `torch.compile` of warp/color/LUT cores on non-CPU paths; opt-in `pipeline_dtype="bfloat16"\|"float16"` low-precision cores with matrices and parameter sampling kept in float32/64, no accuracy guarantee. |
 | Plan inspection        | Human-readable plans, structured descriptors, a warp-saving estimate, and the last matrix-producing segment are exposed.                                                                                             |
 | Training integration   | Pipelines are `nn.Module` objects and have tested pickle/serialization paths for common worker use.                                                                                                                  |
+
+`antialias=True` is opt-in for aggressive crop-resize downscales. It evaluates each sample's scale and prefilters only samples that need it; enabling the option requires Kornia and raises `ImportError` during pipeline construction when that optional dependency is missing. The default remains unfiltered and does not require Kornia.
 
 ### Built-in live-transform coverage
 
@@ -271,8 +274,8 @@ Registered fused geometry can route:
 
 Important boundaries:
 
-- unknown spatial transforms may desynchronize image and targets;
-- mask padding is always zero even when image padding is border/reflection;
+- unknown or unclassified spatial transforms with auxiliary targets are rejected before execution; image-only passthroughs still need review;
+- mask padding uses the independent scalar `mask_fill` (default `0`) even when image padding is border/reflection;
 - nearest masks are intentionally detached; bilinear requires floating soft masks;
 - boxes are AABB-wrapped after rotation but are not clipped or filtered;
 - labels, visibility, ragged instances, invalid-box removal, and keypoint validity are application responsibilities;
@@ -285,13 +288,13 @@ For detection and segmentation, validate every transform class and warning befor
 - `fusion_plan` describes the current segment structure.
 - `fusion_plan_descriptors` provides structured, serializable segment metadata.
 - `n_warps_saved` is a plan estimate, not a literal native interpolation counter for exact operations.
-- `return_matrix=True` and `transform_matrix` expose the **last matrix-producing segment**, not an automatic whole-pipeline matrix across backend, projective, crop, or passthrough boundaries.
+- `return_matrix=True` and `transform_matrix` expose the actual forward pixel-centre matrix from the **last supported matrix-producing segment**. Fused affine/projective, exact D4/flip/quarter-turn, and direct deterministic `letterbox` segments publish a `(B, 3, 3)` matrix; it is not an automatic whole-pipeline matrix across backend, projective, crop, or passthrough boundaries.
 
 Use per-call matrix return when output and transform provenance must stay paired.
 
 ### Test-time de-augmentation
 
-For one fused affine or projective geometric segment, pass the matrix returned by the same call to `inverse` to map a prediction back into the original frame. This pairing is safe for concurrent calls; `inverse` deliberately does not read the mutable `transform_matrix` property.
+For one fused affine or projective geometric segment, pass the matrix returned by the same call to `inverse` to map a prediction back into the original frame. Exact and deterministic letterbox matrices are available for coordinate recovery through the target helpers, while the image inverse remains narrower. This pairing is safe for concurrent calls; `inverse` deliberately does not read the mutable `transform_matrix` property.
 
 ```python
 import torch
@@ -307,6 +310,8 @@ assert prediction_original.shape == images.shape
 ```
 
 With `data_keys`, pass the augmented auxiliary targets in the same positional order; masks use the matching sampling grid and boxes/keypoints use the inverse pixel matrix. Keypoints and masks recover to sampling precision, but bounding boxes are axis-aligned: a forward-then-inverse box is exact only for axis-aligned transforms (flip, scale, translation) and inflates under a rotation, shear, or projective warp. `inverse` raises instead of guessing for crop-resize (cropped pixels are lost), color/LUT/blur or passthrough segments, exact-only segments, multiple segments, or a missing paired matrix. It is geometric-only and cannot recover values discarded by interpolation or padding.
+
+For ragged detector targets, import `augment_detection_batch` from the package root. It requires a pipeline whose `data_keys` are exactly `["input", "bbox_xyxy"]`, accepts one mapping per image with floating `boxes` and int64 `labels`, and returns new mappings after pixel-edge clipping and aligned filtering. See [Detection and keypoints](docs/applications/detection-and-keypoints.md#augment-a-ragged-detector-batch) for optional fields and thresholds.
 
 ## 🎨 Synthetic datasets
 

@@ -49,7 +49,7 @@ The standard call accepts a BCHW tensor. Set `data_keys` when positional auxilia
 
 !!! danger "Use only explicitly supported spatial transforms with auxiliary targets"
 
-    The runtime refusal policy is a finite class-name list. An unknown crop, resize, or custom spatial transform can modify the image while leaving masks, boxes, or keypoints stale. Treat every `Unknown ... SPATIAL_KERNEL barrier` warning as unsafe with `data_keys`. Read [Auxiliary targets](../guides/auxiliary-targets.md) before using this path for training data.
+    With auxiliary `data_keys`, an unknown or unclassified spatial transform is rejected before any segment executes. Image-only calls may use native passthrough, so review every `Unknown ... SPATIAL_KERNEL barrier` warning. Read [Auxiliary targets](../guides/auxiliary-targets.md) before using this path for training data.
 
 ```python
 import torch
@@ -84,6 +84,8 @@ image_out, mask_out, boxes_out, keypoints_out = pipe(
 
 An image-only Albumentations pipeline additionally accepts `pipe(image=hwc_array)` and returns an Albumentations-style dictionary. Auxiliary keyword keys are not supported on that native NumPy path; use tensor inputs and `data_keys` instead.
 
+For detector batches whose per-image annotations are ragged, use the package-root [`augment_detection_batch`](../applications/detection-and-keypoints.md#augment-a-ragged-detector-batch) boundary rather than padding targets in application code.
+
 ## Inspect a pipeline
 
 ```python
@@ -102,7 +104,7 @@ fused ('RandomRotation', 'RandomHorizontalFlip', 'RandomAffine') 2
 
 </details>
 
-`fusion_plan`, `fusion_plan_descriptors`, and `n_warps_saved` describe the constructed plan. `transform_matrix` and `return_matrix=True` report only the most recent call's **last matrix-producing segment**, not a whole-pipeline composition.
+`fusion_plan`, `fusion_plan_descriptors`, and `n_warps_saved` describe the constructed plan. `transform_matrix` and `return_matrix=True` report the actual forward pixel-centre matrix from the most recent call's **last supported matrix-producing segment**. Fused affine/projective, exact D4/flip/quarter-turn, and direct deterministic `letterbox` segments publish it; it is not a whole-pipeline composition.
 
 ## Constructor options that change semantics
 
@@ -157,3 +159,10 @@ The converters are useful when conversion should be explicit rather than attache
         show_source: false
         members:
             - convert
+
+## Ragged detection adapter
+
+::: fuse_augmentations.augment_detection_batch
+    options:
+        show_root_heading: true
+        show_source: false

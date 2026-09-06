@@ -113,17 +113,16 @@ class IntrospectionMixin:
 
     @property
     def n_warps_saved(self) -> int:
-        """Return the number of interpolation passes eliminated vs sequential execution.
+        """Return the legacy heuristic for operations combined or routed exactly.
 
-        For affine fused segments with *n* transforms, *n - 1* warp passes
-        are saved. For exact (flip-only) segments with *n* transforms, *n*
-        passes are saved because no interpolation is performed at all.
-        For color fused segments with *n* transforms, *n - 1* matrix-multiply
-        passes are saved (all ops collapse to one ``torch.bmm`` call).
-        Single-transform fused segments contribute zero savings.
+        This compatibility counter includes exact transforms and fused colour,
+        lookup, and blur work. It is not a literal count of removed interpolation
+        passes and does not predict latency or memory savings. Inspect the actual
+        segment plan and profile the intended workload for those decisions.
 
         Returns:
-            Total number of eliminated warp passes across all fused segments.
+            Historical aggregate count across planned segments, independent of
+            which random operations activate on a particular call.
 
         """
         total = 0
@@ -140,10 +139,8 @@ class IntrospectionMixin:
                 continue
 
             if isinstance(seg, ExactAffineSegment):
-                # Each flip in an ExactAffineSegment avoids grid_sample entirely
-                # (uses tensor.flip), so every transform saves exactly 1 warp.
-                # This is why ExactAffineSegment contributes n rather than n-1:
-                # even a single flip is lossless and free of grid_sample cost.
+                # Preserve the historical exact-operation count; exact native
+                # operations need not have performed interpolation originally.
                 total += len(seg.transforms)
                 continue
 

@@ -77,7 +77,7 @@ The `transform_matrix` property exposes the same mutable last-call state and is 
 
 Matrices map source pixel centres to output pixel centres. Use the target helpers with the inverse matrix for coordinate recovery; AABB helpers perform their pixel-edge conversion internally. For a pipeline deliberately constrained to one supported matrix segment, the returned matrix can route coordinates or be stored as augmentation provenance. A matrix from a multi-segment pipeline still describes only its last supported segment.
 
-Native NumPy single-image exact calls preserve the native layout, including rectangular outputs when a 90-degree or transpose operation swaps height and width, and publish the same actual-call matrix. Dense BCHW shape-changing D4/90-degree/transpose batches remain limited to square inputs; heterogeneous per-sample shapes are unsupported.
+Native NumPy single-image exact calls preserve the native layout, including rectangular outputs when a 90-degree or transpose operation swaps height and width, and publish the same actual-call matrix. Uniform BCHW exact D4/90-degree/transpose batches also support rectangular inputs and swap the common output shape. A batch whose samples would produce heterogeneous spatial shapes is refused; use a uniform exact draw (for example `same_on_batch=True`) or separate those samples.
 
 ## Test-time de-augmentation with `inverse`
 

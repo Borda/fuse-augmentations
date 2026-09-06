@@ -15,7 +15,7 @@ The strongest use case is a BCHW tensor pipeline with several consecutive, regis
 
 !!! warning "Auxiliary targets require an allowlisted pipeline"
 
-    An unknown spatial transform can be passed through on the image while a mask, box, or keypoint tensor remains unchanged. Ordinary unsupported TorchVision crops and resize operations can therefore desynchronize targets. Treat every `Unknown ... SPATIAL_KERNEL barrier` warning as unsafe when `data_keys` is present. See [Known limitations](known-limitations.md).
+    With `data_keys` present, an unknown or unclassified spatial transform is rejected before any segment executes, preventing silent image/target divergence. Image-only calls may still use native passthrough; review every `Unknown ... SPATIAL_KERNEL barrier` warning. See [Known limitations](known-limitations.md).
 
 ## What is verified
 

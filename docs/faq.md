@@ -49,7 +49,7 @@ Not in a pipeline with masks, boxes, or keypoints.
 
 !!! danger "Unknown spatial transforms can corrupt training targets"
 
-    `RandomCrop`, `CenterCrop`, and `Resize` can change the image while an auxiliary mask remains unchanged. The runtime refusal list is not exhaustive. Treat every unknown transform as unsafe with `data_keys` until you have independently proved it preserves coordinates.
+    With `data_keys`, an unknown or unclassified spatial transform is rejected before any segment executes. The image-only path may still run an unknown transform natively, so treat every warning as a review point there.
 
 For image-only pipelines, the warning still means fusion stopped and native passthrough behavior applies.
 
@@ -59,9 +59,9 @@ The tensor `data_keys` path supports masks, dense xyxy or xywh boxes, and dense 
 
 It does not provide a full detection processor: no box clipping, visibility or area filtering, class-label propagation, variable-length batching, or keypoint visibility policy is included.
 
-## Why do masks contain zeros near a transformed boundary?
+## Why do masks contain fill values near a transformed boundary?
 
-Mask sampling always uses zero padding. This is independent of the image's `padding_mode`. If label `0` is not a valid background or ignore label, remap labels around augmentation or avoid out-of-bounds sampling.
+Mask sampling uses the independent scalar `mask_fill`, which defaults to `0` and is independent of the image's `padding_mode`. Set `mask_fill` to a finite dtype-compatible background or ignore label when `0` is not valid.
 
 ## Can I backpropagate through a transformed mask?
 
@@ -99,7 +99,7 @@ Use `ReorderPolicy.NONE` for order-sensitive or parity-oriented experiments. Rem
 
 ## What does `transform_matrix` represent?
 
-It is the last matrix-producing affine or projective segment from the most recent call. It is not a whole-pipeline matrix across multiple segments, backend boundaries, passthroughs, or affine/projective boundaries. It can be `None` for exact-only or passthrough-only pipelines.
+It is the actual forward pixel-centre matrix from the most recent call's last supported matrix-producing segment. Fused affine/projective, exact D4/flip/quarter-turn, and direct deterministic `letterbox` segments publish a `(B, 3, 3)` matrix. It is not a whole-pipeline matrix across multiple segments, backend boundaries, passthroughs, or affine/projective boundaries. It is `None` when the latest call produced no supported matrix.
 
 Use `return_matrix=True` to retrieve the same last-segment matrix with the call. The property is mutable per-call state, so do not read it concurrently from a shared pipeline instance.
 
@@ -109,13 +109,13 @@ No. It is a planning heuristic. It does not measure runtime, transfers, or nativ
 
 ## When should I use `antialias=True`?
 
-Use it experimentally for aggressive crop-resize downscales and validate image quality and speed. It depends on Kornia; without Kornia it falls back to the unfiltered warp. The antialias decision is batch-global, so one aggressively downscaled sample can filter the entire batch.
+Use it experimentally for aggressive crop-resize downscales and validate image quality and speed. Each sample is evaluated independently; safe samples remain unfiltered. Enabling the option requires Kornia and raises `ImportError` during pipeline construction when that optional dependency is missing. The flag is off by default.
 
 ## Can I undo augmentation on predictions?
 
 Yes, with `pipe.inverse(prediction, matrix=matrix)`, where `matrix` is the matrix returned by the exact paired `forward(..., return_matrix=True)` call. Each `inverse` call must be paired with its own forward call's matrix; do not read the mutable `transform_matrix` property instead.
 
-This supports one fused affine or projective segment only. It raises for crop-resize, color/LUT/blur or passthrough segments, exact-only segments, and multi-segment pipelines, since `return_matrix` records only the last segment's matrix. Boxes are axis-aligned, so a forward-then-inverse box is exact only for axis-aligned transforms and inflates under rotation, shear, or a projective warp.
+This supports one fused affine or projective image segment only. Exact D4/flip/quarter-turn and direct deterministic `letterbox` calls publish coordinate matrices, but their images remain outside this inverse API. It raises for crop-resize, color/LUT/blur or passthrough segments, exact-only segments, and multi-segment pipelines, since `return_matrix` records only the last segment's matrix. Boxes are axis-aligned, so a forward-then-inverse box is exact only for axis-aligned transforms and inflates under rotation, shear, or a projective warp.
 
 See [Introspection](guides/introspection.md) and the README's [Test-time de-augmentation](https://github.com/Borda/fuse-augmentations#test-time-de-augmentation) example.
 

@@ -7,11 +7,11 @@ description: Verified compatibility, target-safety, numerical-parity, randomness
 
 `fuse-augmentations` is a tensor-first matrix-fusion engine. It has a real, tested advantage: compatible geometric transforms in one segment can share a single interpolation pass. It is not a behaviorally identical replacement for every Kornia, TorchVision, or Albumentations pipeline.
 
-!!! danger "Auxiliary targets can silently desynchronize"
+!!! danger "Auxiliary targets require a supported contract"
 
-    When `data_keys` contains a mask, boxes, or keypoints, treat any warning of the form `Unknown ... transform ... treating as SPATIAL_KERNEL barrier` as unsafe until you have proved that the transform leaves pixel coordinates unchanged.
+    When `data_keys` contains a mask, boxes, or keypoints, an unknown or unclassified spatial transform is refused before any segment executes. Treat any warning of the form `Unknown ... transform ... treating as SPATIAL_KERNEL barrier` as a review point for image-only calls.
 
-    Common TorchVision transforms such as `RandomCrop`, `CenterCrop`, and `Resize` are not registered target-aware operations. They can change the image while the mask remains at its original shape. The runtime refusal list catches several named distortions, but it is not a complete detector for every spatial transform or custom callable.
+    Common TorchVision transforms such as `RandomCrop`, `CenterCrop`, and `Resize` are not registered target-aware operations. A target-aware call refuses them before they can change only the image; the image-only path may still invoke a native passthrough.
 
     Use only explicitly supported geometric transforms in a multi-target pipeline. Otherwise, apply the operation through a native target-aware pipeline or transform every target yourself. See [Auxiliary targets](guides/auxiliary-targets.md).
 
@@ -109,9 +109,9 @@ Fast paths and different batch sizes can consume random draws differently. For s
 
 `compile=True` is off by default and is a no-op on CPU. Non-CPU compilation is environment-dependent; the test suite does not establish a universal CUDA or MPS speedup, dynamic-shape guarantee, or compiler compatibility matrix. Measure warmup and steady state separately on the deployment host.
 
-`antialias=True` is limited to aggressive crop-resize downscaling. It depends on Kornia's Gaussian blur and silently falls back to the unfiltered warp when Kornia is absent. The decision and blur strength are batch-global: one strongly downscaled sample can cause the whole batch to be filtered. Scale estimation also reads device values into Python, which can synchronize accelerator work.
+`antialias=True` is limited to aggressive crop-resize downscaling. Each sample's axis scales determine whether it is prefiltered and its Gaussian support; safe samples remain unchanged. Enabling the option requires Kornia and raises `ImportError` during pipeline construction when that optional dependency is unavailable. The flag is off by default, so ordinary pipelines do not acquire this dependency or filtering cost. Scale estimation reads bounded device values into Python, which can synchronize accelerator work.
 
-Passthrough operations are particularly important on accelerators. A native CPU-only passthrough can erase the advantage of a fused GPU segment through device transfers. Inspect the plan and benchmark the complete pipeline, not only the fused warp.
+Passthrough operations are particularly important on accelerators. A native CPU-only passthrough can erase the advantage of a fused GPU segment through device transfers. `execution="torch"` keeps the registered Albumentations fused warp on the input device, but it cannot move an opaque CPU-only native transform onto that device. Inspect the plan and benchmark the complete pipeline, not only the fused warp.
 
 That cost was measured in the historical September 5, 2026 NVIDIA L4 sweep rather than asserted. Chains carrying exactly one passthrough ran 2.0x to 3.0x slower on CUDA than the same chains on the CPU engine, while chains with no passthrough tied or won — and the penalty grew with batch size, because `call_nonfused` copies the whole batch to the host and back once per passthrough per call. One passthrough was enough to erase a fused warp's advantage in that run; revalidate on the current revision and deployment hardware.
 
@@ -123,7 +123,7 @@ Fusion's value on an accelerator is backend-dependent, and the dated CPU/MPS pro
 
 `transform_matrix` and `return_matrix=True` expose the actual forward pixel-centre matrix for the last supported matrix-producing segment. Fused affine/projective segments, exact D4/flip/quarter-turn segments, and direct deterministic `letterbox` publish this `(B, 3, 3)` coordinate provenance. They do not compose across backend boundaries, passthrough barriers, separate affine/projective segments, or multiple fused segments; the matrix is never a whole-pipeline trace. The property is mutable per-call state and should not be read concurrently from a shared pipeline instance. Before a call, or after a call with no supported geometry, it is `None`.
 
-Native NumPy single-image exact calls retain the native layout, including rectangular outputs when a 90-degree or transpose operation swaps height and width, and publish the same actual-call matrix. Dense BCHW shape-changing D4/90-degree/transpose batches remain limited to square inputs; heterogeneous per-sample shapes are unsupported.
+Native NumPy single-image exact calls retain the native layout, including rectangular outputs when a 90-degree or transpose operation swaps height and width, and publish the same actual-call matrix. Uniform BCHW exact D4/90-degree/transpose batches also support rectangular inputs and swap the common output shape. A batch whose samples would produce heterogeneous spatial shapes is refused; use a uniform exact draw (for example `same_on_batch=True`) or separate those samples.
 
 `n_warps_saved` is a planning heuristic, not a literal count of native interpolations or an observed speedup. In particular, exact flips can contribute to the metric even though native flips are already non-interpolating.
 

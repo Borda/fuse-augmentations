@@ -153,7 +153,7 @@ The three introspection properties answer different questions:
 | `fusion_plan_descriptors` | Structured, JSON-serializable plan metadata                                                        |
 | `n_warps_saved`           | Legacy planning heuristic summarizing collapsed operations; not a literal interpolation-call count |
 
-`transform_matrix` is different: it is mutable execution state populated by the most recent call. It contains only the matrix produced by the **last affine or projective segment that ran**. It is not a whole-pipeline matrix across backend boundaries, passthrough operations, or multiple geometric segments. It can be `None` for exact-only, color-only, passthrough-only, or empty pipelines.
+`transform_matrix` is different: it is mutable execution state populated by the most recent call. It contains the actual forward pixel-centre matrix from the **last supported matrix-producing segment that ran**. Fused affine/projective segments, exact D4/flip/quarter-turn segments, and direct deterministic `letterbox` segments publish a `(B, 3, 3)` matrix. It is not a whole-pipeline matrix across backend boundaries, passthrough operations, or multiple geometric segments, and is `None` when the latest call produced no supported geometry.
 
 Use `return_matrix=True` when the output and last-segment matrix should be retrieved from the same call:
 

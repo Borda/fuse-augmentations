@@ -11,7 +11,7 @@ Use `data_keys` to route dense tensor targets through a supported fused geometri
 
     Before using any example on this page, inspect construction warnings and `pipe.fusion_plan`.
 
-    An unknown or unclassified spatial transform is refused before any segment executes when auxiliary targets are present. `RandomCrop`, `CenterCrop`, and `Resize` can transform only the image and leave the mask at its old shape; use a registered target-aware operation or handle the image and targets together outside `Compose`.
+    An unknown or unclassified spatial transform is refused before any segment executes when auxiliary targets are present. `RandomCrop`, `CenterCrop`, and `Resize` would transform only the image if run through an unaware native path; use a registered target-aware operation or handle the image and targets together outside `Compose`.
 
     Replace an unsupported spatial transform with a registered operation, run it through a native target-aware pipeline, or transform every target yourself. A warning is not a safety guarantee.
 
@@ -20,7 +20,7 @@ Use `data_keys` to route dense tensor targets through a supported fused geometri
 | Key           | Required tensor shape                        | Output behavior                                               |
 | ------------- | -------------------------------------------- | ------------------------------------------------------------- |
 | `"input"`     | `(B, C, H, W)` floating image                | Warped by the selected image interpolation and padding policy |
-| `"mask"`      | `(B, C_mask, H, W)` integer or floating mask | Nearest sampling by default; zero-filled out of bounds        |
+| `"mask"`      | `(B, C_mask, H, W)` integer or floating mask | Nearest sampling by default; `mask_fill=0` out of bounds      |
 | `"bbox_xyxy"` | `(B, N, 4)` floating `[x1, y1, x2, y2]`      | Four corners transformed, then wrapped in an axis-aligned box |
 | `"bbox_xywh"` | `(B, N, 4)` floating `[x, y, width, height]` | Converted through xyxy, transformed, then converted back      |
 | `"keypoints"` | `(B, N, 2)` floating `[x, y]`                | Transformed by the forward homogeneous matrix                 |
@@ -175,16 +175,16 @@ Apply `valid_boxes` to the corresponding class labels, scores, instance masks, a
 
 ## Safe and unsafe pipeline matrix
 
-| Pattern                                                         | Decision                           | Reason                                                 |
-| --------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------ |
-| Registered rotation/affine/flip with declared targets           | Use                                | Targets share the supported grid or matrix path        |
-| Registered `RandomResizedCrop`                                  | Use with output-size awareness     | Image and targets change to the configured output size |
-| Blur, noise, or color passthrough known to preserve coordinates | Use with backend-domain validation | Coordinate targets may remain unchanged legitimately   |
-| Named elastic/grid/optical distortion refused at runtime        | Do not expect support              | Raising prevents known target desynchronization        |
-| Unknown crop, resize, spatial transform, or custom callable     | Do not use with targets            | It can transform only the image                        |
-| Albumentations HWC NumPy call with no `data_keys`               | Do not use with targets            | Without `data_keys` the NumPy path is image-only       |
-| HWC NumPy call with supported `data_keys`                       | Use                                | Targets route through the same matrix as tensors       |
-| BCHW tensor call with supported `data_keys`                     | Use                                | This is the intended multi-target API                  |
+| Pattern                                                         | Decision                           | Reason                                                             |
+| --------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------ |
+| Registered rotation/affine/flip with declared targets           | Use                                | Targets share the supported grid or matrix path                    |
+| Registered `RandomResizedCrop`                                  | Use with output-size awareness     | Image and targets change to the configured output size             |
+| Blur, noise, or color passthrough known to preserve coordinates | Use with backend-domain validation | Coordinate targets may remain unchanged legitimately               |
+| Named elastic/grid/optical distortion refused at runtime        | Do not expect support              | Raising prevents known target desynchronization                    |
+| Unknown crop, resize, spatial transform, or custom callable     | Do not use with targets            | Refused before any segment executes; image-only calls are separate |
+| Albumentations HWC NumPy call with no `data_keys`               | Do not use with targets            | Without `data_keys` the NumPy path is image-only                   |
+| HWC NumPy call with supported `data_keys`                       | Use                                | Targets route through the same matrix as tensors                   |
+| BCHW tensor call with supported `data_keys`                     | Use                                | This is the intended multi-target API                              |
 
 ## Validate every production pipeline
 

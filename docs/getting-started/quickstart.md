@@ -45,7 +45,7 @@ fused(_DirectParamTransform, _DirectFlipTransform)
 
 </details>
 
-`return_matrix=True` is unambiguous here because this pipeline has one matrix-producing segment. In a pipeline with backend changes, projective boundaries, or passthrough operations, the returned matrix represents only the last matrix-producing segment.
+`return_matrix=True` is unambiguous here because this pipeline has one matrix-producing segment. In a pipeline with backend changes, projective boundaries, or passthrough operations, the returned matrix is the actual pixel-centre matrix from only the last supported matrix-producing segment.
 
 ## What this example guarantees
 
@@ -154,7 +154,7 @@ print(sorted(set(mask_out.unique().tolist())))
 
 </details>
 
-`mask_interpolation="nearest"` keeps label values discrete. Read [Known limitations](../known-limitations.md) before routing targets through any pipeline that reports an unknown spatial transform — the direct-parameter path used here is safe, arbitrary backend transforms are not.
+`mask_interpolation="nearest"` keeps label values discrete. With `data_keys`, an unknown or unclassified spatial transform is refused before execution; image-only passthroughs have a separate native contract. Read [Known limitations](../known-limitations.md) before routing targets through a backend pipeline.
 
 ## Hand back NumPy
 

@@ -27,9 +27,9 @@ Nearest-neighbor sampling preserves discrete class values, but the package delib
 
 ## Coordinate-changing passthrough
 
-A passthrough transform normally changes only the image. That is safe only for an operation known to preserve coordinates, such as a verified blur or pointwise color transform. When auxiliary targets are present, the pipeline raises for passthroughs whose exact class name appears on its finite coordinate-changing refusal list.
+A passthrough transform normally changes only the image. That is safe only for an operation known to preserve coordinates, such as a verified blur or pointwise color transform. When auxiliary targets are present, the pipeline rejects unknown or unclassified spatial passthroughs before execution and raises for known coordinate-changing passthroughs.
 
-Unknown spatial transforms are not structurally detected. Unsupported crops, resizes, and custom callables can still modify the image while targets remain unchanged. Treat every `Unknown ... SPATIAL_KERNEL barrier` warning as unsafe with `data_keys`; use a registered transform or route all targets through a native target-aware pipeline.
+Image-only calls can still execute an unknown transform natively, but target-aware calls fail closed. Use a registered transform or route all targets through a native target-aware pipeline when the operation is not classified.
 
 ## Output conversion
 

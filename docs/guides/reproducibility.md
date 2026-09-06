@@ -183,10 +183,41 @@ Albumentations `execution="cv2"` and `execution="torch"` can use the same sample
 ### Which engine to pin
 
 - `execution="cv2"` (the default) is the fastest choice on the host and is bit-exact with the native cv2 backend. On a detection-shaped step it measured five to sixteen times faster than `grid_sample` on the same CPU.
-- `execution="torch"` is the explicit engine for accelerator execution and differentiable warps. On CPU, a batch-one tensor with `requires_grad=True` automatically bypasses the cv2 fast path and uses the differentiable torch route; pin `execution="torch"` when the engine choice itself must stay stable across batch sizes. The cv2 path remains the faster choice for ordinary non-differentiable host work.
+- `execution="torch"` is the explicit engine for accelerator execution and differentiable registered warps. On CPU, a batch-one tensor with `requires_grad=True` automatically bypasses the cv2 fast path and uses the differentiable torch route; pin `execution="torch"` when the engine choice itself must stay stable across batch sizes. The cv2 path remains the faster choice for ordinary non-differentiable host work. A CPU-only Albumentations passthrough still transfers an accelerator tensor to the host and back; this setting avoids the fused warp's round trip, not opaque native transforms.
 - `execution="auto"` resolves per call: host data to cv2, accelerator data to torch. **Choosing it opts out of bit-reproducibility across environments** — the engine becomes a function of where the tensors live rather than of the recorded configuration, so the same config on two machines can render differently and nothing in the config explains why. It is never the default, and it is the only setting under which `pipeline.resolved_execution` can differ from what you configured. Read that attribute after a call when you need to know which engine drew the pixels; it is `None` until the first call warps something.
 
 A pipeline pickled with `"auto"` re-resolves on unpickling rather than freezing the engine it happened to pick. A `DataLoader` worker that receives it therefore routes for its own data, which is what asking for `"auto"` means; if you need every worker pinned to one engine, pin the engine instead.
+
+This recipe keeps the transfer decision visible without requiring an accelerator. It selects CUDA when available, pins the registered warp to `"torch"`, and leaves a CPU-only color passthrough visible in the plan:
+
+```python
+import albumentations as A
+import torch
+
+from fuse_augmentations import Compose
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+pipe = Compose(
+    [A.Affine(rotate=(15.0, 15.0), p=1.0), A.HueSaturationValue(p=1.0)],
+    execution="torch",
+)
+images = torch.rand(2, 3, 32, 32, device=device)
+output = pipe(images)
+
+assert output.device == device
+print(pipe.fusion_plan)
+```
+
+<details>
+<summary>Registered warp plus native CPU passthrough</summary>
+
+```
+fused(Affine) → passthrough(HueSaturationValue)
+```
+
+</details>
+
+On a CUDA run, the passthrough is the transfer boundary; replace it with a registered torch-native operation or accept and measure the host round trip.
 
 `Compose` is an `nn.Module`, so register forward pre- and post-hooks on the pipeline when instrumentation or result replacement is part of your contract. Public hooks run for exact, fused, and general tensor routes, including tensor keyword and mixed image/target calls. Hooks registered on internal segment modules are a separate implementation detail and are not dispatched by the top-level segmented call.
 
@@ -244,7 +275,7 @@ print(json.dumps({**run_metadata, "torch_version": "<runtime>"}, indent=2))
 
 </details>
 
-The returned matrix is only the last matrix-producing segment, not a whole-pipeline matrix. Save it when it is useful for audit, but do not use it to reconstruct pipelines that cross barriers or backend boundaries.
+The returned matrix is the actual pixel-centre matrix from only the last supported matrix-producing segment, not a whole-pipeline matrix. Save it when it is useful for audit, but do not use it to reconstruct pipelines that cross barriers or backend boundaries.
 
 For research artifacts, also record:
 

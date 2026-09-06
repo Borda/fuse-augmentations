@@ -87,7 +87,7 @@ augment = Compose(
 output = augment(torch.rand(4, 3, 224, 224))
 ```
 
-`execution="cv2"` is the default CPU path. `execution="torch"` applies the composed matrices through a batched torch sampling grid and can remain on a torch device, but its border and subpixel numerics differ from OpenCV. `execution="auto"` resolves per call — host data to cv2, accelerator data to torch — and `pipeline.resolved_execution` reports which one ran; it trades cross-environment bit-reproducibility for that convenience, so [Reproducibility](reproducibility.md) covers when it is the wrong choice.
+`execution="cv2"` is the default CPU path. `execution="torch"` applies registered geometry through a batched torch sampling grid and can remain on a torch device, but its border and subpixel numerics differ from OpenCV. An opaque CPU-only Albumentations passthrough still transfers an accelerator tensor to the host and back; `execution="torch"` keeps the fused warp on-device but cannot make that native operation device-native. `execution="auto"` resolves per call — host data to cv2, accelerator data to torch — and `pipeline.resolved_execution` reports which one ran; it trades cross-environment bit-reproducibility for that convenience, so [Reproducibility](reproducibility.md) covers when it is the wrong choice.
 
 An HWC NumPy path also exists. Without `data_keys` it transforms the image only:
 
@@ -112,7 +112,7 @@ out = with_boxes(image=image, bboxes=np.zeros((4, 4), dtype=np.float32))
 assert out["image"].dtype == np.uint8
 ```
 
-A NumPy image comes back in the dtype it was passed in, as Albumentations returns it. Labels and Albumentations' own processor behaviour are still not replicated — filtering instances after a warp is the caller's, and [Auxiliary targets](auxiliary-targets.md) covers the helpers for it. Tensor input is a separate contract: it stays float32 `[0, 1]` throughout, and native Albumentations transforms that expect uint8 ranges can behave incorrectly on it.
+A NumPy image comes back in the dtype it was passed in, as Albumentations returns it. Routed NumPy masks are labels rather than image intensities: their dtype and values are preserved through the round trip, and they are never normalized to `[0, 1]`; nearest sampling is the hard-label default. Labels and Albumentations' own processor behaviour are still not replicated — filtering instances after a warp is the caller's, and [Auxiliary targets](auxiliary-targets.md) covers the helpers for it. Tensor input is a separate contract: images stay float32 `[0, 1]` throughout, while native Albumentations transforms that expect uint8 ranges can behave incorrectly on image tensors.
 
 ## Mixed backends
 
@@ -139,4 +139,4 @@ An unregistered transform becomes a passthrough barrier when the adapter can saf
 
 !!! danger
 
-    Never ignore an `Unknown ... SPATIAL_KERNEL barrier` warning in a pipeline with `data_keys`. Unsupported spatial transforms can modify only the image and leave auxiliary targets stale. Replace the transform with a registered operation, split the pipeline and route every target yourself, or do not use this package for that pipeline.
+    With `data_keys`, an unknown or unclassified spatial transform is refused before any segment executes, so it cannot silently leave auxiliary targets stale. Image-only calls may still execute native passthrough; replace the transform with a registered operation or route targets through a native target-aware pipeline when you need explicit semantics.

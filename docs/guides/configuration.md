@@ -158,7 +158,7 @@ print(round(float(out[0, 0, 16, 0]), 3), round(float(out[0, 0, 16, 31]), 3))
 
 - **Units are the image's own.** A float image in `[0, 1]` takes `114 / 255`; a uint8 image on the Albumentations NumPy path takes `114`. Nothing rescales the value.
 - **Scalar or per-channel.** `fill=0.447` fills every channel; `fill=(0.1, 0.2, 0.3)` fills one channel each and must match the image's channel count.
-- **Image only.** A routed mask keeps its zero padding whatever the image fill is — outside the canvas a mask means "no instance", not a colour. The same holds for boxes and keypoints, which are mapped rather than sampled.
+- **Image only.** Routed masks use their independent scalar `mask_fill`, default `0`; set an appropriate ignore label such as `255` for a segmentation loss. Image `fill` never changes that mask value. Boxes and keypoints are mapped rather than sampled.
 - **Requires `padding_mode="zeros"`** (the default). `"border"` and `"reflection"` have no constant to replace and `"per_transform"` picks a mode per transform, so combining any of them with `fill` raises rather than ignoring the argument.
 - **Executor-independent.** The torch warp has no constant padding mode in `grid_sample`, so it subtracts the fill, samples against the zero border and adds it back; the cv2 warps pass it as `borderValue`. Both produce the same border, including on the batch-size-dependent cv2 fast path.
 - `fill=None` (the default) keeps the plain zero border, unchanged.
