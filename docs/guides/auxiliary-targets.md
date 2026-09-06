@@ -27,6 +27,8 @@ Use `data_keys` to route dense tensor targets through a supported fused geometri
 
 The batch dimension is mandatory. Before the first segment runs, the pipeline checks that every target batch matches the image batch, masks have the image's spatial dimensions, and coordinate targets have exactly the trailing widths shown above. Empty instance axes are valid; extra box columns are rejected rather than interpreted as labels. Box and keypoint counts are dense and fixed within a batch. This API does not carry class labels, visibility flags, or per-image variable-length lists.
 
+`bbox_xyxy` and `bbox_xywh` use pixel-edge coordinates: a canvas of width `W` and height `H` spans `[0, W] x [0, H]`, so a full-canvas box is `[0, 0, W, H]`. Image sampling, keypoints, and rotated boxes keep the pixel-centre convention `[0, W - 1] x [0, H - 1]`. The public box helpers convert the image-centre matrix to edge coordinates internally before mapping box corners; do not replace `W - 1` with `W` in image, keypoint, or rotated-box calculations.
+
 ## A contract-safe example
 
 This example uses the augmentation-backend-free builder and only registered operations. It avoids unknown passthrough transforms.
@@ -113,11 +115,38 @@ assert soft_masks_out.grad_fn is not None
 
 Bilinear sampling mixes neighboring values. It is not appropriate for integer class IDs, and the package rejects integer masks in bilinear mode.
 
-## Mask padding is always zero
+## Mask padding
 
-Mask sampling uses zero padding independently of image `padding_mode`.
+Mask sampling uses a scalar `mask_fill`, independently of image `fill` and `padding_mode`. It defaults to `0`, so existing pipelines keep zero padding. Set it when an out-of-canvas sample must carry an ignore label, for example `255` for a `uint8` mask or `-1` for a signed integer mask:
 
-If the image uses `padding_mode="border"` or `"reflection"`, the image and mask share the same geometric grid but not the same out-of-bounds fill rule. Ensure label `0` means background or an acceptable ignore/background value. If it does not, remap labels before augmentation and restore them afterward, or avoid warps that sample outside the image.
+```python
+import torch
+
+from fuse_augmentations import Compose
+
+image = torch.zeros(1, 1, 8, 8)
+mask = torch.zeros(1, 1, 8, 8, dtype=torch.uint8)
+pipe = Compose.from_params(
+    translate_x=(-4.0, -4.0),
+    data_keys=["input", "mask"],
+    mask_fill=255,
+)
+_, warped_mask = pipe(image, mask)
+print(sorted(torch.unique(warped_mask).tolist()))
+```
+
+<details>
+<summary>Mask values include the configured ignore fill</summary>
+
+```
+[0, 255]
+```
+
+</details>
+
+`mask_fill` must be one finite scalar. Integer and boolean masks require a value representable by that dtype and exactly by the sampler's float32 conversion; `255` is valid for `uint8`, while `-1` is valid for signed integer masks and invalid for `uint8`. Bilinear mode still requires floating masks; nearest mode keeps its deliberate no-autograd behavior.
+
+If the image uses `padding_mode="border"` or `"reflection"`, the image and mask share the same geometric grid but not the same out-of-bounds fill rule. Choose `mask_fill` to match the background or ignore value your loss expects; image `fill` never changes mask labels.
 
 ## Postprocess boxes and keypoints
 
@@ -133,8 +162,8 @@ def clip_and_filter_xyxy(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Clip dense xyxy boxes and return a validity mask for positive-area boxes."""
     clipped = boxes_xyxy.clone()
-    clipped[..., 0::2].clamp_(0, image_width - 1)
-    clipped[..., 1::2].clamp_(0, image_height - 1)
+    clipped[..., 0::2].clamp_(0, image_width)
+    clipped[..., 1::2].clamp_(0, image_height)
     valid = (clipped[..., 2] > clipped[..., 0]) & (clipped[..., 3] > clipped[..., 1])
     return clipped, valid
 
@@ -258,7 +287,7 @@ print(keep.tolist())
 [[True, False]]
 ```
 
-- `clip_bbox_xyxy` clamps boxes to the `[0, width] x [0, height]` canvas extent — geometry, not policy.
+- `clip_bbox_xyxy` clamps boxes to the `[0, width] x [0, height]` pixel-edge canvas extent — geometry, not policy.
 - `instance_keep_mask` keeps an instance whose clipped box is at least `min_size` on both axes **and** retains at least `min_visibility` of its unclipped area. Both thresholds are yours; the defaults are `0.0`, which drops nothing.
 - **It returns the mask, not filtered boxes.** Labels, keypoints, rotated boxes, polygon rings and any per-instance flag live on the same instance axis, and only you hold all of them. Filter every one of them with this single mask: a pipeline that filtered boxes but not the keypoints on the same instances is corrupt while every shape still lines up and nothing raises.
 

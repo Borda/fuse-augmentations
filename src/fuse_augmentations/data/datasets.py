@@ -25,8 +25,10 @@ Examples:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from operator import index
+from typing import TYPE_CHECKING, Any, SupportsIndex
 
+import numpy as np
 from torch.utils.data import IterableDataset, get_worker_info
 
 from fuse_augmentations.data.config import SyntheticConfig
@@ -38,13 +40,29 @@ if TYPE_CHECKING:
     from fuse_augmentations.data.sample import Sample
 
 
+_StreamSeed = int | np.random.SeedSequence | None
+
+
+def _non_negative_int(value: object, name: str, minimum: int = 0) -> int:
+    """Return an integer input after rejecting booleans and out-of-range values."""
+    if isinstance(value, bool) or not isinstance(value, SupportsIndex):
+        raise TypeError(f"{name} must be an integer, got {type(value).__name__}")
+    integer = index(value)
+    if integer < minimum:
+        raise ValueError(f"{name} must be >= {minimum}, got {integer}")
+    return integer
+
+
 class SyntheticIterableDataset(IterableDataset["Sample"]):
     """Stream synthetic :class:`Sample` objects into a PyTorch training loop.
 
     Args:
-        num_images: Total number of samples the dataset yields per epoch.
+        num_images: Number of samples yielded by each rank for this epoch.
         config: Full :class:`SyntheticConfig`; when given, ``config_kwargs`` are ignored.
         seed: Base seed for reproducible streams; ``None`` uses fresh entropy.
+        rank: Distributed-process rank supplied by the training process.
+        world_size: Number of distributed processes supplied by the training process.
+        epoch: Immutable epoch identity for this dataset instance.
         **config_kwargs: Extra :class:`SyntheticConfig` fields (e.g. ``img_size``,
             ``class_mode``) used only when ``config`` is not supplied.
 
@@ -65,27 +83,55 @@ class SyntheticIterableDataset(IterableDataset["Sample"]):
         num_images: int,
         config: SyntheticConfig | None = None,
         seed: int | None = None,
+        *,
+        rank: int = 0,
+        world_size: int = 1,
+        epoch: int = 0,
         **config_kwargs: Any,  # noqa: ANN401 - forwarded verbatim to SyntheticConfig
     ) -> None:
-        """Store the sample budget and build the underlying generator."""
+        """Store immutable stream identity and build the underlying generator."""
         super().__init__()
-        self.num_images = num_images
+        self.num_images = _non_negative_int(num_images, "num_images")
+        self._world_size = _non_negative_int(world_size, "world_size", minimum=1)
+        self._rank = _non_negative_int(rank, "rank")
+        if self._rank >= self._world_size:
+            raise ValueError(f"rank must be < world_size, got rank={self._rank}, world_size={self._world_size}")
+        self._epoch = _non_negative_int(epoch, "epoch")
         self.config = config or SyntheticConfig(**config_kwargs)
         self.seed = seed
         self._generator = SyntheticGenerator(self.config)
+
+    @property
+    def rank(self) -> int:
+        """Return the immutable distributed rank for this stream."""
+        return self._rank
+
+    @property
+    def world_size(self) -> int:
+        """Return the immutable distributed topology size for this stream."""
+        return self._world_size
+
+    @property
+    def epoch(self) -> int:
+        """Return the immutable epoch identity for this stream."""
+        return self._epoch
 
     def __len__(self) -> int:
         """Return the per-epoch sample count."""
         return self.num_images
 
-    def _worker_shard(self) -> tuple[int, int | None]:
-        """Return this worker's ``(count, seed)`` slice of the total budget."""
+    def _worker_shard(self) -> tuple[int, _StreamSeed]:
+        """Return this worker's count and seed namespace within the rank's budget."""
         info = get_worker_info()
-        if info is None or info.num_workers <= 1:
-            return self.num_images, self.seed
-        per, remainder = divmod(self.num_images, info.num_workers)
-        count = per + (1 if info.id < remainder else 0)
-        seed = None if self.seed is None else self.seed + info.id
+        num_workers = 1 if info is None else info.num_workers
+        worker_id = 0 if info is None else info.id
+        per, remainder = divmod(self.num_images, num_workers)
+        count = per + (1 if worker_id < remainder else 0)
+        if self.seed is None:
+            return count, None
+        if self.rank == 0 and self.epoch == 0:
+            return count, self.seed + worker_id
+        seed = np.random.SeedSequence(self.seed, spawn_key=(self.rank, self.epoch, worker_id))
         return count, seed
 
     def __iter__(self) -> Iterator[Sample]:

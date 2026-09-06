@@ -581,16 +581,26 @@ class KorniaAdapter:
         raise TypeError(f"Cannot determine flip dims for {ttype.__name__!r}")
 
     @staticmethod
-    def exact_apply(transform: object, image: torch.Tensor) -> torch.Tensor:
+    def exact_apply(
+        transform: object,
+        image: torch.Tensor,
+        *,
+        params: dict[str, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         """Apply a GEOMETRIC_EXACT transform losslessly.
 
         Dispatches flips via ``tensor.flip`` and 90-degree rotations via
-        ``torch.rot90``. For ``RandomRotation90``, the rotation count ``k``
-        is sampled from the transform's ``times`` range.
+        ``torch.rot90``. For ``RandomRotation90``, an omitted ``params``
+        samples the rotation count ``k`` from the transform's ``times`` range.
+        A supplied canonical ``params["k90"]`` is consumed directly so a
+        caller can use the same draw for image pixels and its forward matrix.
 
         Args:
             transform: A Kornia GEOMETRIC_EXACT transform.
             image: ``(batch_size, channels, height, width)`` input tensor.
+            params: Optional canonical parameters for this exact application.
+                ``RandomRotation90`` requires a one-value-per-image ``"k90"``
+                tensor when supplied; flips deliberately ignore it.
 
         Returns:
             Transformed ``(batch_size, channels, height, width)`` tensor.
@@ -607,11 +617,21 @@ class KorniaAdapter:
         if TRANSFORM_REGISTRY and ttype is _RandomVerticalFlip:
             return image.flip(dims=[2])
         if TRANSFORM_REGISTRY and ttype is _RandomRotation90:
-            # Sample per-batch k values using Kornia's native sampler.
-            params = transform.generate_parameters(  # type: ignore[attr-defined]
-                torch.Size(image.shape),
-            )
-            k_values = params["times"].to(device=image.device).to(dtype=torch.int64) % 4
+            if params is None:
+                native_params = transform.generate_parameters(  # type: ignore[attr-defined]
+                    torch.Size(image.shape),
+                )
+                k_values = native_params["times"].to(device=image.device, dtype=torch.int64) % 4
+            else:
+                k_values = params.get("k90")
+                if k_values is None:
+                    raise ValueError("RandomRotation90 exact params must contain a 'k90' tensor")
+                k_values = k_values.to(device=image.device, dtype=torch.int64) % 4
+                if k_values.ndim != 1 or k_values.shape[0] != image.shape[0]:
+                    raise ValueError(
+                        "RandomRotation90 exact params['k90'] must have shape "
+                        f"({image.shape[0]},), got {tuple(k_values.shape)}"
+                    )
             if image.shape[2] != image.shape[3] and bool(((k_values == 1) | (k_values == 3)).any().item()):
                 msg = (
                     "RandomRotation90 with k in {1, 3} changes spatial dimensions "

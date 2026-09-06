@@ -237,22 +237,37 @@ class TestPipelineIntegration:
 
         out, matrix = pipe(image, return_matrix=True)
 
-        point = torch.tensor([[[30.0, 10.0, 30.0, 10.0]]], dtype=matrix.dtype)
-        mapped = transform_bbox_xyxy(point, matrix)[0, 0, :2]
+        point = torch.tensor([[[30.0, 10.0]]], dtype=matrix.dtype)
+        mapped = transform_keypoints(point, matrix)[0, 0]
         peak = out[0, 0].flatten().argmax().item()
         assert (peak // 32, peak % 32) == (round(mapped[1].item()), round(mapped[0].item()))
 
-    def test_a_letterbox_alone_reports_no_matrix(self) -> None:
-        """``return_matrix=True`` on a letterbox-only pipeline returns ``None``, not a partial chain.
-
-        A crop-resize segment reports no matrix, so the standalone case has nothing to hand back — pinned here because
-        the fused case *does* return the whole chain, and a caller who saw that first would reasonably expect a matrix
-        from both. `letterbox_matrix()` is the answer for the standalone case, and it needs no pipeline at all.
-
-        """
-        _, matrix = FusedCompose.from_params(letterbox=(32, 32))(_image(20, 40), return_matrix=True)
-
-        assert matrix is None
+    @pytest.mark.parametrize(
+        "shape,output,upscale", [((5, 7), (9, 11), False), ((5, 7), (10, 12), False), ((20, 40), (32, 32), True)]
+    )
+    def test_letterbox_reports_actual_coordinate_matrix(self, shape, output, upscale) -> None:
+        """A standalone letterbox exposes the same geometry its pixels and targets use."""
+        height, width = shape
+        out_height, out_width = output
+        image = torch.zeros(1, 1, height, width)
+        image[0, 0, 2, 3] = 1.0
+        pipe = FusedCompose.from_params(letterbox=output, allow_upscale=upscale)
+        result, matrix = pipe(image, return_matrix=True)
+        expected = letterbox_matrix(height, width, out_height, out_width, allow_upscale=upscale)
+        assert matrix is not None
+        torch.testing.assert_close(matrix, expected, rtol=1e-4, atol=1e-6)
+        torch.testing.assert_close(matrix, pipe.transform_matrix, rtol=1e-4, atol=1e-6)
+        point = torch.tensor([[[3.0, 2.0]]])
+        mapped = transform_keypoints(point, matrix)
+        recovered = transform_keypoints(mapped, inv3x3(matrix))
+        torch.testing.assert_close(recovered, point, rtol=1e-4, atol=1e-6)
+        peak = result[0, 0].flatten().argmax().item()
+        assert (peak // out_width, peak % out_width) == (round(mapped[0, 0, 1].item()), round(mapped[0, 0, 0].item()))
+        boxes = torch.tensor([[[0.0, 0.0, float(width), float(height)]]])
+        recovered_boxes = transform_bbox_xyxy(transform_bbox_xyxy(boxes, matrix), inv3x3(matrix))
+        torch.testing.assert_close(recovered_boxes, boxes, rtol=1e-4, atol=1e-6)
+        with pytest.raises(ValueError, match="crop-resize"):
+            pipe.inverse(result)
 
     def test_boxes_route_through_the_same_letterbox_map(self) -> None:
         """A routed box equals the box mapped by the public ``letterbox_matrix``.

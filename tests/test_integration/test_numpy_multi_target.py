@@ -119,12 +119,13 @@ class TestNumpyImageWithBoxes:
 
         Shape-only assertions would pass even if the boxes were returned untransformed, which is the exact failure the
         missing routing test would have had to catch; this pins the values. The mirror axis follows the package's
-        pixel-centre convention (``align_corners=True``), so the reflection is about ``width - 1``, not ``width``.
+        image-centre convention (``align_corners=True``). Boxes are pixel-edge extents,
+        so their reflection maps ``x`` to ``width - x``.
 
         """
         pipe = _flip_pipeline("cv2", ["input", "bbox_xyxy"])
         expected = boxes_xyxy.copy()
-        expected[:, [0, 2]] = (WIDTH - 1) - boxes_xyxy[:, [2, 0]]
+        expected[:, [0, 2]] = WIDTH - boxes_xyxy[:, [2, 0]]
 
         out = pipe(image=image_hwc, bboxes=boxes_xyxy)
 

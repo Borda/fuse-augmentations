@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from numbers import Real
 from typing import cast
 
 import torch
@@ -16,6 +17,7 @@ import torch
 from fuse_augmentations.types import (
     ClipPolicyStr,
     FillValue,
+    MaskFillValue,
     MaskInterpolationStr,
     PipelineDtypeStr,
     RandomnessPolicy,
@@ -157,6 +159,24 @@ def _validate_mask_interpolation(mask_interpolation: str) -> MaskInterpolationSt
     if mask_interpolation not in ("nearest", "bilinear"):
         raise ValueError(f"invalid mask_interpolation {mask_interpolation!r}; expected 'nearest' or 'bilinear'")
     return cast(MaskInterpolationStr, mask_interpolation)
+
+
+def _validate_mask_fill(mask_fill: MaskFillValue) -> MaskFillValue:
+    """Reject non-scalar or non-finite mask border values at construction time.
+
+    Dtype compatibility remains a runtime target contract because the pipeline has no mask tensor while it is being
+    built.
+
+    """
+    if not isinstance(mask_fill, Real):
+        raise ValueError(f"mask_fill must be a finite scalar real value, got {mask_fill!r}.")
+    try:
+        value = float(mask_fill)
+    except OverflowError as error:
+        raise ValueError(f"mask_fill must be finite, got {mask_fill!r}.") from error
+    if not math.isfinite(value):
+        raise ValueError(f"mask_fill must be finite, got {mask_fill!r}.")
+    return mask_fill
 
 
 def _validate_pipeline_dtype(pipeline_dtype: PipelineDtypeStr | None) -> PipelineDtypeStr | None:

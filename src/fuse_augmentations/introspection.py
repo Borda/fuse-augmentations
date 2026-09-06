@@ -51,7 +51,7 @@ class IntrospectionMixin:
             if isinstance(segment, _PassthroughSegment):
                 return "Cannot inverse a pipeline containing a passthrough segment without a recorded matrix."
             if isinstance(segment, ExactAffineSegment):
-                return "Cannot inverse a pipeline containing an exact geometric segment without a recorded matrix."
+                return "Cannot inverse exact images through this API; recover coordinates with the recorded matrix."
         if len(self._segments) != 1:
             return "Cannot inverse a multi-segment pipeline: return_matrix records only the last segment matrix."
         if not isinstance(
@@ -63,27 +63,26 @@ class IntrospectionMixin:
 
     @property
     def transform_matrix(self) -> torch.Tensor | None:
-        """Return the ``(batch_size, 3, 3)`` composed matrix for the last fused segment.
+        """Return the last supported geometric segment's forward pixel-centre matrix.
 
-        This is the composed forward transform matrix produced by the last
-        fused geometric segment executed in the most recent :meth:`forward`
-        call. This includes affine segments and projective segments, so the
-        returned matrix may encode either an affine or a full homography-style
-        projective warp depending on the last fused segment type. Passthrough
-        (non-fused) transforms do not affect this value, and multiple fused
-        segments are *not* composed into a single whole-pipeline matrix. In
-        mixed-backend pipelines, only the last fused segment across all
-        backends contributes to this value.
+        Affine, projective, exact D4, and direct deterministic letterbox segments
+        publish their actual-call ``(batch_size, 3, 3)`` matrix. A matrix maps input
+        pixel centres to output pixel centres; bbox helpers convert it to pixel-edge
+        geometry. Recover prediction coordinates with its inverse and the appropriate
+        target helper, keeping the input and output canvases explicit.
+
+        Multiple segment matrices are not composed into a whole-pipeline transform.
+        Colour, passthrough and unmarked random-crop operations do not contribute;
+        a matrix alone therefore does not establish complete pipeline invertibility.
+        The narrower :meth:`inverse` image contract remains separately checked.
 
         Returns:
-            The composed matrix for the last fused affine or projective segment, or ``None`` if no such segment has
-            been executed yet (including before the first call to :meth:`forward` or if the last forward contained
-            only passthrough transforms).
+            The last recorded supported matrix, or ``None`` before a call or when
+            the latest call produced no supported geometry.
 
         Note:
-            This is per-instance mutable state written on every ``forward``. Reading it from another
-            thread while a shared instance is running ``forward`` is racy; use one pipeline instance
-            per thread (or read the matrix in the same thread that ran the forward pass).
+            Per-instance mutable state is racy across threads sharing a pipeline.
+            Prefer ``return_matrix=True`` for the matrix paired with a specific call.
 
         """
         return self._last_transform_matrix

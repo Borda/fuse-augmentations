@@ -9,7 +9,7 @@ The package applies matrix math to coordinate tensors. It is not a detection fra
 
 What it does: transforms `(B, N, 4)` boxes and `(B, N, 2)` keypoints through the same fused geometry as the image.
 
-What it does not do: clip coordinates to the image, drop boxes that left the frame, shrink boxes to their visible part, remove degenerate areas, propagate class labels alongside a filtered box tensor, accept a ragged `N` per image, or update keypoint visibility flags.
+The core tensor route does not clip coordinates to the image, drop boxes that left the frame, shrink boxes to their visible part, remove degenerate areas, propagate class labels alongside a filtered box tensor, or update keypoint visibility flags. When a detector already owns one ragged target mapping per image, use `augment_detection_batch` as the explicit boundary described below.
 
 Skip that postprocessing and you train on boxes that sit outside the image, on one-pixel slivers, and on labels that no longer line up with their coordinates.
 
@@ -55,8 +55,8 @@ Three boxes in, three boxes out — including the one now rotated off the canvas
 labels = torch.tensor([[1, 2, 3]])
 
 clipped = boxes_out.clone()
-clipped[..., 0::2] = clipped[..., 0::2].clamp(0, 127)
-clipped[..., 1::2] = clipped[..., 1::2].clamp(0, 127)
+clipped[..., 0::2] = clipped[..., 0::2].clamp(0, 128)
+clipped[..., 1::2] = clipped[..., 1::2].clamp(0, 128)
 
 widths = clipped[..., 2] - clipped[..., 0]
 heights = clipped[..., 3] - clipped[..., 1]
@@ -82,6 +82,46 @@ print(tuple(kept_boxes.shape), tuple(kept_labels.shape))
 The important line is `labels[keep]`. The same boolean mask has to be applied to every per-instance array you carry — classes, track identifiers, crowd flags, scores — or your labels silently shift by one instance for the rest of training.
 
 Once boxes are filtered per image, `N` differs across the batch, so the result is a ragged list rather than a padded tensor. Re-pad it, or collate it the way your detector expects, before it reaches the model.
+
+## Augment a ragged detector batch
+
+`augment_detection_batch` is the narrow adapter for a TorchVision-style detector target list. It requires a `FusedCompose` whose `data_keys` are exactly `["input", "bbox_xyxy"]`. It validates one mapping per image, packs the per-image `(N, 4)` floating `boxes` into a dense batch, runs the declared geometry, clips boxes to the output pixel-edge canvas `[0, W] x [0, H]`, and restores a new ragged list.
+
+Each mapping requires `boxes` and int64 `labels`. Optional fields are floating same-dtype `area`, integer or boolean `iscrowd`, and scalar or one-element `image_id`. Unsupported fields, missing values, shape/device/dtype mismatches, and non-sequence targets raise at the boundary. The helper applies one validity mask to boxes and supported per-instance fields; supplied `area` is recomputed after clipping, and input mappings and tensors are left untouched. `min_size` and `min_visibility` are explicit thresholds; zero-area boxes are always removed because detector models reject them.
+
+```python
+import torch
+
+from fuse_augmentations import Compose, augment_detection_batch
+
+images = torch.zeros(1, 1, 16, 16)
+targets = [
+    {
+        "boxes": torch.tensor([[0.0, 2.0, 4.0, 6.0], [10.0, 2.0, 14.0, 6.0]]),
+        "labels": torch.tensor([1, 2]),
+    }
+]
+pipe = Compose.from_params(
+    translate_x=(-4.0, -4.0),
+    data_keys=["input", "bbox_xyxy"],
+)
+
+_, augmented_targets = augment_detection_batch(pipe, images, targets)
+print(augmented_targets[0]["boxes"].tolist())
+print(augmented_targets[0]["labels"].tolist())
+```
+
+<details>
+<summary>Ragged target fields stay aligned after clipping and filtering</summary>
+
+```
+[[6.0, 2.0, 10.0, 6.0]]
+[2]
+```
+
+</details>
+
+The adapter pads only inside the call and returns one target mapping per input image, including empty `(0, 4)` box and `(0,)` label tensors. Keep arbitrary per-instance metadata outside this boundary and apply the returned keep decision yourself, or reject it before calling the helper; silently dropping a field would corrupt alignment.
 
 ## Rotation inflates axis-aligned boxes
 

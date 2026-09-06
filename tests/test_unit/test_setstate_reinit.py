@@ -31,7 +31,6 @@ _DERIVED_ATTRS = (
     "_seg_dispatch_tags",
     "_multi_target",
     "_aux_keys",
-    "_single_exact_fast",
     "_single_fused_fast_seg",
     "_single_albu_direct_seg",
     "_is_albu_native",
@@ -71,6 +70,22 @@ def test_legacy_pickle_missing_derived_attrs_rebuilds_and_runs():
     restored = _legacy_restore(pipe, _DERIVED_ATTRS)
     assert all(hasattr(restored, attr) for attr in _DERIVED_ATTRS)
     torch.testing.assert_close(restored(image), pipe(image))
+
+
+def test_legacy_projective_mask_fill_defaults_to_zero():
+    """A pre-mask-fill projective pickle retains its zero-padded mask behavior."""
+    pipe = Compose([kornia_aug.RandomPerspective(distortion_scale=0.2, p=1.0)], data_keys=["input", "mask"])
+    image = _image()
+    mask = torch.ones(2, 1, 16, 16, dtype=torch.int64)
+    torch.manual_seed(29)
+    expected_image, expected_mask = pipe(image, mask)
+    del pipe._segments[0].mask_fill
+    restored = _legacy_restore(pipe, ("mask_fill",))
+    torch.manual_seed(29)
+    actual_image, actual_mask = restored(image, mask)
+    torch.testing.assert_close(actual_image, expected_image, rtol=1e-4, atol=1e-6)
+    assert torch.equal(actual_mask, expected_mask)
+    assert restored._segments[0].mask_fill == 0
 
 
 def test_legacy_pickle_multi_target_rebuilt():

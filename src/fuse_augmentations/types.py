@@ -199,6 +199,11 @@ ComposePaddingModeStr = PaddingModeStr | Literal["per_transform"]
 #: out-of-canvas mask region means "no instance", not "the fill colour".
 FillValue = float | Sequence[float]
 
+#: Constant scalar written into the out-of-canvas region of a warped **mask**.
+#: This is independent of :data:`FillValue`: masks carry one label per pixel, not
+#: image channels. Boolean values are accepted at runtime as the integer values 0 and 1.
+MaskFillValue = int | float
+
 #: String literal type for the ``kind`` field of :class:`SegmentDescriptor`.
 SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color", "lut", "crop_resize", "gaussian_blur"]
 
@@ -345,7 +350,13 @@ class TransformAdapter(Protocol):
         """
         raise NotImplementedError("Adapter does not implement exact_flip_dims; required for ExactAffineSegment support")
 
-    def exact_apply(self, transform: object, image: Tensor) -> Tensor:
+    def exact_apply(
+        self,
+        transform: object,
+        image: Tensor,
+        *,
+        params: dict[str, Tensor] | None = None,
+    ) -> Tensor:
         """Apply a GEOMETRIC_EXACT transform losslessly to an image batch.
 
         Implementers **must** provide this method for adapters that are used with :class:`ExactAffineSegment`.
@@ -353,21 +364,17 @@ class TransformAdapter(Protocol):
         Adapters that support non-flip discrete ops (e.g. 90-degree rotations, transposes) can instead dispatch via
         ``torch.rot90``, ``.permute``, etc.
 
-        Warning:
-            Implementations for stochastic discrete ops (``RandomRotate90``, ``D4``) draw their own random
-            parameters internally, independent of :meth:`sample_params`. Never combine an ``exact_apply``
-            image path with a :meth:`sample_params`-derived matrix for the SAME transform in one forward —
-            the two draws are unrelated and image vs coordinate outputs would diverge. Current segments keep
-            these paths mutually exclusive.
-
         Args:
             transform: The backend transform object (GEOMETRIC_EXACT category).
             image: ``(batch_size, channels, height, width)`` input tensor.
+            params: Canonical parameters sampled for this exact application. Stochastic
+                discrete adapters must consume these rather than draw a second value.
 
         Returns:
             Transformed ``(batch_size, channels, height, width)`` tensor.
 
         """
+        del params
         return image.flip(dims=self.exact_flip_dims(transform))
 
     def call_nonfused(

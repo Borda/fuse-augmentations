@@ -24,7 +24,7 @@ description: Verified compatibility, target-safety, numerical-parity, randomness
 | Is Albumentations NumPy input supported?          | Yes. `image=HWC_array` works on its own, and with `data_keys` declared the same call carries masks, boxes, keypoints and rotated boxes. Albumentations' label processors are still not replicated. |
 | Are all upstream transforms fused?                | No. Built-in adapters use finite registries. Unknown transforms become passthrough barriers or are refused.                                                                                        |
 | Does fused output equal native output?            | Not universally. Sampling, coordinate conventions, interpolation, padding, clipping, and operation order can differ.                                                                               |
-| Does `transform_matrix` cover the whole pipeline? | No. It is the last matrix-producing affine or projective segment from the most recent call.                                                                                                        |
+| Does `transform_matrix` cover the whole pipeline? | No. It is the actual matrix from the most recent call's last supported affine/projective, exact D4, or direct deterministic letterbox segment.                                                     |
 | Is every GPU or MPS configuration faster?         | No. Speed depends on device, batch, image size, operation mix, warmup, and passthrough transfers. Benchmark your exact pipeline.                                                                   |
 
 ## Input and backend limits
@@ -53,13 +53,16 @@ TorchVision `RandomRotation(expand=True)` is explicitly unsupported. The fused T
 
 Masks and coordinates have additional contracts:
 
-- Nearest-neighbor mask sampling uses zero padding even when the image uses `padding_mode="border"` or `"reflection"`. Label `0` must therefore be an acceptable out-of-bounds fill value.
+- Detection `bbox_xyxy` and `bbox_xywh` use pixel-edge extents: a full `(H, W)` canvas is `[0, W] x [0, H]`. Image sampling, keypoints, and rotated boxes retain pixel-centre coordinates through `[0, W - 1] x [0, H - 1]`; box helpers perform the centre-to-edge matrix conversion at their boundary. Do not apply the box convention to image, keypoint, or rotated-box matrices.
+- Nearest-neighbor mask sampling uses scalar `mask_fill=0` by default, independently of image `fill` and `padding_mode`. Configure a finite dtype-compatible scalar for an ignore value such as `255` (`uint8`) or `-1` (signed integer). Bilinear masks remain floating-only; nearest masks retain their no-autograd contract.
 - `padding_mode="reflection"` reflects about the outer pixel *centres* (OpenCV `BORDER_REFLECT_101`), following this package's `align_corners=True` sampling. An implementation sampling with `align_corners=False` reflects about the outer pixel *edges* (`BORDER_REFLECT`) and its mirrored band differs by a pixel of phase. `"zeros"` and `"border"` are convention-free; see "Half-pixel convention" in `guides/configuration.md`.
 - A canvas thinner than two pixels on either axis is refused: the `align_corners=True` normalization divides by `L - 1`. A `(H, 1)` or `(1, W)` image raises naming the axis rather than warping through an infinite scale.
 - The nearest mask path is deliberately executed without autograd. This removes gradients with respect to both the mask values and sampling grid. Bilinear sampling is available for floating soft masks, mixes values at boundaries, and keeps an autograd path.
 - Boxes are dense `(B, N, 4)` tensors and keypoints are dense `(B, N, 2)` tensors. Validation rejects batch mismatches, mask-canvas mismatches, wrong coordinate widths, and extra box columns before execution; empty `N=0` tables remain valid. The package does not clip them to image bounds, filter invisible or zero-area boxes, calculate visibility, carry labels, or manage variable `N`.
 - Rotated boxes are returned as axis-aligned bounding boxes, which can be larger than the rotated object.
 - Coordinate targets remain PyTorch tensors when image and mask outputs are converted with `output_backend="numpy"`.
+
+The dense auxiliary-target route intentionally does not understand detector metadata or ragged instance axes. `augment_detection_batch` is the explicit TorchVision-style adapter: it accepts one mapping per image with `boxes` and int64 `labels`, packs and unpacks the dense box route, clips to pixel-edge extents, recomputes supplied `area`, and applies one keep mask to supported `iscrowd` and `image_id` fields. Unsupported per-instance fields raise instead of being silently discarded.
 
 ## Passthrough is not transparent
 
@@ -118,13 +121,15 @@ Fusion's value on an accelerator is backend-dependent, and the dated CPU/MPS pro
 
 `fusion_plan` and `fusion_plan_descriptors` describe segmentation. They are the right tools for detecting barriers and backend boundaries.
 
-`transform_matrix` and `return_matrix=True` expose only the last matrix-producing segment. They do not compose across backend boundaries, passthrough barriers, separate affine/projective segments, exact-only segments, or multiple fused segments. The property is mutable per-call state and should not be read concurrently from a shared pipeline instance.
+`transform_matrix` and `return_matrix=True` expose the actual forward pixel-centre matrix for the last supported matrix-producing segment. Fused affine/projective segments, exact D4/flip/quarter-turn segments, and direct deterministic `letterbox` publish this `(B, 3, 3)` coordinate provenance. They do not compose across backend boundaries, passthrough barriers, separate affine/projective segments, or multiple fused segments; the matrix is never a whole-pipeline trace. The property is mutable per-call state and should not be read concurrently from a shared pipeline instance. Before a call, or after a call with no supported geometry, it is `None`.
+
+Native NumPy single-image exact calls retain the native layout, including rectangular outputs when a 90-degree or transpose operation swaps height and width, and publish the same actual-call matrix. Dense BCHW shape-changing D4/90-degree/transpose batches remain limited to square inputs; heterogeneous per-sample shapes are unsupported.
 
 `n_warps_saved` is a planning heuristic, not a literal count of native interpolations or an observed speedup. In particular, exact flips can contribute to the metric even though native flips are already non-interpolating.
 
 ## Test-time inverse limits
 
-`pipe.inverse(prediction, matrix=matrix)` maps a prediction back to the original geometric frame, but only for a pipeline that reduces to one fused affine or projective segment. It raises for crop-resize (cropped pixels are lost and cannot be recovered), color/LUT/blur or passthrough segments, exact-only segments, and multi-segment pipelines, because `return_matrix` records only the last segment's matrix.
+`pipe.inverse(prediction, matrix=matrix)` maps a prediction back to the original geometric frame, but only for a pipeline that reduces to one fused affine or projective image segment. It raises for crop-resize or standalone deterministic letterbox (cropped, padded, or resized pixels are not reconstructed), color/LUT/blur or passthrough segments, exact-only images, and multi-segment pipelines. Exact D4/flip/quarter-turn and letterbox matrices remain useful for coordinate recovery through the target helpers; publishing provenance does not widen the image-inverse contract.
 
 The inverse is geometric-only. It cannot recover values discarded by interpolation or padding, and it does not undo color, LUT, or blur operations. Recovered boxes are axis-aligned, so a forward-then-inverse box is exact only for axis-aligned transforms (flip, scale, translation) and inflates under rotation, shear, or a projective warp. Always pass the matrix returned by the same `forward(..., return_matrix=True)` call rather than the mutable `transform_matrix` property.
 

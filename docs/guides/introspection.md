@@ -71,11 +71,13 @@ Use it as a planning metric, then profile the real workload.
 output, matrix = augment(images, return_matrix=True)
 ```
 
-The matrix is the forward pixel-space matrix for the **last matrix-producing segment in that call**. It is not automatically the transform of an entire pipeline containing multiple backend segments, a projective boundary, a crop boundary, or passthrough operations.
+The matrix is the actual forward pixel-centre matrix for the **last supported matrix-producing segment in that call**. Fused affine/projective segments, exact D4/flip/quarter-turn segments, and direct deterministic `letterbox` publish a `(B, 3, 3)` matrix. It is not automatically the transform of an entire pipeline containing multiple backend segments, a projective boundary, a crop boundary, or passthrough operations.
 
-The `transform_matrix` property exposes the same mutable last-call state and can be `None` for a pipeline with no matrix-producing segment. It is not safe as shared cross-thread request state. Prefer `return_matrix=True` when the matrix must stay paired with its output.
+The `transform_matrix` property exposes the same mutable last-call state and is `None` before a call or when the latest call produced no supported geometry. It is not safe as shared cross-thread request state. Prefer `return_matrix=True` when the matrix must stay paired with its output.
 
-For a pipeline deliberately constrained to one matrix segment, the returned `(B, 3, 3)` matrix can route coordinates or be stored as augmentation provenance.
+Matrices map source pixel centres to output pixel centres. Use the target helpers with the inverse matrix for coordinate recovery; AABB helpers perform their pixel-edge conversion internally. For a pipeline deliberately constrained to one supported matrix segment, the returned matrix can route coordinates or be stored as augmentation provenance. A matrix from a multi-segment pipeline still describes only its last supported segment.
+
+Native NumPy single-image exact calls preserve the native layout, including rectangular outputs when a 90-degree or transpose operation swaps height and width, and publish the same actual-call matrix. Dense BCHW shape-changing D4/90-degree/transpose batches remain limited to square inputs; heterogeneous per-sample shapes are unsupported.
 
 ## Test-time de-augmentation with `inverse`
 
@@ -90,12 +92,13 @@ recovered = translate_pipe.inverse(augmented, matrix=matrix)
 
 Pass the `matrix` returned by the same forward call rather than reading `transform_matrix`. `inverse` does not read that mutable property, so pairing a call's own matrix this way is safe under concurrent calls.
 
-`inverse` supports one fused affine or projective segment, including a chain already fused into that segment. It raises `ValueError` instead of guessing for:
+`inverse` supports one fused affine or projective image segment, including a chain already fused into that segment. Exact D4/flip/quarter-turn and deterministic letterbox calls still publish coordinate provenance, but their images are not accepted by this inverse API. It raises `ValueError` instead of guessing for:
 
 - crop-resize segments (`CropResizeSegment`, `_FusedGeoCropSegment`) — crop-resize discards pixels outside the crop;
 - non-geometric segments (`FusedColorSegment`, `FusedLUTSegment`, `FusedGaussianBlurSegment`) — color, LUT, and blur segments carry no geometric matrix;
 - passthrough segments — no recorded matrix;
-- exact-only segments (`ExactAffineSegment`) — flips and D4/90° ops have no recorded matrix;
+- exact-only segments (`ExactAffineSegment`) — exact pixels cannot be reconstructed through this image inverse, even though the segment records a forward coordinate matrix;
+- standalone deterministic letterbox segments — padding and resizing are not restored by the image inverse;
 - multi-segment pipelines — `return_matrix` records only the last segment's matrix;
 - a missing paired `matrix` argument.
 

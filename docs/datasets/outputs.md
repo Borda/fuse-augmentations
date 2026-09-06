@@ -134,3 +134,56 @@ print(sum(len(batch) for batch in loader))
 </details>
 
 Set `num_workers>0` for multi-process loading: `SyntheticIterableDataset` is worker-shard aware, so each worker generates a disjoint, deterministically-seeded slice of `num_images`. Note that a `DataLoader` relaxes the one-sample bound: a batch materializes up to `batch_size` samples at once, prefetching holds `prefetch_factor` batches per worker, and each of `num_workers` workers materializes its own sample concurrently — so in-memory peak scales with `batch_size × num_workers`, not with a single image. When writing to disk, `generate_dataset` streams the same single sample source through per-split views, so image pixels never accumulate; peak memory then depends on the writer — bounded for YOLO, and O(n) COCO metadata (per the note above) for COCO.
+
+### Distributed ranks and epochs
+
+`SyntheticIterableDataset` treats `num_images` as a per-rank count. Pass the process `rank`, total `world_size`, and an immutable `epoch` when constructing it; the dataset does not inspect `torch.distributed` and has no `set_epoch()` method. Rank, epoch, and worker id are part of the seeded stream namespace, so equal seeds remain reproducible within one rank and epoch while different ranks and epochs receive different streams.
+
+Build a fresh dataset and `DataLoader` for every epoch. Keep `persistent_workers=False`; persistent workers retain the old dataset instance and therefore cannot observe a new immutable epoch. This recipe also shows the per-rank count: each rank yields ten samples, so a two-rank job yields twenty total samples per epoch.
+
+```python
+from torch.utils.data import DataLoader
+
+from fuse_augmentations.data import SyntheticIterableDataset
+
+rank, world_size = 1, 2
+persistent_workers = False
+if persistent_workers:
+    raise ValueError("build a fresh DataLoader per epoch with persistent_workers=False")
+
+
+def loader_for_epoch(epoch: int) -> DataLoader:
+    dataset = SyntheticIterableDataset(
+        num_images=10,
+        img_size=32,
+        class_mode="shape",
+        seed=7,
+        rank=rank,
+        world_size=world_size,
+        epoch=epoch,
+    )
+    return DataLoader(
+        dataset,
+        batch_size=2,
+        collate_fn=list,
+        num_workers=2,
+        persistent_workers=persistent_workers,
+    )
+
+
+for epoch in range(2):
+    loader = loader_for_epoch(epoch)
+    print(epoch, len(loader.dataset), sum(len(batch) for batch in loader))
+```
+
+<details>
+<summary>Per-rank samples for two fresh epochs</summary>
+
+```
+0 10 10
+1 10 10
+```
+
+</details>
+
+The dataset intentionally does not promise mid-epoch replay, persistent-worker epoch propagation, topology-independent streams, or accelerator behavior. If persistent workers are required by an application, the application must own an explicit epoch-aware worker protocol rather than changing this dataset's immutable `epoch` property.

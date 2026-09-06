@@ -235,12 +235,13 @@ class TestPipelineRouting:
 
         """
         rboxes = torch.tensor([[[16.0, 8.0, 8.0, 4.0, 0.0]]])
-        boxes = torch.tensor([[[12.0, 6.0, 20.0, 10.0]]])
+        # Rbox corners use pixel centres; xyxy extents use pixel edges (+0.5).
+        boxes = torch.tensor([[[12.5, 6.5, 20.5, 10.5]]])
         pipe = FusedCompose.from_params(scale=(1.5, 1.5), data_keys=["input", "bbox_xyxy", "rboxes"])
 
         _, routed_boxes, routed_rboxes = pipe(torch.rand(1, 3, 16, 32), boxes, rboxes)
 
-        assert torch.allclose(rbox_envelopes(routed_rboxes), routed_boxes, atol=1e-4)
+        torch.testing.assert_close(rbox_envelopes(routed_rboxes) + 0.5, routed_boxes, rtol=1e-4, atol=1e-6)
 
     def test_the_pipeline_returns_un_canonicalized_boxes(self) -> None:
         """A rotation past a quarter turn is reported as-is, not folded into a long-edge form.

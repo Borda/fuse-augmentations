@@ -125,10 +125,10 @@ class TestBboxIdentity:
 
 @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
 class TestBboxHFlip:
-    """#35: HFlip mirrors bbox x-coordinates: new_x = W - 1 - old_x."""
+    """#35: HFlip mirrors bbox pixel-edge x-coordinates: new_x = W - old_x."""
 
     def test_bbox_x_mirrored_after_hflip(self):
-        """After HFlip(p=1), bbox x-coords mirror: x_min' = W-1-x_max, x_max' = W-1-x_min."""
+        """After HFlip(p=1), bbox edges mirror: x_min' = W-x_max, x_max' = W-x_min."""
         pipe = Compose(
             [kornia_aug.RandomHorizontalFlip(p=1.0)],
             data_keys=["input", "bbox_xyxy"],
@@ -138,8 +138,8 @@ class TestBboxHFlip:
         boxes = torch.tensor([[[x1, y1, x2, y2]]] * BATCH)
         _, out_boxes = pipe(img, boxes)
 
-        expected_x1 = WIDTH - 1 - x2
-        expected_x2 = WIDTH - 1 - x1
+        expected_x1 = WIDTH - x2
+        expected_x2 = WIDTH - x1
         expected = torch.tensor([[[expected_x1, y1, expected_x2, y2]]] * BATCH)
         torch.testing.assert_close(out_boxes, expected, atol=1e-4, rtol=1e-4)
 
@@ -248,8 +248,8 @@ class TestBatchConsistency:
 
         out_img, out_boxes = pipe(img, boxes)
 
-        expected_x1 = WIDTH - 1 - x2
-        expected_x2 = WIDTH - 1 - x1
+        expected_x1 = WIDTH - x2
+        expected_x2 = WIDTH - x1
         for batch_idx in range(batch_size):
             # Image must be flipped
             expected_img_i = img[batch_idx].flip(dims=[-1])

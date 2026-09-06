@@ -34,12 +34,14 @@ from fuse_augmentations.config_validation import (
     _has_coord_aux,
     _validate_fill,
     _validate_keypoint_flip_index,
+    _validate_mask_fill,
 )
 from fuse_augmentations.types import (
     ClipPolicyStr,
     ComposePaddingModeStr,
     FillValue,
     InterpolationStr,
+    MaskFillValue,
     MaskInterpolationStr,
     PipelineDtypeStr,
     RandomnessPolicy,
@@ -78,6 +80,7 @@ class FactoriesMixin:
         generator: torch.Generator | None = None,
         fill: FillValue | None = None,
         keypoint_flip_index: Sequence[int] | None = None,
+        mask_fill: MaskFillValue = 0,
     ) -> object:
         """Create a FusedCompose pipeline from a list of TransformSpec objects.
 
@@ -105,6 +108,8 @@ class FactoriesMixin:
             randomness: Batch randomness policy forwarded to :meth:`__init__`.
             clip_policy: Clamp policy for fused color segments.
             mask_interpolation: Auxiliary mask sampling mode forwarded to
+                :meth:`__init__`.
+            mask_fill: Scalar border value for routed auxiliary masks, forwarded to
                 :meth:`__init__`.
             pipeline_dtype: Optional fused GPU image-operation dtype forwarded to
                 :meth:`__init__`.
@@ -147,6 +152,7 @@ class FactoriesMixin:
         if backend not in SUPPORTED_BACKENDS:
             msg = f"unknown backend {backend!r}; supported: {sorted(SUPPORTED_BACKENDS)}"
             raise ValueError(msg)
+        mask_fill = _validate_mask_fill(mask_fill)
 
         kept_specs = cls._validate_specs(specs, backend, on_unsupported)
         if backend == "native":
@@ -160,6 +166,7 @@ class FactoriesMixin:
                 randomness=_coerce_randomness_policy(randomness),
                 clip_policy=clip_policy,
                 mask_interpolation=mask_interpolation,
+                mask_fill=mask_fill,
                 pipeline_dtype=pipeline_dtype,
                 route_coords_via_grid=_has_coord_aux(data_keys),
                 native=True,
@@ -183,6 +190,7 @@ class FactoriesMixin:
             randomness=randomness,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
             pipeline_dtype=pipeline_dtype,
         )
 
@@ -376,6 +384,7 @@ class FactoriesMixin:
         specs: list[TransformSpec] | None = None,
         backend: BackendStr | None = None,
         route_coords_via_grid: bool = False,
+        mask_fill: MaskFillValue = 0,
     ) -> object:
         """Create a ``FusedCompose`` pipeline directly from parameter ranges.
 
@@ -445,6 +454,8 @@ class FactoriesMixin:
                 when ``backend=`` is set (delegation to :meth:`from_config`).
             clip_policy: Clamp policy forwarded to fused color segments.
             mask_interpolation: Auxiliary mask sampling mode forwarded to
+                :meth:`__init__` or :meth:`from_config`.
+            mask_fill: Scalar border value for routed auxiliary masks, forwarded to
                 :meth:`__init__` or :meth:`from_config`.
             pipeline_dtype: Optional fused GPU image-operation dtype forwarded to
                 :meth:`__init__` or :meth:`from_config`.
@@ -546,6 +557,7 @@ class FactoriesMixin:
         """
         _validate_geometric_probability("rotation_p", rotation_p)
         _validate_geometric_probability("scale_p", scale_p)
+        mask_fill = _validate_mask_fill(mask_fill)
 
         # --- specs= overload path ---
         # Note: specs= is a convenience alias for declarative pipeline construction.
@@ -592,6 +604,7 @@ class FactoriesMixin:
                     randomness=randomness,
                     clip_policy=clip_policy,
                     mask_interpolation=mask_interpolation,
+                    mask_fill=mask_fill,
                     pipeline_dtype=pipeline_dtype,
                 )
 
@@ -608,6 +621,7 @@ class FactoriesMixin:
                 randomness=_coerce_randomness_policy(randomness),
                 clip_policy=clip_policy,
                 mask_interpolation=mask_interpolation,
+                mask_fill=mask_fill,
                 pipeline_dtype=pipeline_dtype,
                 route_coords_via_grid=route_coords_via_grid,
             )
@@ -655,6 +669,7 @@ class FactoriesMixin:
                 randomness=randomness,
                 clip_policy=clip_policy,
                 mask_interpolation=mask_interpolation,
+                mask_fill=mask_fill,
                 pipeline_dtype=pipeline_dtype,
             )
 
@@ -701,6 +716,7 @@ class FactoriesMixin:
                 randomness=randomness,
                 clip_policy=clip_policy,
                 mask_interpolation=mask_interpolation,
+                mask_fill=mask_fill,
                 pipeline_dtype=pipeline_dtype,
             )
 
@@ -741,6 +757,7 @@ class FactoriesMixin:
             randomness_policy,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
             route_coords_via_grid=route_coords_via_grid or _has_coord_aux(data_keys),
             per_transform_padding=padding_mode == "per_transform",
             generator=generator,
@@ -759,6 +776,7 @@ class FactoriesMixin:
             randomness=randomness_policy,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
             pipeline_dtype=pipeline_dtype,
             generator=generator,
             fill=fill_values,
@@ -785,6 +803,7 @@ class FactoriesMixin:
         generator: torch.Generator | None = None,
         fill: FillValue | None = None,
         keypoint_flip_index: Sequence[int] | None = None,
+        mask_fill: MaskFillValue = 0,
     ) -> object:
         """Build a from_params pipeline from a list of TransformSpec objects.
 
@@ -855,6 +874,7 @@ class FactoriesMixin:
                 randomness=randomness,
                 clip_policy=clip_policy,
                 mask_interpolation=mask_interpolation,
+                mask_fill=mask_fill,
                 pipeline_dtype=pipeline_dtype,
             )
 
@@ -871,6 +891,7 @@ class FactoriesMixin:
             randomness,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
             route_coords_via_grid=route_coords_via_grid or _has_coord_aux(data_keys),
             per_transform_padding=padding_mode == "per_transform",
             generator=generator,
@@ -889,6 +910,7 @@ class FactoriesMixin:
             randomness=randomness,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
             pipeline_dtype=pipeline_dtype,
             generator=generator,
             fill=fill_values,
@@ -1099,6 +1121,8 @@ class _DirectLetterboxTransform:
     source canvas straight to the letterboxed one.
 
     """
+
+    _coordinate_matrix_recoverable = True
 
     def __init__(self, height_out: int, width_out: int, allow_upscale: bool = True) -> None:
         self.height_out = int(height_out)
@@ -1352,8 +1376,14 @@ class _DirectParamAdapter:
         raise TypeError(msg)
 
     @staticmethod
-    def exact_apply(transform: object, image: torch.Tensor) -> torch.Tensor:
+    def exact_apply(
+        transform: object,
+        image: torch.Tensor,
+        *,
+        params: dict[str, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         """Apply a GEOMETRIC_EXACT transform losslessly."""
+        del params
         if isinstance(transform, _DirectFlipTransform):
             if transform.flip_type == "hflip":
                 return image.flip(dims=[3])

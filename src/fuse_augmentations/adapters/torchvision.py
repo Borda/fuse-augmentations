@@ -498,7 +498,12 @@ class TorchVisionAdapter:
         raise TypeError(f"Cannot determine flip dims for {type(transform).__name__!r}")
 
     @staticmethod
-    def exact_apply(transform: object, image: torch.Tensor) -> torch.Tensor:
+    def exact_apply(
+        transform: object,
+        image: torch.Tensor,
+        *,
+        params: dict[str, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         """Apply a GEOMETRIC_EXACT transform losslessly.
 
         TorchVision currently only supports flip transforms as GEOMETRIC_EXACT.
@@ -506,6 +511,8 @@ class TorchVisionAdapter:
         Args:
             transform: A TorchVision GEOMETRIC_EXACT transform.
             image: ``(batch_size, channels, height, width)`` input tensor.
+            params: Optional canonical exact parameters. TorchVision currently
+                supports only flips here, which deliberately ignore them.
 
         Returns:
             Transformed ``(batch_size, channels, height, width)`` tensor.

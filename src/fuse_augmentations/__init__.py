@@ -35,6 +35,7 @@ from fuse_augmentations.affine.segment import (
     build_segments,
 )
 from fuse_augmentations.converters import NumpyToTorchConverter, TorchToNumpyConverter
+from fuse_augmentations.detection import augment_detection_batch
 
 # Import from the implementation module (not the ``compose`` compatibility
 # shim, whose runtime ``__getattr__`` forwarding is invisible to static doc
@@ -97,6 +98,7 @@ __all__ = [
     "TransformAdapter",
     "TransformCategory",
     "TransformSpec",
+    "augment_detection_batch",
     "build_segments",
     "clip_bbox_xyxy",
     "corners_to_rboxes",

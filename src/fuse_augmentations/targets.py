@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from numbers import Integral, Real
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -62,14 +63,53 @@ def _check_rboxes(rboxes: Tensor) -> None:
         raise ValueError(msg)
 
 
-def transform_mask(mask: Tensor, grid: Tensor, mode: MaskInterpolationStr = "nearest") -> Tensor:
+def _validate_mask_fill(mask: Tensor, fill: object) -> float:
+    """Return a finite fill that survives the mask's sampling and dtype round trip."""
+    if not isinstance(fill, Real):
+        raise TypeError(f"mask fill must be a scalar real value, got {type(fill).__name__}")
+    try:
+        fill_value = float(fill)
+    except OverflowError as error:
+        raise ValueError("mask fill must be finite") from error
+    if not math.isfinite(fill_value):
+        raise ValueError("mask fill must be finite")
+    if mask.dtype == torch.bool:
+        if fill_value not in (0.0, 1.0):
+            raise ValueError("boolean mask fill must be False or True")
+        return fill_value
+    if mask.is_floating_point():
+        if abs(fill_value) > torch.finfo(mask.dtype).max:
+            raise ValueError(f"mask fill {fill_value} is not finite in sampling dtype {mask.dtype}")
+        return fill_value
+    if isinstance(fill, Integral):
+        # Preserve a Python integer before converting it to float. Above 2**53,
+        # that conversion can otherwise erase a non-representable low bit.
+        fill_int = int(fill)
+    else:
+        if not fill_value.is_integer():
+            raise ValueError("integer mask fill must be integral")
+        fill_int = int(fill_value)
+    dtype_range = torch.iinfo(mask.dtype)
+    if not dtype_range.min <= fill_int <= dtype_range.max:
+        raise ValueError(f"mask fill {fill_int} is outside the range of {mask.dtype}")
+    if int(torch.tensor(fill_int, dtype=torch.float32).item()) != fill_int:
+        raise ValueError(f"integer mask fill {fill_int} is not exactly representable by float32")
+    return fill_value
+
+
+def transform_mask(
+    mask: Tensor,
+    grid: Tensor,
+    mode: MaskInterpolationStr = "nearest",
+    fill: int | float = 0,  # noqa: PYI041 -- integer values are accepted mask fills.
+) -> Tensor:
     """Apply a precomputed affine grid to a segmentation mask.
 
     The default ``mode='nearest'`` preserves integer class labels without
     fractional mixing and retains the historical no-gradient behavior. Use
     ``mode='bilinear'`` for differentiable float soft masks; labels may mix at
-    boundaries. Out-of-bounds samples are filled with 0 via
-    ``padding_mode='zeros'``.
+    boundaries. Out-of-bounds samples use the scalar ``fill`` value, which
+    defaults to the historical value 0.
 
     Args:
         mask: Segmentation mask. Shape ``(batch_size, channels, height, width)``, typically ``channels=1``.
@@ -89,6 +129,10 @@ def transform_mask(mask: Tensor, grid: Tensor, mode: MaskInterpolationStr = "nea
             Coordinates in normalised ``[-1, 1]`` space with ``align_corners=True``.
         mode: Mask sampling mode, either ``"nearest"`` (default) or
             ``"bilinear"``. Bilinear mode requires a floating-point mask.
+        fill: Finite scalar used outside the source canvas. Floating masks require
+            a value that remains finite in their sampling dtype. Integer masks
+            require an integral in-range value that round-trips through float32;
+            boolean masks allow only ``False``/``True`` values.
 
     Returns:
         Warped mask with the same shape and dtype as ``mask``.
@@ -116,6 +160,7 @@ def transform_mask(mask: Tensor, grid: Tensor, mode: MaskInterpolationStr = "nea
         raise ValueError(f"unsupported mask interpolation mode {mode!r}; expected 'nearest' or 'bilinear'")
     if mode == "bilinear" and not mask.is_floating_point():
         raise TypeError("bilinear mask interpolation requires a floating-point mask")
+    fill_value = _validate_mask_fill(mask, fill)
 
     needs_cast_back = not mask.is_floating_point()
     sample_mask = mask
@@ -142,6 +187,14 @@ def transform_mask(mask: Tensor, grid: Tensor, mode: MaskInterpolationStr = "nea
                 padding_mode="zeros",
                 align_corners=True,
             )
+            if fill_value:
+                coverage = F.grid_sample(
+                    torch.ones_like(sample_mask),
+                    sample_grid,
+                    mode=mode,
+                    padding_mode="zeros",
+                    align_corners=True,
+                )
     else:
         sampled = F.grid_sample(
             sample_mask,
@@ -150,9 +203,34 @@ def transform_mask(mask: Tensor, grid: Tensor, mode: MaskInterpolationStr = "nea
             padding_mode="zeros",
             align_corners=True,
         )
+    if fill_value:
+        if mode == "bilinear":
+            coverage = F.grid_sample(
+                torch.ones_like(sample_mask),
+                sample_grid,
+                mode=mode,
+                padding_mode="zeros",
+                align_corners=True,
+            )
+        # Sampling a zero-padded coverage mask applies fill only outside the
+        # source canvas, avoiding lossy subtraction from in-bounds labels.
+        sampled = sampled + (1 - coverage) * fill_value
     if needs_cast_back:
         return sampled.to(dtype=mask.dtype)
     return sampled
+
+
+def _bbox_edge_matrix(mtx_forward: Tensor) -> Tensor:
+    """Convert an image-centre homography with ``T(+0.5) @ M @ T(-0.5)`` for AABBs."""
+    to_edge = (
+        torch.eye(3, device=mtx_forward.device, dtype=mtx_forward.dtype).expand(mtx_forward.shape[0], -1, -1).clone()
+    )
+    to_edge[:, 0, 2] = 0.5
+    to_edge[:, 1, 2] = 0.5
+    to_center = to_edge.clone()
+    to_center[:, 0, 2] = -0.5
+    to_center[:, 1, 2] = -0.5
+    return to_edge @ mtx_forward @ to_center
 
 
 def transform_bbox_xyxy(boxes: Tensor, mtx_forward: Tensor) -> Tensor:
@@ -168,9 +246,12 @@ def transform_bbox_xyxy(boxes: Tensor, mtx_forward: Tensor) -> Tensor:
 
     Args:
         boxes: Bounding boxes in xyxy format. Shape ``(batch_size, num_boxes, 4)``,
-            columns ``[x1, y1, x2, y2]`` in pixel coordinates, dtype ``float32``.
-        mtx_forward: Forward (not inverse) affine or projective matrix in pixel
-            coordinates. Shape ``(batch_size, 3, 3)``, dtype ``float32``.
+            columns ``[x1, y1, x2, y2]`` as pixel-edge extents. A full image spans
+            ``[0, width] x [0, height]``, dtype ``float32``.
+        mtx_forward: Forward (not inverse) affine or projective matrix in
+            image-centre pixel coordinates. Shape ``(batch_size, 3, 3)``, dtype
+            ``float32``. The helper converts it internally to the AABB edge
+            coordinate space; callers must not pre-convert it.
 
     Returns:
         Transformed AABB boxes. Shape ``(batch_size, num_boxes, 4)``, xyxy format.
@@ -203,8 +284,9 @@ def transform_bbox_xyxy(boxes: Tensor, mtx_forward: Tensor) -> Tensor:
         dim=-2,
     )  # (B, N, 3, 4)
 
-    # mtx_forward: (B, 3, 3) -> (B, 1, 3, 3) for broadcasting with (B, N, 3, 4)
-    mtx_unsqueezed = mtx_forward.unsqueeze(1)  # (B, 1, 3, 3)
+    # Image resampling matrices map pixel centres. AABBs use pixel edges, so conjugate
+    # once here rather than changing image, keypoint, or rotated-box centre geometry.
+    mtx_unsqueezed = _bbox_edge_matrix(mtx_forward).unsqueeze(1)  # (B, 1, 3, 3)
     transformed = mtx_unsqueezed @ corners_h  # (B, N, 3, 4)
 
     # Perspective division (for affine, homogeneous_w_raw=1 so this is a no-op)
@@ -253,10 +335,11 @@ def transform_bbox_xywh(boxes: Tensor, mtx_forward: Tensor) -> Tensor:
 
     Args:
         boxes: Bounding boxes in xywh format. Shape ``(batch_size, num_boxes, 4)``,
-            columns ``[x, y, w, h]`` where ``(x, y)`` is the top-left corner,
+            columns ``[x, y, w, h]`` where ``(x, y)`` is the top-left pixel edge,
             dtype ``float32``.
-        mtx_forward: Forward (not inverse) affine or projective matrix in pixel
-            coordinates. Shape ``(batch_size, 3, 3)``, dtype ``float32``.
+        mtx_forward: Forward (not inverse) affine or projective matrix in
+            image-centre pixel coordinates. Shape ``(batch_size, 3, 3)``, dtype
+            ``float32``. :func:`transform_bbox_xyxy` converts it to edge space.
 
     Returns:
         Transformed boxes in xywh format. Shape ``(batch_size, num_boxes, 4)``.

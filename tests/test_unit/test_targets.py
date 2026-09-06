@@ -7,6 +7,8 @@ homogeneous-w homography, independent of any backend pipeline.
 
 from __future__ import annotations
 
+import numpy as np
+import pytest
 import torch
 import torch.nn.functional as F
 
@@ -28,6 +30,11 @@ def _identity_mtx() -> torch.Tensor:
 def _hflip_mtx(width: float = _WIDTH) -> torch.Tensor:
     """Return (1, 3, 3) horizontal flip matrix mapping x to (width - 1) - x."""
     return torch.tensor([[[-1.0, 0.0, width - 1.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]])
+
+
+def _vflip_mtx(height: float = 12.0) -> torch.Tensor:
+    """Return (1, 3, 3) vertical flip matrix mapping y to (height - 1) - y."""
+    return torch.tensor([[[1.0, 0.0, 0.0], [0.0, -1.0, height - 1.0], [0.0, 0.0, 1.0]]])
 
 
 def _rot90_mtx() -> torch.Tensor:
@@ -88,21 +95,38 @@ class TestTransformBboxXyxy:
         assert torch.allclose(out, boxes)
 
     def test_hflip_swaps_x_extent(self):
-        """Horizontal flip mirrors the x extent: new x1 = (w-1) - x2, new x2 = (w-1) - x1."""
+        """Horizontal flip preserves edge extents: new x1 = w - x2, new x2 = w - x1."""
         boxes = torch.tensor([[[2.0, 3.0, 6.0, 9.0]]])
         out = transform_bbox_xyxy(boxes, _hflip_mtx())
-        expected = torch.tensor([[[_WIDTH - 1.0 - 6.0, 3.0, _WIDTH - 1.0 - 2.0, 9.0]]])
+        expected = torch.tensor([[[_WIDTH - 6.0, 3.0, _WIDTH - 2.0, 9.0]]])
+        assert torch.allclose(out, expected)
+
+    def test_hflip_preserves_full_canvas_extent(self):
+        """A full pixel-edge canvas remains full after an image-centre horizontal flip."""
+        boxes = torch.tensor([[[0.0, 0.0, _WIDTH, 8.0]]])
+
+        out = transform_bbox_xyxy(boxes, _hflip_mtx())
+
+        assert torch.equal(out, boxes)
+
+    def test_vflip_swaps_y_extent(self):
+        """Vertical flips map edge coordinates around the full canvas height."""
+        boxes = torch.tensor([[[2.0, 1.0, 6.0, 5.0]]])
+
+        out = transform_bbox_xyxy(boxes, _vflip_mtx())
+
+        expected = torch.tensor([[[2.0, 7.0, 6.0, 11.0]]])
         assert torch.allclose(out, expected)
 
     def test_rotation_45_widens_aabb(self):
-        """A 45-degree rotation of a square box widens the AABB by sqrt(2)."""
+        """A 45-degree rotation transforms pixel-edge corners before reducing the AABB."""
         angle = torch.tensor(torch.pi / 4)
         cos_a, sin_a = torch.cos(angle), torch.sin(angle)
         mtx_rot = torch.tensor([[[cos_a, -sin_a, 0.0], [sin_a, cos_a, 0.0], [0.0, 0.0, 1.0]]])
         boxes = torch.tensor([[[-1.0, -1.0, 1.0, 1.0]]])  # square centred at origin, side 2
         out = transform_bbox_xyxy(boxes, mtx_rot)
         side = float(2**0.5)
-        expected = torch.tensor([[[-side, -side, side, side]]])
+        expected = torch.tensor([[[0.5 - side, 0.5 - 1.5 * side, 0.5 + side, 0.5 + 0.5 * side]]])
         assert torch.allclose(out, expected, atol=1e-5)
 
     def test_degenerate_w_stays_finite(self):
@@ -138,7 +162,9 @@ class TestBboxAabbReductionContract:
         corners_x = torch.stack([boxes[..., 0], boxes[..., 2], boxes[..., 2], boxes[..., 0]], dim=-1)
         corners_y = torch.stack([boxes[..., 1], boxes[..., 1], boxes[..., 3], boxes[..., 3]], dim=-1)
         ones = torch.ones_like(corners_x)
-        transformed = mtx.unsqueeze(1) @ torch.stack([corners_x, corners_y, ones], dim=-2)
+        to_edge = torch.tensor([[[1.0, 0.0, 0.5], [0.0, 1.0, 0.5], [0.0, 0.0, 1.0]]])
+        to_center = torch.tensor([[[1.0, 0.0, -0.5], [0.0, 1.0, -0.5], [0.0, 0.0, 1.0]]])
+        transformed = (to_edge @ mtx @ to_center).unsqueeze(1) @ torch.stack([corners_x, corners_y, ones], dim=-2)
         expected = torch.stack(
             [
                 transformed[:, :, 0, :].min(dim=-1).values,
@@ -193,7 +219,16 @@ class TestTransformBboxXywh:
         """Horizontal flip relocates the top-left corner but keeps w and h."""
         boxes = torch.tensor([[[2.0, 3.0, 4.0, 6.0]]])
         out = transform_bbox_xywh(boxes, _hflip_mtx())
-        expected = torch.tensor([[[_WIDTH - 1.0 - 6.0, 3.0, 4.0, 6.0]]])
+        expected = torch.tensor([[[_WIDTH - 6.0, 3.0, 4.0, 6.0]]])
+        assert torch.allclose(out, expected)
+
+    def test_vflip_preserves_width_and_height(self):
+        """Vertical flip relocates the top edge but keeps xywh dimensions."""
+        boxes = torch.tensor([[[2.0, 1.0, 4.0, 4.0]]])
+
+        out = transform_bbox_xywh(boxes, _vflip_mtx())
+
+        expected = torch.tensor([[[2.0, 7.0, 4.0, 4.0]]])
         assert torch.allclose(out, expected)
 
     def test_matches_xyxy_conversion(self):
@@ -264,3 +299,142 @@ class TestTransformMask:
         out = transform_mask(mask, grid)
         assert out.dtype == torch.float32
         assert torch.allclose(out, mask)
+
+    def test_large_finite_float_fill_preserves_in_bounds_identity(self):
+        """A finite border value must not cancel smaller in-bounds soft-mask values."""
+        mask = torch.tensor([[[[0.25, 0.5], [0.75, 1.0]]]])
+        grid = self._grid_from_theta(torch.eye(2, 3).unsqueeze(0), 2, 2)
+
+        out = transform_mask(mask, grid, fill=1e20)
+
+        assert torch.equal(out, mask)
+
+    def test_rejects_float_fill_that_overflows_sampling_dtype(self):
+        """A Python-finite fill must also be finite in the float sampling dtype."""
+        mask = torch.zeros(1, 1, 2, 2)
+        grid = self._grid_from_theta(torch.eye(2, 3).unsqueeze(0), 2, 2)
+
+        with pytest.raises(ValueError, match="float32"):
+            transform_mask(mask, grid, fill=1e39)
+
+    def test_large_integer_fill_preserves_smaller_signed_labels_at_identity(self):
+        """An exact float32 ignore label cannot cancel a smaller signed in-bounds label."""
+        mask = torch.tensor([[[[-2, -1], [0, 1]]]], dtype=torch.int64)
+        grid = self._grid_from_theta(torch.eye(2, 3).unsqueeze(0), 2, 2)
+
+        out = transform_mask(mask, grid, fill=16_777_215)
+
+        assert torch.equal(out, mask)
+
+    def test_uint8_mask_uses_the_requested_ignore_fill(self):
+        """Nearest sampling preserves an in-range uint8 ignore label outside the source canvas."""
+        mask = torch.zeros(1, 1, 3, 3, dtype=torch.uint8)
+        grid = torch.full((1, 3, 3, 2), 2.0)
+
+        out = transform_mask(mask, grid, fill=255)
+
+        assert out.dtype == torch.uint8
+        assert torch.equal(out, torch.full_like(mask, 255))
+
+    def test_signed_mask_uses_negative_ignore_fill(self):
+        """Nearest sampling accepts a signed ignore label that uint8 cannot represent."""
+        mask = torch.zeros(1, 1, 3, 3, dtype=torch.int64)
+        grid = torch.full((1, 3, 3, 2), 2.0)
+
+        out = transform_mask(mask, grid, fill=-1)
+
+        assert torch.equal(out, torch.full_like(mask, -1))
+
+    def test_numpy_real_fill_is_accepted_at_runtime(self):
+        """Runtime real-scalar validation accepts NumPy values beyond the public static union."""
+        mask = torch.zeros(1, 1, 3, 3)
+        grid = torch.full((1, 3, 3, 2), 2.0)
+
+        out = transform_mask(mask, grid, fill=np.float32(1.5))
+
+        assert torch.equal(out, torch.full_like(mask, 1.5))
+
+    def test_bool_mask_accepts_true_and_false_fill(self):
+        """Boolean masks keep boolean border semantics for both allowed scalar values."""
+        mask = torch.zeros(1, 1, 3, 3, dtype=torch.bool)
+        grid = torch.full((1, 3, 3, 2), 2.0)
+
+        true_out = transform_mask(mask, grid, fill=True)
+        false_out = transform_mask(mask, grid, fill=False)
+
+        assert torch.equal(true_out, torch.ones_like(mask))
+        assert torch.equal(false_out, torch.zeros_like(mask))
+
+    def test_default_fill_remains_zero(self):
+        """The legacy default remains zero outside the source canvas."""
+        mask = torch.ones(1, 1, 3, 3, dtype=torch.int64)
+        grid = torch.full((1, 3, 3, 2), 2.0)
+
+        out = transform_mask(mask, grid)
+
+        assert torch.equal(out, torch.zeros_like(mask))
+
+    def test_nearest_fill_remains_non_differentiable(self):
+        """Nearest sampling stays detached when a non-default fill is applied."""
+        mask = torch.ones(1, 1, 3, 3, requires_grad=True)
+        grid = torch.full((1, 3, 3, 2), 2.0)
+
+        out = transform_mask(mask, grid, fill=1.0)
+
+        assert not out.requires_grad
+
+    @pytest.mark.parametrize(
+        ("mask", "fill", "match"),
+        [
+            pytest.param(torch.zeros(1, 1, 3, 3, dtype=torch.uint8), -1, "range", id="unsigned-negative"),
+            pytest.param(torch.zeros(1, 1, 3, 3, dtype=torch.uint8), 1.5, "integral", id="integer-fraction"),
+            pytest.param(torch.zeros(1, 1, 3, 3, dtype=torch.bool), 2, "boolean", id="bool-nonbinary"),
+            pytest.param(torch.zeros(1, 1, 3, 3, dtype=torch.int64), 16_777_217, "float32", id="lossy-int"),
+            pytest.param(
+                torch.zeros(1, 1, 3, 3, dtype=torch.int64),
+                2**54 + 1,
+                "float32",
+                id="lossy-python-float-conversion",
+            ),
+            pytest.param(torch.zeros(1, 1, 3, 3), float("inf"), "finite", id="infinite"),
+            pytest.param(torch.zeros(1, 1, 3, 3), [0], "scalar", id="sequence"),
+        ],
+    )
+    def test_rejects_unrepresentable_fill(self, mask, fill, match):
+        """Mask fill must be finite, scalar, and exactly representable by the target dtype."""
+        grid = torch.full((1, 3, 3, 2), 2.0)
+
+        with pytest.raises((TypeError, ValueError), match=match):
+            transform_mask(mask, grid, fill=fill)
+
+    def test_bilinear_fill_blends_at_the_boundary_and_keeps_gradients(self):
+        """A float fill mixes with the edge pixel and remains differentiable in bilinear mode."""
+        mask = torch.zeros(1, 1, 3, 3, requires_grad=True)
+        grid = torch.tensor([[[[1.5, 0.0]]]])
+
+        out = transform_mask(mask, grid, mode="bilinear", fill=1.0)
+        out.sum().backward()
+
+        assert out.requires_grad
+        torch.testing.assert_close(out, torch.tensor([[[[0.5]]]]))
+        torch.testing.assert_close(mask.grad[0, 0, 1, 2], torch.tensor(0.5))
+
+    def test_bilinear_fractional_border_matches_direct_weight_oracle(self):
+        """A half-outside sample blends its right-edge value and fill by the same half weight."""
+        mask = torch.zeros(1, 1, 3, 3)
+        mask[0, 0, 1, 2] = 0.25
+        grid = torch.tensor([[[[1.5, 0.0]]]])
+
+        out = transform_mask(mask, grid, mode="bilinear", fill=4.0)
+
+        # At width 3, x=1.5 is halfway from the rightmost source pixel to zero padding.
+        torch.testing.assert_close(out, torch.tensor([[[[2.125]]]]))
+
+    def test_bilinear_fill_preserves_grid_gradient_at_the_border(self):
+        """The coverage term contributes the border-fill derivative with respect to grid coordinates."""
+        mask = torch.zeros(1, 1, 3, 3)
+        grid = torch.tensor([[[[1.5, 0.0]]]], requires_grad=True)
+
+        transform_mask(mask, grid, mode="bilinear", fill=2.0).sum().backward()
+
+        torch.testing.assert_close(grid.grad[..., 0], torch.tensor([[[2.0]]]))

@@ -85,6 +85,7 @@ from fuse_augmentations.config_validation import (
     _validate_clip_policy,
     _validate_fill,
     _validate_keypoint_flip_index,
+    _validate_mask_fill,
     _validate_mask_interpolation,
     _validate_pipeline_dtype,
 )
@@ -108,6 +109,7 @@ from fuse_augmentations.types import (
     ExecutionStr,
     FillValue,
     InterpolationStr,
+    MaskFillValue,
     MaskInterpolationStr,
     PipelineDtypeStr,
     RandomnessPolicy,
@@ -153,8 +155,8 @@ class _NumpyRoundTrip(NamedTuple):
     4 for a batch). ``aux_ndims`` holds the same for each auxiliary target that arrived as an array; auxiliary targets
     passed as tensors are absent from it and are returned as tensors.
 
-    ``image_dtype`` and ``mask_dtype`` carry the input dtypes so the intensity normalisation the converter applies on
-    the way in is undone on the way out. ``mask_dtype`` is ``None`` when no mask arrived as an array.
+    ``image_dtype`` records the image normalization to undo. ``mask_dtype`` preserves label dtype, without intensity
+    normalization, and is ``None`` when no mask arrived as an array.
 
     """
 
@@ -213,8 +215,8 @@ def _tensor_to_numpy_coords(tensor: Tensor, input_ndim: int) -> NDArray[Any]:
 # stored on the instance so ``forward`` loops over integer tags instead of running
 # an isinstance chain per segment per call. Kept as plain ints (not bound methods)
 # so the dispatch plan survives the default nn.Module pickle round-trip.
-_TAG_MATRIX = 0  # sets last_matrix: FusedAffine/AlbuFusedAffine/Projective/AlbuProjective
-_TAG_PLAIN = 1  # no matrix: ExactAffine/FusedColor/CropResize
+_TAG_MATRIX = 0  # records supported geometric segment matrices
+_TAG_PLAIN = 1  # no matrix: color/LUT/unmarked crop
 _TAG_PASSTHROUGH = 2  # _PassthroughSegment: adapter.call_nonfused
 _TAG_LEGACY = 3  # pre-wrapper pickles / unknown segment — resolve adapter by index
 
@@ -376,6 +378,9 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         mask_interpolation: Auxiliary mask sampling mode. ``"nearest"`` (default)
             preserves hard labels; ``"bilinear"`` provides differentiable soft-mask
             sampling and requires floating-point mask input.
+        mask_fill: Scalar auxiliary-mask border value, independent of image fill. Defaults
+            to zero; use a dtype-compatible ignore label such as ``255`` or ``-1``.
+            Bilinear soft masks interpolate toward this value outside the source canvas.
         pipeline_dtype: Optional ``"bfloat16"`` or ``"float16"`` GPU execution
             dtype for fused affine/projective/crop warps and fused color/LUT applies.
             Matrix composition and inversion remain float32 or float64, and the
@@ -396,9 +401,8 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             warp, in the image's own value range (``114`` for a uint8 grey, ``114 / 255``
             for the same grey as float). A scalar fills every channel; a sequence fills
             one channel each. ``None`` (default) keeps the plain zero border, so existing
-            pipelines are unchanged. The fill applies to the **image** only — an
-            out-of-canvas auxiliary mask region keeps its zero, because there it means
-            "no instance" rather than a colour. Requires ``padding_mode="zeros"``: the
+            pipelines are unchanged. The fill applies to the **image** only;
+            ``mask_fill`` independently controls auxiliary-mask borders. Requires ``padding_mode="zeros"``: the
             other modes have no constant to replace, and the combination raises.
         generator: Caller-owned ``torch.Generator`` driving every pipeline-owned
             draw. ``None`` (default) keeps the global torch stream, leaving existing
@@ -432,12 +436,14 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         generator: torch.Generator | None = None,
         fill: FillValue | None = None,
         keypoint_flip_index: Sequence[int] | None = None,
+        mask_fill: MaskFillValue = 0,
         **backend_kwargs: object,
     ) -> None:
         """Initialize ``FusedCompose``."""
         super().__init__()
         _reject_generator_with_backend_transforms(generator, transforms)
         fill = _validate_fill(fill, padding_mode)
+        mask_fill = _validate_mask_fill(mask_fill)
         flip_index = _validate_keypoint_flip_index(keypoint_flip_index)
         randomness_policy = _coerce_randomness_policy(randomness)
         execution = _validate_execution(execution)
@@ -512,6 +518,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                     antialias=antialias,
                     clip_policy=clip_policy,
                     mask_interpolation=mask_interpolation,
+                    mask_fill=mask_fill,
                     generator=generator,
                     fill=fill,
                     keypoint_flip_index=flip_index,
@@ -532,6 +539,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                     antialias=antialias,
                     clip_policy=clip_policy,
                     mask_interpolation=mask_interpolation,
+                    mask_fill=mask_fill,
                     fill=fill,
                     keypoint_flip_index=flip_index,
                 )
@@ -552,6 +560,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             antialias=antialias,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
             pipeline_dtype=pipeline_dtype,
             generator=generator,
             fill=fill,
@@ -579,6 +588,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         generator: torch.Generator | None = None,
         fill: tuple[float, ...] | None = None,
         keypoint_flip_index: tuple[int, ...] | None = None,
+        mask_fill: MaskFillValue = 0,
     ) -> None:
         """Assign all instance attributes.
 
@@ -596,6 +606,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         self.antialias: bool = antialias
         self.clip_policy: ClipPolicyStr = clip_policy
         self.mask_interpolation: MaskInterpolationStr = _validate_mask_interpolation(mask_interpolation)
+        self.mask_fill: MaskFillValue = _validate_mask_fill(mask_fill)
         self.pipeline_dtype: PipelineDtypeStr | None = _validate_pipeline_dtype(pipeline_dtype)
         #: Caller-owned generator, or ``None`` when draws come from the global torch stream.
         #: The segments hold the same object; unpickling resumes its state as of pickling,
@@ -664,7 +675,6 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
 
         """
         adapter = self._adapter
-        randomness = self.randomness
         data_keys = self.data_keys
 
         # Device tracker: a zero-element buffer whose only purpose is to follow the
@@ -682,26 +692,6 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         self._seg_dispatch_tags: list[int] = self._build_dispatch_tags()
         self._multi_target: bool = data_keys is not None
         self._aux_keys: list[str] = list(data_keys[1:]) if data_keys is not None else []
-
-        # Pre-compute single-segment fast-path: when the pipeline contains
-        # exactly one ExactAffineSegment with a single transform, forward()
-        # can bypass the segment's nn.Module.__call__ and probability
-        # machinery by calling the native adapter directly via call_nonfused.
-        # This eliminates ~6 us/call overhead for operations like single-flip
-        # pipelines where the native transform takes <50 us total.
-        # Only safe for real backend adapters (Kornia, TorchVision) where
-        # call_nonfused delegates to the native transform; _DirectParamAdapter
-        # has a no-op call_nonfused and must go through ExactAffineSegment.
-        self._single_exact_fast: tuple[TransformAdapter, object] | None = None
-        if (
-            len(self._segments) == 1
-            and isinstance(self._segments[0], ExactAffineSegment)
-            and len(self._segments[0].transforms) == 1
-            and adapter is not None
-            and not isinstance(adapter, _DirectParamAdapter)
-            and randomness is RandomnessPolicy.BACKEND
-        ):
-            self._single_exact_fast = (adapter, self._segments[0].transforms[0])
 
         # Single-transform FusedAffineSegment fast path: bypass the segment's
         # nn.Module.__call__ for single-transform GEOMETRIC_INTERP pipelines (a-group
@@ -912,6 +902,24 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         if not hasattr(self, "mask_interpolation"):
             # Pickles predating configurable mask sampling retain nearest behavior.
             self.mask_interpolation = "nearest"
+        if not hasattr(self, "mask_fill"):
+            self.mask_fill = 0
+        mask_segments = list(self._segments)
+        for segment in self._segments:
+            if isinstance(segment, FusedGaussianBlurSegment):
+                mask_segments.extend((segment._geometric, segment._prefix, segment._suffix))
+        for segment in mask_segments:
+            if isinstance(
+                segment,
+                (
+                    FusedAffineSegment,
+                    ProjectiveSegment,
+                    AlbuFusedAffineSegment,
+                    AlbuProjectiveSegment,
+                    CropResizeSegment,
+                ),
+            ) and not hasattr(segment, "mask_fill"):
+                segment.mask_fill = self.mask_fill
         if not hasattr(self, "pipeline_dtype"):
             # Pickles predating optional low-precision execution retain default precision.
             self.pipeline_dtype = None
@@ -955,8 +963,8 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
 
         When called with ``image=<numpy.ndarray>`` and the pipeline adapter is an
         :class:`~fuse_augmentations.adapters.albumentations.AlbumentationsAdapter`,
-        the call is dispatched to :meth:`_forward_albu_native`, which avoids all
-        tensor round-trips and returns a ``{"image": ndarray}`` dict matching the
+        the call is dispatched to :meth:`_forward_albu_native`, which keeps the native
+        dtype and returns a ``{"image": ndarray}`` dict matching the
         :class:`albumentations.Compose` calling convention.
 
         A multi-target pipeline (``data_keys`` with auxiliary entries) also accepts the image
@@ -968,7 +976,8 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         (``(height, width)``, ``(height, width, channels)`` or a batch) instead of a tensor. Auxiliary
         targets then have to be arrays too, and results come back as arrays in the caller's own
         layout. NumPy image input is normalised the way ``output_backend`` normalises it — ``uint8``
-        is scaled to float32 in ``[0, 1]`` — so the returned image is float32.
+        is scaled internally to float32 in ``[0, 1]`` — and the inferred NumPy round-trip
+        restores its original dtype. Mask labels are never intensity-normalized.
 
         All other invocations fall through to the standard
         :meth:`~torch.nn.Module.__call__` → :meth:`forward` path.
@@ -979,7 +988,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 ``isinstance(kwargs["image"], np.ndarray)`` is checked to
                 decide routing.
             return_matrix: When ``True``, return the output together with the
-                matrix produced by the last fused geometric segment.
+                matrix produced by the last supported geometric segment.
 
         Returns:
             ``dict`` with ``"image"`` key (HWC NumPy) for the Albu native path;
@@ -1064,10 +1073,20 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             )
         return super().__call__(*args, return_matrix=return_matrix, **kwargs)
 
+    def _forward_numpy_exact(self, segment: ExactAffineSegment, image: NDArray[Any]) -> NDArray[Any]:
+        """Apply exact pixels and record their matrix without normalizing NumPy intensities."""
+        tensor = torch.from_numpy(np.ascontiguousarray(image))
+        if tensor.ndim == 2:
+            tensor = tensor.unsqueeze(-1)
+        output = cast(Tensor, segment.forward(tensor.permute(2, 0, 1).unsqueeze(0)))
+        self._last_transform_matrix = _current_call_matrix()
+        return _tensor_to_numpy_image(output, image.ndim)
+
     def _forward_albu_native(self, img_hwc: NDArray[Any]) -> dict[str, NDArray[Any]]:
         """Execute the pipeline in Albumentations native dict-input mode.
 
-        Iterates over all segments in NumPy space — no tensor conversion.
+        Resampling stays in NumPy space. Exact operations use a dtype-preserving
+        tensor view so the applied pixels and recorded matrix share one parameter draw.
         :class:`~fuse_augmentations.affine.segment.AlbuFusedAffineSegment`
         segments are dispatched via their :meth:`forward_numpy` method;
         :class:`~fuse_augmentations.compose._PassthroughSegment` segments
@@ -1098,8 +1117,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                     img_hwc = seg.forward_numpy(img_hwc)
                     self._last_transform_matrix = seg.last_matrix
                 elif tag == 1:  # ExactAffineSegment
-                    for tfm in seg.transforms:
-                        img_hwc = tfm(image=img_hwc)["image"]
+                    img_hwc = self._forward_numpy_exact(seg, img_hwc)
                 elif tag == 2:  # FusedColorSegment
                     for tfm in seg._transforms:
                         img_hwc = tfm(image=img_hwc)["image"]
@@ -1132,8 +1150,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                     self._last_transform_matrix = seg.last_matrix
                     continue
                 if isinstance(seg, ExactAffineSegment):
-                    for tfm in seg.transforms:
-                        img_hwc = tfm(image=img_hwc)["image"]  # type: ignore[operator]
+                    img_hwc = self._forward_numpy_exact(seg, img_hwc)
                     continue
                 if isinstance(seg, FusedColorSegment):
                     for tfm in seg._transforms:
@@ -1291,8 +1308,8 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 ``(B, N, 5)`` float32 ``(cx, cy, w, h, theta)``, theta in radians,
                 returned un-canonicalized (this package imposes no long-edge or
                 angle-range convention -- see :func:`~fuse_augmentations.targets.transform_rboxes`).
-            return_matrix: When ``True``, return the output and its last fused
-                geometric pixel matrix.
+            return_matrix: When ``True``, return the output and its last supported
+                geometric pixel-centre matrix.
             **kwargs: Declared multi-target keyword inputs. Tensor keyword calls return a
                 dict and retain the same public module hooks as positional tensor calls.
 
@@ -1303,7 +1320,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             ``data_keys`` order otherwise.
 
             When ``return_matrix=True``, returns ``(output, matrix)`` where
-            ``matrix`` is the image-dtype pixel matrix from the last fused
+            ``matrix`` is the full-precision pixel-centre matrix from the last supported
             geometric segment, or ``None`` when no such segment ran.
 
         Raises:
@@ -1352,10 +1369,13 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                     FusedGaussianBlurSegment,
                     ProjectiveSegment,
                     AlbuProjectiveSegment,
+                    ExactAffineSegment,
                 ),
+            ) or (
+                isinstance(seg, CropResizeSegment) and getattr(seg.transform, "_coordinate_matrix_recoverable", False)
             ):
                 tags.append(_TAG_MATRIX)
-            elif isinstance(seg, (ExactAffineSegment, FusedColorSegment, FusedLUTSegment, CropResizeSegment)):
+            elif isinstance(seg, (FusedColorSegment, FusedLUTSegment, CropResizeSegment)):
                 tags.append(_TAG_PLAIN)
             elif isinstance(seg, _PassthroughSegment):
                 tags.append(_TAG_PASSTHROUGH)
@@ -1401,18 +1421,13 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
     def _forward_single(self, image: torch.Tensor, *, return_matrix: bool = False) -> object:
         """Run the pipeline in single-tensor mode (``data_keys is None``)."""
         # Reset per-call state so transform_matrix returns None when only
-        # exact/passthrough segments run (no stale matrix from a previous call).
+        # unsupported segments run (no stale matrix from a previous call).
         self._last_transform_matrix = None
         _clear_current_call_matrix()
         call_matrix: Tensor | None = None
 
         # Whole-pipeline single-segment fast paths: bypass the segment's
         # nn.Module.__call__ and probability machinery entirely.
-        _exact_fast = self._single_exact_fast
-        if _exact_fast is not None:
-            image = _exact_fast[0].call_nonfused(_exact_fast[1], image)
-            result = self._convert_primary_output(image)
-            return (result, None) if return_matrix else result
         _fast_seg = self._single_fused_fast_seg
         if _fast_seg is not None and self._low_precision_segment_dtype(_fast_seg, image) is None:
             image = cast(Tensor, _fast_seg.forward(image, None))
@@ -1493,7 +1508,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
     def _normalize_aux_input(key: str, value: object, aux_ndims: dict[str, int]) -> Any:  # noqa: ANN401
         """Normalise one auxiliary target and record its input rank in *aux_ndims*.
 
-        Masks share the image's channel-last layout and go through the same converter. Coordinate targets are already
+        Masks share the image's channel-last layout but retain label values and dtype. Coordinate targets are already
         numeric ``(num_instances, ...)`` tables, so they only gain the leading batch axis and the float32 dtype the
         target transforms operate on.
 
@@ -1502,9 +1517,20 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             return value
         aux_ndims[key] = value.ndim
         if key == "mask":
-            from fuse_augmentations.converters import NumpyToTorchConverter
-
-            return NumpyToTorchConverter().convert(value)
+            # Labels are not intensities: normalizing uint8 would alter ignore IDs and
+            # allow integer masks to bypass the bilinear floating-mask requirement.
+            array = np.ascontiguousarray(value)
+            if array.dtype == np.uint16:
+                # Torch versions before 2.3 cannot ingest uint16; int32 preserves each label.
+                array = array.astype(np.int32)
+            tensor = torch.from_numpy(array)
+            if tensor.ndim == 2:
+                tensor = tensor.unsqueeze(0).unsqueeze(-1)
+            elif tensor.ndim == 3:
+                tensor = tensor.unsqueeze(0)
+            elif tensor.ndim != 4:
+                raise ValueError(f"mask must have HW, HWC or BHWC layout, got {tuple(tensor.shape)}")
+            return tensor.permute(0, 3, 1, 2)
         tensor = torch.as_tensor(np.ascontiguousarray(value), dtype=torch.float32)
         return tensor.unsqueeze(0) if tensor.ndim == 2 else tensor
 
@@ -1514,10 +1540,10 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         Applied only when no explicit ``output_backend`` converter is configured — an explicit ``output_backend`` is the
         caller stating what it wants back, and it wins over the inferred round-trip.
 
-        The image and any array mask come back in the dtype they were passed in: the converter's ``uint8``/``uint16``
-        normalisation is undone here so the same call returns the same dtype whether or not it was eligible for the
-        NumPy-native path, which never normalises at all. Coordinate targets stay ``float32`` — a warp puts boxes and
-        keypoints at fractional positions, so restoring an integer input dtype would quantise them.
+        The image and array mask retain their input dtype. Image intensity normalization is undone; mask label values
+        were never normalized. Native and tensor-backed routes share this contract. Coordinate targets stay ``float32``
+        — a warp puts boxes and keypoints at fractional positions, so restoring an integer input dtype would quantise
+        them.
 
         """
         if self._output_converter is not None:
@@ -1535,7 +1561,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             elif key == "mask":
                 mask_out = _tensor_to_numpy_image(cast("Tensor", value), round_trip.aux_ndims[key])
                 if round_trip.mask_dtype is not None:
-                    mask_out = _denormalize_numpy_image(mask_out, round_trip.mask_dtype)
+                    mask_out = mask_out.astype(round_trip.mask_dtype, copy=False)
                 restored.append(mask_out)
             else:
                 restored.append(_tensor_to_numpy_coords(cast("Tensor", value), round_trip.aux_ndims[key]))
@@ -1593,7 +1619,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 outputs.append(value)
             elif key == "mask":
                 mask_out = _tensor_to_numpy_image(cast("Tensor", value), aux_ndims[key])
-                outputs.append(_denormalize_numpy_image(mask_out, mask_dtype) if mask_dtype is not None else mask_out)
+                outputs.append(mask_out.astype(mask_dtype, copy=False) if mask_dtype is not None else mask_out)
             else:
                 outputs.append(_tensor_to_numpy_coords(cast("Tensor", value), aux_ndims[key]))
         return tuple(outputs)
@@ -1876,7 +1902,12 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         # Forward routing uses the forward pixel matrix; de-augmentation uses its
         # inverse while reusing the matching output-to-input sampling grid.
         FusedAffineSegment._route_grid_aux(
-            aux_targets, grid, inverse_matrix, self.mask_interpolation, self.keypoint_flip_index
+            aux_targets,
+            grid,
+            inverse_matrix,
+            self.mask_interpolation,
+            keypoint_flip_index=self.keypoint_flip_index,
+            mask_fill=self.mask_fill,
         )
         return self._assemble_multi_output(recovered, aux_targets, args)
 

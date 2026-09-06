@@ -172,6 +172,8 @@ loader = DataLoader(
 
 Adapt the `dataset.augment` lookup to your dataset. Constructing a fresh pipeline inside every `__getitem__` call has a different state and cost model; document that choice if you use it.
 
+For `SyntheticIterableDataset`, reproducibility also includes distributed identity. Pass `rank`, `world_size`, and an immutable `epoch`; `num_images` is the count produced by each rank, and worker sharding adds the worker id to the stream namespace. Construct a fresh dataset and `DataLoader` per epoch with `persistent_workers=False`, as shown in [the streaming dataset recipe](../datasets/outputs.md#distributed-ranks-and-epochs). The dataset does not inspect the process group or provide `set_epoch()`, so persistent workers cannot receive a new epoch implicitly.
+
 ## Reorder and execution settings are part of the experiment
 
 `ReorderPolicy.POINTWISE` can change results because color operations do not always commute with padding, interpolation, and clipping. `from_params` and `from_config` default to `POINTWISE`; set `NONE` explicitly when comparing runs or native references.
@@ -250,8 +252,8 @@ For research artifacts, also record:
 - device type and model, torch build, and accelerator runtime;
 - transform configuration and construction route;
 - input batch size, shape, dtype, and value range;
-- every seed and worker count;
-- randomness, reorder, execution, interpolation, padding, mask, color-clipping, antialias, and compile settings;
+- every seed and worker count, plus `rank`, `world_size`, and immutable dataset `epoch` when streaming distributed synthetic data;
+- randomness, reorder, execution, interpolation, padding, mask interpolation and `mask_fill`, color-clipping, antialias, and compile settings;
 - `fusion_plan_descriptors` and warnings;
 - whether timing includes compilation/warmup and device synchronization.
 
@@ -260,3 +262,5 @@ For research artifacts, also record:
 A repeatable fused run is not necessarily equal to a native backend run. The fused engine can use different coordinate, interpolation, clipping, and execution rules. Reproducibility answers “can I repeat this pipeline?”; numerical parity answers “does it match another implementation?” Treat them as separate validation gates.
 
 See [Known limitations](../known-limitations.md) for backend parity and accelerator constraints.
+
+Exact geometry now uses the segment's activation policy and one discrete parameter draw for both pixels and matrices. Seeded output may differ from older singleton/native exact shortcuts; record the package revision alongside seeds. This does not promise native-backend RNG parity.

@@ -53,6 +53,7 @@ from fuse_augmentations.types import (
     ClipPolicyStr,
     ExecutionStr,
     InterpolationStr,
+    MaskFillValue,
     MaskInterpolationStr,
     PaddingModeStr,
     RandomnessPolicy,
@@ -104,9 +105,9 @@ _MAX_SAMPLED_GAUSSIAN_RADIUS = 31
 
 def _matrix_public_dtype(image_dtype: torch.dtype) -> torch.dtype:
     """Return the full-precision dtype exposed for a composed image matrix."""
-    if image_dtype in (torch.float16, torch.bfloat16):
-        return torch.float32
-    return image_dtype
+    if image_dtype == torch.float64:
+        return torch.float64
+    return torch.float32
 
 
 def _matrix_geometry_dtype(dtype: torch.dtype) -> torch.dtype:
@@ -849,11 +850,11 @@ class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
     application probability and applying the exact transform only to active samples. The fused engine prefers a ``prob``
     attribute when present and falls back to backend ``p`` for native transform objects.
 
-    Auxiliary-target routing: masks route for every exact op (a non-flip op's mask is transformed by the same
-    lossless rotation applied to the image, sharing its per-sample sampling); boxes/keypoints route for flips via
-    :meth:`TransformAdapter.exact_flip_dims`. A geometric run that combines a non-flip exact op with box/keypoint
-    targets is built as a :class:`FusedAffineSegment` (grid path) instead, so those targets are always routed --
-    ``build_segments`` receives that hint via its ``route_coords_via_grid`` flag.
+    Auxiliary-target routing: masks route for every exact op, and coordinates
+    route through the matrix built from the same sampled parameters as pixels.
+    Flips retain their pixel-edge AABB and keypoint-pair rules. A geometric run
+    that combines a non-flip exact op with box/keypoint targets may also be
+    built as a :class:`FusedAffineSegment` through ``route_coords_via_grid``.
 
     Args:
         transforms: List of ``GEOMETRIC_EXACT`` transform objects.
@@ -895,11 +896,12 @@ class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
         self.randomness = randomness
         self.generator = generator
         self.keypoint_flip_index = keypoint_flip_index
+        self._last_matrix: Tensor | None = None
 
     @property
     def last_matrix(self) -> Tensor | None:
-        """Return ``None`` always (ExactAffineSegment does not compute a matrix)."""
-        return None
+        """Return the actual forward matrix from the most recent exact call."""
+        return self._last_matrix
 
     def forward(
         self,
@@ -911,8 +913,8 @@ class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
         For each transform, draws a per-sample boolean mask from the transform's
         ``prob`` probability, applies :meth:`TransformAdapter.exact_apply` only to
         active samples, and scatters the transformed subset back into the batch.
-        Auxiliary-target routing is currently supported only for flip-compatible
-        exact ops exposed through :meth:`TransformAdapter.exact_flip_dims`.
+        Auxiliary targets use the same matrix and sampled parameters as exact
+        pixels; flips additionally retain their dedicated edge-coordinate rules.
 
         Args:
             image: Input image batch. Shape: ``(batch_size, channels, height, width)``, dtype: float32.
@@ -931,9 +933,11 @@ class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
         if aux_targets is None:
             aux_targets = {}
 
+        self._last_matrix = None
         batch_size = image.shape[0]
-        _height, width = image.shape[2], image.shape[3]
         device = image.device
+        matrix_dtype = _matrix_geometry_dtype(image.dtype)
+        acc = torch.eye(3, device=device, dtype=matrix_dtype).expand(batch_size, -1, -1).clone()
 
         for tfm in self.transforms:
             prob = _transform_prob(tfm)
@@ -950,19 +954,45 @@ class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
             if not bool(active.any().item()):
                 continue
 
-            # A flip exposes its axes via exact_flip_dims; a non-flip D4 op (rot90,
-            # transpose) raises there. For non-flip ops the mask is routed by applying
-            # the identical op to it (sharing the image's per-sample sampling — see
-            # _apply_exact_with_mask), while boxes/keypoints still raise (no per-sample
-            # matrix is recoverable without re-sampling).
+            height, width = image.shape[-2:]
+            active_idx = active.nonzero(as_tuple=True)[0]
+            active_shape = (len(active_idx), *image.shape[1:])
+            params = _sample_transform_params(
+                self.adapter,
+                tfm,
+                active_shape,
+                device,
+                self.randomness,
+                generator=self.generator,
+            )
+            # ExactAffineSegment owns the shape-changing discrete path. The adapter
+            # remains conservative for generic mixed affine fusion, while this
+            # segment verifies active/inactive compatibility before scattering.
+            params["_exact_allow_shape_change"] = torch.tensor(True, device=device)
+            active_matrix = self.adapter.build_matrix(tfm, params, height, width).to(device=device, dtype=matrix_dtype)
+            matrix = _scatter_active_matrices(
+                active_matrix,
+                active,
+                batch_size,
+                device,
+                matrix_dtype,
+            )
+            acc = matmul3x3(matrix, acc)
+
+            # A flip exposes its axes via exact_flip_dims. Non-flip D4 operations
+            # instead route coordinates through the matrix built from these same
+            # sampled parameters, while mask stacking keeps their pixels aligned.
             try:
                 flip_dims: list[int] | None = self.adapter.exact_flip_dims(tfm)
             except (TypeError, NotImplementedError):
                 flip_dims = None
 
-            image = self._apply_exact_with_mask(tfm, image, active, aux_targets, flip_dims)
+            image = self._apply_exact_with_mask(tfm, image, active, aux_targets, flip_dims, params)
             if aux_targets:
-                self._route_exact_coord_aux(tfm, flip_dims, active, aux_targets, _height, width)
+                self._route_exact_coord_aux(tfm, flip_dims, active, aux_targets, height, width, matrix)
+
+        self._last_matrix = acc.to(dtype=matrix_dtype).detach().clone()
+        _set_current_call_matrix(self._last_matrix)
 
         if not _has_aux:
             return image
@@ -975,6 +1005,7 @@ class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
         active: Tensor,
         aux_targets: dict[str, Tensor],
         flip_dims: list[int] | None,
+        params: dict[str, Tensor],
     ) -> Tensor:
         """Apply an exact op to the image, stacking the mask for non-flip ops.
 
@@ -993,6 +1024,7 @@ class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
             aux_targets: Aux dict; its ``"mask"`` entry is updated in place for
                 non-flip ops.
             flip_dims: Result of ``exact_flip_dims`` (``None`` for non-flip ops).
+            params: Canonical parameters already sampled for the active subset.
 
         Returns:
             The transformed ``(B, C, H, W)`` image.
@@ -1007,9 +1039,22 @@ class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
 
         active_idx = active.nonzero(as_tuple=True)[0]
         if image.shape[0] == 1 or bool(active.all().item()):
-            stack_out = self.adapter.exact_apply(tfm, stack)
+            stack_out = (
+                self.adapter.exact_apply(tfm, stack)
+                if flip_dims is not None
+                else self.adapter.exact_apply(tfm, stack, params=params)
+            )
         else:
-            transformed = self.adapter.exact_apply(tfm, stack[active_idx])
+            transformed = (
+                self.adapter.exact_apply(tfm, stack[active_idx])
+                if flip_dims is not None
+                else self.adapter.exact_apply(tfm, stack[active_idx], params=params)
+            )
+            if transformed.shape[-2:] != stack.shape[-2:]:
+                raise ValueError(
+                    "ExactAffineSegment cannot mix active and inactive samples for an exact transform "
+                    "that changes canvas dimensions. Use same_on_batch=True or a square input."
+                )
             stack_out = stack.clone()
             stack_out[active_idx] = transformed
 
@@ -1026,16 +1071,12 @@ class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
         aux_targets: dict[str, Tensor],
         height: int,
         width: int,
+        matrix: Tensor,
     ) -> None:
-        """Route flip-based mask/box/keypoint aux with per-sample masking.
+        """Route exact mask and coordinate targets with the matrix used for pixels.
 
-        Flips route mask (via ``exact_flip_dims``), boxes and keypoints with per-sample
-        ``active`` masking. Non-flip exact ops (rot90/transpose) have their mask handled
-        by :meth:`_apply_exact_with_mask` and return here without touching coord targets:
-        a Compose pipeline carrying box/keypoint aux routes such runs through the
-        interpolating grid segment instead (see ``build_segments`` ``route_coords_via_grid``).
-        A directly instantiated segment can still reach this method with coord targets;
-        it then raises ``RuntimeError`` rather than passing them through untransformed.
+        Flips retain direct pixel-edge AABB and keypoint-pair routing. Non-flip D4
+        operations use the same sampled forward matrix as the exact image call.
 
         Args:
             tfm: The exact transform.
@@ -1044,29 +1085,27 @@ class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
             aux_targets: Aux dict, updated in place.
             height: Image height in pixels.
             width: Image width in pixels.
-
-        Raises:
-            RuntimeError: If a non-flip exact op (rot90/transpose) is applied while
-                box/keypoint auxiliary targets are present — no per-sample matrix is
-                recoverable to route them, so they would otherwise pass through untransformed.
+            matrix: ``(B, 3, 3)`` forward centre-coordinate matrix built from the
+                canonical parameters passed to ``exact_apply``.
 
         """
         if flip_dims is None:
-            # Non-flip exact op (rot90/transpose): the mask is already routed in
-            # _apply_exact_with_mask, but boxes/keypoints have no per-sample matrix to
-            # route here. A Compose pipeline diverts coord-carrying exact runs to
-            # FusedAffineSegment (route_coords_via_grid), so this branch is reached only
-            # by DIRECT instantiation. Raise rather than silently pass coords through.
-            present_coords = {"bbox_xyxy", "bbox_xywh", "keypoints"} & aux_targets.keys()
-            if present_coords:
-                raise RuntimeError(
-                    "ExactAffineSegment cannot transform coordinate targets "
-                    f"({sorted(present_coords)}) through a non-flip exact op "
-                    "(rot90/transpose): no per-sample matrix is recoverable. Route "
-                    "coordinate-carrying exact runs through FusedAffineSegment "
-                    "(FusedCompose does this automatically), or pass only masks / use "
-                    "flip ops with this segment."
-                )
+            from fuse_augmentations.targets import (
+                transform_bbox_xywh,
+                transform_bbox_xyxy,
+                transform_rboxes,
+            )
+
+            for key in list(aux_targets.keys()):
+                value = aux_targets[key]
+                if key == "bbox_xyxy":
+                    aux_targets[key] = transform_bbox_xyxy(value, matrix)
+                elif key == "bbox_xywh":
+                    aux_targets[key] = transform_bbox_xywh(value, matrix)
+                elif key == "keypoints":
+                    aux_targets[key] = _route_keypoints(value, matrix, self.keypoint_flip_index)
+                elif key == "rboxes":
+                    aux_targets[key] = transform_rboxes(value, matrix)
             return
         is_hflip = 3 in flip_dims
         is_vflip = 2 in flip_dims
@@ -1122,6 +1161,7 @@ class _BaseAffineSegment(GeneratorPicklingMixin, nn.Module):
         randomness: Batch randomness policy for the fused run.
         mask_interpolation: Sampling mode for auxiliary masks. ``"nearest"``
             preserves hard labels; ``"bilinear"`` supports float soft masks.
+        mask_fill: Scalar value written outside a routed mask's source canvas.
         generator: Caller-owned generator driving parameter sampling and the
             per-transform probability gates, or ``None`` for the global torch stream.
         fill: Validated constant written outside the source canvas, in the image's own
@@ -1142,6 +1182,7 @@ class _BaseAffineSegment(GeneratorPicklingMixin, nn.Module):
         *,
         compile_warp: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        mask_fill: MaskFillValue = 0,
         generator: torch.Generator | None = None,
         fill: tuple[float, ...] | None = None,
         keypoint_flip_index: tuple[int, ...] | None = None,
@@ -1154,6 +1195,7 @@ class _BaseAffineSegment(GeneratorPicklingMixin, nn.Module):
         self.padding_mode = padding_mode
         self.randomness = randomness
         self.mask_interpolation = mask_interpolation
+        self.mask_fill = mask_fill
         self.generator = generator
         self.fill = fill
         self.keypoint_flip_index = keypoint_flip_index
@@ -1340,6 +1382,7 @@ class _BaseAffineSegment(GeneratorPicklingMixin, nn.Module):
         acc_img: Tensor,
         mask_interpolation: MaskInterpolationStr = "nearest",
         keypoint_flip_index: tuple[int, ...] | None = None,
+        mask_fill: MaskFillValue = 0,
     ) -> None:
         """Route auxiliary targets through the warp grid and composed pixel matrix.
 
@@ -1355,6 +1398,7 @@ class _BaseAffineSegment(GeneratorPicklingMixin, nn.Module):
             mask_interpolation: Mask sampling mode for the ``"mask"`` target.
             keypoint_flip_index: Optional caller-supplied keypoint pair permutation, applied
                 where the composed matrix reverses orientation.
+            mask_fill: Scalar border value for the ``"mask"`` target.
 
         """
         from fuse_augmentations.targets import (
@@ -1369,7 +1413,7 @@ class _BaseAffineSegment(GeneratorPicklingMixin, nn.Module):
         for key in list(aux_targets.keys()):
             val = aux_targets[key]
             if key == "mask":
-                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation)
+                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation, fill=mask_fill)
                 continue
             if key == "bbox_xyxy":
                 aux_targets[key] = transform_bbox_xyxy(val, acc_img)
@@ -1413,6 +1457,7 @@ class FusedAffineSegment(_BaseAffineSegment):
         *,
         compile_warp: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        mask_fill: MaskFillValue = 0,
         generator: torch.Generator | None = None,
         fill: tuple[float, ...] | None = None,
         keypoint_flip_index: tuple[int, ...] | None = None,
@@ -1425,6 +1470,7 @@ class FusedAffineSegment(_BaseAffineSegment):
             padding_mode,
             randomness,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
             compile_warp=compile_warp,
             generator=generator,
             fill=fill,
@@ -1737,7 +1783,14 @@ class FusedAffineSegment(_BaseAffineSegment):
 
         # Transform auxiliary targets using the composed forward matrix
         if aux_targets:
-            self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation, self.keypoint_flip_index)
+            self._route_grid_aux(
+                aux_targets,
+                grid,
+                acc_img,
+                self.mask_interpolation,
+                self.keypoint_flip_index,
+                self.mask_fill,
+            )
 
         if not _has_aux:
             return image
@@ -1875,6 +1928,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         compile_warp: bool = False,
         antialias: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        mask_fill: MaskFillValue = 0,
         generator: torch.Generator | None = None,
         fill: tuple[float, ...] | None = None,
         keypoint_flip_index: tuple[int, ...] | None = None,
@@ -1898,6 +1952,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         self.padding_mode = padding_mode
         self.randomness = randomness
         self.mask_interpolation = mask_interpolation
+        self.mask_fill = mask_fill
         self._last_matrix: Tensor | None = None
         # `compile_warp` is accepted for build_segments API symmetry but deliberately not
         # stored: forward() builds its own affine_grid/grid_sample and never routes through
@@ -1991,6 +2046,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
                 acc_full.to(dtype=_matrix_public_dtype(dtype)),
                 self.mask_interpolation,
                 self.keypoint_flip_index,
+                self.mask_fill,
             )
 
         if not _has_aux:
@@ -2032,6 +2088,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         mtx: Tensor,
         mask_interpolation: MaskInterpolationStr = "nearest",
         keypoint_flip_index: tuple[int, ...] | None = None,
+        mask_fill: MaskFillValue = 0,
     ) -> None:
         """Warp auxiliary targets in place: mask via the output grid, coords via ``mtx``."""
         from fuse_augmentations.targets import (
@@ -2044,7 +2101,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         for key in list(aux_targets.keys()):
             val = aux_targets[key]
             if key == "mask":
-                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation)
+                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation, fill=mask_fill)
             elif key == "bbox_xyxy":
                 aux_targets[key] = transform_bbox_xyxy(val, mtx)
             elif key == "bbox_xywh":
@@ -2089,6 +2146,7 @@ class FusedGaussianBlurSegment(nn.Module):
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
         *,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        mask_fill: MaskFillValue = 0,
     ) -> None:
         """Initialize a folded Gaussian blur and affine segment."""
         super().__init__()
@@ -2106,6 +2164,7 @@ class FusedGaussianBlurSegment(nn.Module):
             padding_mode,
             randomness,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
         )
         self._prefix = FusedAffineSegment(
             prefix_geometric_transforms,
@@ -2114,6 +2173,7 @@ class FusedGaussianBlurSegment(nn.Module):
             padding_mode,
             randomness,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
         )
         self._suffix = FusedAffineSegment(
             suffix_geometric_transforms,
@@ -2122,6 +2182,7 @@ class FusedGaussianBlurSegment(nn.Module):
             padding_mode,
             randomness,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
         )
         self._last_matrix: Tensor | None = None
 
@@ -2164,7 +2225,12 @@ class FusedGaussianBlurSegment(nn.Module):
             warped, grid = self._geometric._apply_grid(image, acc)
             if aux_targets:
                 self._geometric._route_grid_aux(
-                    aux_targets, grid, acc_img, self._geometric.mask_interpolation, self._geometric.keypoint_flip_index
+                    aux_targets,
+                    grid,
+                    acc_img,
+                    self._geometric.mask_interpolation,
+                    self._geometric.keypoint_flip_index,
+                    self._geometric.mask_fill,
                 )
             if _is_axis_aligned_gaussian_matrix(suffix):
                 sigma = _transform_gaussian_sigma(sigma, suffix)
@@ -2193,6 +2259,7 @@ class FusedGaussianBlurSegment(nn.Module):
                     acc_img,
                     self._geometric.mask_interpolation,
                     self._geometric.keypoint_flip_index,
+                    self._geometric.mask_fill,
                 )
         if aux_targets is None:
             return result
@@ -2491,6 +2558,7 @@ class AlbuFusedAffineSegment(nn.Module):
         padding_mode: PaddingModeStr | None = None,
         execution: ExecutionStr = "cv2",
         mask_interpolation: MaskInterpolationStr = "nearest",
+        mask_fill: MaskFillValue = 0,
         fill: tuple[float, ...] | None = None,
         keypoint_flip_index: tuple[int, ...] | None = None,
     ) -> None:
@@ -2506,6 +2574,7 @@ class AlbuFusedAffineSegment(nn.Module):
         #: first call, and before any call that warps nothing.
         self._last_execution: ExecutionStr | None = None
         self.mask_interpolation = mask_interpolation
+        self.mask_fill = mask_fill
         self.fill = fill
         self.keypoint_flip_index = keypoint_flip_index
         self._last_matrix: Tensor | None = None
@@ -2652,7 +2721,14 @@ class AlbuFusedAffineSegment(nn.Module):
                 [mask.shape[0], mask.shape[1], mask.shape[-2], mask.shape[-1]],
                 align_corners=True,
             )
-        self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation, self.keypoint_flip_index)
+        self._route_grid_aux(
+            aux_targets,
+            grid,
+            acc_img,
+            self.mask_interpolation,
+            self.keypoint_flip_index,
+            self.mask_fill,
+        )
 
     @staticmethod
     def _route_grid_aux(
@@ -2661,6 +2737,7 @@ class AlbuFusedAffineSegment(nn.Module):
         acc_img: Tensor,
         mask_interpolation: MaskInterpolationStr = "nearest",
         keypoint_flip_index: tuple[int, ...] | None = None,
+        mask_fill: MaskFillValue = 0,
     ) -> None:
         """Route auxiliary targets through the warp grid and composed pixel matrix.
 
@@ -2673,6 +2750,7 @@ class AlbuFusedAffineSegment(nn.Module):
             grid: Sampling grid for the mask, or ``None`` when no mask is present.
             acc_img: ``(B, 3, 3)`` composed forward pixel matrix; recast to the geometry dtype here.
             mask_interpolation: Mask sampling mode for the ``"mask"`` target.
+            mask_fill: Scalar border value for the ``"mask"`` target.
             keypoint_flip_index: Optional caller-supplied keypoint pair permutation, applied
                 where the composed matrix reverses orientation.
 
@@ -2689,7 +2767,7 @@ class AlbuFusedAffineSegment(nn.Module):
         for key in list(aux_targets.keys()):
             val = aux_targets[key]
             if key == "mask" and grid is not None:
-                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation)
+                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation, fill=mask_fill)
             elif key == "bbox_xyxy":
                 aux_targets[key] = transform_bbox_xyxy(val, acc_img)
             elif key == "bbox_xywh":
@@ -3063,7 +3141,14 @@ class AlbuFusedAffineSegment(nn.Module):
                 [mask.shape[0], mask.shape[1], mask.shape[-2], mask.shape[-1]],
                 align_corners=True,
             )
-        self._route_grid_aux(aux_targets, grid, composed, self.mask_interpolation, self.keypoint_flip_index)
+        self._route_grid_aux(
+            aux_targets,
+            grid,
+            composed,
+            self.mask_interpolation,
+            self.keypoint_flip_index,
+            self.mask_fill,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3125,7 +3210,14 @@ class ProjectiveSegment(_BaseAffineSegment):
 
         # Transform auxiliary targets using the composed forward matrix
         if aux_targets:
-            self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation, self.keypoint_flip_index)
+            self._route_grid_aux(
+                aux_targets,
+                grid,
+                acc_img,
+                self.mask_interpolation,
+                self.keypoint_flip_index,
+                self.mask_fill,
+            )
 
         if not _has_aux:
             return image
@@ -3190,6 +3282,7 @@ class AlbuProjectiveSegment(nn.Module):
         padding_mode: PaddingModeStr | None = None,
         execution: ExecutionStr = "cv2",
         mask_interpolation: MaskInterpolationStr = "nearest",
+        mask_fill: MaskFillValue = 0,
         fill: tuple[float, ...] | None = None,
     ) -> None:
         """Initialize ``AlbuProjectiveSegment``."""
@@ -3210,6 +3303,7 @@ class AlbuProjectiveSegment(nn.Module):
         self.interpolation = interpolation or "bilinear"
         self.padding_mode = padding_mode or "zeros"
         self.mask_interpolation = mask_interpolation
+        self.mask_fill = mask_fill
         self._last_matrix: Tensor | None = None
         self._interp_flag: int = _CV2_INTERP.get(self.interpolation, 1)
         self._border_flag: int = _CV2_BORDER.get(self.padding_mode, 0)
@@ -3299,7 +3393,13 @@ class AlbuProjectiveSegment(nn.Module):
             mtx_inv = inv3x3(acc_mask)
             mtx_norm = normalize_matrix(mtx_inv, mask.shape[-2], mask.shape[-1]).to(dtype=torch.float32)
             grid = perspective_grid(mtx_norm, mask.shape[-2], mask.shape[-1])
-        AlbuFusedAffineSegment._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation)
+        AlbuFusedAffineSegment._route_grid_aux(
+            aux_targets,
+            grid,
+            acc_img,
+            self.mask_interpolation,
+            mask_fill=self.mask_fill,
+        )
 
     def _compose_matrices(self, image: Tensor) -> tuple[list[MatrixArray], list[bool]]:
         """Compose per-sample forward homographies via Albumentations sampling.
@@ -4415,6 +4515,7 @@ class CropResizeSegment(nn.Module):
         *,
         antialias: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        mask_fill: MaskFillValue = 0,
         fill: tuple[float, ...] | None = None,
     ) -> None:
         """Initialize ``CropResizeSegment``."""
@@ -4430,7 +4531,14 @@ class CropResizeSegment(nn.Module):
         # default → output bit-identical to the plain single grid_sample warp.
         self._antialias: bool = antialias
         self.mask_interpolation = mask_interpolation
+        self.mask_fill = mask_fill
         self.fill = fill
+        self._last_matrix: Tensor | None = None
+
+    @property
+    def last_matrix(self) -> Tensor | None:
+        """Return the deterministic letterbox matrix from the most recent call, if available."""
+        return self._last_matrix
 
     def forward(
         self,
@@ -4452,6 +4560,7 @@ class CropResizeSegment(nn.Module):
 
         """
         _has_aux = aux_targets is not None
+        self._last_matrix = None
         batch_size, num_channels, height, width = image.shape
         device = image.device
         dtype = image.dtype
@@ -4477,7 +4586,11 @@ class CropResizeSegment(nn.Module):
         mtx = self.adapter.build_matrix(self.transform, params, height, width)
         if mtx.shape[0] == 1 and batch_size > 1:
             mtx = mtx.expand(batch_size, -1, -1)
-        mtx = mtx.to(device=device, dtype=dtype)
+        mtx = mtx.to(device=device, dtype=_matrix_geometry_dtype(dtype))
+
+        if getattr(self.transform, "_coordinate_matrix_recoverable", False):
+            self._last_matrix = mtx.to(dtype=_matrix_public_dtype(dtype)).detach().clone()
+            _set_current_call_matrix(self._last_matrix)
 
         # Default and mild-downscale calls skip the prefilter function entirely,
         # preserving the original single-warp path bit-for-bit.
@@ -4515,7 +4628,7 @@ class CropResizeSegment(nn.Module):
             for key in list(aux_targets.keys()):
                 val = aux_targets[key]
                 if key == "mask":
-                    aux_targets[key] = transform_mask(val, grid, mode=self.mask_interpolation)
+                    aux_targets[key] = transform_mask(val, grid, mode=self.mask_interpolation, fill=self.mask_fill)
                     continue
                 if key == "bbox_xyxy":
                     aux_targets[key] = transform_bbox_xyxy(val, mtx)
@@ -4742,6 +4855,7 @@ def build_segments(
     antialias: bool = False,
     clip_policy: ClipPolicyStr = "final",
     mask_interpolation: MaskInterpolationStr = "nearest",
+    mask_fill: MaskFillValue = 0,
     generator: torch.Generator | None = None,
     fill: tuple[float, ...] | None = None,
     keypoint_flip_index: tuple[int, ...] | None = None,
@@ -4812,6 +4926,7 @@ def build_segments(
             ``"per_op_parity"`` clamps at each op that could leave ``[0, 1]``.
         mask_interpolation: Sampling mode for routed masks. ``"nearest"`` preserves
             the historical hard-label behavior; ``"bilinear"`` supports float soft masks.
+        mask_fill: Scalar border value for routed masks, independent of image ``fill``.
         fill: Validated constant border value written outside the source canvas of every
             resampling segment (image only; routed masks keep zero padding), or ``None``
             for the historical zero border.
@@ -4873,6 +4988,7 @@ def build_segments(
                         padding_mode=geo_padding_mode,
                         execution=execution,
                         mask_interpolation=mask_interpolation,
+                        mask_fill=mask_fill,
                         fill=fill,
                         keypoint_flip_index=keypoint_flip_index,
                     ),
@@ -4901,6 +5017,7 @@ def build_segments(
                     randomness=randomness,
                     compile_warp=compile_warp,
                     mask_interpolation=mask_interpolation,
+                    mask_fill=mask_fill,
                     generator=generator,
                     fill=fill,
                     keypoint_flip_index=keypoint_flip_index,
@@ -4955,6 +5072,7 @@ def build_segments(
                     padding_mode=projective_padding_mode,
                     execution=execution,
                     mask_interpolation=mask_interpolation,
+                    mask_fill=mask_fill,
                     fill=fill,
                 ),
                 split_reason,
@@ -4969,6 +5087,7 @@ def build_segments(
                 randomness=randomness,
                 compile_warp=compile_warp,
                 mask_interpolation=mask_interpolation,
+                mask_fill=mask_fill,
                 fill=fill,
             ),
             split_reason,
@@ -5080,6 +5199,7 @@ def build_segments(
                             randomness=randomness,
                             antialias=antialias,
                             mask_interpolation=mask_interpolation,
+                            mask_fill=mask_fill,
                             fill=fill,
                         )
                     )
@@ -5098,6 +5218,7 @@ def build_segments(
                             randomness=randomness,
                             antialias=antialias,
                             mask_interpolation=mask_interpolation,
+                            mask_fill=mask_fill,
                             fill=fill,
                         )
                     )
@@ -5114,6 +5235,7 @@ def build_segments(
                         compile_warp=compile_warp,
                         antialias=antialias,
                         mask_interpolation=mask_interpolation,
+                        mask_fill=mask_fill,
                         generator=generator,
                         fill=fill,
                         keypoint_flip_index=keypoint_flip_index,
@@ -5130,6 +5252,7 @@ def build_segments(
                         randomness=randomness,
                         antialias=antialias,
                         mask_interpolation=mask_interpolation,
+                        mask_fill=mask_fill,
                         fill=fill,
                     )
                 )
@@ -5165,6 +5288,7 @@ def build_segments(
                         padding_mode,
                         randomness,
                         mask_interpolation=mask_interpolation,
+                        mask_fill=mask_fill,
                     )
                 )
                 current_geo.clear()
@@ -5189,6 +5313,7 @@ def build_segments(
                         padding_mode,
                         randomness,
                         mask_interpolation=mask_interpolation,
+                        mask_fill=mask_fill,
                     )
                 )
                 consumed_linear_indices.update(range(index + 1, blur_end))
@@ -5222,20 +5347,20 @@ def _flip_bbox_xyxy(
 ) -> Tensor:
     """Flip bounding boxes (batch_size, num_boxes, 4) xyxy format using direct coordinate arithmetic.
 
-    HFlip: ``coord_x' = width - 1 - coord_x``, swap x1/x2.
-    VFlip: ``coord_y' = height - 1 - coord_y``, swap y1/y2.
+    AABBs use pixel-edge extents, so HFlip is ``coord_x' = width - coord_x``
+    and VFlip is ``coord_y' = height - coord_y``; each swaps its extent ends.
 
     """
     box_x1, box_y1, box_x2, box_y2 = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
 
     if is_hflip:
-        new_x1 = (width - 1) - box_x2
-        new_x2 = (width - 1) - box_x1
+        new_x1 = width - box_x2
+        new_x2 = width - box_x1
         box_x1, box_x2 = new_x1, new_x2
 
     if is_vflip:
-        new_y1 = (height - 1) - box_y2
-        new_y2 = (height - 1) - box_y1
+        new_y1 = height - box_y2
+        new_y2 = height - box_y1
         box_y1, box_y2 = new_y1, new_y2
 
     flipped = torch.stack([box_x1, box_y1, box_x2, box_y2], dim=-1)

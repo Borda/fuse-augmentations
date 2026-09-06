@@ -1,22 +1,25 @@
-"""Regression tests for LOW-severity segment fixes (AFF-3, AFF-5, XB-4).
+"""Regression tests for LOW-severity segment fixes (AFF-3, K07, F03).
 
 - AFF-3: the cv2/numpy fast paths must clone the composed matrix into ``last_matrix``
   so a matrix retained from call N is not mutated in place by call N+1.
-- AFF-5: a directly instantiated ``ExactAffineSegment`` with a non-flip exact op must
-  raise on box/keypoint auxiliary targets instead of passing them through untransformed.
-- XB-4: a ``requires_grad`` input fed into a cv2 segment must run (detach before the raw
-  ``.numpy()`` conversion) and return a detached output.
+- K07: a directly instantiated ``ExactAffineSegment`` routes non-flip D4 pixels,
+  masks, and coordinate targets from one sampled matrix.
+- F03: a ``requires_grad`` input must take the differentiable CPU path and propagate
+  a finite, non-zero gradient to its source image.
 
 """
 
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 
 from fuse_augmentations._compat import _CV2_AVAILABLE
-from fuse_augmentations.affine.matrix import scale_matrix
+from fuse_augmentations.affine.matrix import rotation_matrix, scale_matrix
 from fuse_augmentations.affine.segment import ExactAffineSegment, FusedAffineSegment
+from fuse_augmentations.targets import transform_bbox_xyxy, transform_keypoints
 from fuse_augmentations.types import TransformCategory
 
 
@@ -67,7 +70,7 @@ class _StatefulScaleTransform:
 
 
 class _ExactStubAdapter:
-    """Adapter driving ``ExactAffineSegment`` with a non-flip exact op."""
+    """Complete adapter stub for a sampled counter-clockwise quarter turn."""
 
     def category(self, transform):
         """Return the transform's category attribute (default GEOMETRIC_EXACT)."""
@@ -77,13 +80,31 @@ class _ExactStubAdapter:
         """Raise for a non-flip discrete op (rot90/transpose have no flip axes)."""
         raise NotImplementedError("non-flip exact op exposes no flip dims")
 
-    def exact_apply(self, transform, image):
-        """Apply the exact op as an identity for the stub (channels preserved)."""
-        return image
+    def sample_params(self, transform, input_shape, device):
+        """Return one counter-clockwise quarter turn for every active sample."""
+        return {"k90": torch.ones(input_shape[0], device=device, dtype=torch.int64)}
+
+    def build_matrix(self, transform, params, height, width):
+        """Return the centre-coordinate matrix for the sampled quarter turn."""
+        angles = -params["k90"].to(dtype=torch.float32) * (math.pi / 2)
+        return rotation_matrix(angles, height=height, width=width)
+
+    def exact_apply(self, transform, image, *, params=None):
+        """Apply the supplied sampled quarter turn losslessly to pixels and masks."""
+        if params is None:
+            raise AssertionError("non-flip exact application must consume the sampled parameters")
+        k90 = params["k90"].to(device=image.device, dtype=torch.int64) % 4
+        if k90.shape != (image.shape[0],):
+            raise ValueError("k90 must contain one value per image")
+        output = image.clone()
+        for turns in range(1, 4):
+            active = k90 == turns
+            output[active] = torch.rot90(image[active], turns, dims=[2, 3])
+        return output
 
 
-class _ExactTransform:
-    """A stub non-flip exact transform (e.g. rot90) that always applies."""
+class _ExactQuarterTurnTransform:
+    """A non-flip exact transform (rot90) that always applies."""
 
     def __init__(self) -> None:
         self.p = 1.0
@@ -111,46 +132,41 @@ class TestLastMatrixStabilityCv2FastPath:
 
 @pytest.mark.skipif(not _CV2_AVAILABLE, reason="cv2 not installed -- fast path unavailable")
 class TestRequiresGradThroughCv2Segment:
-    """XB-4: a ``requires_grad`` input runs through the cv2 segment and detaches output."""
+    """F03: a ``requires_grad`` input uses a differentiable CPU segment path."""
 
-    def test_requires_grad_input_runs_and_returns_detached(self):
-        """A grad-tracking input does not raise and yields a detached result."""
+    def test_requires_grad_input_propagates_finite_gradient(self):
+        """A grad-tracking input retains a meaningful gradient through the CPU transform."""
         adapter = _StubAdapter()
         transforms = [_StatefulScaleTransform((0.5,)), _StatefulScaleTransform((0.5,))]
         seg = FusedAffineSegment(transforms, adapter)
         image = torch.rand(1, 3, 16, 16, requires_grad=True)
 
         out = seg(image)
+        out.square().mean().backward()
 
-        assert out.requires_grad is False
+        assert out.requires_grad
+        assert image.grad is not None
+        assert torch.isfinite(image.grad).all()
+        assert image.grad.abs().sum() > 0
 
 
-class TestExactSegmentCoordAuxGuard:
-    """AFF-5: non-flip exact op + coordinate aux must raise, mask-only must not."""
+class TestExactSegmentNonFlipTargets:
+    """K07: a sampled quarter turn shares its matrix with every target modality."""
 
-    @pytest.mark.parametrize(
-        "coord_key",
-        [
-            pytest.param("bbox_xyxy", id="bbox_xyxy"),
-            pytest.param("bbox_xywh", id="bbox_xywh"),
-            pytest.param("keypoints", id="keypoints"),
-        ],
-    )
-    def test_coord_aux_raises_on_non_flip_exact_op(self, coord_key):
-        """Box/keypoint aux on a non-flip exact op raises instead of silent passthrough."""
-        seg = ExactAffineSegment([_ExactTransform()], _ExactStubAdapter())
-        image = torch.rand(1, 3, 8, 8)
-        aux_targets = {coord_key: torch.zeros(1, 1, 4)}
+    def test_nonflip_exact_routes_pixels_mask_and_coordinates_from_same_params(self):
+        """A quarter turn maps image, mask, boxes, and keypoints by one supplied draw."""
+        seg = ExactAffineSegment([_ExactQuarterTurnTransform()], _ExactStubAdapter())
+        image = torch.arange(64, dtype=torch.float32).reshape(1, 1, 8, 8).repeat(1, 3, 1, 1)
+        mask = torch.arange(64, dtype=torch.float32).reshape(1, 1, 8, 8)
+        boxes = torch.tensor([[[1.0, 2.0, 4.0, 6.0]]])
+        keypoints = torch.tensor([[[1.0, 2.0], [6.0, 4.0]]])
+        aux_targets = {"mask": mask, "bbox_xyxy": boxes, "keypoints": keypoints}
+        expected_matrix = rotation_matrix(torch.tensor([-math.pi / 2]), height=8, width=8)
 
-        with pytest.raises(RuntimeError, match="non-flip exact op"):
-            seg(image, aux_targets)
+        out_image, out_aux = seg(image, aux_targets)
 
-    def test_mask_only_aux_passes_through_non_flip_exact_op(self):
-        """Mask-only aux on a non-flip exact op is handled without raising (contract case)."""
-        seg = ExactAffineSegment([_ExactTransform()], _ExactStubAdapter())
-        image = torch.rand(1, 3, 8, 8)
-        aux_targets = {"mask": torch.zeros(1, 1, 8, 8)}
-
-        _, out_aux = seg(image, aux_targets)
-
-        assert "mask" in out_aux
+        torch.testing.assert_close(out_image, torch.rot90(image, 1, dims=[2, 3]))
+        torch.testing.assert_close(out_aux["mask"], torch.rot90(mask, 1, dims=[2, 3]))
+        torch.testing.assert_close(out_aux["bbox_xyxy"], transform_bbox_xyxy(boxes, expected_matrix))
+        torch.testing.assert_close(out_aux["keypoints"], transform_keypoints(keypoints, expected_matrix))
+        torch.testing.assert_close(seg.last_matrix, expected_matrix)

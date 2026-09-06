@@ -146,3 +146,35 @@ Masks and keypoints do not have this problem: they are sampled or mapped pointwi
 ## One segment only
 
 `inverse` supports a single fused affine or projective segment — a chain already fused into that one segment is fine, but a pipeline that splits into geometry, color, and geometry again is not invertible this way. Check `fusion_plan` before designing around it, and see [Introspection](../guides/introspection.md) for the mechanics.
+
+## Recover coordinates after exact transforms and letterbox
+
+Exact flips/quarter-turns and a direct deterministic `letterbox` also return their actual forward matrix. Use target helpers with its inverse to recover prediction coordinates. These matrices map **pixel centres**; `transform_bbox_xyxy` converts them internally for **pixel-edge** boxes. The image `inverse()` API retains its narrower scope: discarded content and interpolation cannot be undone by coordinate recovery.
+
+```python
+import torch
+
+from fuse_augmentations import Compose, transform_bbox_xyxy
+
+source_size = (5, 7)
+detector_size = (10, 12)
+preprocess = Compose.from_params(letterbox=detector_size, allow_upscale=False)
+detector_input, forward_matrix = preprocess(
+    torch.zeros(1, 3, *source_size), return_matrix=True
+)
+# A detector prediction in its input canvas; padding moved the source box by (2, 2).
+prediction = torch.tensor([[[3.0, 3.0, 8.0, 6.0]]])
+source_prediction = transform_bbox_xyxy(prediction, torch.linalg.inv(forward_matrix))
+print(tuple(detector_input.shape[-2:]), source_prediction.tolist())
+```
+
+<details>
+<summary>Letterbox prediction recovered onto the source canvas</summary>
+
+```
+(10, 12) [[[1.0, 1.0, 6.0, 4.0]]]
+```
+
+</details>
+
+For pose predictions, coordinate recovery with `transform_keypoints` is separate from restoring semantic left/right slots: apply the configured involutive pair table when the recorded transform reverses orientation. A matrix from a multi-segment pipeline describes only its last supported geometric segment; it is not a complete preprocessing trace. Random crop-only pipelines still return no matrix under this contract.

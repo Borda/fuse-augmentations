@@ -40,7 +40,7 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
-from fuse_augmentations.affine.matrix import crop_resize_matrix, hflip_matrix, matmul3x3, rotation_matrix, vflip_matrix
+from fuse_augmentations.affine.matrix import crop_resize_matrix
 from fuse_augmentations.affine.segment import _CV2_BORDER
 from fuse_augmentations.types import PaddingModeStr, SamplingSemantics, TransformCategory
 
@@ -399,11 +399,8 @@ class AlbumentationsAdapter:
             same_on_batch = bool(getattr(transform, "same_on_batch", False))
 
             if TRANSFORM_REGISTRY and isinstance(transform, _RandomRotate90):
-                # RNG INVARIANT: k90 is drawn here (matrix-param path) and again,
-                # independently, by exact_apply in _apply_discrete_exact — each via its
-                # own get_params(). A transform routes through EXACTLY ONE of the two
-                # paths, never both, so never let both fire for one transform (the two
-                # get_params() draws would desync into different rotations).
+                # ExactAffineSegment supplies this k90 back to exact_apply, so
+                # image pixels and its coordinate matrix consume one draw.
                 if same_on_batch:
                     factor = int(transform.get_params()["factor"]) % 4
                     result["k90"] = torch.full((batch_size,), factor, device=device, dtype=torch.int64)
@@ -416,10 +413,8 @@ class AlbumentationsAdapter:
                 return result
 
             if TRANSFORM_REGISTRY and isinstance(transform, _D4):
-                # RNG INVARIANT: d4_code is drawn here (matrix-param path) and again,
-                # independently, by exact_apply in _apply_discrete_exact — each via its
-                # own get_params(). A transform routes through EXACTLY ONE of the two
-                # paths, never both; never let both fire (the draws would desync).
+                # ExactAffineSegment supplies this D4 code back to exact_apply,
+                # so image pixels and its coordinate matrix consume one draw.
                 if same_on_batch:
                     elem = str(transform.get_params()["group_element"])
                     result["d4_code"] = torch.full(
@@ -531,25 +526,37 @@ class AlbumentationsAdapter:
                 k90 = params.get("k90")
                 if k90 is None:
                     k90 = torch.zeros(batch_size, device=device, dtype=torch.int64)
-                if height != width and bool(((k90 == 1) | (k90 == 3)).any().item()):
-                    msg = (
-                        "RandomRotate90 with k in {1, 3} changes spatial dimensions "
-                        f"({height}x{width}). Mixed affine fusion requires shape-preserving ops."
-                    )
-                    raise RuntimeError(msg)
-                # rotation_matrix(+θ) warps like torch.rot90(k=-1); negate so the
-                # matrix path matches native np.rot90(+k) and exact_apply.
-                angles = -k90.to(dtype=dtype) * (torch.pi / 2.0)
-                return rotation_matrix(angles, height=height, width=width)
+                return _d4_matrix(
+                    k90,
+                    height=height,
+                    width=width,
+                    device=device,
+                    dtype=dtype,
+                    allow_shape_change=_allows_exact_shape_change(params),
+                )
 
             if _is_albu_instance(transform, frozenset({_Transpose})):
-                return _transpose_matrix(height=height, width=width, batch_size=batch_size, device=device, dtype=dtype)
+                return _transpose_matrix(
+                    height=height,
+                    width=width,
+                    batch_size=batch_size,
+                    device=device,
+                    dtype=dtype,
+                    allow_shape_change=_allows_exact_shape_change(params),
+                )
 
             if _is_albu_instance(transform, frozenset({_D4})):
                 d4_code = params.get("d4_code")
                 if d4_code is None:
                     d4_code = torch.zeros(batch_size, device=device, dtype=torch.int64)
-                return _d4_matrix(d4_code, height=height, width=width, device=device, dtype=dtype)
+                return _d4_matrix(
+                    d4_code,
+                    height=height,
+                    width=width,
+                    device=device,
+                    dtype=dtype,
+                    allow_shape_change=_allows_exact_shape_change(params),
+                )
 
         if _is_albu_instance(transform, _CROP_RESIZE_TYPES):
             return crop_resize_matrix(
@@ -590,7 +597,12 @@ class AlbumentationsAdapter:
         raise TypeError(f"Cannot determine flip dims for {type(transform).__name__!r}")
 
     @staticmethod
-    def exact_apply(transform: object, image: torch.Tensor) -> torch.Tensor:
+    def exact_apply(
+        transform: object,
+        image: torch.Tensor,
+        *,
+        params: dict[str, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         """Apply a GEOMETRIC_EXACT transform losslessly.
 
         Dispatches flips via ``tensor.flip``, 90-degree rotations via
@@ -600,6 +612,9 @@ class AlbumentationsAdapter:
         Args:
             transform: An Albumentations GEOMETRIC_EXACT transform.
             image: ``(batch_size, channels, height, width)`` input tensor.
+            params: Optional canonical exact parameters. Supplied ``"k90"``
+                and ``"d4_code"`` values are consumed without another backend
+                draw; flips deliberately ignore them.
 
         Returns:
             Transformed ``(batch_size, channels, height, width)`` tensor.
@@ -614,7 +629,7 @@ class AlbumentationsAdapter:
         if _is_albu_instance(transform, _VFLIP_TYPES):
             return image.flip(dims=[2])
         if _is_albu_instance(transform, _EXACT_DISCRETE_TYPES):
-            return _apply_discrete_exact(transform, image)
+            return _apply_discrete_exact(transform, image, params=params)
         msg = f"Cannot apply exact op for {type(transform).__name__!r}"
         raise TypeError(msg)
 
@@ -878,6 +893,12 @@ def _check_square_for_shape_changing_op(
         raise RuntimeError(msg)
 
 
+def _allows_exact_shape_change(params: dict[str, torch.Tensor]) -> bool:
+    """Return whether ExactAffineSegment accepted a shape-changing exact call."""
+    flag = params.get("_exact_allow_shape_change")
+    return flag is not None and flag.numel() == 1 and bool(flag.item())
+
+
 # D4 group element -> tensor operation mapping
 _D4_OPS: dict[str, str] = {
     "e": "identity",
@@ -896,12 +917,16 @@ _D4_CODE_TO_ELEM: dict[int, str] = {idx: name for name, idx in _D4_ELEM_TO_CODE.
 def _apply_discrete_exact(
     transform: object,
     image: torch.Tensor,
+    *,
+    params: dict[str, torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """Apply a discrete exact transform (RandomRotate90, D4, Transpose).
 
     Args:
         transform: An Albumentations discrete exact transform.
         image: ``(batch_size, channels, height, width)`` input tensor.
+        params: Optional canonical exact parameters. When supplied for a
+            stochastic operation, they replace its backend draw.
 
     Returns:
         Transformed ``(batch_size, channels, height, width)`` tensor.
@@ -914,13 +939,33 @@ def _apply_discrete_exact(
     same_on_batch = bool(getattr(transform, "same_on_batch", False))
 
     if TRANSFORM_REGISTRY and ttype is _RandomRotate90:
-        # RNG INVARIANT: exact_apply draws the rotation factor here via get_params(); the
-        # matrix-param path in AlbumentationsAdapter.sample_params draws k90 the same way,
-        # independently. A transform routes through EXACTLY ONE path, never both, so never
-        # let both fire for one transform (the two get_params() draws would desync).
+        if params is not None:
+            k90 = _exact_param_values(params, "k90", batch_size, "RandomRotate90") % 4
+            if batch_size == 0:
+                return image
+            shape_changing = (k90 == 1) | (k90 == 3)
+            if image.shape[2] != image.shape[3] and bool(shape_changing.any().item()):
+                if not _allows_exact_shape_change(params):
+                    _check_square_for_shape_changing_op(image, "RandomRotate90")
+                if not bool((k90 == k90[0]).all().item()):
+                    msg = (
+                        "RandomRotate90 on non-square images requires one shared quarter-turn "
+                        "for the whole exact batch."
+                    )
+                    raise RuntimeError(msg)
+                return torch.rot90(image, k=int(k90[0].item()), dims=[2, 3])
+            image_output = image.clone()
+            for rotations in (1, 2, 3):
+                active_index = torch.nonzero(k90 == rotations, as_tuple=False).squeeze(1)
+                if active_index.numel() > 0:
+                    image_output[active_index] = torch.rot90(image[active_index], k=rotations, dims=[2, 3])
+            return image_output
+
+        # Preserve the standalone adapter API when no caller-owned canonical
+        # parameters are available.
         if same_on_batch:
-            params = transform.get_params()  # type: ignore[attr-defined]
-            num_rotations = int(params["factor"]) % 4
+            native_params = transform.get_params()  # type: ignore[attr-defined]
+            num_rotations = int(native_params["factor"]) % 4
             if num_rotations in (1, 3):
                 _check_square_for_shape_changing_op(image, "RandomRotate90")
             return torch.rot90(image, k=num_rotations, dims=[2, 3])
@@ -929,8 +974,8 @@ def _apply_discrete_exact(
             return image
         image_output = image.clone()
         for idx_sample in range(batch_size):
-            params = transform.get_params()  # type: ignore[attr-defined]
-            num_rotations = int(params["factor"]) % 4
+            native_params = transform.get_params()  # type: ignore[attr-defined]
+            num_rotations = int(native_params["factor"]) % 4
             if num_rotations in (1, 3):
                 _check_square_for_shape_changing_op(image[idx_sample : idx_sample + 1], "RandomRotate90")
             image_output[idx_sample : idx_sample + 1] = torch.rot90(
@@ -939,30 +984,69 @@ def _apply_discrete_exact(
         return image_output
 
     if TRANSFORM_REGISTRY and ttype is _Transpose:
-        _check_square_for_shape_changing_op(image, "Transpose")
         return image.permute(0, 1, 3, 2).contiguous()
 
     if TRANSFORM_REGISTRY and ttype is _D4:
-        # RNG INVARIANT: exact_apply draws the group element here via get_params(); the
-        # matrix-param path in AlbumentationsAdapter.sample_params draws d4_code the same
-        # way, independently. A transform routes through EXACTLY ONE path, never both;
-        # never let both fire for one transform (the two get_params() draws would desync).
+        if params is not None:
+            d4_code = _exact_param_values(params, "d4_code", batch_size, "D4")
+            if batch_size == 0:
+                return image
+            elements = [_convert_normalize_d4_elem(_D4_CODE_TO_ELEM[int(code)]) for code in d4_code.tolist()]
+            shape_changing_elements = {"r90", "r270", "t", "hvt"}
+            if image.shape[2] != image.shape[3] and any(elem in shape_changing_elements for elem in elements):
+                if not _allows_exact_shape_change(params):
+                    _check_square_for_shape_changing_op(image, "D4")
+                if any(elem != elements[0] for elem in elements):
+                    msg = (
+                        "D4 on non-square images requires one shared shape-changing operation "
+                        "for the whole exact batch."
+                    )
+                    raise RuntimeError(msg)
+                return _apply_d4_element(image, elements[0], allow_shape_change=True)
+            image_output = image.clone()
+            for row_index, code in enumerate(d4_code.tolist()):
+                try:
+                    element = _convert_normalize_d4_elem(_D4_CODE_TO_ELEM[int(code)])
+                except KeyError as error:
+                    raise ValueError(f"D4 exact params['d4_code'] contains unsupported code {int(code)}") from error
+                image_output[row_index : row_index + 1] = _apply_d4_element(image[row_index : row_index + 1], element)
+            return image_output
+
+        # Preserve the standalone adapter API when no caller-owned canonical
+        # parameters are available.
         if same_on_batch:
-            params = transform.get_params()  # type: ignore[attr-defined]
-            elem = _convert_normalize_d4_elem(params["group_element"])
+            native_params = transform.get_params()  # type: ignore[attr-defined]
+            elem = _convert_normalize_d4_elem(native_params["group_element"])
             return _apply_d4_element(image, elem)
 
         if batch_size == 0:
             return image
         image_output = image.clone()
         for idx_sample in range(batch_size):
-            params = transform.get_params()  # type: ignore[attr-defined]
-            elem = _convert_normalize_d4_elem(params["group_element"])
+            native_params = transform.get_params()  # type: ignore[attr-defined]
+            elem = _convert_normalize_d4_elem(native_params["group_element"])
             image_output[idx_sample : idx_sample + 1] = _apply_d4_element(image[idx_sample : idx_sample + 1], elem)
         return image_output
 
     msg = f"Cannot apply discrete exact op for {ttype.__name__!r}"
     raise TypeError(msg)
+
+
+def _exact_param_values(
+    params: dict[str, torch.Tensor],
+    key: str,
+    batch_size: int,
+    operation: str,
+) -> torch.Tensor:
+    """Return a validated one-value-per-image canonical exact parameter tensor."""
+    values = params.get(key)
+    if values is None:
+        raise ValueError(f"{operation} exact params must contain a {key!r} tensor")
+    if values.ndim != 1 or values.shape[0] != batch_size:
+        raise ValueError(
+            f"{operation} exact params[{key!r}] must have shape ({batch_size},), got {tuple(values.shape)}"
+        )
+    return values.to(dtype=torch.int64)
 
 
 def _transpose_matrix(
@@ -971,9 +1055,10 @@ def _transpose_matrix(
     batch_size: int,
     device: torch.device,
     dtype: torch.dtype,
+    allow_shape_change: bool = False,
 ) -> torch.Tensor:
     """Build the forward pixel-space matrix for transpose."""
-    if height != width:
+    if height != width and not allow_shape_change:
         msg = (
             f"Transpose changes spatial dimensions on non-square images ({height}x{width})."
             f" Mixed affine fusion requires shape-preserving ops."
@@ -992,14 +1077,20 @@ def _d4_matrix(
     width: int,
     device: torch.device,
     dtype: torch.dtype,
+    allow_shape_change: bool = False,
 ) -> torch.Tensor:
     """Build forward pixel-space matrices for D4 group elements."""
     batch_size = int(d4_code.shape[0])
     if height != width:
-        _shape_changing = frozenset({_D4_ELEM_TO_CODE["r90"], _D4_ELEM_TO_CODE["r270"], _D4_ELEM_TO_CODE["hvt"]})
+        _shape_changing = frozenset({
+            _D4_ELEM_TO_CODE["r90"],
+            _D4_ELEM_TO_CODE["r270"],
+            _D4_ELEM_TO_CODE["t"],
+            _D4_ELEM_TO_CODE["hvt"],
+        })
         for code in d4_code.tolist():
             elem = _D4_CODE_TO_ELEM[int(code)]
-            if int(code) in _shape_changing:
+            if int(code) in _shape_changing and not allow_shape_change:
                 msg = (
                     f"D4 element {elem!r} changes spatial dimensions on non-square images "
                     f"({height}x{width}). Mixed affine fusion requires shape-preserving ops. "
@@ -1007,47 +1098,37 @@ def _d4_matrix(
                 )
                 raise RuntimeError(msg)
     out = torch.empty(batch_size, 3, 3, device=device, dtype=dtype)
-    base_h = hflip_matrix(width=width, batch_size=1, device=device, dtype=dtype)
-    base_v = vflip_matrix(height=height, batch_size=1, device=device, dtype=dtype)
-    base_t = _transpose_matrix(height=height, width=width, batch_size=1, device=device, dtype=dtype)
 
     for idx, code in enumerate(d4_code.tolist()):
         elem = _D4_CODE_TO_ELEM[int(code)]
-        if elem == "e":
-            out[idx] = torch.eye(3, device=device, dtype=dtype)
-            continue
-        if elem == "r90":
-            # rotation_matrix(+θ) warps like torch.rot90(k=-1); negate so r90/r270
-            # match native np.rot90 direction and _apply_d4_element.
-            out[idx] = rotation_matrix(
-                torch.tensor([-torch.pi / 2.0], device=device, dtype=dtype), height=height, width=width
-            )[0]
-            continue
-        if elem == "r180":
-            out[idx] = rotation_matrix(
-                torch.tensor([torch.pi], device=device, dtype=dtype), height=height, width=width
-            )[0]
-            continue
-        if elem == "r270":
-            out[idx] = rotation_matrix(
-                torch.tensor([-3.0 * torch.pi / 2.0], device=device, dtype=dtype), height=height, width=width
-            )[0]
-            continue
-        if elem == "h":
-            out[idx] = base_h[0]
-            continue
-        if elem == "v":
-            out[idx] = base_v[0]
-            continue
-        if elem == "t":
-            out[idx] = base_t[0]
-            continue
-        if elem == "hvt":
-            out[idx] = matmul3x3(base_t, matmul3x3(base_v, base_h))[0]
-            continue
-        msg = f"Unknown D4 group element: {elem!r}"
-        raise ValueError(msg)
+        out[idx] = _d4_forward_matrix(elem, height, width, device, dtype)
     return out
+
+
+def _d4_forward_matrix(
+    element: str,
+    height: int,
+    width: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Build one exact D4 pixel-centre matrix for a potentially rectangular image."""
+    w1 = float(width - 1)
+    h1 = float(height - 1)
+    rows: dict[str, list[list[float]]] = {
+        "e": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        "r90": [[0.0, 1.0, 0.0], [-1.0, 0.0, w1], [0.0, 0.0, 1.0]],
+        "r180": [[-1.0, 0.0, w1], [0.0, -1.0, h1], [0.0, 0.0, 1.0]],
+        "r270": [[0.0, -1.0, h1], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        "h": [[-1.0, 0.0, w1], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        "v": [[1.0, 0.0, 0.0], [0.0, -1.0, h1], [0.0, 0.0, 1.0]],
+        "t": [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        "hvt": [[0.0, -1.0, h1], [-1.0, 0.0, w1], [0.0, 0.0, 1.0]],
+    }
+    try:
+        return torch.tensor(rows[element], device=device, dtype=dtype)
+    except KeyError as error:
+        raise ValueError(f"Unknown D4 group element: {element!r}") from error
 
 
 _D4Elem = Literal["e", "r90", "r180", "r270", "h", "v", "t", "hvt"]
@@ -1062,13 +1143,20 @@ def _convert_normalize_d4_elem(elem: object) -> _D4Elem:
     return cast(_D4Elem, elem_str)
 
 
-def _apply_d4_element(image: torch.Tensor, elem: _D4Elem) -> torch.Tensor:
+def _apply_d4_element(
+    image: torch.Tensor,
+    elem: _D4Elem,
+    *,
+    allow_shape_change: bool = False,
+) -> torch.Tensor:
     """Apply a single D4 group element to a (batch_size, channels, height, width) tensor.
 
     Args:
         image: ``(batch_size, channels, height, width)`` input tensor.
         elem: D4 group element name (``"e"``, ``"r90"``, ``"r180"``,
             ``"r270"``, ``"h"``, ``"v"``, ``"t"``, ``"hvt"``).
+        allow_shape_change: Whether ExactAffineSegment has verified a rectangular
+            canvas can change shape for this whole batch.
 
     Returns:
         Transformed ``(batch_size, channels, height, width)`` tensor.
@@ -1077,22 +1165,26 @@ def _apply_d4_element(image: torch.Tensor, elem: _D4Elem) -> torch.Tensor:
     if elem == "e":
         return image
     if elem == "r90":
-        _check_square_for_shape_changing_op(image, "D4(r90)")
+        if not allow_shape_change:
+            _check_square_for_shape_changing_op(image, "D4(r90)")
         return torch.rot90(image, k=1, dims=[2, 3])
     if elem == "r180":
         return torch.rot90(image, k=2, dims=[2, 3])
     if elem == "r270":
-        _check_square_for_shape_changing_op(image, "D4(r270)")
+        if not allow_shape_change:
+            _check_square_for_shape_changing_op(image, "D4(r270)")
         return torch.rot90(image, k=3, dims=[2, 3])
     if elem == "h":
         return image.flip(dims=[3])
     if elem == "v":
         return image.flip(dims=[2])
     if elem == "t":
-        _check_square_for_shape_changing_op(image, "D4(t)")
+        if not allow_shape_change:
+            _check_square_for_shape_changing_op(image, "D4(t)")
         return image.permute(0, 1, 3, 2).contiguous()
     if elem == "hvt":
-        _check_square_for_shape_changing_op(image, "D4(hvt)")
+        if not allow_shape_change:
+            _check_square_for_shape_changing_op(image, "D4(hvt)")
         return image.flip(dims=[2, 3]).permute(0, 1, 3, 2).contiguous()
     msg = f"Unknown D4 group element: {elem!r}"
     raise ValueError(msg)

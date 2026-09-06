@@ -245,7 +245,7 @@ class SyntheticGenerator:
             )
         return Sample(image=np.asarray(canvas), annotations=annotations, width=cfg.img_size, height=cfg.img_size)
 
-    def generate(self, num_images: int, seed: int | None = None) -> Iterator[Sample]:
+    def generate(self, num_images: int, seed: int | np.random.SeedSequence | None = None) -> Iterator[Sample]:
         """Lazily yield ``num_images`` samples from a fresh seeded generator.
 
         This is the streaming primitive: only one :class:`Sample` is materialized at
@@ -255,7 +255,7 @@ class SyntheticGenerator:
 
         Args:
             num_images: Number of samples to yield.
-            seed: Seed for the internal generator; ``None`` uses fresh entropy.
+            seed: Integer or independent stream seed for the internal generator; ``None`` uses fresh entropy.
 
         Yields:
             One :class:`Sample` per iteration.

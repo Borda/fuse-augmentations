@@ -167,11 +167,12 @@ class TestTransformMatrix:
         pipe(torch.rand(4, 3, 8, 8))
         assert pipe.transform_matrix.shape == torch.Size([4, 3, 3])
 
-    def test_none_for_exact_only(self):
-        """transform_matrix is None when pipeline has only ExactAffineSegments."""
+    def test_exact_flip_records_pixel_matrix(self):
+        """An exact flip records the transform used by its lossless pixels."""
         pipe = Compose([kornia_aug.RandomHorizontalFlip(p=1.0)])
         pipe(torch.rand(1, 3, 8, 8))
-        assert pipe.transform_matrix is None
+        expected = torch.tensor([[[-1.0, 0.0, 7.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]])
+        torch.testing.assert_close(pipe.transform_matrix, expected, rtol=1e-4, atol=1e-6)
 
 
 class TestPassthroughPath:
