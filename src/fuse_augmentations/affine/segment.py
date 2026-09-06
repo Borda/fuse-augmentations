@@ -1637,7 +1637,14 @@ class FusedAffineSegment(_BaseAffineSegment):
         # ------------------------------------------------------------------ #
         # Gate on CPU tensors only: the cv2 warp round-trips through NumPy
         # (image[0]...numpy()), which raises on any non-CPU device (CUDA and MPS).
-        if self._cv2_warp and batch_size == 1 and not _has_aux and image.device.type == "cpu":
+        # Gradient-bearing inputs stay on the differentiable torch path; NumPy cannot preserve autograd.
+        if (
+            self._cv2_warp
+            and batch_size == 1
+            and not _has_aux
+            and image.device.type == "cpu"
+            and not image.requires_grad
+        ):
             acc_np = np.eye(3, dtype=np.float64)
             # Select the numpy-native matrix builder when available (avoids
             # creating intermediate torch tensors that are immediately converted

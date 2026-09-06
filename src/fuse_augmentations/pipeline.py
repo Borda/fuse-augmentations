@@ -1007,6 +1007,10 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         # the keyword entry adds dict output; the positional data_keys API is
         # unchanged and still returns a tuple.
         if kwargs and "image" in kwargs and self._multi_target and self._aux_keys:
+            if args:
+                raise TypeError("Pass the image either positionally or by keyword, not both")
+            if isinstance(kwargs["image"], Tensor):
+                return super().__call__(return_matrix=return_matrix, **kwargs)
             return self._forward_kwargs_dict(kwargs, return_matrix=return_matrix)
 
         if (
@@ -1036,41 +1040,18 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 return result, _current_call_matrix()
             return result
 
-        # Single-transform tensor fast paths: bypass nn.Module.__call__ overhead
-        # (~10-15 us from hook dispatch, _call_impl indirection) for the
-        # common single-tensor, single-transform case.  Guards: exactly 1 positional
-        # arg, no kwargs, data_keys is None (single-tensor mode).
-        if len(args) == 1 and not kwargs and self.data_keys is None:
-            _exact_fast = self._single_exact_fast
-            if _exact_fast is not None:
-                # Exact segments produce no matrix; clear any stale value so the
-                # transform_matrix "None after exact/passthrough-only" contract holds.
-                self._last_transform_matrix = None
-                image = _exact_fast[0].call_nonfused(_exact_fast[1], cast(Tensor, args[0]))
-                result = self._convert_primary_output(image)
-                return (result, None) if return_matrix else result
-
-            _fused_fast = self._single_fused_fast_seg
-            if _fused_fast is not None:
-                image = cast(Tensor, _fused_fast.forward(cast(Tensor, args[0]), None))
-                self._last_transform_matrix = _current_call_matrix()
-                result = self._convert_primary_output(image)
-                return (result, _current_call_matrix()) if return_matrix else result
-
         # Mixed call: the image positionally, auxiliary targets by keyword -- pipe(img, bboxes=...).
         # Accepted on multi-target pipelines only, and only in this one shape: exactly one positional
         # argument, no "image" keyword to conflict with it. Every other mix still raises below,
         # because with two or more positional arguments there is no unambiguous mapping onto
         # data_keys once some of those keys are also being passed by name.
         if len(args) == 1 and kwargs and self._multi_target and self._aux_keys and "image" not in kwargs:
+            if isinstance(args[0], Tensor):
+                return super().__call__(*args, return_matrix=return_matrix, **kwargs)
             return self._forward_kwargs_dict({"image": args[0], **kwargs}, return_matrix=return_matrix)
 
-        # Any keyword arguments still present were not consumed by the keyword-image dispatch above
-        # and would reach forward() -- whose signature is (*args, return_matrix) and accepts no data
-        # keywords -- yielding an opaque "unexpected keyword argument" TypeError whose exact wording
-        # depends on which adapter/backend the pipeline uses. Fail early with a clear, backend-
-        # independent message instead. (return_matrix is bound by __call__'s own signature, so it is
-        # never present in kwargs here.)
+        # Only the declared multi-target API consumes data keywords. Reject other keyword calls
+        # consistently before an adapter can reinterpret or silently discard them.
         if kwargs:
             misrouted = sorted(kwargs)
             raise TypeError(
@@ -1256,7 +1237,11 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
 
         ordered_args = tuple(cast("torch.Tensor", kwargs[key_to_kwarg[key]]) for key in data_keys)
         matrix = None
-        if self._native_multi_ok and all(isinstance(value, np.ndarray) for value in ordered_args):
+        if (
+            self._native_multi_ok
+            and all(isinstance(value, np.ndarray) for value in ordered_args)
+            and ordered_args[0].ndim in (2, 3)
+        ):
             self._last_transform_matrix = None
             _clear_current_call_matrix()
             result: object = self._forward_albu_native_multi(ordered_args)
@@ -1281,6 +1266,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         self,
         *args: torch.Tensor,
         return_matrix: bool = False,
+        **kwargs: object,
     ) -> object:
         """Apply the augmentation pipeline to an image batch and optional auxiliary targets.
 
@@ -1307,6 +1293,8 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 angle-range convention -- see :func:`~fuse_augmentations.targets.transform_rboxes`).
             return_matrix: When ``True``, return the output and its last fused
                 geometric pixel matrix.
+            **kwargs: Declared multi-target keyword inputs. Tensor keyword calls return a
+                dict and retain the same public module hooks as positional tensor calls.
 
         Returns:
             Single ``Tensor`` or NumPy ``ndarray`` when ``data_keys`` is
@@ -1325,10 +1313,9 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 ``None``.
 
         Note:
-            Passthrough (non-fused) transforms in the pipeline apply to the image
-            only. Auxiliary targets skip passthrough segments and retain their
-            values from the preceding fused segment. This is by design -
-            passthrough backends do not expose a target-routing API.
+            Only known coordinate-preserving passthrough transforms may run with
+            auxiliary targets. Unclassified or coordinate-changing passthrough is
+            refused before any segment executes, since it cannot route the targets.
 
             ``output_backend`` conversion is applied per target in multi-target
             mode: image and mask outputs are converted to the requested backend,
@@ -1336,6 +1323,14 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             channel-last image layout does not apply to them.
 
         """
+        if kwargs:
+            if not self._multi_target or not self._aux_keys:
+                raise TypeError("Keyword target inputs require a multi-target data_keys pipeline")
+            if args:
+                if len(args) != 1 or "image" in kwargs:
+                    raise TypeError("Pass one positional image or image=, with auxiliary targets by keyword")
+                kwargs = {"image": args[0], **kwargs}
+            return self._forward_kwargs_dict(kwargs, return_matrix=return_matrix)
         # data_keys is constructor state: dispatch to the pre-resolved single-tensor
         # or multi-target path instead of re-parsing it on every call.
         if not self._multi_target:
@@ -1576,6 +1571,10 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 mask_dtype = value.dtype
             aux_targets[key] = self._normalize_aux_input(key, value, aux_ndims)
 
+        # Validate only shape metadata here: native images must not pay for a full tensor conversion.
+        height, width = img_hwc.shape[:2]
+        channels = img_hwc.shape[2] if img_hwc.ndim == 3 else 1
+        self._validate_aux_targets((1, channels, height, width), aux_targets)
         tags = cast("list[int]", self._albu_seg_tags)
         for idx_segment, seg in enumerate(self._segments):
             if tags[idx_segment] == 2:  # FusedColorSegment — cannot move a coordinate
@@ -1611,6 +1610,13 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         args, numpy_round_trip = self._normalize_multi_inputs(args)
         image = args[0]
         aux_targets = self._build_aux_targets(args)
+        # Refuse the entire unsafe chain before a preceding transform can mutate inputs or consume RNG.
+        if aux_targets:
+            for seg, tag in zip(self._segments, self._dispatch_tags(), strict=True):
+                if tag == _TAG_PASSTHROUGH:
+                    self._check_passthrough_aux_policy(seg.transform, seg.adapter)
+                elif tag == _TAG_LEGACY:
+                    self._check_passthrough_aux_policy(seg, self._adapter)
 
         for seg, tag in zip(self._segments, self._dispatch_tags(), strict=True):
             if tag == _TAG_MATRIX:
@@ -1620,12 +1626,8 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             elif tag == _TAG_PLAIN:
                 image, aux_targets = self._forward_fused_segment(seg, image, aux_targets)
             elif tag == _TAG_PASSTHROUGH:
-                if aux_targets:
-                    self._check_passthrough_aux_policy(seg.transform)
                 image = seg.adapter.call_nonfused(seg.transform, image)
             else:
-                if aux_targets:
-                    self._check_passthrough_aux_policy(seg)
                 image = self._legacy_passthrough(seg, image)
         assembled = self._assemble_multi_output(image, aux_targets, args)
         result: object = assembled
@@ -1634,38 +1636,75 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         return (result, call_matrix) if return_matrix else result
 
     @staticmethod
-    def _check_passthrough_aux_policy(transform: object) -> None:
-        """Enforce the passthrough / auxiliary-target correctness policy.
+    def _check_passthrough_aux_policy(transform: object, adapter: TransformAdapter | None) -> None:
+        """Refuse passthrough unless its adapter proves that coordinates stay unchanged.
 
-        Passthrough (non-fused) transforms apply to the image only; auxiliary targets
-        (masks, boxes, keypoints) skip them. Whether that is a bug depends on the op:
-
-        - **Coordinate-changing** passthrough ops (geometric distortion: elastic, grid,
-          optical distortion, thin-plate-spline, piecewise-affine) move image content,
-          so auxiliary targets that skip them silently desync from the image. This is a
-          correctness bug and raises :class:`ValueError`.
-        - **Kernel / pointwise** passthrough ops (blur, noise, gamma) leave geometry
-          unchanged, so auxiliary targets legitimately pass through untouched — no
-          warning is emitted.
+        Known distortions retain their specific error. Unknown barriers are unsafe with targets even
+        if they happen to preserve an image's shape; only classified pointwise operations and Gaussian
+        filtering may leave auxiliary targets untouched. Image-only pipelines keep native dispatch.
 
         Args:
-            transform: The passthrough transform being executed with auxiliary targets
-                present.
+            transform: The operation that would receive only the image.
+            adapter: Its resolved backend classifier, or ``None`` for an unresolved legacy operation.
 
         Raises:
-            ValueError: If ``transform`` is a coordinate-changing passthrough op, since
-                the auxiliary targets would silently desync from the image.
+            ValueError: If coordinate preservation is unknown or the operation needs target routing.
 
         """
         if is_coordinate_changing_passthrough(transform):
-            msg = (
+            raise ValueError(
                 f"Coordinate-changing passthrough transform {type(transform).__name__!r} moves "
-                "image content but does NOT route auxiliary targets (masks, boxes, keypoints) — "
-                "they would silently desync from the image. Move geometric ops before the "
-                "passthrough barrier, transform the auxiliary targets manually, or remove this "
-                "op from a multi-target (data_keys) pipeline."
+                "image content but does NOT route auxiliary targets. Use a supported target-aware "
+                "transform or apply the operation and targets together outside this pipeline."
             )
-            raise ValueError(msg)
+        safe_categories = {
+            TransformCategory.POINTWISE,
+            TransformCategory.POINTWISE_LINEAR,
+            TransformCategory.POINTWISE_LUT,
+            TransformCategory.SPATIAL_LINEAR,
+        }
+        if adapter is None or adapter.category(transform) not in safe_categories:
+            raise ValueError(
+                f"Unclassified or unsafe passthrough transform {type(transform).__name__!r} cannot "
+                "preserve auxiliary targets reliably. Use a supported coordinate-preserving or "
+                "target-aware transform, or handle the image and targets together outside Compose."
+            )
+
+    def _validate_aux_targets(self, image_shape: tuple[int, ...], aux_targets: dict[str, Tensor]) -> None:
+        """Validate normalized target schemas before any transform executes.
+
+        Coordinate rows carry geometry only; labels and ragged validity remain separate. Empty instance axes are valid,
+        while batch broadcasting and extra columns would silently corrupt annotations. Unknown data keys keep their
+        documented passthrough contract.
+
+        """
+        if len(image_shape) != 4:
+            raise ValueError(f"input must have BCHW shape, got {image_shape}")
+        widths = {"bbox_xyxy": 4, "bbox_xywh": 4, "keypoints": 2, "rboxes": 5}
+        for key, target in aux_targets.items():
+            if key not in widths and key != "mask":
+                continue
+            if not isinstance(target, Tensor):
+                raise TypeError(f"{key} must be a tensor after NumPy input normalization")
+            expected_ndim = 4 if key == "mask" else 3
+            if target.ndim != expected_ndim:
+                raise ValueError(f"{key} must have {expected_ndim} dimensions, got shape {tuple(target.shape)}")
+            if target.shape[0] != image_shape[0]:
+                raise ValueError(f"{key} batch size {target.shape[0]} does not match input batch size {image_shape[0]}")
+            if key == "mask":
+                if target.shape[-2:] != image_shape[-2:]:
+                    raise ValueError(
+                        f"mask spatial dimensions {tuple(target.shape[-2:])} must match input {image_shape[-2:]}"
+                    )
+                continue
+            if target.shape[-1] != widths[key]:
+                raise ValueError(f"{key} trailing dimension must be {widths[key]}, got {target.shape[-1]}")
+            if (
+                key == "keypoints"
+                and self.keypoint_flip_index is not None
+                and target.shape[1] != len(self.keypoint_flip_index)
+            ):
+                raise ValueError("keypoints slots must match the length of keypoint_flip_index")
 
     def _build_aux_targets(self, args: tuple[torch.Tensor, ...]) -> dict[str, torch.Tensor]:
         """Build the auxiliary-target dict from positional args, rejecting duplicate keys."""
@@ -1677,7 +1716,11 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 f"(data_keys[1:]): {aux_keys}. Auxiliary keys must be unique."
             )
             raise ValueError(msg)
-        return dict(zip(aux_keys, args[1:], strict=True))
+        if not isinstance(args[0], Tensor):
+            raise TypeError("input must be a tensor after NumPy input normalization")
+        targets = dict(zip(aux_keys, args[1:], strict=True))
+        self._validate_aux_targets(tuple(args[0].shape), targets)
+        return targets
 
     def _assemble_multi_output(
         self,
@@ -1832,7 +1875,9 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         inverse_matrix = inv3x3(forward_matrix)
         # Forward routing uses the forward pixel matrix; de-augmentation uses its
         # inverse while reusing the matching output-to-input sampling grid.
-        FusedAffineSegment._route_grid_aux(aux_targets, grid, inverse_matrix, self.mask_interpolation)
+        FusedAffineSegment._route_grid_aux(
+            aux_targets, grid, inverse_matrix, self.mask_interpolation, self.keypoint_flip_index
+        )
         return self._assemble_multi_output(recovered, aux_targets, args)
 
 

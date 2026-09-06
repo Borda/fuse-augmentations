@@ -42,14 +42,14 @@ TorchVision `RandomRotation(expand=True)` is explicitly unsupported. The fused T
 
 ### Safe only within the declared contract
 
-| Pipeline element                                          | Mask/box/keypoint behavior                               | Safety decision                                                               |
-| --------------------------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| Registered affine/projective transform                    | Routes supported targets with the segment grid or matrix | Supported, subject to the numerical limits below                              |
-| Registered exact flip or discrete operation               | Routes supported targets through exact or matrix logic   | Supported for the registered operation                                        |
-| Registered `RandomResizedCrop`                            | Routes targets to the target spatial size                | Supported; output size changes                                                |
-| Known pointwise or kernel passthrough                     | Leaves coordinate targets unchanged                      | Safe only when the operation truly preserves coordinates                      |
-| Named coordinate-changing passthrough on the refusal list | Raises rather than silently misaligning targets          | Safe refusal, not target support                                              |
-| Unknown transform or custom callable                      | May run on the image only                                | Unsafe with auxiliary targets unless independently proved geometry-preserving |
+| Pipeline element                                          | Mask/box/keypoint behavior                                | Safety decision                                                 |
+| --------------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------- |
+| Registered affine/projective transform                    | Routes supported targets with the segment grid or matrix  | Supported, subject to the numerical limits below                |
+| Registered exact flip or discrete operation               | Routes supported targets through exact or matrix logic    | Supported for the registered operation                          |
+| Registered `RandomResizedCrop`                            | Routes targets to the target spatial size                 | Supported; output size changes                                  |
+| Known pointwise or kernel passthrough                     | Leaves coordinate targets unchanged                       | Safe only when the operation truly preserves coordinates        |
+| Named coordinate-changing passthrough on the refusal list | Raises rather than silently misaligning targets           | Safe refusal, not target support                                |
+| Unknown transform or custom callable                      | Raises before any segment executes with auxiliary targets | Fail-closed; image-only passthrough remains a separate contract |
 
 Masks and coordinates have additional contracts:
 
@@ -57,16 +57,16 @@ Masks and coordinates have additional contracts:
 - `padding_mode="reflection"` reflects about the outer pixel *centres* (OpenCV `BORDER_REFLECT_101`), following this package's `align_corners=True` sampling. An implementation sampling with `align_corners=False` reflects about the outer pixel *edges* (`BORDER_REFLECT`) and its mirrored band differs by a pixel of phase. `"zeros"` and `"border"` are convention-free; see "Half-pixel convention" in `guides/configuration.md`.
 - A canvas thinner than two pixels on either axis is refused: the `align_corners=True` normalization divides by `L - 1`. A `(H, 1)` or `(1, W)` image raises naming the axis rather than warping through an infinite scale.
 - The nearest mask path is deliberately executed without autograd. This removes gradients with respect to both the mask values and sampling grid. Bilinear sampling is available for floating soft masks, mixes values at boundaries, and keeps an autograd path.
-- Boxes are dense `(B, N, 4)` tensors and keypoints are dense `(B, N, 2)` tensors. The package does not clip them to image bounds, filter invisible or zero-area boxes, calculate visibility, carry labels, or manage variable `N`.
+- Boxes are dense `(B, N, 4)` tensors and keypoints are dense `(B, N, 2)` tensors. Validation rejects batch mismatches, mask-canvas mismatches, wrong coordinate widths, and extra box columns before execution; empty `N=0` tables remain valid. The package does not clip them to image bounds, filter invisible or zero-area boxes, calculate visibility, carry labels, or manage variable `N`.
 - Rotated boxes are returned as axis-aligned bounding boxes, which can be larger than the rotated object.
 - Coordinate targets remain PyTorch tensors when image and mask outputs are converted with `output_backend="numpy"`.
 
 ## Passthrough is not transparent
 
-An unregistered transform can execute through its native backend, but "passthrough" does not mean identical data or behavior:
+An unregistered transform can execute through its native backend on image-only calls, but "passthrough" does not mean identical data or behavior. With auxiliary targets, unknown or unsafe passthroughs are refused before any segment runs:
 
 - It splits fusion segments and can add transfers or native calls.
-- A coordinate-changing passthrough may be unsafe for auxiliary targets as described above.
+- A coordinate-changing or unclassified passthrough cannot route auxiliary targets and is refused as described above.
 - Albumentations passthrough on the tensor path receives HWC float data derived from the BCHW tensor. Operations designed around uint8 magnitude, including some noise, fog, and compression transforms, may behave differently or become ineffective.
 - `substitute_passthrough=True` is explicitly behavior-changing. The current substitution can replace Albumentations Gaussian blur with a Kornia blur that has different kernels, borders, and randomness.
 

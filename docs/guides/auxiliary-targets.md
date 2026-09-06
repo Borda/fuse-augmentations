@@ -11,7 +11,7 @@ Use `data_keys` to route dense tensor targets through a supported fused geometri
 
     Before using any example on this page, inspect construction warnings and `pipe.fusion_plan`.
 
-    If you see `Unknown ... transform ... treating as SPATIAL_KERNEL barrier`, do not use that pipeline with masks, boxes, or keypoints until you have proved the transform preserves coordinates. `RandomCrop`, `CenterCrop`, and `Resize` can transform only the image and leave the mask at its old shape. The runtime refusal list catches several named distortions, but it is not a complete spatial-transform detector.
+    An unknown or unclassified spatial transform is refused before any segment executes when auxiliary targets are present. `RandomCrop`, `CenterCrop`, and `Resize` can transform only the image and leave the mask at its old shape; use a registered target-aware operation or handle the image and targets together outside `Compose`.
 
     Replace an unsupported spatial transform with a registered operation, run it through a native target-aware pipeline, or transform every target yourself. A warning is not a safety guarantee.
 
@@ -25,7 +25,7 @@ Use `data_keys` to route dense tensor targets through a supported fused geometri
 | `"bbox_xywh"` | `(B, N, 4)` floating `[x, y, width, height]` | Converted through xyxy, transformed, then converted back      |
 | `"keypoints"` | `(B, N, 2)` floating `[x, y]`                | Transformed by the forward homogeneous matrix                 |
 
-The batch dimension is mandatory. Box and keypoint counts are dense and fixed within a batch. This API does not carry class labels, visibility flags, or per-image variable-length lists.
+The batch dimension is mandatory. Before the first segment runs, the pipeline checks that every target batch matches the image batch, masks have the image's spatial dimensions, and coordinate targets have exactly the trailing widths shown above. Empty instance axes are valid; extra box columns are rejected rather than interpreted as labels. Box and keypoint counts are dense and fixed within a batch. This API does not carry class labels, visibility flags, or per-image variable-length lists.
 
 ## A contract-safe example
 
@@ -196,7 +196,7 @@ print(swapped[0].tolist())
 
 - **When it fires is decided by the composed matrix's determinant**, never by whether a flip transform appears in the pipeline. After fusion the mirror is part of a larger matrix and is no longer a discrete op, and two mirrors compose back to a rotation — which must *not* swap. A rotation past 90 degrees looks like a flip and is not one; the determinant is what tells them apart.
 - **Every path applies it**, including the ones that never build a warp grid: the exact-flip route and the D4 fast path (a pure flip is applied by tensor reversal, skipping `grid_sample` entirely). A permutation wired only into the interpolating route would leave those images mirrored with unswapped labels, and nothing about the shapes would say so.
-- **The pair table is dataset schema and stays with you.** This package validates only that it is a permutation of `range(len(flip_index))` — a table that repeated or dropped a slot would duplicate one landmark and silently delete another.
+- **The pair table is dataset schema and stays with you.** It must be an involutive permutation of `range(len(flip_index))`: fixed points and disjoint two-slot pairs are valid, while a cycle such as `(1, 2, 0)` is rejected. A mirror applied twice must restore the original slot order; replace any older arbitrary permutation with explicit fixed points and pairs.
 - `None` (the default) leaves the keypoint axis in input order, unchanged.
 - The same decision is available directly: `orientation_reversed(matrix)` and `permute_keypoint_pairs(points, flip_index, reversed_mask)`.
 

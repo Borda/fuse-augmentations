@@ -236,7 +236,7 @@ def _validate_keypoint_flip_index(flip_index: Sequence[int] | None) -> tuple[int
         The permutation as a tuple of ints, or ``None``.
 
     Raises:
-        ValueError: If the entries are not a permutation of ``range(len(flip_index))``.
+        ValueError: If entries are not an involutive permutation (fixed points and pairs).
 
     Examples:
         ```pycon
@@ -258,4 +258,6 @@ def _validate_keypoint_flip_index(flip_index: Sequence[int] | None) -> tuple[int
             "duplicate one landmark and drop another."
         )
         raise ValueError(msg)
+    if any(indices[paired] != slot for slot, paired in enumerate(indices)):
+        raise ValueError("keypoint_flip_index must be an involution containing only fixed points and pairs")
     return indices

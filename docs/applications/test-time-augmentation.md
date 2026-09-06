@@ -45,6 +45,66 @@ print(tuple(restored.shape), bool(torch.allclose(restored_boxes, boxes, atol=1e-
 
 Under translation, scaling, and flips the box round trip is exact, because an axis-aligned transform maps a rectangle to a rectangle. The image recovers to sampling precision rather than bit-exactly: the inverse applies a second `grid_sample`, and two interpolations are not the identity.
 
+## Lift strided predictions before inversion
+
+`inverse` interprets its prediction tensor on the augmentation canvas. A dense prediction head that returns a stride-two `16x16` grid for a `32x32` augmented image must be lifted to the `32x32` canvas before calling `inverse`; pass the restored result through the model's output-grid conversion afterward. Calling `inverse` directly on the low-resolution logits silently applies the pixel matrix in the wrong coordinate frame.
+
+This runnable probe uses a nonzero eight-pixel translation, keeps the source and augmentation canvases explicit, and checks the peak location after the round trip:
+
+```python
+import torch
+from torch.nn import functional as F
+
+from fuse_augmentations import Compose
+
+source_canvas = (32, 32)
+augmentation_canvas = (32, 32)
+stride = 2
+
+image = torch.zeros(1, 1, *source_canvas)
+image[0, 0, 16:18, 8:10] = 1.0
+translate = Compose.from_params(translate_x=(8.0, 8.0))
+
+augmented, matrix = translate(image, return_matrix=True)
+assert tuple(augmented.shape[-2:]) == augmentation_canvas
+logits = F.max_pool2d(augmented, kernel_size=stride)
+reference_logits = F.max_pool2d(image, kernel_size=stride)
+
+wrong_frame = translate.inverse(logits, matrix=matrix)
+lifted_logits = F.interpolate(logits, size=augmentation_canvas, mode="nearest")
+restored_logits = F.max_pool2d(
+    translate.inverse(lifted_logits, matrix=matrix), kernel_size=stride
+)
+
+expected_peak = int(reference_logits.flatten().argmax())
+wrong_peak = int(wrong_frame.flatten().argmax())
+restored_peak = int(restored_logits.flatten().argmax())
+print(
+    (
+        source_canvas,
+        augmentation_canvas,
+        tuple(logits.shape[-2:]),
+        expected_peak,
+        wrong_peak,
+        restored_peak,
+    )
+)
+assert wrong_peak != expected_peak
+assert restored_peak == expected_peak
+torch.testing.assert_close(restored_logits, reference_logits, rtol=1e-4, atol=1e-6)
+```
+
+<details>
+<summary>Stride-two prediction peak before and after lifting</summary>
+
+```
+((32, 32), (32, 32), (16, 16), 132, 128, 132)
+```
+
+</details>
+
+The expected peak is flat index `132` on the `16x16` output grid. The direct low-resolution inverse lands at `128`; lifting to the augmentation canvas before inversion restores `132` exactly in this probe. A real head may need bilinear upsampling or an output-stride offset chosen by its model contract, but it still must express predictions in the augmentation frame before this inverse.
+
 ## Rotation does not round trip for boxes
 
 ```python
