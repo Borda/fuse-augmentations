@@ -12,6 +12,10 @@ name: CI GPU tests
 #
 # Triggers are deliberately manual and scheduled only -- not on pull requests -- because a queued
 # job against a runner that may not exist should never block a merge.
+#
+# Re-checked 2026-09-06: still no self-hosted GPU runner attached. `runs-on: [self-hosted, gpu]`
+# below has never matched a live runner, so `workflow_dispatch` queues and times out; the only CUDA
+# signal to date is the manual Colab/`run_gpu_check.sh` run recorded in the integration plan.
 on:
   workflow_dispatch: {}
   schedule:
