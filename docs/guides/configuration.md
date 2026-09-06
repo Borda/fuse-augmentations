@@ -107,11 +107,19 @@ torch.Size([1, 3, 32, 32]) 1
 - **One resample, not two.** The letterbox is a `CROP_RESIZE_FIXED` op, so a geometric run in front of it composes into a single matrix warped once, straight from the source canvas to the letterboxed one — the `1` printed above is the segment count. `return_matrix=True` then hands back the whole chain (`M_letterbox @ M_geo`), not the letterbox alone.
 - **Ordering.** The letterbox is placed after the geometry and before any `brightness`/`contrast`, because the crop-resize category is a reorder barrier and a colour op buffered ahead of it would be flushed between the geometric run and the letterbox, splitting the fusion. A colour op in the same call therefore also acts on the pad region.
 - **`allow_upscale=False`** caps the ratio at `1.0`, so a source smaller than the canvas is padded rather than magnified.
-- **Padding is integer and floor-halved.** An odd slack puts the extra pixel on the right or the bottom, matching a resize-then-pad implementation pixel for pixel.
+- **Padding is integer and floor-halved.** An odd slack puts the extra pixel on the right or the bottom. The image uses the reported scale-and-pad matrix; do not assume pixel identity with a separate resize implementation that rounds each axis independently.
 - **Rounded before printing.** Exact here means the map inverts without resampling, not that the float64 round trip is bit-identical: composing and inverting leaves the last bits to the linear algebra build in use, so the example rounds rather than printing a bit pattern that differs between PyTorch versions.
 - **`letterbox_matrix` / `letterbox_geometry`** expose the same fit as data, computed from sizes alone. An evaluation loop that no longer has the pipeline can recompute the matrix and invert it with `inv3x3`.
-- **A letterbox on its own returns no matrix.** `return_matrix=True` gives `None` for a letterbox-only pipeline — a crop-resize segment reports no matrix — so use `letterbox_matrix()` there. With a geometric run in front, the fused segment does report the composed chain.
+- **Standalone letterbox reports its actual-call matrix.** `return_matrix=True` also works without preceding geometry. General random crops do not promise recoverable metadata; image `inverse()` still accepts only one supported fused affine/projective segment. Use coordinate helpers with the paired matrix for letterbox predictions.
 - Backend-free mode only; `backend=` raises rather than accepting and ignoring the argument.
+
+## Downscale antialiasing (`antialias`)
+
+`Compose([...], antialias=True)` requires the optional Kornia dependency and raises at construction if it is missing. The default is `False`.
+
+Supported crop-resize and fused geometry-plus-crop segments estimate scales once per warp. A sample shrinking below the filtering threshold on either axis receives its own Gaussian prefilter: axis-aligned scaling uses separate width/height scales; rotation or shear uses the smallest singular value conservatively on both axes. Each sample's kernel support is independent of its batch neighbors. Masks retain their requested interpolation and are not blurred with the image.
+
+This changes the previous batch-wide filtering behavior. It can cost additional filtering calls and host synchronization when enabled; measure your actual batch, device, and crop distribution. It is not a universal antialias switch for every segment or a guarantee of better model accuracy.
 
 ## Half-pixel convention (`align_corners`)
 
@@ -120,7 +128,7 @@ Sampling runs with `align_corners=True`, and matrices are normalized with the sa
 Practically, for anyone porting matrices in or out:
 
 - A forward pixel matrix (`transform_matrix`, or one you build yourself) transfers unchanged in both directions. This is measured, not assumed: `tests/test_unit/affine/test_coordinate_convention.py` warps against an independently built `align_corners=False` reference for integer, half- and quarter-pixel shifts, up- and downscales, rotation, a non-square canvas, and differing input/output sizes, and matches to float32 rounding.
-- Coordinate targets carry no convention either. Boxes and keypoints are multiplied by the pixel matrix directly, with no normalization step anywhere; masks are resampled on the image's own grid. The invariant that ties the three together — a keypoint on a bright pixel still sits on that pixel after any warp — is pinned by test.
+- Keypoints use the pixel-centre matrix directly; masks use the image grid. Axis-aligned boxes use pixel-edge extents `[0, W] x [0, H]`: their helpers internally conjugate the image matrix by half-pixel translations. Rotated-box centres remain in pixel-centre space; add `0.5` to their corner envelope before comparing it with an edge-space AABB.
 
 Two exceptions, both tested:
 

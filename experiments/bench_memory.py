@@ -63,6 +63,7 @@ from pathlib import Path
 from typing import Any
 
 import albumentations as A
+import cv2
 import kornia.augmentation as K
 import numpy as np
 import torch
@@ -759,6 +760,8 @@ def _build_metadata(cfg: BenchConfig, source: str) -> dict[str, Any]:
         "revision": _git_revision(),
         "python_version": sys.version.split()[0],
         "torch_version": torch.__version__,
+        "torch_threads": torch.get_num_threads(),
+        "opencv_threads": cv2.getNumThreads(),
         "platform": platform.platform(),
         "devices": {d.name: d.counter for d in cfg.devices},
         "image_shape": [3, IMAGE_HEIGHT, IMAGE_WIDTH],

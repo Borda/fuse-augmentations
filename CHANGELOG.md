@@ -32,6 +32,10 @@ Versions below `0.12.0` are `dev0` snapshots, each cut from its own `bump vX` co
 
 ### Changed
 
+- Albumentations affine/projective tensor paths reuse native NumPy matrix preparation and retain the existing float32 rounding and random-draw order. Older perspective-pipeline pickles rebuild the new preparation cache when restored. The CPU preparation benchmark reports matrix cost separately from the complete image-and-box endpoint.
+
+- `antialias=True` now requires Kornia during public pipeline/segment-plan construction and filters aggressive crop-resize downscales per sample. Batch neighbors no longer determine another sample's Gaussian support. Scale estimation runs once per warp; separate filtering calls can cost more, and accelerator performance remains unmeasured. Default `False` is unchanged.
+
 - **Bounding-box numerical migration:** xyxy/xywh use pixel-edge extents `[0, W] x [0, H]`. Their helpers convert pixel-centre image matrices internally; full-frame boxes now survive flips without a one-pixel shift. Keypoint and rotated-box centre conventions are unchanged; convert rbox envelopes by `+0.5` when comparing against edge-space AABBs.
 
 - NumPy auxiliary masks retain label values and dtype during layout conversion. Integer masks now reject bilinear sampling consistently with tensor masks; image normalization is unchanged.

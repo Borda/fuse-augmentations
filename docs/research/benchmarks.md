@@ -5,11 +5,78 @@ description: "Historical benchmark results for fuse-augmentations, with CPU late
 
 # Benchmarks
 
-Fusion is most useful when a pipeline contains several compatible geometric transforms. It is not a universal speedup: a single transform, color-heavy workload, or particular backend and batch size can be neutral or slower. This page reports the complete benchmark suite collected on **July 12, 2026**.
+Fusion is most useful when a pipeline contains several compatible geometric transforms. It is not a universal speedup: a single transform, color-heavy workload, or particular backend and batch size can be neutral or slower. The historical suite below was collected on **July 12, 2026**; the separately labeled CPU preparation comparison was collected on **September 6, 2026**.
 
-The figures are historical measurements for the environments below, not performance promises for every workload or the current revision. The memory table is retained as an audit trail but is withdrawn as evidence because its original timeline accounting interpreted profiler events incorrectly. The current memory tool is action-aware, and the current RF-DETR probe has reproducible variants at a common model-ready endpoint, but it does not replay shared geometry; collect a fresh sweep before replacing the historical ratios. See [Methodology](methodology.md) for the publication gate.
+The figures are historical measurements for the environments below, not performance promises for every workload or the current revision. The memory table is retained as an audit trail but is withdrawn as evidence because its original timeline accounting interpreted profiler events incorrectly. The current memory tool is action-aware, and the current RF-DETR probe has reproducible variants at a common model-ready endpoint, but it does not replay shared geometry. Fresh, separately scoped CPU sweeps appear below; historical device ratios remain unvalidated for this revision. See [Methodology](methodology.md) for the publication gate.
 
-??? abstract "Test environment"
+## CPU preparation comparison — September 6, 2026
+
+The CV remediation compares committed baseline `1b454ed` with the Wave 3 implementation. On this host, reusing native Albumentations matrix preparation reduced repeated adapter conversions while retaining the tensor path's float32 rounding and random-draw order.
+
+| Batch | Preparation before / after (ms) | Preparation ratio | Image + boxes before / after (ms) | Endpoint ratio |
+| ----- | ------------------------------- | ----------------- | --------------------------------- | -------------- |
+| 1     | 0.0513 / 0.0323                 | 1.59x             | 0.675 / 0.592                     | 1.14x          |
+| 8     | 0.462 / 0.194                   | 2.38x             | 4.175 / 3.782                     | 1.10x          |
+| 32    | 1.890 / 0.792                   | 2.39x             | 16.381 / 14.663                   | 1.12x          |
+
+Each cell is the median of three run medians. All three batch-32 preparation runs improved. Raw per-run medians, p95 values, profiles and source identity are in the [before](../assets/benchmarks/cv-wave3-preparation-before.json) and [after](../assets/benchmarks/cv-wave3-preparation-after.json) records.
+
+Configuration: CPU, one Torch thread, RGB `224 x 224`, float32 BCHW images, one dense pixel-edge box per image, `execution="torch"`; `Rotate(limit=15, p=0.7)`, `Affine(scale=(0.9, 1.1), p=0.8)`, `HorizontalFlip(p=0.5)`. Each independent pipeline seeds NumPy, Torch and each Albumentations transform with `17`; five warmups precede 30 timed calls per run. Host: macOS 26.6.2 arm64, Torch 2.10.0, Albumentations 2.0.8, NumPy 2.2.6.
+
+The complete endpoint includes augmentation and box routing. It excludes decode, host/device transfers, model execution and training. These ratios are local measurements for this chain; antialiasing is disabled. No accelerator or model-quality improvement is inferred.
+
+```bash
+NO_ALBUMENTATIONS_UPDATE=1 python experiments/bench_albu_preparation.py \
+  experiments/results/preparation.json --revision YOUR_SOURCE_REVISION
+```
+
+Use the same environment, script and otherwise idle host for both source trees; `PYTHONPATH` can select an exported baseline. The private preparation probe attributes internal cost and may need updating when that implementation changes.
+
+## Corrected detector-shaped CPU endpoint — September 6, 2026
+
+`experiments/bench_rfdetr_shape.py` ran its complete 16-row sweep: two chains, 640/1024-pixel canvases, four variants, 20 warmups and 200 timed calls. Each endpoint holds a CPU float32 BCHW image in `[0, 1]`, clipped/filtered float32 boxes and aligned int64 labels. The timed NumPy-input rows include conversion to that model-ready endpoint. A detector forward/backward pass is not timed.
+
+| Variant                  | Two ops, 640 (ms) | Two ops, 1024 (ms) | Four ops, 640 (ms) | Four ops, 1024 (ms) |
+| ------------------------ | ----------------- | ------------------ | ------------------ | ------------------- |
+| Native Albumentations    | 0.751             | 1.300              | 1.999              | 2.588               |
+| Fused cv2, NumPy input   | 0.659             | 1.005              | 0.712              | 0.991               |
+| Fused Torch, NumPy input | 5.368             | 12.727             | 5.412              | 12.887              |
+| Fused cv2, tensor input  | 0.836             | 1.546              | 0.778              | 1.311               |
+
+The cv2 NumPy-input ratio is about 1.14x/1.29x for two ops, and 2.81x/2.61x for four ops at 640/1024. This sweep used 12 Torch and 16 OpenCV threads. Independent sweeps on this shared host varied; these are single-sweep observations, not guaranteed gains. The tensor-input row starts after image conversion and has a different input boundary. Variants are independently reproducible; they do not replay shared sampled geometry, so these timings cannot establish image fidelity or model quality. [Raw p95, endpoint, seed and source records](../assets/benchmarks/cv-wave3-rfdetr.json).
+
+Before augmentation, a 640/1024 RGB uint8 image occupies 1,228,800/3,145,728 bytes; the corresponding float32 model image occupies 4,915,200/12,582,912 bytes. Twelve float32 boxes and int64 labels add 192 and 96 bytes before filtering. These are tensor/array payload sizes, not measured allocations or host/device transfer counts. Accelerator transfers require a device trace; none was collected here.
+
+## Antialias CPU cost — September 6, 2026
+
+Per-sample filtering fixes neighbor-dependent blur and has an explicit cost. A fixed full-canvas Kornia crop from RGB224 to 56 pixels measured:
+
+| Batch | Flag off (ms) | Flag on (ms) |
+| ----- | ------------- | ------------ |
+| 1     | 0.288         | 0.739        |
+| 8     | 0.515         | 4.247        |
+| 32    | 1.394         | 14.992       |
+
+One Torch thread, five warmups, 30 calls, three repeats; each table cell is the median of run medians. A separate heterogeneous batch-32 probe measured 0.018 ms for scale estimation and 6.355 ms for the full prefilter. Its CPU profile counted 50 scalar extractions; this identifies potential synchronization sites but does not measure accelerator synchronization latency. The simple implementation filters active rows separately so each Gaussian support matches standalone execution. Exact-support grouping is a possible future optimization if this opt-in cost blocks a measured workload.
+
+Run `experiments/bench_antialias.py` with Kornia installed. [Raw timings and CPU profile counts](../assets/benchmarks/cv-wave3-antialias.json). These measurements demonstrate cost; they do not establish model accuracy or accelerator performance.
+
+## Corrected CPU tensor-memory sweep — September 6, 2026
+
+The action-aware tool completed all 72 native/fused rows: six sequences, three backends, batches 1 and 8, RGB256, three warmups, 12 Torch and 16 OpenCV threads. All rows returned counters. Representative three-geometric-operation rows:
+
+| Backend / batch | Native / fused live peak (MiB) | Native / fused CREATE count |
+| --------------- | ------------------------------ | --------------------------- |
+| kornia / 1      | 2.751 / 1.500                  | 271 / 28                    |
+| kornia / 8      | 21.002 / 16.002                | 429 / 260                   |
+| torchvision / 1 | 4.250 / 2.250                  | 35 / 23                     |
+| torchvision / 8 | 30.500 / 16.002                | 35 / 231                    |
+
+[All live/incremental peaks, preexisting bytes, CREATE counts, tracemalloc and RSS deltas](../assets/benchmarks/cv-wave3-memory.json). These are Torch tensor-timeline metrics, not total process memory. NumPy/OpenCV allocations are outside that timeline; near-zero Albumentations tensor peaks do not mean zero memory use. RSS deltas and tracemalloc describe different scopes and are not substitutes for transient total-process peaks. The profiler warned about an allocation made before profiling whose size was unknown, so baseline accounting is limited to visible events.
+
+Run `NO_ALBUMENTATIONS_UPDATE=1 python experiments/bench_memory.py --devices cpu --batch-sizes 1 8 --warmup 3 --json`. Old memory ratios below remain withdrawn. No CUDA/MPS memory result was collected.
+
+??? abstract "Historical test environment"
 
     | Component             | Value                                                            |
     | --------------------- | ---------------------------------------------------------------- |
@@ -103,7 +170,7 @@ For the first five rows, a ratio near 1 is parity and a ratio above 1 means the 
 
 ## Historical CPU tensor-memory output (withdrawn)
 
-`experiments/bench_memory.py --json` used its normal six-sequence CPU and MPS sweep, batches 1 and 8, and three warmups. The values below are the historical output retained for traceability; they must not be interpreted as current peak-memory or allocation evidence. The current tool now interprets profiler actions explicitly, separating live peak, incremental peak above preexisting memory, baseline bytes, and physical `CREATE` events; unavailable counters are recorded as null with an error. No fresh sweep has replaced the historical tables.
+`experiments/bench_memory.py --json` used its normal six-sequence CPU and MPS sweep, batches 1 and 8, and three warmups. The values below are the historical output retained for traceability; they must not be interpreted as current peak-memory or allocation evidence. The current tool now interprets profiler actions explicitly, separating live peak, incremental peak above preexisting memory, baseline bytes, and physical `CREATE` events; unavailable counters are recorded as null with an error. The corrected September 6 CPU sweep above supplies new tensor-counter evidence; it does not rehabilitate these historical ratios.
 
 | Backend / batch | Fused / native peak | Fused / native allocations | Lower peak samples | Lower allocation samples |
 | --------------- | ------------------: | -------------------------: | -----------------: | -----------------------: |
@@ -193,11 +260,9 @@ Geometry and colour fuse correctly. One passthrough is enough to erase the warp'
 
 `HueSaturationValue` is registered `POINTWISE`: reorderable, but non-linear in RGB, so it composes into neither a `FusedColorSegment` colour matrix nor a per-channel LUT. It has no fused segment because it cannot have one in the current design. That is a documented limitation, not a gap.
 
-`RandomResizedCrop` is different, and the first version of this section got it wrong. It **is** registered (`CROP_RESIZE_FIXED`) and it **does** fuse — but only when the call carries an auxiliary target. The `route_crop_aux` path sends a crop through a `CropResizeSegment` when a mask, box or keypoint target is present, because routing those through the crop is the reason the segment exists; an image-only call falls back to the passthrough. This benchmark is image-only, so it measures the fallback. The same chain with `data_keys=["input", "mask"]` plans to `AlbuFusedAffineSegment` + `CropResizeSegment` with no passthrough at all.
+The historical `RandomResizedCrop` row used an image-only passthrough. Current `execution="torch"` routes that registered crop through `CropResizeSegment` even for image-only calls; auxiliary targets also select the routed crop. The historical CUDA loss therefore does not measure the current route. `execution="cv2"` and `"auto"` retain the native image-only crop policy.
 
-The backend asymmetry is real but narrower than "unregistered": Kornia and TorchVision fuse crop **into the preceding affine** as a single `_FusedGeoCropSegment` whether or not auxiliary targets are present, while Albumentations produces two segments at best and a passthrough when the call is image-only. That is why `e01` shows Kornia fused winning 2.79x and Albumentations fused losing 2.95x on the same benchmark row.
-
-Whether the image-only fallback should extend to the device path is an open question rather than a settled defect. The gating was chosen on CPU, where the passthrough is a copy; on CUDA the same fallback is a round trip, which is what the `e01` row costs.
+Kornia and TorchVision can combine a compatible crop with preceding geometry into one `_FusedGeoCropSegment`. Albumentations can retain separate fused-affine and crop segments. Inspect the current plan and profile the complete chain: a remaining CPU-only operation such as `HueSaturationValue` still causes transfers on accelerator input, even with `execution="torch"`. The [transfer-aware recipe](../guides/reproducibility.md) makes that boundary explicit; no current-device speedup is inferred from the old table.
 
 ## Reproduce this run
 

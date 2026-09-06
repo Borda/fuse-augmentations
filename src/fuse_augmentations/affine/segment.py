@@ -700,8 +700,8 @@ def _mipmap_sigma(scale: float) -> float:
     return 0.5 * math.sqrt((1.0 / scale) ** 2 - 1.0)
 
 
-def _antialias_axis_scales(mtx: Tensor) -> tuple[float, float]:
-    """Return the ``(width-axis, height-axis)`` output/input scales for the prefilter.
+def _antialias_axis_scales(mtx: Tensor) -> tuple[Tensor, Tensor]:
+    """Return one ``(width-axis, height-axis)`` scale pair for every image.
 
     Unlike :func:`~fuse_augmentations.affine.matrix.estimate_scale` (whose two
     singular values are sorted by *magnitude*, not by image axis), this maps each
@@ -716,16 +716,15 @@ def _antialias_axis_scales(mtx: Tensor) -> tuple[float, float]:
       matrix axes, so the smallest singular value (worst-axis scale) is applied
       isotropically — a conservative band-limit that never under-blurs.
 
-    Batched matrices reduce to the smallest scale per axis (``.min()`` over the
-    batch), matching :func:`estimate_scale`, so any downscaling sample is
-    antialiased. All device→host traffic is collapsed into a single ``.tolist()``
-    transfer to avoid repeated per-warp stream syncs.
+    The returned tensors retain one scale pair per batch row. The prefilter then
+    processes only the rows that need filtering, so a neighbouring image cannot
+    widen this image's Gaussian support or blur an otherwise safe sample.
 
     Args:
         mtx: ``(batch_size, 3, 3)`` forward pixel matrix of the downscaling warp.
 
     Returns:
-        A ``(scale_x, scale_y)`` tuple: the width-axis and height-axis scales.
+        A ``(scale_x, scale_y)`` tuple of ``(batch_size,)`` tensors.
 
     Examples:
         ```pycon
@@ -734,48 +733,34 @@ def _antialias_axis_scales(mtx: Tensor) -> tuple[float, float]:
         >>> mtx = torch.eye(3).unsqueeze(0)
         >>> mtx[:, 0, 0], mtx[:, 1, 1] = 0.9, 0.2  # shrink height much harder than width
         >>> sx, sy = _antialias_axis_scales(mtx)
-        >>> round(sx, 3), round(sy, 3)
+        >>> round(float(sx[0]), 3), round(float(sy[0]), 3)
         (0.9, 0.2)
 
         ```
 
     """
     linear = mtx[:, :2, :2].to(dtype=torch.float32)
-    off_diagonal = torch.maximum(linear[:, 0, 1].abs(), linear[:, 1, 0].abs()).max()
-    diag_x = linear[:, 0, 0].abs().min()
-    diag_y = linear[:, 1, 1].abs().min()
-    min_sv = torch.linalg.svdvals(linear)[:, 1].min()  # worst-axis scale (smallest singular value)
-    off_val, scale_x, scale_y, sv = torch.stack([off_diagonal, diag_x, diag_y, min_sv]).tolist()
-    if off_val <= _AXIS_ALIGNED_EPS:
-        return float(scale_x), float(scale_y)
-    return float(sv), float(sv)
-
-
-def _needs_antialias_prefilter(mtx: Tensor) -> bool:
-    """Return whether ``mtx`` downscales far enough to require prefiltering.
-
-    Args:
-        mtx: ``(batch_size, 3, 3)`` forward pixel matrix of the pending warp.
-
-    Returns:
-        ``True`` when at least one axis scales below the aggressive-downscale threshold.
-
-    """
-    return min(_antialias_axis_scales(mtx)) < _ANTIALIAS_SCALE_THRESHOLD
+    off_diagonal = torch.maximum(linear[:, 0, 1].abs(), linear[:, 1, 0].abs())
+    axis_aligned = off_diagonal <= _AXIS_ALIGNED_EPS
+    singular_min = torch.linalg.svdvals(linear)[:, 1]
+    scale_x = torch.where(axis_aligned, linear[:, 0, 0].abs(), singular_min)
+    scale_y = torch.where(axis_aligned, linear[:, 1, 1].abs(), singular_min)
+    return scale_x, scale_y
 
 
 def _maybe_antialias_prefilter(image: Tensor, mtx: Tensor, enabled: bool) -> Tensor:
     """Gaussian-prefilter ``image`` before a downscaling warp when antialiasing is on.
 
-    Estimates the per-axis scale of the forward matrix ``mtx`` (via
-    :func:`_antialias_axis_scales`, which maps each scale to its image axis); when
-    antialiasing is enabled and the worst axis downscales below
+    Computes each sample's per-axis scale once from the forward matrix ``mtx``.
+    Every aggressive sample is then filtered independently, so a smaller or more
+    anisotropic neighbour cannot determine its Gaussian support. When antialiasing
+    is enabled and the worst axis downscales below
     :data:`_ANTIALIAS_SCALE_THRESHOLD`, band-limits the input with a per-axis
     Gaussian (mipmap sigma rule) so the single ``grid_sample`` no longer aliases.
-    The blur runs in the image dtype via the installed kornia backend; if kornia
-    is unavailable the input is returned unchanged (documented fallback, no custom
-    kernel). Returns ``image`` untouched when disabled or the scale is safe, so the
-    default path stays bit-identical.
+    The blur runs in the image dtype via the installed kornia backend. Construction
+    rejects ``antialias=True`` without that optional dependency. Returns ``image``
+    untouched when disabled or every scale is safe, so the default path stays
+    bit-identical.
 
     Args:
         image: ``(batch_size, channels, height, width)`` float input tensor.
@@ -788,13 +773,19 @@ def _maybe_antialias_prefilter(image: Tensor, mtx: Tensor, enabled: bool) -> Ten
     """
     if not enabled:
         return image
-    scale_x, scale_y = _antialias_axis_scales(mtx)  # (width-axis, height-axis) scales
-    if min(scale_x, scale_y) >= _ANTIALIAS_SCALE_THRESHOLD:
+    scale_x, scale_y = _antialias_axis_scales(mtx)
+    active = torch.minimum(scale_x, scale_y) < _ANTIALIAS_SCALE_THRESHOLD
+    if not bool(active.any().item()):
         return image
-    sigma_x = _mipmap_sigma(scale_x)
-    sigma_y = _mipmap_sigma(scale_y)
-    blurred = _kornia_gaussian_blur(image, sigma_x, sigma_y)
-    return image if blurred is None else blurred
+    sigma_x = 0.5 * torch.sqrt((scale_x.reciprocal().square() - 1.0).clamp_min(0.0))
+    sigma_y = 0.5 * torch.sqrt((scale_y.reciprocal().square() - 1.0).clamp_min(0.0))
+    result = image.clone()
+    for index in active.nonzero(as_tuple=True)[0].tolist():
+        blurred = _kornia_gaussian_blur(image[index : index + 1], sigma_x[index], sigma_y[index])
+        if blurred is None:
+            raise RuntimeError("antialias=True requires the optional kornia dependency")
+        result[index : index + 1] = blurred
+    return result
 
 
 def _kornia_gaussian_blur(image: Tensor, sigma_x: float | Tensor, sigma_y: float | Tensor) -> Tensor | None:
@@ -826,10 +817,10 @@ def _kornia_gaussian_blur(image: Tensor, sigma_x: float | Tensor, sigma_y: float
         raise ValueError(msg)
     if bool(((sig_x <= 0.0) & (sig_y <= 0.0)).all()):
         return image
-    try:
-        from kornia.filters import gaussian_blur2d
-    except ImportError:
+    if not _KORNIA_AVAILABLE:
         return None
+    from kornia.filters import gaussian_blur2d
+
     ksize_x = 2 * math.ceil(3.0 * float(sig_x.max().item())) + 1
     ksize_y = 2 * math.ceil(3.0 * float(sig_y.max().item())) + 1
     # kornia expects positive sigmas on both axes; clamp the near-zero axis to a
@@ -2015,10 +2006,10 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         self._last_matrix = acc_full.to(dtype=_matrix_public_dtype(dtype)).detach().clone()
         _set_current_call_matrix(self._last_matrix)
 
-        # Keep the prefilter out of default and mild-downscale calls entirely; the
-        # composed matrix still handles rotations and shears in the opt-in case.
+        # The prefilter computes per-sample scales once and only touches aggressive
+        # rows; the default path remains the original one-warp execution.
         antialias_mtx = acc_full.to(dtype=dtype)
-        if self._antialias and _needs_antialias_prefilter(antialias_mtx):
+        if self._antialias:
             image = _maybe_antialias_prefilter(image, antialias_mtx, enabled=True)
 
         mtx_inv = inv3x3(acc_full)
@@ -2630,6 +2621,73 @@ class AlbuFusedAffineSegment(nn.Module):
                 tags.append(AlbuFusedAffineSegment._TAG_ADAPTER)
         return tags
 
+    @staticmethod
+    def _sample_matrix_numpy(
+        adapter: TransformAdapter,
+        transform: object,
+        tag: int,
+        channels: int,
+        height: int,
+        width: int,
+        *,
+        tensor_roundtrip: bool,
+    ) -> MatrixArray:
+        """Sample one Albumentations matrix through the native preparation path.
+
+        ``forward_numpy`` keeps raw float64 matrices. Tensor callers retain the
+        historical adapter conversion through float32 before float64 composition,
+        so this optimization removes wrapper work without changing their sampled
+        geometry or established warp numerics.
+
+        Args:
+            adapter: Backend bridge used only for transforms without a native
+                Albumentations preparation path.
+            transform: Active Albumentations transform.
+            tag: Pre-classified native preparation tag.
+            channels: Input channel count for the fallback adapter route.
+            height: Input canvas height.
+            width: Input canvas width.
+            tensor_roundtrip: Whether to reproduce the tensor adapter's float32
+                matrix conversion before returning the float64 accumulator value.
+
+        Returns:
+            One ``(3, 3)`` float64 forward matrix.
+
+        """
+        from fuse_augmentations.adapters.albumentations import (
+            _sample_matrices,
+            hflip_matrix_np,
+            vflip_matrix_np,
+        )
+
+        if tag == AlbuFusedAffineSegment._TAG_FAST_ROTATE:
+            angle = transform.py_random.uniform(*transform.limit)  # type: ignore[attr-defined]
+            radians = math.radians(angle)
+            cos_angle, sin_angle = math.cos(radians), math.sin(radians)
+            center_x = width / 2.0 - 0.5
+            center_y = height / 2.0 - 0.5
+            matrix = np.array(
+                [
+                    [cos_angle, sin_angle, center_x * (1.0 - cos_angle) - center_y * sin_angle],
+                    [-sin_angle, cos_angle, center_y * (1.0 - cos_angle) + center_x * sin_angle],
+                    [0.0, 0.0, 1.0],
+                ],
+                dtype=np.float64,
+            )
+        elif tag == AlbuFusedAffineSegment._TAG_INTERP:
+            matrix = _sample_matrices(transform, 1, height, width)[0]
+        elif tag == AlbuFusedAffineSegment._TAG_HFLIP:
+            matrix = hflip_matrix_np(width=width)
+        elif tag == AlbuFusedAffineSegment._TAG_VFLIP:
+            matrix = vflip_matrix_np(height=height)
+        else:
+            params = adapter.sample_params(transform, (1, channels, height, width), torch.device("cpu"))
+            matrix = adapter.build_matrix(transform, params, height, width)[0].double().cpu().numpy()
+
+        if tensor_roundtrip:
+            return np.asarray(matrix, dtype=np.float32).astype(np.float64)
+        return np.asarray(matrix, dtype=np.float64)
+
     @property
     def last_matrix(self) -> Tensor | None:
         """Return the ``(B, 3, 3)`` composed forward matrix from the last forward pass.
@@ -2814,9 +2872,15 @@ class AlbuFusedAffineSegment(nn.Module):
         shared_mtx: dict[int, MatrixArray] = {}
         for t_idx, tfm in enumerate(self.transforms):
             if bool(getattr(tfm, "same_on_batch", False)) and bool(np.any(active_masks[t_idx])):
-                params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
-                mtx_shared = self.adapter.build_matrix(tfm, params, height, width)
-                shared_mtx[t_idx] = mtx_shared[0].double().cpu().numpy()
+                shared_mtx[t_idx] = self._sample_matrix_numpy(
+                    self.adapter,
+                    tfm,
+                    self._tfm_tags[t_idx],
+                    num_channels,
+                    height,
+                    width,
+                    tensor_roundtrip=True,
+                )
 
         accs: list[MatrixArray] = []
         any_active: list[bool] = []
@@ -2833,10 +2897,17 @@ class AlbuFusedAffineSegment(nn.Module):
                     active = True
                     acc = shared_mtx[t_idx] @ acc
                     continue
-                params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
-                mtx_i = self.adapter.build_matrix(tfm, params, height, width)
+                mtx_i = self._sample_matrix_numpy(
+                    self.adapter,
+                    tfm,
+                    self._tfm_tags[t_idx],
+                    num_channels,
+                    height,
+                    width,
+                    tensor_roundtrip=True,
+                )
                 active = True
-                acc = mtx_i[0].double().cpu().numpy() @ acc
+                acc = mtx_i @ acc
             accs.append(acc)
             any_active.append(active)
         return accs, any_active
@@ -2990,69 +3061,24 @@ class AlbuFusedAffineSegment(nn.Module):
         acc: MatrixArray = np.eye(3, dtype=np.float64)
         any_active = False
 
-        # Resolve imports once (cached by Python import system, but avoids
-        # per-iteration dict lookups inside the hot loop).
-        from fuse_augmentations.adapters.albumentations import (
-            _sample_matrices as _sample_matrices_fn,
-        )
-        from fuse_augmentations.adapters.albumentations import (
-            hflip_matrix_np as _hflip_matrix_np_fn,
-        )
-        from fuse_augmentations.adapters.albumentations import (
-            vflip_matrix_np as _vflip_matrix_np_fn,
-        )
-
-        # Fast numpy-only matrix loop: bypass the adapter's torch round-trip
-        # by dispatching on pre-classified tags from __init__.
+        # The shared native preparer also serves tensor callers, whose explicit
+        # float32 roundtrip preserves their existing matrix numerics.
         _tags = self._tfm_tags
         for idx_tfm, tfm in enumerate(self.transforms):
             if not active_masks[idx_tfm]:
                 # Skip expensive sample_params + build_matrix for inactive transforms.
                 continue
-            tag = _tags[idx_tfm]
-            if tag == self._TAG_FAST_ROTATE:
-                # Ultra-fast path for A.Rotate (crop_border=False):
-                # Call tfm.py_random.uniform directly (same Python Random instance as
-                # albumentations) then build the rotation matrix in pure Python/numpy.
-                # Identical output to albumentations; saves ~19µs vs get_params_dependent_on_data.
-                angle = tfm.py_random.uniform(*tfm.limit)  # type: ignore[attr-defined]
-                _rad = math.radians(angle)
-                # NOTE: rows below are the TRANSPOSE of matrix.rotation_matrix —
-                # deliberate, mirroring Albumentations' clockwise-positive angle
-                # convention. Pinned by the A.Rotate parity tests in
-                # tests/test_integration/adapters/test_albument.py; keep in sync
-                # with the adapter convention if either changes.
-                _cos, _sin = math.cos(_rad), math.sin(_rad)
-                _center_x = width / 2.0 - 0.5
-                _center_y = height / 2.0 - 0.5
-                mtx_np = np.array(
-                    [
-                        [_cos, _sin, _center_x * (1.0 - _cos) - _center_y * _sin],
-                        [-_sin, _cos, _center_y * (1.0 - _cos) + _center_x * _sin],
-                        [0.0, 0.0, 1.0],
-                    ],
-                    dtype=np.float64,
-                )
-                any_active = True
-                acc = mtx_np @ acc
-            elif tag == self._TAG_INTERP:
-                # Direct numpy: call _sample_matrices (returns (1,3,3) float64 ndarray)
-                # without the numpy -> torch.tensor -> .numpy() adapter round-trip.
-                mtx_np = _sample_matrices_fn(tfm, 1, height, width)
-                any_active = True
-                acc = mtx_np[0] @ acc
-            elif tag == self._TAG_HFLIP:
-                any_active = True
-                acc = _hflip_matrix_np_fn(width=width) @ acc
-            elif tag == self._TAG_VFLIP:
-                any_active = True
-                acc = _vflip_matrix_np_fn(height=height) @ acc
-            else:
-                # Fallback: full adapter round-trip for unrecognised types.
-                params = self.adapter.sample_params(tfm, (1, n_ch, height, width), torch.device("cpu"))
-                mtx_i = self.adapter.build_matrix(tfm, params, height, width)
-                any_active = True
-                acc = mtx_i[0].double().cpu().numpy() @ acc
+            matrix = self._sample_matrix_numpy(
+                self.adapter,
+                tfm,
+                _tags[idx_tfm],
+                n_ch,
+                height,
+                width,
+                tensor_roundtrip=False,
+            )
+            any_active = True
+            acc = matrix @ acc
 
         np.copyto(self._last_matrix_np_buffer, acc, casting="unsafe")
         self._last_matrix_buffer[0].copy_(self._last_matrix_np_tensor)
@@ -3308,6 +3334,7 @@ class AlbuProjectiveSegment(nn.Module):
         self._interp_flag: int = _CV2_INTERP.get(self.interpolation, 1)
         self._border_flag: int = _CV2_BORDER.get(self.padding_mode, 0)
         self.fill = fill
+        self._tfm_tags = AlbuFusedAffineSegment._classify_transforms(transforms, adapter)
 
     @property
     def last_matrix(self) -> Tensor | None:
@@ -3433,9 +3460,15 @@ class AlbuProjectiveSegment(nn.Module):
         shared_mtx: dict[int, MatrixArray] = {}
         for t_idx, tfm in enumerate(self.transforms):
             if bool(getattr(tfm, "same_on_batch", False)) and bool(np.any(active_masks[t_idx])):
-                params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
-                mtx_shared = self.adapter.build_matrix(tfm, params, height, width)
-                shared_mtx[t_idx] = mtx_shared[0].double().cpu().numpy()
+                shared_mtx[t_idx] = AlbuFusedAffineSegment._sample_matrix_numpy(
+                    self.adapter,
+                    tfm,
+                    self._tfm_tags[t_idx],
+                    num_channels,
+                    height,
+                    width,
+                    tensor_roundtrip=True,
+                )
 
         accs: list[MatrixArray] = []
         any_active: list[bool] = []
@@ -3452,10 +3485,17 @@ class AlbuProjectiveSegment(nn.Module):
                     active = True
                     acc = shared_mtx[t_idx] @ acc
                     continue
-                params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
-                mtx_i = self.adapter.build_matrix(tfm, params, height, width)
+                mtx_i = AlbuFusedAffineSegment._sample_matrix_numpy(
+                    self.adapter,
+                    tfm,
+                    self._tfm_tags[t_idx],
+                    num_channels,
+                    height,
+                    width,
+                    tensor_roundtrip=True,
+                )
                 active = True
-                acc = mtx_i[0].double().cpu().numpy() @ acc
+                acc = mtx_i @ acc
             accs.append(acc)
             any_active.append(active)
         return accs, any_active
@@ -4592,9 +4632,8 @@ class CropResizeSegment(nn.Module):
             self._last_matrix = mtx.to(dtype=_matrix_public_dtype(dtype)).detach().clone()
             _set_current_call_matrix(self._last_matrix)
 
-        # Default and mild-downscale calls skip the prefilter function entirely,
-        # preserving the original single-warp path bit-for-bit.
-        if self._antialias and _needs_antialias_prefilter(mtx):
+        # The helper leaves safe rows untouched and computes their scales only once.
+        if self._antialias:
             image = _maybe_antialias_prefilter(image, mtx, enabled=True)
 
         mtx_inv = inv3x3(mtx)
@@ -4921,6 +4960,7 @@ def build_segments(
         antialias: When ``True``, crop-resize segments prefilter the input before an
             aggressive downscale so the single warp does not alias. Off by default and
             a no-op unless the scale drops past the threshold — the output is unchanged.
+            Requires the optional kornia dependency at construction.
         clip_policy: Clamp policy forwarded to each :class:`FusedColorSegment`.
             ``"final"`` (default) fuses the color chain into one matmul and clamps once;
             ``"per_op_parity"`` clamps at each op that could leave ``[0, 1]``.
@@ -4950,6 +4990,9 @@ def build_segments(
         unsupported ``POINTWISE_LINEAR`` transforms).
 
     """
+    if antialias and not _KORNIA_AVAILABLE:
+        raise ImportError("antialias=True requires the optional kornia dependency")
+
     fusible = {TransformCategory.GEOMETRIC_INTERP, TransformCategory.GEOMETRIC_EXACT}
     projective_cat = TransformCategory.PROJECTIVE
     pointwise_linear_cat = TransformCategory.POINTWISE_LINEAR

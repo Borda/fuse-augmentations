@@ -7,7 +7,7 @@ produced before the others existed raised ``AttributeError`` on the first forwar
 ``_build_derived_state`` builder as construction, so an older pickle (simulated here by stripping the derived attributes
 from the restored state) is fully reconstructed.
 
-Requires kornia.
+Kornia and Albumentations cases require their respective optional backends.
 
 """
 
@@ -19,12 +19,13 @@ import pytest
 import torch
 
 from fuse_augmentations import Compose, FusedCompose
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
+from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fuse_augmentations.affine.segment import AlbuProjectiveSegment
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
-
-pytestmark = pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia required")
+if _ALBUMENTATIONS_AVAILABLE:
+    import albumentations as albu
 
 # Derived attributes rebuilt by ``_build_derived_state`` — absent from a pre-attr pickle.
 _DERIVED_ATTRS = (
@@ -55,6 +56,7 @@ def _legacy_restore(pipe: FusedCompose, drop: tuple[str, ...]) -> FusedCompose:
     return restored
 
 
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia required")
 def test_pickle_roundtrip_forward_matches():
     """A standard pickle round-trip preserves the deterministic forward output."""
     pipe = Compose([kornia_aug.RandomHorizontalFlip(p=1.0)])
@@ -63,6 +65,7 @@ def test_pickle_roundtrip_forward_matches():
     torch.testing.assert_close(reloaded(image), pipe(image))
 
 
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia required")
 def test_legacy_pickle_missing_derived_attrs_rebuilds_and_runs():
     """A pickle lacking every derived attribute is fully rebuilt and forwards without AttributeError."""
     pipe = Compose([kornia_aug.RandomHorizontalFlip(p=1.0)])
@@ -72,6 +75,7 @@ def test_legacy_pickle_missing_derived_attrs_rebuilds_and_runs():
     torch.testing.assert_close(restored(image), pipe(image))
 
 
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia required")
 def test_legacy_projective_mask_fill_defaults_to_zero():
     """A pre-mask-fill projective pickle retains its zero-padded mask behavior."""
     pipe = Compose([kornia_aug.RandomPerspective(distortion_scale=0.2, p=1.0)], data_keys=["input", "mask"])
@@ -88,6 +92,26 @@ def test_legacy_projective_mask_fill_defaults_to_zero():
     assert restored._segments[0].mask_fill == 0
 
 
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="albumentations required")
+def test_legacy_albu_projective_pickle_rebuilds_preparation_tags():
+    """A projective segment saved before `_tfm_tags` forwards after restoration."""
+    transform = albu.Perspective(scale=(0.1, 0.1), keep_size=True, p=1.0)
+    transform.set_random_seed(17)
+    pipe = Compose([transform], execution="torch")
+    image = _image()[:1]
+    expected, expected_matrix = pipe(image, return_matrix=True)
+    transform.set_random_seed(17)
+    projective = pipe._segments[0]
+    assert isinstance(projective, AlbuProjectiveSegment)
+    del projective._tfm_tags
+
+    restored = pickle.loads(pickle.dumps(pipe))  # noqa: S301 -- trusted, self-produced bytes
+    output, matrix = restored(image, return_matrix=True)
+    torch.testing.assert_close(output, expected, rtol=0, atol=0)
+    torch.testing.assert_close(matrix, expected_matrix, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia required")
 def test_legacy_pickle_multi_target_rebuilt():
     """A multi-target pickle missing derived attrs rebuilds ``_multi_target``/``_aux_keys`` and routes the mask."""
     pipe = Compose([kornia_aug.RandomHorizontalFlip(p=1.0)], data_keys=["input", "mask"])
@@ -101,6 +125,7 @@ def test_legacy_pickle_multi_target_rebuilt():
     torch.testing.assert_close(out_mask, exp_mask)
 
 
+@pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia required")
 def test_legacy_pickle_output_converter_rebuilt_from_backend_flag():
     """A pickle whose ``_output_converter`` is dropped rebuilds it from the retained ``_output_backend`` flag."""
     pipe = Compose([kornia_aug.RandomHorizontalFlip(p=1.0)], output_backend="numpy")

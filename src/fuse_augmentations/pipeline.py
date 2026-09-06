@@ -334,8 +334,8 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             ``"cv2"`` (default) warps each sample with OpenCV -- bit-exact with the
             native cv2 backend and fastest on CPU at small batch sizes.
             ``"torch"`` composes the same per-sample matrices (identical sampling
-            and RNG) but applies one batched ``grid_sample`` for the whole batch,
-            giving batch-size-independent throughput and a native GPU/MPS warp; its
+            and RNG) but applies one batched ``grid_sample`` for the whole batch.
+            Throughput depends on the batch, device, and workload; its
             border/bilinear numerics differ slightly from cv2. Only affects
             Albumentations pipelines; the Kornia/TorchVision backends already run
             the torch engine.
@@ -352,9 +352,11 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             When ``True``, a crop-resize (or fused geo+crop) segment whose worst-axis
             scale drops below ``0.5`` prefilters the input with a Gaussian
             (mipmap-rule sigma) before the single warp, so the downscale no longer
-            aliases. A no-op when the scale is safe or the flag is off, keeping the
-            default output bit-identical; requires kornia for the blur (falls back to
-            the un-filtered warp when kornia is absent).
+            aliases. Each active image is filtered separately, preventing a batch
+            neighbour from changing its filter support. A no-op when the scale is
+            safe or the flag is off, keeping the default output bit-identical;
+            ``antialias=True`` requires the optional kornia dependency at
+            construction.
         substitute_passthrough: When ``True`` (default ``False``), non-fusible
             passthrough ops that have a registered torch-native equivalent in an
             already-installed backend are replaced with that equivalent, so the
@@ -450,6 +452,8 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         clip_policy = _validate_clip_policy(clip_policy)
         mask_interpolation = _validate_mask_interpolation(mask_interpolation)
         pipeline_dtype = _validate_pipeline_dtype(pipeline_dtype)
+        if antialias and not _KORNIA_AVAILABLE:
+            raise ImportError("antialias=True requires the optional kornia dependency")
 
         if reorder not in (ReorderPolicy.NONE, ReorderPolicy.POINTWISE, ReorderPolicy.AGGRESSIVE):
             msg = f"ReorderPolicy.{reorder.name} not yet supported"
@@ -920,6 +924,8 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 ),
             ) and not hasattr(segment, "mask_fill"):
                 segment.mask_fill = self.mask_fill
+            if isinstance(segment, AlbuProjectiveSegment) and not hasattr(segment, "_tfm_tags"):
+                segment._tfm_tags = AlbuFusedAffineSegment._classify_transforms(segment.transforms, segment.adapter)
         if not hasattr(self, "pipeline_dtype"):
             # Pickles predating optional low-precision execution retain default precision.
             self.pipeline_dtype = None

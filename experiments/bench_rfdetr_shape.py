@@ -47,6 +47,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import albumentations as albu
+import cv2
 import numpy as np
 import torch
 
@@ -326,6 +327,8 @@ def main() -> None:
                     "torch": torch.__version__,
                     "albumentations": albu.__version__,
                     "numpy": np.__version__,
+                    "torch_threads": torch.get_num_threads(),
+                    "opencv_threads": cv2.getNumThreads(),
                 },
                 "config": {
                     "num_instances": NUM_INSTANCES,
