@@ -18,8 +18,8 @@ Per-device memory counter (profiler memory support is uneven across backends, so
 each device uses the counter that is actually reliable there):
 
 - **cpu** — ``torch.profiler`` with ``profile_memory=True`` gives the authoritative
-  peak (reconstructed as the running-total maximum over the allocation/free
-  timeline) and the allocation count (number of positive timeline entries). Because
+  live peak (reconstructed from explicit allocation actions), the peak above memory
+  already live before profiling, and the number of physical ``CREATE`` events. Because
   the torch allocator does not see NumPy/cv2 buffers used by native Albumentations,
   a :mod:`tracemalloc` peak is reported alongside as a Python-heap cross-check, and
   the process ``ru_maxrss`` delta is recorded as a coarse resident-set sanity bound.
@@ -53,6 +53,7 @@ import copy
 import gc
 import platform
 import resource
+import subprocess
 import sys
 import tracemalloc
 from collections.abc import Callable
@@ -333,34 +334,67 @@ class MemSample:
     """One memory measurement: peak MB, allocation count, plus optional cross-checks."""
 
     peak_mb: float
-    alloc_count: int
+    alloc_count: int | None
+    incremental_peak_mb: float | None = None
+    preexisting_mb: float | None = None
     tracemalloc_peak_mb: float | None = None
     rss_delta_mb: float | None = None
     driver_mb: float | None = None
     approx_allocs: bool = False
+    alloc_count_error: str | None = None
 
 
-def _timeline_stats(prof: profile) -> tuple[float, int]:
-    """Reconstruct (peak bytes, alloc count) from the profiler memory timeline.
+@dataclass(frozen=True)
+class TimelineStats:
+    """Profiler timeline accounting separated into live, incremental, and baseline memory."""
 
-    The timeline is a stream of ``(ts, action, key, nbytes)`` records; ``nbytes`` is positive for allocations and
-    negative for frees. The running total's maximum is the peak, and the number of positive records is the allocation
-    count.
+    live_peak_bytes: int
+    incremental_peak_bytes: int
+    preexisting_bytes: int
+    allocation_count: int
+
+
+def _timeline_stats(prof: profile) -> TimelineStats:
+    """Reconstruct live memory from profiler actions instead of byte signs.
+
+    ``PREEXISTING`` records establish the baseline held before the measured call, ``CREATE`` records allocate physical
+    storage, ``DESTROY`` records release it, and ``INCREMENT_VERSION`` changes tensor provenance without allocating
+    storage. The profiler's byte sign is not a lifecycle signal, so each action uses its magnitude and supplies its own
+    direction.
 
     """
     try:
         timeline = prof._memory_profile().timeline
-    except Exception:
-        return 0.0, 0
-    running = 0
-    peak = 0
-    n_alloc = 0
-    for _ts, _action, _key, nbytes in timeline:
-        running += nbytes
-        if nbytes > 0:
-            n_alloc += 1
-        peak = max(peak, running)
-    return float(peak), n_alloc
+    except (AttributeError, RuntimeError, ValueError) as exc:
+        raise RuntimeError(f"Profiler memory timeline unavailable: {type(exc).__name__}: {exc}") from exc
+
+    live_bytes = 0
+    peak_live_bytes = 0
+    preexisting_bytes = 0
+    allocation_count = 0
+    for _timestamp, action, _key, raw_bytes in timeline:
+        nbytes = abs(raw_bytes)
+        action_name = action.name
+        if action_name == "PREEXISTING":
+            preexisting_bytes += nbytes
+            live_bytes += nbytes
+        elif action_name == "CREATE":
+            allocation_count += 1
+            live_bytes += nbytes
+        elif action_name == "DESTROY":
+            live_bytes -= nbytes
+        elif action_name != "INCREMENT_VERSION":
+            raise RuntimeError(f"Unsupported profiler memory action: {action_name!r}")
+        if live_bytes < 0:
+            raise RuntimeError(f"Profiler memory timeline released more bytes than it tracked after {action_name!r}")
+        peak_live_bytes = max(peak_live_bytes, live_bytes)
+
+    return TimelineStats(
+        live_peak_bytes=peak_live_bytes,
+        incremental_peak_bytes=max(peak_live_bytes - preexisting_bytes, 0),
+        preexisting_bytes=preexisting_bytes,
+        allocation_count=allocation_count,
+    )
 
 
 def _measure_cpu(thunk: Callable, warmup: int) -> MemSample:
@@ -375,11 +409,13 @@ def _measure_cpu(thunk: Callable, warmup: int) -> MemSample:
     _tm_cur, tm_peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     rss_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    peak_bytes, n_alloc = _timeline_stats(prof)
+    stats = _timeline_stats(prof)
     rss_delta = max(rss_after - rss_before, 0)  # macOS reports ru_maxrss in bytes
     return MemSample(
-        peak_mb=peak_bytes / _BYTES_PER_MB,
-        alloc_count=n_alloc,
+        peak_mb=stats.live_peak_bytes / _BYTES_PER_MB,
+        alloc_count=stats.allocation_count,
+        incremental_peak_mb=stats.incremental_peak_bytes / _BYTES_PER_MB,
+        preexisting_mb=stats.preexisting_bytes / _BYTES_PER_MB,
         tracemalloc_peak_mb=tm_peak / _BYTES_PER_MB,
         rss_delta_mb=rss_delta / _BYTES_PER_MB,
     )
@@ -407,12 +443,22 @@ def _measure_mps(thunk: Callable, warmup: int) -> MemSample:
     footprint = torch.mps.current_allocated_memory() - base
     driver = torch.mps.driver_allocated_memory()
     del out  # release only after the counter has been read
-    _peak_bytes, n_alloc = _timeline_stats(prof)
+    try:
+        stats = _timeline_stats(prof)
+        alloc_count = stats.allocation_count
+        alloc_count_error = None
+        preexisting_mb = stats.preexisting_bytes / _BYTES_PER_MB
+    except RuntimeError as exc:
+        alloc_count = None
+        alloc_count_error = str(exc)
+        preexisting_mb = None
     return MemSample(
         peak_mb=max(footprint, 0) / _BYTES_PER_MB,
-        alloc_count=n_alloc,
+        alloc_count=alloc_count,
+        preexisting_mb=preexisting_mb,
         driver_mb=driver / _BYTES_PER_MB,
         approx_allocs=True,
+        alloc_count_error=alloc_count_error,
     )
 
 
@@ -423,13 +469,29 @@ def _measure_cuda(thunk: Callable, device: torch.device, warmup: int) -> MemSamp
     torch.cuda.synchronize(device)
     torch.cuda.reset_peak_memory_stats(device)
     with profile(
-        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True, with_stack=True
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        profile_memory=True,
+        record_shapes=True,
+        with_stack=True,
     ) as prof:
         thunk()
         torch.cuda.synchronize(device)
     peak = torch.cuda.max_memory_allocated(device)
-    _peak_bytes, n_alloc = _timeline_stats(prof)
-    return MemSample(peak_mb=peak / _BYTES_PER_MB, alloc_count=n_alloc)
+    try:
+        stats = _timeline_stats(prof)
+        alloc_count = stats.allocation_count
+        alloc_count_error = None
+        preexisting_mb = stats.preexisting_bytes / _BYTES_PER_MB
+    except RuntimeError as exc:
+        alloc_count = None
+        alloc_count_error = str(exc)
+        preexisting_mb = None
+    return MemSample(
+        peak_mb=peak / _BYTES_PER_MB,
+        alloc_count=alloc_count,
+        preexisting_mb=preexisting_mb,
+        alloc_count_error=alloc_count_error,
+    )
 
 
 def _measure(thunk: Callable, device: Device, warmup: int) -> MemSample:
@@ -472,6 +534,10 @@ def _record_from_sample(case: CaseKey, mode: str, sample: MemSample) -> dict[str
     record = case.record(mode=mode, status="ok")
     record["peak_mb"] = sample.peak_mb
     record["alloc_count"] = sample.alloc_count
+    if sample.incremental_peak_mb is not None:
+        record["incremental_peak_mb"] = sample.incremental_peak_mb
+    if sample.preexisting_mb is not None:
+        record["preexisting_mb"] = sample.preexisting_mb
     if sample.tracemalloc_peak_mb is not None:
         record["tracemalloc_peak_mb"] = sample.tracemalloc_peak_mb
     if sample.rss_delta_mb is not None:
@@ -480,6 +546,8 @@ def _record_from_sample(case: CaseKey, mode: str, sample: MemSample) -> dict[str
         record["driver_mb"] = sample.driver_mb
     if sample.approx_allocs:
         record["approx_allocs"] = True
+    if sample.alloc_count_error is not None:
+        record["alloc_count_error"] = sample.alloc_count_error
     return record
 
 
@@ -547,6 +615,14 @@ def _pkg_version(name: str) -> str:
         return "unknown"
 
 
+def _git_revision() -> str:
+    """Return the checked-out revision that produced a benchmark result."""
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
 def _platform_slug() -> str:
     """Filesystem-safe ``<system>_<machine>`` slug for the output filename."""
     return f"{platform.system().lower()}_{platform.machine().lower()}"
@@ -560,9 +636,13 @@ def _pair_ratio(results: list[dict[str, Any]], key: tuple, metric: str) -> float
     }
     native = lookup.get((seq, backend, device, batch, "native"))
     fused = lookup.get((seq, backend, device, batch, "fused"))
-    if not native or not fused or native.get(metric, 0) <= 0:
+    if not native or not fused:
         return None
-    return fused[metric] / native[metric]
+    native_metric = native.get(metric)
+    fused_metric = fused.get(metric)
+    if not isinstance(native_metric, (int, float)) or not isinstance(fused_metric, (int, float)) or native_metric <= 0:
+        return None
+    return fused_metric / native_metric
 
 
 def _row_notes(record: dict[str, Any]) -> str:
@@ -572,8 +652,12 @@ def _row_notes(record: dict[str, Any]) -> str:
         parts.append(f"tm={record['tracemalloc_peak_mb']:.1f}")
     if "driver_mb" in record:
         parts.append(f"drv={record['driver_mb']:.0f}")
+    if "preexisting_mb" in record:
+        parts.append(f"base={record['preexisting_mb']:.1f}")
     if record.get("approx_allocs"):
         parts.append("allocs≈")
+    if "alloc_count_error" in record:
+        parts.append("allocs unavailable")
     return " ".join(parts)
 
 
@@ -658,7 +742,7 @@ def _print_results_table(results: list[dict[str, Any]]) -> None:
             r["device"],
             str(r["batch"]),
             f"{r['peak_mb']:.1f}",
-            str(r["alloc_count"]),
+            "—" if r["alloc_count"] is None else str(r["alloc_count"]),
             peak_x,
             alloc_x,
             _row_notes(r),
@@ -672,6 +756,7 @@ def _build_metadata(cfg: BenchConfig, source: str) -> dict[str, Any]:
     """Assemble the JSON metadata block."""
     return {
         "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+        "revision": _git_revision(),
         "python_version": sys.version.split()[0],
         "torch_version": torch.__version__,
         "platform": platform.platform(),

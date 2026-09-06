@@ -231,18 +231,20 @@ Mixed-backend pipelines are supported, with every backend change acting as a har
 
 ## 📊 What the measurements say
 
-These numbers are from the 2026-07-12 local audit on macOS arm64, `fuse-augmentations 0.9.0.dev0`, Python 3.12, PyTorch 2.10, 256×256 inputs. They demonstrate the shape of the opportunity—not a release-wide promise.
+These numbers are historical smoke measurements from the 2026-07-12 local audit on macOS arm64, `fuse-augmentations 0.9.0.dev0`, Python 3.12, PyTorch 2.10, and 256×256 inputs. They demonstrate the shape of the opportunity, not current-head or release-wide performance. The [benchmark methodology](docs/research/methodology.md) records the controls still required before reusing them.
 
-| Measurement                          |                                             Observed result | Interpretation                                                                             |
-| ------------------------------------ | ----------------------------------------------------------: | ------------------------------------------------------------------------------------------ |
-| Fixed 45-case CPU, batch-1 score     |            **1.79×** geometric mean of native/fused latency | Real aggregate gain for the synthetic bank; mixed cases use opt-in reordering.             |
-| Five-op geometric chain, CPU batch 1 |   **6.52× Kornia**, **14.48× TorchVision** in one quick run | Long geometric chains are the strongest fit; quick-run effect sizes are noisy.             |
-| Sampled CPU tensor peak memory       |                           Lower in **12/12** compared pairs | Fewer intermediate warped tensors can reduce peak; allocation count improved in only 8/12. |
-| TorchVision 3-op, CPU batch 8 peak   |                        **117.5 MB → 38.0 MB** (~3.1× lower) | One profiler result, not a universal memory ratio.                                         |
-| Apple MPS quick sweep                | Faster in only **9/28** comparable Kornia/TorchVision pairs | GPU-capable does not mean faster; TorchVision MPS often regressed here.                    |
-| CUDA                                 |                                              **Not tested** | No CUDA performance claim is made by this audit.                                           |
+| Measurement                          |                                             Observed result | Interpretation                                                                                                                                                                    |
+| ------------------------------------ | ----------------------------------------------------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fixed 45-case CPU, batch-1 score     |            **1.79×** geometric mean of native/fused latency | Historical, unpaired smoke result; rerun after the benchmark RNG controls before using it as a comparison claim.                                                                  |
+| Five-op geometric chain, CPU batch 1 |   **6.52× Kornia**, **14.48× TorchVision** in one quick run | Historical quick-run result; sampled-parameter pairing and endpoint equivalence were not established.                                                                             |
+| Sampled CPU tensor peak memory       |                           **Withdrawn pending fresh sweep** | The historical profiler output is retained in the benchmark page for traceability; collect a new sweep with the corrected action-aware tool before citing peak/allocation ratios. |
+| TorchVision 3-op, CPU batch 8 peak   |                           **Withdrawn pending fresh sweep** | The historical `117.5 MB → 38.0 MB` output must not be used as a memory claim until a corrected-tool sweep replaces it.                                                           |
+| Apple MPS quick sweep                | Faster in only **9/28** comparable Kornia/TorchVision pairs | Historical quick sweep; benchmark the current pipeline on the deployment device.                                                                                                  |
+| CUDA                                 |                  **Historical sweep documented separately** | The September 5, 2026 CUDA run is historical; current runner availability and current-head measurements are unverified.                                                           |
 
-Single operations can be slower because there is no resampling to eliminate. Color-heavy pipelines retain color cost. Small accelerator workloads can be dominated by launch, sampling, compilation, or conversion overhead. Always benchmark the exact production pipeline and keep a correctness/parity gate beside the timing.
+Single operations can be slower because there is no resampling to eliminate. Color-heavy pipelines retain color cost. Small accelerator workloads can be dominated by launch, sampling, compilation, or conversion overhead. Always benchmark the exact production pipeline and keep a correctness/parity gate beside the timing. See the [historical benchmark record](docs/research/benchmarks.md) for dated results and the current measurement boundaries.
+
+The current benchmark tools have stricter contracts than the historical runs above. `bench_memory.py` accounts for live bytes, preexisting baseline, incremental peak, and physical allocation events; unavailable counters are recorded as null with an error. `bench_rfdetr_shape.py` makes all four variants reproducible and converts them to a common CPU model-ready endpoint: `float32` BCHW images in `[0, 1]`, `float32` `(N, 4)` boxes, and `int64` `(N,)` labels. It does not replay shared sampled geometry, so it is not a paired raster comparison. Collect a fresh sweep before replacing the withdrawn historical ratios.
 
 ## 🔬 Quality and semantics
 
@@ -384,7 +386,7 @@ uv run --all-extras --group benchmark python experiments/bench_gpu_batch.py --qu
 uv run --all-extras --group benchmark python experiments/bench_memory.py --quick
 ```
 
-These three headline commands are not the full set: `experiments/` holds five benchmark scripts in total, including `bench_augmentation_pipelines.py` and `bench_primitive_vs_affine.py`, and the [quality and benchmark evidence](https://borda.github.io/fuse-augmentations/research/benchmarks/) documentation page walks through all of them.
+These three headline commands are not the full set: `experiments/` holds five benchmark scripts in total, including `bench_augmentation_pipelines.py`, `bench_primitive_vs_affine.py`, and `bench_rfdetr_shape.py`, and the [quality and benchmark evidence](https://borda.github.io/fuse-augmentations/research/benchmarks/) documentation page walks through all of them.
 
 Treat quick runs as smoke evidence. Release-grade comparisons need independent processes, uncertainty intervals, paired RNG state, output-parity assertions, and full environment provenance.
 

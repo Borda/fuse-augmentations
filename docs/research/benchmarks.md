@@ -1,30 +1,30 @@
 ---
 title: Benchmarks
-description: "Full benchmark results for fuse-augmentations: CPU latency, batch scaling, primitive routing cost, and reported tensor memory."
+description: "Historical benchmark results for fuse-augmentations, with CPU latency, batch scaling, primitive routing cost, and measurement limitations."
 ---
 
 # Benchmarks
 
 Fusion is most useful when a pipeline contains several compatible geometric transforms. It is not a universal speedup: a single transform, color-heavy workload, or particular backend and batch size can be neutral or slower. This page reports the complete benchmark suite collected on **July 12, 2026**.
 
-The figures are measurements for the environment below, not performance promises for every workload.
+The figures are historical measurements for the environments below, not performance promises for every workload or the current revision. The memory table is retained as an audit trail but is withdrawn as evidence because its original timeline accounting interpreted profiler events incorrectly. The current memory tool is action-aware, and the current RF-DETR probe has reproducible variants at a common model-ready endpoint, but it does not replay shared geometry; collect a fresh sweep before replacing the historical ratios. See [Methodology](methodology.md) for the publication gate.
 
 ??? abstract "Test environment"
 
-    | Component            | Value                                                            |
-    | -------------------- | ---------------------------------------------------------------- |
-    | Operating system     | macOS 26.5.2, arm64                                              |
-    | Python               | 3.12.13                                                          |
-    | `fuse-augmentations` | 0.9.0.dev0                                                       |
-    | PyTorch              | 2.10.0                                                           |
-    | TorchVision          | 0.25.0                                                           |
-    | Kornia               | 0.8.2                                                            |
-    | Albumentations       | 2.0.8                                                            |
-    | Input                | 256 x 256 images; tensor inputs are BCHW `float32`               |
-    | CPU batch semantics  | Albumentations applies CPU images sequentially within each batch |
-    | CUDA                 | Unavailable                                                      |
+    | Component             | Value                                                            |
+    | --------------------- | ---------------------------------------------------------------- |
+    | Operating system      | macOS 26.5.2, arm64                                              |
+    | Python                | 3.12.13                                                          |
+    | `fuse-augmentations`  | 0.9.0.dev0                                                       |
+    | PyTorch               | 2.10.0                                                           |
+    | TorchVision           | 0.25.0                                                           |
+    | Kornia                | 0.8.2                                                            |
+    | Albumentations        | 2.0.8                                                            |
+    | Input                 | 256 x 256 images; tensor inputs are BCHW `float32`               |
+    | CPU batch semantics   | Albumentations applies CPU images sequentially within each batch |
+    | CUDA in this July run | Unavailable                                                      |
 
-    The CPU model string was not available inside the execution environment. The full latency-and-batch run detected CPU only, so this page makes no MPS latency claim. The separate memory script did execute MPS paths, but its MPS counter is not a reliable transient-peak measurement; see [Memory-counter boundaries](#memory-counter-boundaries). CUDA was measured separately on **September 5, 2026** on different hardware; see [CUDA batch sweep](#cuda-batch-sweep-september-5-2026).
+    The CPU model string was not available inside the execution environment. The full latency-and-batch run detected CPU only, so this page makes no MPS latency claim. The separate memory script did execute MPS paths, but its MPS counter is not a reliable transient-peak measurement; see [Memory-counter boundaries](#memory-counter-boundaries). CUDA was measured separately on **September 5, 2026** on different hardware; see [Historical CUDA batch sweep](#historical-cuda-batch-sweep-september-5-2026).
 
 ## Fixed-bank score: 1.7861x
 
@@ -101,9 +101,9 @@ This sweep exposes an important limitation: TorchVision was favorable for the sa
 
 For the first five rows, a ratio near 1 is parity and a ratio above 1 means the generic Affine route costs more. For the chain rows, a lower combined/native ratio is better.
 
-## Reported CPU tensor memory
+## Historical CPU tensor-memory output (withdrawn)
 
-`experiments/bench_memory.py --json` used its normal six-sequence CPU and MPS sweep, batches 1 and 8, and three warmups. CPU results below compare Kornia and TorchVision tensor paths. The figures are geometric means of six `fused / native` ratios; a smaller peak ratio means less reported peak tensor memory.
+`experiments/bench_memory.py --json` used its normal six-sequence CPU and MPS sweep, batches 1 and 8, and three warmups. The values below are the historical output retained for traceability; they must not be interpreted as current peak-memory or allocation evidence. The current tool now interprets profiler actions explicitly, separating live peak, incremental peak above preexisting memory, baseline bytes, and physical `CREATE` events; unavailable counters are recorded as null with an error. No fresh sweep has replaced the historical tables.
 
 | Backend / batch | Fused / native peak | Fused / native allocations | Lower peak samples | Lower allocation samples |
 | --------------- | ------------------: | -------------------------: | -----------------: | -----------------------: |
@@ -112,7 +112,7 @@ For the first five rows, a ratio near 1 is parity and a ratio above 1 means the 
 | TorchVision / 1 |               0.18x |                      0.86x |              6 / 6 |                    5 / 6 |
 | TorchVision / 8 |               0.33x |                      3.50x |              6 / 6 |                    0 / 6 |
 
-Fusion reduced the profiler-reported peak tensor memory in every sampled CPU Kornia and TorchVision comparison. It did **not** consistently reduce the allocation count: TorchVision batch-eight fused cases allocated more, even while their reported peak was lower.
+The historical output appeared to show lower profiler-reported peak tensor memory in every sampled CPU Kornia and TorchVision comparison, but that conclusion is not currently supported. It also appeared not to consistently reduce allocation count. Neither observation should guide capacity or performance decisions until a fresh sweep is run with the corrected tool.
 
 | Sequence                             | Backend / batch | Native / fused reported peak | Fused / native peak | Fused / native allocations |
 | ------------------------------------ | --------------- | ---------------------------: | ------------------: | -------------------------: |
@@ -124,15 +124,15 @@ Fusion reduced the profiler-reported peak tensor memory in every sampled CPU Kor
 
 ### Memory-counter boundaries
 
-- CPU peak and allocation events come from a Torch profiler memory timeline; they do not capture every allocation made by native code.
+- CPU peak and allocation events came from a Torch profiler memory timeline; they do not capture every allocation made by native code. The historical run used the old sign-based accounting; current action-aware output is not represented by the tables above.
 - Native Albumentations uses NumPy/OpenCV, so its `0.0 MB` Torch-profiler rows are not evidence of zero memory use and are excluded from the comparison.
 - MPS reports an allocation delta, not a reliable transient peak. Its full-run records are preserved as diagnostics, not summarized as a memory claim.
-- CUDA was unavailable and has a different allocator counter.
+- CUDA was unavailable in the July run and has a different allocator counter; a separate historical CUDA latency sweep appears below.
 - Allocation counts depend on the profiler and dependency versions. They can increase even when peak tensor memory falls.
 
-## CUDA batch sweep (September 5, 2026)
+## Historical CUDA batch sweep (September 5, 2026)
 
-The July run had no GPU, so every figure above is CPU. This section is a separate, later run on different hardware and reports the first CUDA numbers this project has: `experiments/bench_gpu_batch.py --batch-sizes 1 8 32 64 --warmup 10 --measure 30`, 308 measured cases and 28 recorded skips.
+The July run had no GPU, so every figure above is CPU. This section is a separate, later run on different hardware and records historical CUDA numbers from `experiments/bench_gpu_batch.py --batch-sizes 1 8 32 64 --warmup 10 --measure 30`, with 308 measured cases and 28 recorded skips. It is evidence from that dated environment, not a current-head or current-runner claim.
 
 ??? abstract "CUDA test environment"
 
@@ -152,7 +152,7 @@ The July run had no GPU, so every figure above is CPU. This section is a separat
 
 ### Engine choice on device
 
-This package's CPU engine (`execution="cv2"`, NumPy) against its own device engine (`execution="torch"`, one batched `grid_sample`), median ms:
+This package's CPU engine (`execution="cv2"`, NumPy) against its own device engine (`execution="torch"`, one batched `grid_sample`), median ms in that historical run:
 
 | sequence            | b32 CPU | b32 CUDA | b64 CPU | b64 CUDA | b64 result       |
 | ------------------- | ------- | -------- | ------- | -------- | ---------------- |
@@ -164,7 +164,7 @@ This package's CPU engine (`execution="cv2"`, NumPy) against its own device engi
 | `d03_mixed_g4c3`    | 49.24   | 112.51   | 99.46   | 206.75   | CUDA 2.08x worse |
 | `e01_geo_crop_fuse` | 18.61   | 38.85    | 36.33   | 107.24   | CUDA 2.95x worse |
 
-No batch size separates the wins from the losses; the split is by what the chain contains. This is the measurement behind ADR-005 keeping host data on cv2 rather than routing it to the device.
+No batch size separates the wins from the losses; the split is by what the chain contains. This historical measurement informed ADR-005 keeping host data on cv2 rather than routing it to the device. Revalidate the conclusion on the current revision and deployment hardware before treating it as an active performance rule.
 
 ### Fusion value on device, by backend
 

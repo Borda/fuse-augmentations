@@ -147,11 +147,11 @@ fused ('_DirectParamTransform', '_DirectFlipTransform') 1
 
 The three introspection properties answer different questions:
 
-| Property                  | Meaning                                                                              |
-| ------------------------- | ------------------------------------------------------------------------------------ |
-| `fusion_plan`             | Human-readable segment order                                                         |
-| `fusion_plan_descriptors` | Structured, JSON-serializable plan metadata                                          |
-| `n_warps_saved`           | Aggregate eliminated geometric interpolation passes and collapsed color applications |
+| Property                  | Meaning                                                                                            |
+| ------------------------- | -------------------------------------------------------------------------------------------------- |
+| `fusion_plan`             | Human-readable segment order                                                                       |
+| `fusion_plan_descriptors` | Structured, JSON-serializable plan metadata                                                        |
+| `n_warps_saved`           | Legacy planning heuristic summarizing collapsed operations; not a literal interpolation-call count |
 
 `transform_matrix` is different: it is mutable execution state populated by the most recent call. It contains only the matrix produced by the **last affine or projective segment that ran**. It is not a whole-pipeline matrix across backend boundaries, passthrough operations, or multiple geometric segments. It can be `None` for exact-only, color-only, passthrough-only, or empty pipelines.
 

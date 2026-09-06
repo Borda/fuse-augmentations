@@ -5,7 +5,7 @@ description: Read the fusion plan to predict whether fusion pays for your pipeli
 
 # Performance planning
 
-Every pipeline reports what it will do before it runs. Reading that plan costs one line and answers the only question that matters up front: how many resampling passes did fusion actually remove?
+Every pipeline reports what it will do before it runs. Reading that plan costs one line and shows which transforms share a fused segment before you benchmark the actual workload.
 
 <!--phmdoctest-share-names-->
 
@@ -39,7 +39,7 @@ fused(RandomRotation, RandomAffine, RandomAffine, RandomHorizontalFlip)
 
 </details>
 
-Four transforms, one segment, three resampling passes removed. This is the shape of pipeline the package was built for, and the shape the [benchmarks](../research/benchmarks.md) measure most favorably.
+Four transforms collapse into one fused segment. The legacy counter prints `3` for this plan, but that value is a heuristic that also counts operations such as exact flips; use the segment type to reason about sampling, then benchmark the workload. This is the shape of pipeline the package was built for and the shape represented by the historical [benchmark record](../research/benchmarks.md).
 
 ## A colour operation in the middle costs everything
 
@@ -99,14 +99,14 @@ Brightness applied before or after a geometric warp is not the same operation in
 
 ## What the plan does and does not tell you
 
-`n_warps_saved` counts resampling passes the planner removed. It is a structural quantity, not a measured speedup — a saved warp on a small tensor may cost less than the fused path's overhead.
+`n_warps_saved` is a legacy planning heuristic. It summarizes collapsed operations across the plan and is not a literal count of native interpolation calls: exact flips can contribute even though a native flip is already lossless. It is not a measured speedup.
 
 Use it as a gate, not as a result:
 
-- `n_warps_saved == 0` — there is no fusion win available; stop here and keep the native pipeline.
-- `n_warps_saved >= 2` — worth benchmarking on your device, dtype, and batch shape.
-- Any value — the wall-clock outcome still has to be measured. The benchmarks report a 1.7861x fixed-bank score over 168 CPU variants and also publish a case where the fused path runs slower, at TorchVision batch 32.
+- `n_warps_saved == 0` — the plan reports no collapsed operations; inspect the segment structure before deciding whether fusion helps.
+- `n_warps_saved >= 2` — a candidate for benchmarking on your device, dtype, and batch shape.
+- Any value — the wall-clock outcome still has to be measured. The historical benchmarks report a 1.7861x fixed-bank score over 168 CPU variants and also publish a case where the fused path runs slower, at TorchVision batch 32; those comparisons remain subject to the methodology limitations.
 
-All published latency evidence is CPU-only. Nothing in this repository measures GPU or MPS, so treat a device change as an unmeasured configuration.
+The dated benchmark record contains a July 12, 2026 CPU run and a separate September 5, 2026 CUDA sweep. Those results are historical measurements from different environments; current-head CUDA/MPS measurements and runner availability are unverified. Treat a device change as requiring a fresh run, using the [benchmark methodology](../research/methodology.md) and the repository's manual GPU workflow.
 
 For the meaning of each segment field, see [Introspection](../guides/introspection.md). For the numbers themselves and how they were produced, see [Benchmarks](../research/benchmarks.md) and [Methodology](../research/methodology.md).

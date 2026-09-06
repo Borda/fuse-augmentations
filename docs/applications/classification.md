@@ -54,7 +54,7 @@ fused(_DirectParamTransform, _DirectFlipTransform)
 
 </details>
 
-One fused segment, one resampling pass avoided. If a color operation had been declared between the rotation and the flip, the plan would show three segments and save nothing — [Performance planning](performance-planning.md) walks through that case.
+The plan has one fused segment; `n_warps_saved` is a legacy heuristic and is not a literal count of native interpolation calls. If a color operation had been declared between the rotation and the flip, the plan would show three segments and report no collapsed operations — [Performance planning](performance-planning.md) walks through that case.
 
 ## Benchmark the training step, not the transform
 

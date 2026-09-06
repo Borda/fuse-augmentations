@@ -32,7 +32,7 @@ The strongest use case is a BCHW tensor pipeline with several consecutive, regis
 - **Native parity:** fewer resampling passes deliberately change numerics, and TorchVision center/fill/interpolation behavior is not generally pixel-equivalent.
 - **Targets:** only registered and explicitly handled spatial operations are safe for multi-target routing.
 - **Reordering:** `POINTWISE` and `AGGRESSIVE` can change pixels because border handling and clipping make operation order observable.
-- **Accelerators:** device execution is supported on torch paths, but the current full latency run provides CPU evidence only; CUDA and stable MPS latency still need measurement on the deployment host.
+- **Accelerators:** device execution is supported on torch paths. The published evidence includes a July 12, 2026 CPU run and a separate September 5, 2026 historical CUDA sweep; current-head CUDA/MPS measurements and runner availability remain unverified. See the [benchmark record](research/benchmarks.md) before making a device claim.
 
 ## Choose your route
 

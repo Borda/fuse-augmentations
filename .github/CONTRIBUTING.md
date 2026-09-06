@@ -60,7 +60,7 @@ The CI matrix tests Python 3.10, 3.11, 3.12, 3.13, and 3.14, the supported optio
 
 Each backend leg installs exactly one optional backend, so a test that imports `albumentations`, `kornia` or `torchvision` without guarding it on the matching `fuse_augmentations._compat` flag passes in a development environment with every backend installed and fails only once CI runs. `make test-matrix` reproduces those legs locally — one cached environment per extra under `.venv-ci-<extra>`, running the same suite CI does — and `make test-kornia` runs a single leg. Guard the import and the module-level objects built from it: a module-level `skipif` marks the tests skipped but does not stop the module body from executing.
 
-No CI runner has GPU access: tests marked `gpu` (`pytest -m gpu`) are skipped in every workflow and never exercise a real CUDA device, so CUDA numeric correctness has no automated verification. If you change GPU-specific code, run the `gpu`-marked tests locally on a CUDA-capable machine before opening a pull request.
+The ordinary test jobs use CPU Torch builds, so they do not establish CUDA numeric correctness. A separate manual/scheduled GPU workflow is defined in [`ci_gpu.yml`](workflows/ci_gpu.yml), but this guide does not verify whether its self-hosted runner is currently attached or when it last completed. If you change GPU-specific code, run the `gpu`-marked tests locally on a CUDA-capable machine or record a successful GPU workflow run before opening a pull request.
 
 ## Executable documentation examples
 

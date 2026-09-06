@@ -27,7 +27,7 @@ That framing decides whether it fits your pipeline.
 
 ## What the evidence supports
 
-The [benchmarks](../research/benchmarks.md) report a 1.7861x fixed-bank score across 168 timed CPU variants, with geometric chains reaching far higher ratios and a published regression at TorchVision batch 32. Fewer resampling passes is structural — it follows from the plan, not from timing — but faster wall-clock is not: it depends on device, shape, batch size, dtype, and transform mix.
+The [benchmarks](../research/benchmarks.md) retain a historical 1.7861x fixed-bank score across 168 timed CPU variants, with geometric chains reaching far higher ratios and a published regression at TorchVision batch 32. These are dated smoke measurements rather than current-head guarantees; the memory section and unpaired/model-endpoint comparisons remain withdrawn pending corrected tools. Fewer resampling passes is structural — it follows from the plan, not from timing — but faster wall-clock is not: it depends on device, shape, batch size, dtype, and transform mix.
 
 Image quality is argued from the resampling count and visual overlays. Whether fusion changes downstream task metrics is not measured in this repository; treat that as an open question in your own ablation rather than a property of the package. The [research methodology](../research/methodology.md) is the checklist for running that comparison honestly.
 

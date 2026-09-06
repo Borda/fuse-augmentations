@@ -35,15 +35,16 @@ Do not combine cross-backend latency into a hardware-independent ranking. HWC ui
 
 ## What the current scripts do
 
-| Script                            | Useful evidence                                                                      | Main limitation                                                                              |
-| --------------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `optimize_score.py`               | One fixed 45-case CPU score with warmup and a deterministic run order                | Batch 1, zero synthetic inputs, no raw samples, paired RNG reset, or uncertainty             |
-| `bench_augmentation_pipelines.py` | 168 CPU cases, raw per-call samples, summaries, plans, metadata, and visual examples | Native/fused order is fixed; timing RNG states are not paired; visual parity is not asserted |
-| `bench_gpu_batch.py`              | Device synchronization, batch sweep, median, p10/p90, throughput, explicit skips     | Quick mode uses only 10 samples; one process; native always precedes fused                   |
-| `bench_memory.py`                 | Counter-specific tensor peak and allocation evidence                                 | One measured invocation; counters are not comparable across devices; NumPy/OpenCV blind spot |
-| `bench_primitive_vs_affine.py`    | Explains primitive fast paths and chain amortization                                 | Mean-only timing; incomplete combined-Affine coverage for some backends                      |
+| Script                            | Useful evidence                                                                         | Main limitation                                                                                                                        |
+| --------------------------------- | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `optimize_score.py`               | One fixed 45-case CPU score with warmup and a deterministic run order                   | Batch 1, zero synthetic inputs, no raw samples, paired RNG reset, or uncertainty                                                       |
+| `bench_augmentation_pipelines.py` | 168 CPU cases, raw per-call samples, summaries, plans, metadata, and visual examples    | Native/fused order is fixed; timing RNG states are not paired; visual parity is not asserted                                           |
+| `bench_gpu_batch.py`              | Device synchronization, batch sweep, median, p10/p90, throughput, explicit skips        | Quick mode uses only 10 samples; one process; native always precedes fused                                                             |
+| `bench_memory.py`                 | Action-aware live/incremental peak, preexisting baseline, and physical allocation count | Current output records unavailable counters as null with an error; counters are not comparable across devices; NumPy/OpenCV blind spot |
+| `bench_primitive_vs_affine.py`    | Explains primitive fast paths and chain amortization                                    | Mean-only timing; incomplete combined-Affine coverage for some backends                                                                |
+| `bench_rfdetr_shape.py`           | Four reproducible variants at a common model-ready CPU endpoint                         | Global and transform-owned RNG streams reset per variant, but variants do not replay shared sampled geometry; no paired-raster claim   |
 
-The scripts are valuable developer probes. Their quick output should not be promoted to a universal package claim without the controls below.
+The scripts are valuable developer probes. Their historical output should not be promoted to a current or universal package claim without the controls below. The current memory tool has corrected action-aware accounting, and the current detection probe has a common endpoint with reproducible variants; historical ratios remain withdrawn until a fresh sweep is collected.
 
 ## Control randomness correctly
 
@@ -154,7 +155,7 @@ When publishing the score:
 - call `2.3752` an operation-count reference, not a ceiling;
 - do not compare scores across changed banks as though they were the same metric.
 
-The July 12, 2026 environment produced `1.7861x`. That result is scoped to CPU, batch 1, 256 x 256, the fixed synthetic bank, and the recorded dependency versions.
+The July 12, 2026 environment produced `1.7861x`. That historical smoke result is scoped to CPU, batch 1, 256 x 256, the fixed synthetic bank, and the recorded dependency versions; it is not a current controlled comparison because the timing scripts do not establish complete paired RNG state for every backend.
 
 ## Measure memory responsibly
 

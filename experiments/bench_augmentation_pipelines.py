@@ -45,9 +45,9 @@ Notes:
    PyTorch training workflow where Albumentations runs CPU-side before ``ToTensorV2``.
    Kornia and TorchVision use BCHW ``float32`` tensors.
 *  ``batch_size=1`` throughout — Albumentations is single-image natively.
-*  Visual figures seed both torch and numpy RNGs identically for native and fused so they
-   draw the same random parameters; the ``max|native-fused|`` annotation in each subplot
-   confirms equivalence (diff = interpolation error only, not random draw difference).
+*  Visual figures reset global and transform-owned RNGs for reproducible individual rows.
+   Their ``max|native-fused|`` annotations are visual diagnostics, not a claim that two
+   implementations sampled identical geometric parameters.
 """
 
 # %% [markdown]
@@ -66,9 +66,8 @@ Notes:
 # `sorted()` gives the display order.  Group `a` = single-op baselines,
 # `b` = geometric chains, `c` = colour chains, `d` = realistic mixed (geo + colour).
 #
-# **Visual sanity check** (cell 3): native and fused rows use the same RNG seed so
-# they draw identical random parameters.  The `max|native-fused|` annotation in
-# each subplot confirms equivalence — any nonzero diff is interpolation error only.
+# **Visual sanity check** (cell 3): each row resets global and transform-owned RNGs.
+# The `max|native-fused|` annotation is a visual diagnostic, not geometric-pairing proof.
 
 # %% ── setup  Install dependencies (run once) ────────────────────────────────
 # !pip install -e ".[all,benchmark]" matplotlib
@@ -80,6 +79,7 @@ import copy
 import json
 import logging
 import platform
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -239,6 +239,12 @@ print(
 _ENTRIES: list[dict] = []  # populated by _register() below
 
 
+def _reset_albumentations_transforms(transforms: list[object], seed: int) -> None:
+    """Reset private Albumentations streams for a reproducible visual invocation."""
+    for transform in transforms:
+        transform.set_random_seed(seed)  # type: ignore[attr-defined]
+
+
 def _register(seq: str, backend: str, native_pipe, fused_pipe, *, albu_native: bool = False) -> None:
     """Add native + fused runners for one (sequence, backend) pair.
 
@@ -282,8 +288,27 @@ def _register(seq: str, backend: str, native_pipe, fused_pipe, *, albu_native: b
         print(f"  ⚠ {seq}/{backend}/fused metadata unavailable: {exc}")
         fused_meta = {}
 
-    _ENTRIES.append({"seq": seq, "backend": backend, "mode": "native", "runner": run_native, "meta": {}})
-    _ENTRIES.append({"seq": seq, "backend": backend, "mode": "fused", "runner": run_fused, "meta": fused_meta})
+    native_reset = None
+    fused_reset = None
+    if albu_native:
+        native_reset = native_pipe.set_random_seed
+        fused_reset = lambda seed: _reset_albumentations_transforms(fused_pipe.original_transforms, seed)
+    _ENTRIES.append({
+        "seq": seq,
+        "backend": backend,
+        "mode": "native",
+        "runner": run_native,
+        "reset_rng": native_reset,
+        "meta": {},
+    })
+    _ENTRIES.append({
+        "seq": seq,
+        "backend": backend,
+        "mode": "fused",
+        "runner": run_fused,
+        "reset_rng": fused_reset,
+        "meta": fused_meta,
+    })
 
 
 # ── AugSequence dataclass ────────────────────────────────────────────────────
@@ -597,35 +622,37 @@ for _policy_name, _policy in _D_REORDER_POLICIES:
 
 
 class SeededRunner:
-    """Zero-argument callable wrapper that resets both RNGs to a fixed seed before every call.
+    """Zero-argument callable wrapper that resets global and transform-owned RNGs.
 
-    Wrapping the native and fused runners for the same (sequence, backend) pair with
-    identical seeds guarantees that both pipelines draw **identical random parameters**
-    on each forward pass.  Visual differences then come only from interpolation quality,
-    not from different random draws.
+    This makes every visual row reproducible after a pipeline rebuild. It does not prove
+    a native/fused pair sampled the same geometry: differing implementations may consume
+    random draws differently, so a matrix replay is required for that claim.
 
     Args:
         runner: The zero-argument callable to wrap (typically a pipeline runner closure).
-        seed: Integer seed applied to both ``torch.manual_seed`` and ``np.random.seed``
-            before each invocation.  Must be in ``[0, 2**32 - 1]`` for NumPy
-            compatibility.
+        seed: Integer applied to global and transform-owned streams before each invocation.
+            Must be in ``[0, 2**32 - 1]`` for NumPy compatibility.
+        reset_rng: Optional callback that resets an owned transform stream.
 
     Notes:
-        * Albumentations transforms draw from **numpy random**; kornia / torchvision
-          draw from **torch RNG**.  Resetting both ensures all backends are covered.
+        * Albumentations transforms own private random streams, so resetting NumPy alone
+          cannot reproduce a rebuilt pipeline.
         * This wrapper is used in the visual sanity-check cell only.  The benchmark
           cell intentionally omits seeding so that wall-clock timings reflect realistic,
           varied-parameter workloads rather than a fixed single-image scenario.
 
     """
 
-    def __init__(self, runner, seed: int) -> None:
+    def __init__(self, runner, seed: int, reset_rng=None) -> None:
         self._runner = runner
         self._seed = int(seed) & 0xFFFF_FFFF  # clamp to uint32 for numpy compatibility
+        self._reset_rng = reset_rng
 
     def __call__(self):
         torch.manual_seed(self._seed)
         np.random.seed(self._seed)
+        if self._reset_rng is not None:
+            self._reset_rng(self._seed)
         return self._runner()
 
 
@@ -682,8 +709,8 @@ def _show_saved(path: Path) -> None:
         pass  # running as a plain script — PNG saved, nothing to display
 
 
-# Index entries for quick lookup: (seq, backend, mode) -> runner
-_runner_idx = {(e["seq"], e["backend"], e["mode"]): e["runner"] for e in _ENTRIES}
+# Index entries for quick lookup: (seq, backend, mode) -> runner metadata.
+_runner_idx = {(e["seq"], e["backend"], e["mode"]): e for e in _ENTRIES}
 
 for seq in _SEQS_ORDER:
     backends_present = [b for b in _BACKENDS_ORDER if (seq, b, "native") in _runner_idx]
@@ -694,36 +721,33 @@ for seq in _SEQS_ORDER:
     fig, axes = plt.subplots(2, n_cols, figsize=(3.5 * n_cols, 7), squeeze=False)
     fig.suptitle(f"{seq}:  {SEQUENCE_BANK[seq].label or seq}", fontsize=10, fontweight="bold")
 
-    # Store native HWC arrays so the fused row can show |native - fused| diff.
-    # Both rows use the same per-(seq, backend) seed via SeededRunner, so they
-    # draw **identical random parameters** — the diff measures only interpolation
-    # quality, not randomness.
+    # Store native HWC arrays so the fused row can show a visual |native - fused| diff.
+    # Rows are reproducible but not paired: different implementations can consume their
+    # independently reset streams differently.
     _native_arr: dict[str, np.ndarray] = {}
 
     for col, backend in enumerate(backends_present):
         # Stable per-(seq, backend) seed — not Python hash() which is
-        # PYTHONHASHSEED-randomised.  SeededRunner resets both torch and
-        # numpy RNGs before every call, so native and fused draw identical
-        # random parameters.
+        # PYTHONHASHSEED-randomised.  SeededRunner resets global and owned streams
+        # before every call, which makes each visual row reproducible.
         _vis_seed = int.from_bytes((seq + backend).encode(), "little") & 0xFFFF_FFFF
 
         for row, mode in enumerate(["native", "fused"]):
-            runner = _runner_idx.get((seq, backend, mode))
+            entry = _runner_idx.get((seq, backend, mode))
             ax = axes[row, col]
             ax.axis("off")
-            if runner is None:
+            if entry is None:
                 ax.set_title(f"{backend}\n{mode}\n(N/A)", fontsize=7)
                 continue
-            arr = _to_hwc(SeededRunner(runner, _vis_seed)())
+            arr = _to_hwc(SeededRunner(entry["runner"], _vis_seed, entry["reset_rng"])())
             ax.imshow(arr)
 
             title_extra = ""
             if mode == "native":
                 _native_arr[backend] = arr
             else:
-                # fused row: show warps saved + max pixel diff vs. native.
-                # A small diff (< ~0.03) confirms the pipelines are equivalent:
-                # same random params, difference is interpolation only.
+                # Fused row: show warps saved and the visual difference vs. native.
+                # The value is not a parity metric because geometry is not replayed.
                 entry_meta = next(
                     (
                         e["meta"]
@@ -903,9 +927,18 @@ def _pkg_version(name: str) -> str:
         return "unknown"
 
 
+def _git_revision() -> str:
+    """Return the checked-out revision that produced a benchmark result."""
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
 output = {
     "metadata": {
         "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+        "revision": _git_revision(),
         "python_version": sys.version.split()[0],
         "torch_version": torch.__version__,
         "platform": platform.platform(),
@@ -913,6 +946,7 @@ output = {
         "image_shape": list(image_tensor.shape),
         "num_warmup": NUM_WARMUP,
         "num_repeats": NUM_REPEATS,
+        "seed_policy": "visual rows reset global and Albumentations-owned RNGs; no paired geometry claim",
         "package_versions": {
             "fuse_augmentations": _pkg_version("fuse-augmentations"),
             "albumentations": _pkg_version("albumentations"),

@@ -6,7 +6,7 @@ has to drop the instances a warp pushed off the canvas — keeping the labels in
 An image-only speed comparison says nothing about whether that whole step is faster, which is the
 number an rf-detr adoption decision actually needs.
 
-This script times three implementations of the same step at two resolutions:
+This script times four reproducible implementations of the same model-ready step at two resolutions:
 
 ``albumentations``
     The native path rf-detr uses today: ``A.Compose(..., bbox_params=A.BboxParams(label_fields=))``
@@ -15,10 +15,14 @@ This script times three implementations of the same step at two resolutions:
     ``fuse_augmentations.Compose`` with ``data_keys=["input", "bbox_xyxy"]`` on the same NumPy
     inputs, followed by ``clip_bbox_xyxy`` and ``instance_keep_mask`` to make the survival decision
     and the label filtering the caller owns in this package. The two differ only in ``execution=``.
+``fuse_cv2_tensor_in``
+    The same fused execution with a model-ready tensor supplied at the input boundary. It retains the common
+    model-ready output boundary, so its result measures augmentation-only work rather than an incomplete endpoint.
 
-The post-warp survival work is deliberately inside the timed region for the fuse variants: it is
-work Albumentations does internally, so leaving it out would compare a complete step against a
-partial one.
+The post-warp survival work and every conversion needed to reach the common model-ready endpoint
+are deliberately inside the timed region. The rows are independently reproducible; they are not a
+paired raster or geometric-parity experiment because the pipelines do not replay a shared sampled
+parameter sequence.
 
 Usage
 -----
@@ -36,6 +40,7 @@ import json
 import platform
 import random
 import statistics
+import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -63,6 +68,12 @@ MIN_INSTANCE_VISIBILITY = 0.1
 
 #: The two chain lengths timed. See :func:`_albu_transforms` for why both are reported.
 CHAINS = ("two_op", "four_op")
+BENCHMARK_SEED = 0
+MODEL_READY_ENDPOINT = {
+    "image": {"dtype": "float32", "range": [0.0, 1.0], "layout": "BCHW", "device": "cpu"},
+    "boxes": {"dtype": "float32", "layout": "N4", "device": "cpu"},
+    "labels": {"dtype": "int64", "layout": "N", "device": "cpu"},
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +95,7 @@ def _sample(resolution: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     centres = rng.uniform(0.15, 0.85, size=(NUM_INSTANCES, 2)) * resolution
     sizes = rng.uniform(0.05, 0.20, size=(NUM_INSTANCES, 2)) * resolution
     boxes = np.concatenate([centres - sizes / 2, centres + sizes / 2], axis=1).astype(np.float32)
-    labels = rng.integers(0, 80, size=NUM_INSTANCES).astype(np.int64)
+    labels = np.arange(NUM_INSTANCES, dtype=np.int64)
     return image, boxes, labels
 
 
@@ -112,6 +123,53 @@ def _albu_transforms(chain: str) -> list[albu.BasicTransform]:
     ]
 
 
+def _seed_albumentations_transforms(transforms: list[albu.BasicTransform], seed: int) -> None:
+    """Seed the private random stream each Albumentations transform owns."""
+    for transform in transforms:
+        transform.set_random_seed(seed)
+
+
+def _model_ready_endpoint(
+    image: np.ndarray | torch.Tensor,
+    boxes: np.ndarray | torch.Tensor,
+    labels: np.ndarray | torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Convert a completed augmentation into the benchmark's common training boundary."""
+    if isinstance(image, np.ndarray):
+        image_tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float().div(255.0)
+    else:
+        image_tensor = image.to(dtype=torch.float32)
+    boxes_tensor = torch.as_tensor(boxes, dtype=torch.float32).reshape(-1, 4)
+    labels_tensor = torch.as_tensor(labels, dtype=torch.int64).reshape(-1)
+    return image_tensor, boxes_tensor, labels_tensor
+
+
+def _validate_model_ready_endpoint(result: tuple[torch.Tensor, torch.Tensor, torch.Tensor], resolution: int) -> None:
+    """Reject a timed row that does not return the declared image and target boundary."""
+    image, boxes, labels = result
+    if image.shape != (1, 3, resolution, resolution) or image.dtype is not torch.float32 or image.device.type != "cpu":
+        raise ValueError("Detection benchmark image endpoint must be CPU float32 BCHW at the requested resolution.")
+    if not (torch.all(image >= 0) and torch.all(image <= 1)):
+        raise ValueError("Detection benchmark image endpoint must be normalized to [0, 1].")
+    if boxes.ndim != 2 or boxes.shape[1:] != (4,) or boxes.dtype is not torch.float32 or boxes.device != image.device:
+        raise ValueError("Detection benchmark box endpoint must be CPU float32 with shape (N, 4).")
+    labels_are_aligned = labels.ndim == 1 and labels.shape[0] == boxes.shape[0]
+    labels_match_endpoint = labels.dtype is torch.int64 and labels.device == image.device
+    if not labels_are_aligned or not labels_match_endpoint:
+        raise ValueError("Detection benchmark labels must remain aligned with the surviving box rows.")
+    source_labels = torch.from_numpy(_sample(resolution)[2])
+    if not torch.isin(labels, source_labels).all() or torch.unique(labels).numel() != labels.numel():
+        raise ValueError("Detection benchmark labels must be unique source labels for each surviving box.")
+
+
+def _git_revision() -> str:
+    """Return the checked-out revision that produced a benchmark result."""
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
 def _albu_step(resolution: int, chain: str) -> Callable[[], object]:
     """Build the native Albumentations detection step, boxes and labels included.
 
@@ -120,8 +178,9 @@ def _albu_step(resolution: int, chain: str) -> Callable[[], object]:
     less work than the side it is being compared against.
 
     """
+    transforms = _albu_transforms(chain)
     pipeline = albu.Compose(
-        _albu_transforms(chain),
+        transforms,
         bbox_params=albu.BboxParams(
             format="pascal_voc",
             label_fields=["labels"],
@@ -130,11 +189,13 @@ def _albu_step(resolution: int, chain: str) -> Callable[[], object]:
             min_height=MIN_INSTANCE_SIZE,
             min_visibility=MIN_INSTANCE_VISIBILITY,
         ),
+        seed=BENCHMARK_SEED,
     )
     image, boxes, labels = _sample(resolution)
 
     def run() -> object:
-        return pipeline(image=image, bboxes=boxes, labels=labels)
+        result = pipeline(image=image, bboxes=boxes, labels=labels)
+        return _model_ready_endpoint(result["image"], np.asarray(result["bboxes"]), np.asarray(result["labels"]))
 
     return run
 
@@ -147,8 +208,10 @@ def _fuse_step(resolution: int, execution: str, chain: str) -> Callable[[], obje
     Albumentations' internal filtering has to pay for it here.
 
     """
+    transforms = _albu_transforms(chain)
+    _seed_albumentations_transforms(transforms, BENCHMARK_SEED)
     pipeline = Compose(
-        _albu_transforms(chain),
+        transforms,
         data_keys=["input", "bbox_xyxy"],
         execution=execution,
     )
@@ -159,7 +222,7 @@ def _fuse_step(resolution: int, execution: str, chain: str) -> Callable[[], obje
         warped = torch.from_numpy(out["bboxes"])
         clipped = clip_bbox_xyxy(warped, resolution, resolution)
         keep = instance_keep_mask(warped, clipped, min_size=MIN_INSTANCE_SIZE, min_visibility=MIN_INSTANCE_VISIBILITY)
-        return out["image"], clipped[keep], labels[keep.numpy()]
+        return _model_ready_endpoint(out["image"], clipped[keep], labels[keep.numpy()])
 
     return run
 
@@ -167,17 +230,15 @@ def _fuse_step(resolution: int, execution: str, chain: str) -> Callable[[], obje
 def _fuse_tensor_step(resolution: int, execution: str, chain: str) -> Callable[[], object]:
     """Build the same step with inputs already in tensor form.
 
-    Timed alongside the NumPy variants to attribute the difference: this one pays for the warp and
-    the survival decision but not for the array-to-tensor normalisation, so the gap between it and
-    ``fuse_cv2`` is the cost of the conversion rather than of the augmentation itself.
-
-    The conversion back to a channel-last array is inside the timed region. Every other variant here
-    ends holding one, so a variant that stopped at a tensor would be measuring a shorter step and
-    would understate its own cost by exactly the copy the others pay.
+    This augmentation-only attribution starts with the same model-ready tensor format that every row returns. It still
+    includes the target survival work, so it isolates input preparation without comparing against a shorter output
+    contract.
 
     """
+    transforms = _albu_transforms(chain)
+    _seed_albumentations_transforms(transforms, BENCHMARK_SEED)
     pipeline = Compose(
-        _albu_transforms(chain),
+        transforms,
         data_keys=["input", "bbox_xyxy"],
         execution=execution,
     )
@@ -192,8 +253,7 @@ def _fuse_tensor_step(resolution: int, execution: str, chain: str) -> Callable[[
         keep = instance_keep_mask(
             warped_boxes, clipped, min_size=MIN_INSTANCE_SIZE, min_visibility=MIN_INSTANCE_VISIBILITY
         )
-        image_hwc = warped_image[0].permute(1, 2, 0).contiguous().numpy()
-        return image_hwc, clipped[keep], labels_tensor[keep[0]]
+        return _model_ready_endpoint(warped_image, clipped[keep], labels_tensor[keep[0]])
 
     return run
 
@@ -248,9 +308,9 @@ def main() -> None:
         for resolution in RESOLUTIONS:
             for name, builder in builders.items():
                 _seed_everything()
-                measurements.append(
-                    _time(builder(resolution, chain), pipeline=name, chain=chain, resolution=resolution)
-                )
+                step = builder(resolution, chain)
+                _validate_model_ready_endpoint(step(), resolution)
+                measurements.append(_time(step, pipeline=name, chain=chain, resolution=resolution))
 
     for entry in measurements:
         print(f"{entry.pipeline:>18}  {entry.chain:>8}  {entry.resolution:>5}  {entry.median_ms:8.3f} ms")
@@ -260,6 +320,7 @@ def main() -> None:
         json.dumps(
             {
                 "environment": {
+                    "revision": _git_revision(),
                     "platform": platform.platform(),
                     "python": platform.python_version(),
                     "torch": torch.__version__,
@@ -272,6 +333,18 @@ def main() -> None:
                     "min_instance_visibility": MIN_INSTANCE_VISIBILITY,
                     "warmup_calls": WARMUP_CALLS,
                     "timed_calls": TIMED_CALLS,
+                    "seed_policy": {
+                        "global_seed": BENCHMARK_SEED,
+                        "albumentations_transform_seed": BENCHMARK_SEED,
+                        "comparison": "per-variant reproducible; no shared sampled-geometry replay",
+                    },
+                    "endpoint": MODEL_READY_ENDPOINT,
+                    "input_boundaries": {
+                        "albumentations": "HWC uint8 NumPy image with NumPy boxes and labels",
+                        "fuse_cv2": "HWC uint8 NumPy image with NumPy boxes and labels",
+                        "fuse_torch": "HWC uint8 NumPy image with NumPy boxes and labels",
+                        "fuse_cv2_tensor_in": "BCHW float32 [0, 1] CPU tensor with dense tensor boxes and labels",
+                    },
                 },
                 "measurements": [asdict(entry) for entry in measurements],
             },
