@@ -29,9 +29,7 @@ detect = Compose.from_params(
 )
 
 images = torch.rand(1, 3, 128, 128)
-boxes = torch.tensor(
-    [[[10.0, 10.0, 40.0, 40.0], [90.0, 90.0, 126.0, 126.0], [0.0, 0.0, 3.0, 3.0]]]
-)
+boxes = torch.tensor([[[10.0, 10.0, 40.0, 40.0], [90.0, 90.0, 126.0, 126.0], [0.0, 0.0, 3.0, 3.0]]])
 
 image_out, boxes_out = detect(images, boxes)
 

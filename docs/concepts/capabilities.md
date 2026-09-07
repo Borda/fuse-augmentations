@@ -46,12 +46,7 @@ An optional backend that is not installed reports an empty capability set for th
 from fuse_augmentations import Compose
 
 print(sorted(Compose.supported_ops("torchvision")))
-print(
-    {
-        backend: len(operations)
-        for backend, operations in sorted(Compose.capability_matrix().items())
-    }
-)
+print({backend: len(operations) for backend, operations in sorted(Compose.capability_matrix().items())})
 ```
 
 <details>

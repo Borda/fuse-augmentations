@@ -188,12 +188,7 @@ assert matrix is not None
 assert matrix.shape == (4, 3, 3)
 
 print(augment.fusion_plan)
-print(
-    [
-        (descriptor.kind, descriptor.n_warps_saved)
-        for descriptor in augment.fusion_plan_descriptors
-    ]
-)
+print([(descriptor.kind, descriptor.n_warps_saved) for descriptor in augment.fusion_plan_descriptors])
 ```
 
 <details>
@@ -324,9 +319,7 @@ from fuse_augmentations import generate_dataset
 
 with tempfile.TemporaryDirectory() as out_dir:
     # COCO detection, 70/20/10 split, reproducible (pass a real path to keep it)
-    counts = generate_dataset(
-        out_dir, num_images=100, fmt="coco", task="detection", seed=0
-    )
+    counts = generate_dataset(out_dir, num_images=100, fmt="coco", task="detection", seed=0)
 
 print(counts)
 ```
