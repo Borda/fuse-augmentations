@@ -126,12 +126,14 @@ from fuse_augmentations.data.animals import AnimalShape
 from fuse_augmentations.data.config import SyntheticConfig, Task
 
 explicit = SyntheticConfig(
-    task=Task.KEYPOINTS, shapes=(AnimalShape.DUCK, AnimalShape.GIRAFFE)
+    task=Task.KEYPOINTS,
+    shapes=(AnimalShape.DUCK, AnimalShape.GIRAFFE),
 )  # explicit
 assert explicit.shapes == (AnimalShape.DUCK, AnimalShape.GIRAFFE)
 
 first_four = SyntheticConfig(
-    task=Task.KEYPOINTS, shapes=tuple(AnimalShape)[:4]
+    task=Task.KEYPOINTS,
+    shapes=tuple(AnimalShape)[:4],
 )  # duck, elephant, giraffe, fish
 assert first_four.shapes == (
     AnimalShape.DUCK,
@@ -141,7 +143,8 @@ assert first_four.shapes == (
 )  # same 4 species every call, per the declaration-order guarantee below
 
 all_animals = SyntheticConfig(
-    task=Task.KEYPOINTS, shapes=tuple(AnimalShape)
+    task=Task.KEYPOINTS,
+    shapes=tuple(AnimalShape),
 )  # all twelve
 assert len(all_animals.shapes) == 12
 ```
@@ -193,12 +196,14 @@ from fuse_augmentations.data.config import SyntheticConfig, Task
 from fuse_augmentations.data.symbols import SymbolShape
 
 explicit = SyntheticConfig(
-    task=Task.KEYPOINTS, shapes=(SymbolShape.KITE, SymbolShape.ANCHOR)
+    task=Task.KEYPOINTS,
+    shapes=(SymbolShape.KITE, SymbolShape.ANCHOR),
 )  # explicit
 assert explicit.shapes == (SymbolShape.KITE, SymbolShape.ANCHOR)
 
 first_three = SyntheticConfig(
-    task=Task.KEYPOINTS, shapes=tuple(SymbolShape)[:3]
+    task=Task.KEYPOINTS,
+    shapes=tuple(SymbolShape)[:3],
 )  # kite, trapezoid, house
 assert first_three.shapes == (
     SymbolShape.KITE,
@@ -207,7 +212,8 @@ assert first_three.shapes == (
 )
 
 all_symbols = SyntheticConfig(
-    task=Task.KEYPOINTS, shapes=tuple(SymbolShape)
+    task=Task.KEYPOINTS,
+    shapes=tuple(SymbolShape),
 )  # all seven
 assert len(all_symbols.shapes) == 7
 ```
@@ -255,12 +261,14 @@ from fuse_augmentations.data.config import SyntheticConfig, Task
 from fuse_augmentations.data.letters import LetterShape
 
 explicit = SyntheticConfig(
-    task=Task.KEYPOINTS, shapes=(LetterShape.X, LetterShape.O)
+    task=Task.KEYPOINTS,
+    shapes=(LetterShape.X, LetterShape.O),
 )  # explicit
 assert explicit.shapes == (LetterShape.X, LetterShape.O)
 
 first_three = SyntheticConfig(
-    task=Task.KEYPOINTS, shapes=tuple(LetterShape)[:3]
+    task=Task.KEYPOINTS,
+    shapes=tuple(LetterShape)[:3],
 )  # a, b, c
 assert first_three.shapes == (
     LetterShape.A,
@@ -269,7 +277,8 @@ assert first_three.shapes == (
 )
 
 all_letters = SyntheticConfig(
-    task=Task.KEYPOINTS, shapes=tuple(LetterShape)
+    task=Task.KEYPOINTS,
+    shapes=tuple(LetterShape),
 )  # all twenty-six
 assert len(all_letters.shapes) == 26
 ```

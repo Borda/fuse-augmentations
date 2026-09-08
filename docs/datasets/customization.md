@@ -115,12 +115,8 @@ Every shape family — the analytic primitives, the animals, the symbols, the le
 from fuse_augmentations.data import SHAPE_FAMILIES, family_of
 from fuse_augmentations.data.animals import AnimalShape
 
-print(
-    [
-        (family.name, len(family.members), family.has_keypoints)
-        for family in SHAPE_FAMILIES
-    ]
-)
+summary = [(f.name, len(f.members), f.has_keypoints) for f in SHAPE_FAMILIES]
+print(summary)
 print(family_of(AnimalShape.DUCK).name)
 ```
 

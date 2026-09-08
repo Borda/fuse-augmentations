@@ -73,7 +73,8 @@ reference_logits = F.max_pool2d(image, kernel_size=stride)
 wrong_frame = translate.inverse(logits, matrix=matrix)
 lifted_logits = F.interpolate(logits, size=augmentation_canvas, mode="nearest")
 restored_logits = F.max_pool2d(
-    translate.inverse(lifted_logits, matrix=matrix), kernel_size=stride
+    translate.inverse(lifted_logits, matrix=matrix),
+    kernel_size=stride,
 )
 
 expected_peak = int(reference_logits.flatten().argmax())
@@ -87,7 +88,7 @@ print(
         expected_peak,
         wrong_peak,
         restored_peak,
-    )
+    ),
 )
 assert wrong_peak != expected_peak
 assert restored_peak == expected_peak
@@ -160,7 +161,8 @@ source_size = (5, 7)
 detector_size = (10, 12)
 preprocess = Compose.from_params(letterbox=detector_size, allow_upscale=False)
 detector_input, forward_matrix = preprocess(
-    torch.zeros(1, 3, *source_size), return_matrix=True
+    torch.zeros(1, 3, *source_size),
+    return_matrix=True,
 )
 # A detector prediction in its input canvas; padding moved the source box by (2, 2).
 prediction = torch.tensor([[[3.0, 3.0, 8.0, 6.0]]])

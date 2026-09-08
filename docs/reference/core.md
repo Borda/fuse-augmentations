@@ -24,7 +24,7 @@ pipe = Compose(
         transforms.RandomRotation(15),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomAffine(degrees=0, scale=(0.9, 1.1)),
-    ]
+    ],
 )
 
 image = torch.rand(8, 3, 224, 224)

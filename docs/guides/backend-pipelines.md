@@ -59,7 +59,7 @@ augment = Compose(
         T.RandomRotation(degrees=15.0),
         T.RandomAffine(degrees=0.0, scale=(0.9, 1.1)),
         T.RandomHorizontalFlip(p=0.5),
-    ]
+    ],
 )
 
 output = augment(torch.rand(8, 3, 224, 224))
@@ -127,7 +127,7 @@ augment = Compose(
         T.RandomRotation(10.0),
         K.RandomHorizontalFlip(p=0.5),
         K.RandomBrightness(brightness=(0.9, 1.1), p=1.0),
-    ]
+    ],
 )
 ```
 
