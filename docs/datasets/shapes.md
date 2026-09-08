@@ -125,10 +125,16 @@ Name the members explicitly, or take the first `N` of them with `tuple(AnimalSha
 from fuse_augmentations.data.animals import AnimalShape
 from fuse_augmentations.data.config import SyntheticConfig, Task
 
-explicit = SyntheticConfig(task=Task.KEYPOINTS, shapes=(AnimalShape.DUCK, AnimalShape.GIRAFFE))  # explicit
+explicit = SyntheticConfig(
+    task=Task.KEYPOINTS,
+    shapes=(AnimalShape.DUCK, AnimalShape.GIRAFFE),
+)  # explicit
 assert explicit.shapes == (AnimalShape.DUCK, AnimalShape.GIRAFFE)
 
-first_four = SyntheticConfig(task=Task.KEYPOINTS, shapes=tuple(AnimalShape)[:4])  # duck, elephant, giraffe, fish
+first_four = SyntheticConfig(
+    task=Task.KEYPOINTS,
+    shapes=tuple(AnimalShape)[:4],
+)  # duck, elephant, giraffe, fish
 assert first_four.shapes == (
     AnimalShape.DUCK,
     AnimalShape.ELEPHANT,
@@ -136,7 +142,10 @@ assert first_four.shapes == (
     AnimalShape.FISH,
 )  # same 4 species every call, per the declaration-order guarantee below
 
-all_animals = SyntheticConfig(task=Task.KEYPOINTS, shapes=tuple(AnimalShape))  # all twelve
+all_animals = SyntheticConfig(
+    task=Task.KEYPOINTS,
+    shapes=tuple(AnimalShape),
+)  # all twelve
 assert len(all_animals.shapes) == 12
 ```
 
@@ -186,17 +195,26 @@ There is no plain-triangle symbol: it would collide in name with the geometric f
 from fuse_augmentations.data.config import SyntheticConfig, Task
 from fuse_augmentations.data.symbols import SymbolShape
 
-explicit = SyntheticConfig(task=Task.KEYPOINTS, shapes=(SymbolShape.KITE, SymbolShape.ANCHOR))  # explicit
+explicit = SyntheticConfig(
+    task=Task.KEYPOINTS,
+    shapes=(SymbolShape.KITE, SymbolShape.ANCHOR),
+)  # explicit
 assert explicit.shapes == (SymbolShape.KITE, SymbolShape.ANCHOR)
 
-first_three = SyntheticConfig(task=Task.KEYPOINTS, shapes=tuple(SymbolShape)[:3])  # kite, trapezoid, house
+first_three = SyntheticConfig(
+    task=Task.KEYPOINTS,
+    shapes=tuple(SymbolShape)[:3],
+)  # kite, trapezoid, house
 assert first_three.shapes == (
     SymbolShape.KITE,
     SymbolShape.TRAPEZOID,
     SymbolShape.HOUSE,
 )
 
-all_symbols = SyntheticConfig(task=Task.KEYPOINTS, shapes=tuple(SymbolShape))  # all seven
+all_symbols = SyntheticConfig(
+    task=Task.KEYPOINTS,
+    shapes=tuple(SymbolShape),
+)  # all seven
 assert len(all_symbols.shapes) == 7
 ```
 
@@ -242,17 +260,26 @@ The 15 named keypoint slots give every letter the same landmark vocabulary (a fi
 from fuse_augmentations.data.config import SyntheticConfig, Task
 from fuse_augmentations.data.letters import LetterShape
 
-explicit = SyntheticConfig(task=Task.KEYPOINTS, shapes=(LetterShape.X, LetterShape.O))  # explicit
+explicit = SyntheticConfig(
+    task=Task.KEYPOINTS,
+    shapes=(LetterShape.X, LetterShape.O),
+)  # explicit
 assert explicit.shapes == (LetterShape.X, LetterShape.O)
 
-first_three = SyntheticConfig(task=Task.KEYPOINTS, shapes=tuple(LetterShape)[:3])  # a, b, c
+first_three = SyntheticConfig(
+    task=Task.KEYPOINTS,
+    shapes=tuple(LetterShape)[:3],
+)  # a, b, c
 assert first_three.shapes == (
     LetterShape.A,
     LetterShape.B,
     LetterShape.C,
 )
 
-all_letters = SyntheticConfig(task=Task.KEYPOINTS, shapes=tuple(LetterShape))  # all twenty-six
+all_letters = SyntheticConfig(
+    task=Task.KEYPOINTS,
+    shapes=tuple(LetterShape),
+)  # all twenty-six
 assert len(all_letters.shapes) == 26
 ```
 

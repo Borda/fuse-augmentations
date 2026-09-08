@@ -43,14 +43,18 @@ from fuse_augmentations import Compose, ReorderPolicy
 batch_size, height, width = 2, 128, 128
 images = torch.rand(batch_size, 3, height, width)
 masks = torch.randint(0, 4, (batch_size, 1, height, width), dtype=torch.int64)
-boxes = torch.tensor([
-    [[12.0, 18.0, 70.0, 92.0]],
-    [[24.0, 10.0, 100.0, 80.0]],
-])
-keypoints = torch.tensor([
-    [[20.0, 30.0], [60.0, 75.0]],
-    [[40.0, 20.0], [90.0, 70.0]],
-])
+boxes = torch.tensor(
+    [
+        [[12.0, 18.0, 70.0, 92.0]],
+        [[24.0, 10.0, 100.0, 80.0]],
+    ],
+)
+keypoints = torch.tensor(
+    [
+        [[20.0, 30.0], [60.0, 75.0]],
+        [[40.0, 20.0], [90.0, 70.0]],
+    ],
+)
 
 pipe = Compose.from_params(
     rotation=(-15.0, 15.0),
@@ -269,7 +273,10 @@ from fuse_augmentations import Compose, clip_bbox_xyxy, instance_keep_mask
 
 image = torch.rand(1, 3, 32, 32)
 boxes = torch.tensor([[[2.0, 2.0, 10.0, 10.0], [26.0, 26.0, 31.0, 31.0]]])
-augment = Compose.from_params(translate_x=(12.0, 12.0), data_keys=["input", "bbox_xyxy"])
+augment = Compose.from_params(
+    translate_x=(12.0, 12.0),
+    data_keys=["input", "bbox_xyxy"],
+)
 
 warped_image, warped_boxes = augment(image, boxes)
 clipped = clip_bbox_xyxy(warped_boxes, height=32, width=32)

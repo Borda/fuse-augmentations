@@ -54,11 +54,13 @@ import torchvision.transforms.v2 as T
 
 from fuse_augmentations import Compose
 
-augment = Compose([
-    T.RandomRotation(degrees=15.0),
-    T.RandomAffine(degrees=0.0, scale=(0.9, 1.1)),
-    T.RandomHorizontalFlip(p=0.5),
-])
+augment = Compose(
+    [
+        T.RandomRotation(degrees=15.0),
+        T.RandomAffine(degrees=0.0, scale=(0.9, 1.1)),
+        T.RandomHorizontalFlip(p=0.5),
+    ],
+)
 
 output = augment(torch.rand(8, 3, 224, 224))
 ```
@@ -120,11 +122,13 @@ import torchvision.transforms.v2 as T
 
 from fuse_augmentations import Compose
 
-augment = Compose([
-    T.RandomRotation(10.0),
-    K.RandomHorizontalFlip(p=0.5),
-    K.RandomBrightness(brightness=(0.9, 1.1), p=1.0),
-])
+augment = Compose(
+    [
+        T.RandomRotation(10.0),
+        K.RandomHorizontalFlip(p=0.5),
+        K.RandomBrightness(brightness=(0.9, 1.1), p=1.0),
+    ],
+)
 ```
 
 Each transform is routed to its registered adapter. A backend change is a hard segment boundary: matrices from different backends are not combined into one warp. Inspect `fusion_plan_descriptors` to make the cost visible.

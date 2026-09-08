@@ -37,7 +37,8 @@ The global operation vocabulary is larger than any one backend's constructible s
 from fuse_augmentations import Compose
 
 print(sorted(Compose.supported_ops("native")))
-print({backend: len(operations) for backend, operations in sorted(Compose.capability_matrix().items())})
+counts = {k: len(v) for k, v in sorted(Compose.capability_matrix().items())}
+print(counts)
 ```
 
 <details>
@@ -80,11 +81,21 @@ import torch
 from fuse_augmentations import Compose, letterbox_matrix, transform_keypoints
 from fuse_augmentations.affine.matrix import inv3x3
 
-augment = Compose.from_params(rotation=(20.0, 20.0), letterbox=(32, 32), fill=114.0 / 255.0)
+augment = Compose.from_params(
+    rotation=(20.0, 20.0),
+    letterbox=(32, 32),
+    fill=114.0 / 255.0,
+)
 out, matrix = augment(torch.full((1, 3, 20, 40), 0.8), return_matrix=True)
 print(out.shape, len(augment.fusion_plan_descriptors))
 
-forward = letterbox_matrix(height_in=20, width_in=40, height_out=32, width_out=32, dtype=torch.float64)
+forward = letterbox_matrix(
+    height_in=20,
+    width_in=40,
+    height_out=32,
+    width_out=32,
+    dtype=torch.float64,
+)
 point = torch.tensor([[[7.5, 3.25]]], dtype=torch.float64)
 recovered = transform_keypoints(transform_keypoints(point, forward), inv3x3(forward))
 print([round(value, 12) for value in recovered.flatten().tolist()])

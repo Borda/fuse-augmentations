@@ -72,19 +72,24 @@ reference_logits = F.max_pool2d(image, kernel_size=stride)
 
 wrong_frame = translate.inverse(logits, matrix=matrix)
 lifted_logits = F.interpolate(logits, size=augmentation_canvas, mode="nearest")
-restored_logits = F.max_pool2d(translate.inverse(lifted_logits, matrix=matrix), kernel_size=stride)
+restored_logits = F.max_pool2d(
+    translate.inverse(lifted_logits, matrix=matrix),
+    kernel_size=stride,
+)
 
 expected_peak = int(reference_logits.flatten().argmax())
 wrong_peak = int(wrong_frame.flatten().argmax())
 restored_peak = int(restored_logits.flatten().argmax())
-print((
-    source_canvas,
-    augmentation_canvas,
-    tuple(logits.shape[-2:]),
-    expected_peak,
-    wrong_peak,
-    restored_peak,
-))
+print(
+    (
+        source_canvas,
+        augmentation_canvas,
+        tuple(logits.shape[-2:]),
+        expected_peak,
+        wrong_peak,
+        restored_peak,
+    ),
+)
 assert wrong_peak != expected_peak
 assert restored_peak == expected_peak
 torch.testing.assert_close(restored_logits, reference_logits, rtol=1e-4, atol=1e-6)
@@ -155,7 +160,10 @@ from fuse_augmentations import Compose, transform_bbox_xyxy
 source_size = (5, 7)
 detector_size = (10, 12)
 preprocess = Compose.from_params(letterbox=detector_size, allow_upscale=False)
-detector_input, forward_matrix = preprocess(torch.zeros(1, 3, *source_size), return_matrix=True)
+detector_input, forward_matrix = preprocess(
+    torch.zeros(1, 3, *source_size),
+    return_matrix=True,
+)
 # A detector prediction in its input canvas; padding moved the source box by (2, 2).
 prediction = torch.tensor([[[3.0, 3.0, 8.0, 6.0]]])
 source_prediction = transform_bbox_xyxy(prediction, torch.linalg.inv(forward_matrix))
