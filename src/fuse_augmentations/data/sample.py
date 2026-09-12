@@ -45,8 +45,16 @@ class Annotation:
     Args:
         class_id: Zero-based class index (see :func:`~fuse_augmentations.data.config.class_names`).
         class_name: Human-readable class label.
-        polygon: Filled-shape outline as a flat pixel-coordinate list.
-        bbox_xyxy: Axis-aligned box ``(x_min, y_min, x_max, y_max)`` in pixels.
+        polygon: Filled-shape outline as a flat pixel-coordinate list, in **pixel-centre** space --
+            the space :func:`~fuse_augmentations.targets.transform_keypoints` moves a point field
+            through. :attr:`obb_corners`, derived from it, is in the same space.
+        bbox_xyxy: Axis-aligned box ``(x_min, y_min, x_max, y_max)`` in pixels, in **pixel-edge**
+            space -- the space :func:`~fuse_augmentations.targets.transform_bbox_xyxy` assumes, so a
+            full ``(H, W)`` canvas spans ``[0, W] x [0, H]``. The two conventions differ by half a
+            pixel each way and are not interchangeable; see
+            :data:`~fuse_augmentations.data.geometry.PIXEL_CENTRE_OFFSET`. Both dataset writers
+            convert the point fields back to edge space at the file boundary, so an exported COCO or
+            YOLO file carries one convention throughout.
         angle: Rotation in radians the shape was placed with (counter-clockwise, ``0.0`` for an
             unrotated or rotation-invariant shape). Carried so :attr:`obb_corners` can derive the
             oriented box in the shape's own upright frame instead of re-guessing the pose from the
@@ -55,7 +63,9 @@ class Annotation:
             ``None`` for any task other than
             :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS`. Visibility follows COCO: ``2``
             for a point inside the canvas, ``0`` for one clipped away by the frame — a ``0`` point
-            carries ``(0.0, 0.0)`` rather than its off-canvas coordinates.
+            carries ``(0.0, 0.0)`` rather than its off-canvas coordinates. Visible coordinates are
+            in pixel-centre space like ``polygon``; the zeroed placeholder is a flag value and
+            carries no convention.
         keypoint_schema: The keypoint-bearing family ``keypoints`` was drawn from, which names and
             sizes the table. Required whenever ``keypoints`` is given, ``None`` otherwise. Carrying
             it here is what lets any consumer — the writers,

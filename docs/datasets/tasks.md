@@ -35,6 +35,53 @@ Each task exposes a different annotation representation. In the looping previews
 
 Regenerate these clips with `python examples/animate_synthetic_dataset.py`.
 
+## Coordinate conventions
+
+Each annotation field is in the coordinate space of the transform that moves it, so a generated label can be handed straight to a `FusedCompose` pipeline without a conversion step:
+
+| Field         | Space                                                                            | Moved by              |
+| ------------- | -------------------------------------------------------------------------------- | --------------------- |
+| `polygon`     | pixel **centre** — pixel `i` is the point `i`                                    | `transform_keypoints` |
+| `keypoints`   | pixel **centre** (visible points; a `v=0` placeholder is a flag, not a position) | `transform_keypoints` |
+| `obb_corners` | pixel **centre** — derived from `polygon`                                        | `transform_rboxes`    |
+| `bbox_xyxy`   | pixel **edge** — a full `(H, W)` canvas spans `[0, W] x [0, H]`                  | `transform_bbox_xyxy` |
+
+The split is not a quirk of the dataset; it mirrors the core, which resamples images and moves point fields on pixel centres while conjugating boxes to pixel edges (see [Known limitations](../known-limitations.md)). The two spaces differ by half a pixel each way, which is invisible under identity and a generic-angle rotation but becomes a **full pixel** under any flip or quarter turn — so a field that travels through the wrong matrix lands one pixel off its own ink.
+
+The rasterizer works in edge space, because Pillow fills pixel `floor(x)` for a vertex at `x`. Adding `0.5` to `polygon` therefore redraws the exact shape that was generated, which is what `tests/test_unit/test_data/test_coordinate_convention.py` asserts pixel for pixel.
+
+**Exported files carry one convention throughout.** Both writers convert the point fields back to edge space at the file boundary, so a COCO record's `segmentation`, `keypoints` and `bbox` are read in a single coordinate system, as COCO and YOLO consumers expect. The split above applies to the in-memory `Annotation` only.
+
+## Recovering a tighter box under rotation
+
+`transform_bbox_xyxy` returns the axis-aligned box of the four warped box corners. That is all it can do with a box as input, and under a rotation the result is looser than the object: the corners sweep a rectangle that includes background the original box never covered.
+
+A segmentation-task sample also carries the outline, so the tighter box can be recovered without any change to the pipeline — warp the polygon and take its extent:
+
+```python
+from fuse_augmentations import FusedCompose
+from fuse_augmentations.data.geometry import polygon_to_bbox_xyxy, to_pixel_edge
+
+pipeline = FusedCompose(transforms, data_keys=["input", "keypoints"])
+warped_image, warped_points = pipeline(image, polygon)
+tight_box = polygon_to_bbox_xyxy(to_pixel_edge(warped_points[0].numpy()))
+```
+
+`to_pixel_edge` is what puts the result in the same space as `bbox_xyxy` (see [Coordinate conventions](#coordinate-conventions)); skip it and the box is half a pixel off.
+
+Measured against the axis-aligned extent of the rendered ink, over six single-object scenes per family at 192 px under a 37° rotation with scale 0.85:
+
+| Family    | Box through the affine | Box from the warped polygon |
+| --------- | ---------------------- | --------------------------- |
+| geometric | 0.76                   | 0.98                        |
+| symbols   | 0.57                   | 0.97                        |
+| animals   | 0.51                   | 0.96                        |
+| letters   | 0.83                   | 0.97                        |
+
+How much a box loosens depends on how much of it the object fills, which is why animals — thin limbs, tails — lose most and letters least. Adding 12° of shear does not close the gap. `tests/test_unit/test_data/test_bbox_from_polygon.py` pins the ordering and its size.
+
+`augment_detection_batch` cannot do this for you: it accepts exactly `data_keys=["input", "bbox_xyxy"]` and a `boxes`/`labels` target mapping, so no polygon reaches that boundary. The recipe above lives in caller code.
+
 ## Keypoints / pose
 
 The `keypoints` task is available for three shape families, each with its own fixed, dataset-wide schema: the twelve **animal** silhouettes use a 16-point anatomical schema (below), the seven **symbol** shapes use a 7-point structural schema (see [Symbol keypoint schema](#symbol-keypoint-schema)), and the twenty-six **letter** stroke figures use a 15-point grid schema (see [Letter keypoint schema](#letter-keypoint-schema)). A dataset carries exactly one — Ultralytics' YOLO pose format declares one `kpt_shape` and COCO one `keypoints` list per category, so `shapes` must belong entirely to one family under this task; mixing any two of them, or pairing a geometric shape with any of them, raises `ValueError` at `SyntheticConfig` construction.
@@ -63,6 +110,12 @@ A single set of animal names covers quadrupeds, birds, and swimmers, because the
 The skeleton connects `mouth`–`head`, `eye`–`head`, `ear`–`head`, the `head`–`neck`–`body_top`–`body_bottom`–`tail` chain, a two-segment `body_top`–`front_elbow`–`front_limb` chain per front limb, and a two-segment `body_bottom`–`hind_knee`–`hind_limb` chain per hind leg — 15 edges over 16 nodes, so an absent ear drops exactly its one edge and an absent hind leg exactly its own two, orphaning nothing. Every limb is articulated in two points because a limb's bend is the most visible pose cue on a silhouette.
 
 Visibility follows COCO: `v=2` means the point is labeled and visible inside the canvas; `v=0` means it is not labeled, either because it fell outside the canvas or because the animal does not have that landmark at all (see "Absent landmarks" below). A `v=0` point's coordinates are zeroed. Partial occlusion is not modeled.
+
+### Landmarks and the silhouette
+
+Only the **letter** family guarantees that a landmark lies inside the ink. A letter's outline *is* the set of points within half a stroke width of its keypoint skeleton, so every letter keypoint sits strictly inside the fill with half a stroke of clearance, by construction. **Symbol** landmarks are inside because the shapes are convex and their slots are structural. **Animal** landmarks carry no such rule: they are hand-placed against the silhouette, and the placement table in `fuse_augmentations/data/zoo/README.md` defines several of them as *tips* — `tail` is the tail tip, `front_limb_*`/`hind_limb_*` are limb tips. A tip on a tapering appendage sits on the boundary by intent, and at default instance sizes the boundary quantises to the outside: roughly 1% of visible animal landmarks (tails, hind limbs on `kangaroo` and `crocodile`, the `flamingo` eye) round to a pixel just off their own filled polygon, before any augmentation runs.
+
+This matters only for a consumer that *samples* at the landmark — a heatmap target, a mask lookup, an "is this landmark occluded" test. An OKS evaluator is unaffected. If you need the inside-ink property, use the letter family, or test it yourself rather than assuming it.
 
 Every landmark is a pure rigid transform (translate/scale/rotate) of its packaged template position — zero articulation, zero intra-class deformation — so a model trained on this data learns template identity plus a similarity-transform regression, not articulated pose; the dataset exercises the COCO/YOLO pose formats end-to-end, it is not a substitute for articulated-pose training data.
 

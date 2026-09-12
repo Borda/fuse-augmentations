@@ -7,6 +7,15 @@ representation (polygon, axis-aligned box, oriented box). All randomness flows
 through a caller-supplied :class:`numpy.random.Generator`, so a fixed seed yields
 byte-identical output.
 
+Coordinate conventions follow the transforms each field travels through, so a generated label can be
+handed straight to a pipeline. Outlines and landmarks are emitted in **pixel-centre** space, which is
+what :func:`~fuse_augmentations.targets.transform_keypoints` and the image resampler assume;
+``bbox_xyxy`` is emitted in **pixel-edge** space, which is what
+:func:`~fuse_augmentations.targets.transform_bbox_xyxy` assumes. The rasterizer itself draws the
+edge-space outline, since Pillow fills pixel ``floor(x)`` for a vertex at ``x``. Mixing the two up
+costs a full pixel under any reflection or quarter turn, which is why each field declares its space
+rather than sharing one; see :data:`~fuse_augmentations.data.geometry.PIXEL_CENTRE_OFFSET`.
+
 Under :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS` each annotation also carries its
 family's landmarks plus the schema naming them, derived from the placement that was already
 sampled — no extra random draw — so a seed produces the same scene whatever the configured task.
@@ -37,7 +46,7 @@ from PIL import Image, ImageDraw
 
 from fuse_augmentations.data.config import Fill, Task, class_vocabulary
 from fuse_augmentations.data.families import keypoint_schema_for, place_keypoints, shape_outline
-from fuse_augmentations.data.geometry import bbox_iou, polygon_to_bbox_xyxy
+from fuse_augmentations.data.geometry import bbox_iou, polygon_to_bbox_xyxy, to_pixel_centre
 from fuse_augmentations.data.primitives import PrimitiveShape
 from fuse_augmentations.data.sample import Annotation, Sample
 
@@ -69,18 +78,26 @@ def _visible_keypoints(points: NDArray[np.float64], img_size: int) -> tuple[tupl
         img_size: Canvas side length in pixels.
 
     Returns:
-        One ``(x, y, visibility)`` triple per landmark, in input order: the real coordinates with
-        :data:`_KEYPOINT_VISIBLE` while the point lies inside ``[0, img_size)`` on both axes, and
-        ``(0.0, 0.0)`` with :data:`_KEYPOINT_HIDDEN` otherwise. Zeroing a clipped point (rather than
-        keeping its off-canvas coordinates) is COCO's "not labeled" convention. An absent
-        hind limb lands here as ``(nan, nan)``; both comparisons in
+        One ``(x, y, visibility)`` triple per landmark, in input order: the coordinates converted to
+        pixel-centre space with :data:`_KEYPOINT_VISIBLE` while the point lies inside
+        ``[0, img_size)`` on both axes, and ``(0.0, 0.0)`` with :data:`_KEYPOINT_HIDDEN` otherwise.
+        Zeroing a clipped point (rather than keeping its off-canvas coordinates) is COCO's
+        "not labeled" convention, and the zeroed placeholder is *not* shifted -- it is a flag value,
+        not a position. An absent hind limb lands here as ``(nan, nan)``; both comparisons in
         ``0.0 <= nan < img_size`` are false, so it falls to the hidden branch with no special-casing.
+
+        Visibility is decided on the *incoming* edge-space coordinates, so which landmarks the frame
+        hides does not depend on the convention the surviving ones are reported in.
 
     """
     triples: list[tuple[float, float, int]] = []
     for x, y in points:
         inside = 0.0 <= x < img_size and 0.0 <= y < img_size
-        triples.append((float(x), float(y), _KEYPOINT_VISIBLE) if inside else (0.0, 0.0, _KEYPOINT_HIDDEN))
+        if not inside:
+            triples.append((0.0, 0.0, _KEYPOINT_HIDDEN))
+            continue
+        centre = to_pixel_centre(np.array([x, y], dtype=np.float64))
+        triples.append((float(centre[0]), float(centre[1]), _KEYPOINT_VISIBLE))
     return tuple(triples)
 
 
@@ -222,6 +239,8 @@ class SyntheticGenerator:
             if placed is None:
                 continue
             shape, color, poly, angle, points = placed
+            # The rasterizer and the AABB both read the outline in edge space; only the point
+            # fields are converted, because only they travel through a pixel-centre matrix.
             draw.polygon([(float(x), float(y)) for x, y in poly], fill=color.rgb)
             bbox = polygon_to_bbox_xyxy(poly)
             kept.append(bbox)
@@ -230,7 +249,7 @@ class SyntheticGenerator:
                 Annotation(
                     class_id=class_id,
                     class_name=self.class_names[class_id],
-                    polygon=[float(v) for v in poly.reshape(-1)],
+                    polygon=[float(v) for v in to_pixel_centre(poly).reshape(-1)],
                     bbox_xyxy=bbox,
                     angle=angle,
                     keypoints=None if points is None else _visible_keypoints(points, cfg.img_size),

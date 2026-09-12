@@ -12,6 +12,7 @@ from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, ANIMAL_KEYPOI
 from fuse_augmentations.data.config import SyntheticConfig, Task, class_vocabulary
 from fuse_augmentations.data.families import keypoint_schema_for
 from fuse_augmentations.data.generator import SyntheticGenerator
+from fuse_augmentations.data.geometry import PIXEL_CENTRE_OFFSET
 from fuse_augmentations.data.keypoints import KeypointSchema
 from fuse_augmentations.data.letters import LETTER_KEYPOINT_SCHEMA, LetterShape
 from fuse_augmentations.data.sample import Annotation, Sample
@@ -219,8 +220,9 @@ def test_keypoints_row_has_fifty_three_tokens(tmp_path: Path) -> None:
             kp_x, kp_y, kp_v = ann.keypoints[i]
             assert int(v_tok) == kp_v
             if kp_v > 0:
-                assert float(x_tok) == pytest.approx(kp_x / img_size, abs=1e-3)
-                assert float(y_tok) == pytest.approx(kp_y / img_size, abs=1e-3)
+                # A row carries edge-space coordinates; the annotation carries pixel-centre ones.
+                assert float(x_tok) == pytest.approx((kp_x + PIXEL_CENTRE_OFFSET) / img_size, abs=1e-3)
+                assert float(y_tok) == pytest.approx((kp_y + PIXEL_CENTRE_OFFSET) / img_size, abs=1e-3)
 
 
 def test_keypoints_writer_task_with_non_keypoints_config_emits_the_all_zero_row(tmp_path: Path) -> None:
@@ -322,8 +324,9 @@ def test_symbol_keypoints_row_has_twenty_six_tokens(tmp_path: Path) -> None:
             kp_x, kp_y, kp_v = ann.keypoints[i]
             assert int(v_tok) == kp_v
             if kp_v > 0:
-                assert float(x_tok) == pytest.approx(kp_x / img_size, abs=1e-3)
-                assert float(y_tok) == pytest.approx(kp_y / img_size, abs=1e-3)
+                # A row carries edge-space coordinates; the annotation carries pixel-centre ones.
+                assert float(x_tok) == pytest.approx((kp_x + PIXEL_CENTRE_OFFSET) / img_size, abs=1e-3)
+                assert float(y_tok) == pytest.approx((kp_y + PIXEL_CENTRE_OFFSET) / img_size, abs=1e-3)
 
 
 def test_data_yaml_declares_kpt_shape_seven_three_for_symbols(tmp_path: Path) -> None:
@@ -404,8 +407,9 @@ def test_letter_keypoints_row_has_fifty_tokens(tmp_path: Path) -> None:
             kp_x, kp_y, kp_v = ann.keypoints[i]
             assert int(v_tok) == kp_v
             if kp_v > 0:
-                assert float(x_tok) == pytest.approx(kp_x / img_size, abs=1e-3)
-                assert float(y_tok) == pytest.approx(kp_y / img_size, abs=1e-3)
+                # A row carries edge-space coordinates; the annotation carries pixel-centre ones.
+                assert float(x_tok) == pytest.approx((kp_x + PIXEL_CENTRE_OFFSET) / img_size, abs=1e-3)
+                assert float(y_tok) == pytest.approx((kp_y + PIXEL_CENTRE_OFFSET) / img_size, abs=1e-3)
 
 
 def test_data_yaml_declares_kpt_shape_fifteen_three_for_letters(tmp_path: Path) -> None:

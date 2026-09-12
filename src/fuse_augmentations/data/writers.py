@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 from PIL import Image
 
 from fuse_augmentations.data.config import ClassVocabulary, OutputFormat, Task
+from fuse_augmentations.data.geometry import PIXEL_CENTRE_OFFSET
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -80,6 +81,27 @@ def _clamp_flat(flat: list[float], img_w: float, img_h: float) -> list[float]:
     return [_clamp(v, 0.0, img_w) if i % 2 == 0 else _clamp(v, 0.0, img_h) for i, v in enumerate(flat)]
 
 
+def _edge_flat(flat: list[float]) -> list[float]:
+    """Convert a flat pixel-centre coordinate list to the edge space an exported file uses.
+
+    An :class:`~fuse_augmentations.data.sample.Annotation` carries outlines, oriented-box corners
+    and landmarks in pixel-centre space, because that is the space the point transforms in
+    :mod:`~fuse_augmentations.targets` move them through. ``bbox_xyxy`` stays in edge space for the
+    same reason -- that is the space its own transform assumes. A COCO or YOLO file has no room for
+    two conventions: its ``segmentation`` ring, its landmarks and its ``bbox`` are read as one
+    coordinate system, and that system is edge space, so the point fields are converted back here,
+    at the file boundary, and nowhere else.
+
+    Args:
+        flat: ``[x1, y1, x2, y2, ...]`` coordinates in pixel-centre space.
+
+    Returns:
+        The same list shifted into edge space.
+
+    """
+    return [v + PIXEL_CENTRE_OFFSET for v in flat]
+
+
 def _keypoint_triples(
     ann: Annotation, img_w: float, img_h: float, schema: KeypointSchema
 ) -> list[tuple[float, float, int]]:
@@ -93,17 +115,20 @@ def _keypoint_triples(
             annotation without landmarks falls back to.
 
     Returns:
-        One triple per name in ``schema.names``, in that order. A visible point is clamped to the
-        image extent like every other coordinate field; an invisible one keeps the zeroed
-        placeholder coordinates rather than being clamped into a spurious corner position. An
-        annotation without landmarks yields the all-zero, "not labeled" table — see the module
-        docstring.
+        One triple per name in ``schema.names``, in that order. A visible point is converted from
+        the annotation's pixel-centre space to the file's edge space (see :func:`_edge_flat`) and
+        clamped to the image extent like every other coordinate field; an invisible one keeps the
+        zeroed placeholder coordinates, unshifted, rather than being clamped into a spurious corner
+        position — ``(0.0, 0.0)`` there is a flag value, not a location. An annotation without
+        landmarks yields the all-zero, "not labeled" table — see the module docstring.
 
     """
     if ann.keypoints is None:
         return [(0.0, 0.0, 0)] * len(schema.names)
     return [
-        (_clamp(x, 0.0, img_w), _clamp(y, 0.0, img_h), visibility) if visibility > 0 else (0.0, 0.0, visibility)
+        (_clamp(x + PIXEL_CENTRE_OFFSET, 0.0, img_w), _clamp(y + PIXEL_CENTRE_OFFSET, 0.0, img_h), visibility)
+        if visibility > 0
+        else (0.0, 0.0, visibility)
         for x, y, visibility in ann.keypoints
     ]
 
@@ -214,11 +239,11 @@ class CocoWriter(DatasetWriter):
             "iscrowd": 0,
         }
         if self.task is Task.SEGMENTATION:
-            record["segmentation"] = [_clamp_flat(ann.polygon, img_w, img_h)]
+            record["segmentation"] = [_clamp_flat(_edge_flat(ann.polygon), img_w, img_h)]
         elif self.task is Task.OBB:
-            record["segmentation"] = [_clamp_flat(ann.obb_corners, img_w, img_h)]
+            record["segmentation"] = [_clamp_flat(_edge_flat(ann.obb_corners), img_w, img_h)]
         elif self.task is Task.KEYPOINTS:
-            record["segmentation"] = [_clamp_flat(ann.polygon, img_w, img_h)]
+            record["segmentation"] = [_clamp_flat(_edge_flat(ann.polygon), img_w, img_h)]
             triples = _keypoint_triples(ann, img_w, img_h, self.schema)
             record["keypoints"] = [value for triple in triples for value in triple]
             record["num_keypoints"] = sum(1 for *_, visibility in triples if visibility > 0)
@@ -344,7 +369,7 @@ class YoloWriter(DatasetWriter):
             # A pose row is a detection row plus the landmark block (Ultralytics' order).
             coords = self._box_coords(ann, width, height)
         else:
-            flat = ann.polygon if self.task is Task.SEGMENTATION else ann.obb_corners
+            flat = _edge_flat(ann.polygon if self.task is Task.SEGMENTATION else ann.obb_corners)
             coords = [v / width if i % 2 == 0 else v / height for i, v in enumerate(flat)]
         tokens = [str(ann.class_id), *(f"{_clamp(c, 0.0, 1.0):.6f}" for c in coords)]
         if self.task is Task.KEYPOINTS:

@@ -63,6 +63,7 @@ from PIL import Image, ImageDraw
 from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
 from fuse_augmentations.data.animals import AnimalShape
 from fuse_augmentations.data.config import DEFAULT_SHAPES, Task, keypoint_schema_for
+from fuse_augmentations.data.geometry import PIXEL_CENTRE_OFFSET
 from fuse_augmentations.data.letters import LetterShape
 from fuse_augmentations.data.sample import Annotation, Sample
 from fuse_augmentations.data.symbols import SymbolShape
@@ -120,8 +121,17 @@ _LABELLED_MS = 1300  # hold the annotated image long enough to read the overlay
 
 
 def _pairs(flat: list[float], scale: float) -> list[tuple[float, float]]:
-    """Turn a flat ``[x1, y1, x2, y2, ...]`` list into scaled ``(x, y)`` point tuples."""
-    return [(flat[i] * scale, flat[i + 1] * scale) for i in range(0, len(flat), 2)]
+    """Turn a flat ``[x1, y1, x2, y2, ...]`` list into scaled ``(x, y)`` point tuples.
+
+    Point fields are in pixel-centre coordinates while the canvas being drawn on is in edge ones, so the offset goes
+    back on before scaling -- at ``_SUPERSAMPLE`` magnification half a pixel is visible as an overlay sitting off its
+    own ink.
+
+    """
+    return [
+        ((flat[i] + PIXEL_CENTRE_OFFSET) * scale, (flat[i + 1] + PIXEL_CENTRE_OFFSET) * scale)
+        for i in range(0, len(flat), 2)
+    ]
 
 
 def _draw_annotation(
@@ -150,7 +160,9 @@ def _draw_annotation(
         if ann.keypoints is None or schema is None:
             return
         visible = {
-            index: (x * scale, y * scale) for index, (x, y, visibility) in enumerate(ann.keypoints) if visibility > 0
+            index: ((x + PIXEL_CENTRE_OFFSET) * scale, (y + PIXEL_CENTRE_OFFSET) * scale)
+            for index, (x, y, visibility) in enumerate(ann.keypoints)
+            if visibility > 0
         }
         for first, second in schema.skeleton_for(ann.class_name):
             if first in visible and second in visible:
@@ -161,7 +173,7 @@ def _draw_annotation(
         for _index, (x, y, visibility) in enumerate(ann.keypoints):
             if visibility <= 0:
                 continue
-            px, py = x * scale, y * scale
+            px, py = (x + PIXEL_CENTRE_OFFSET) * scale, (y + PIXEL_CENTRE_OFFSET) * scale
             color = _KEYPOINT_COLORS.get(visibility, _OVERLAY_RGB)
             draw.ellipse((px - radius, py - radius, px + radius, py + radius), fill=color)
         return

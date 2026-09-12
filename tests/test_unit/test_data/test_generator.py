@@ -337,6 +337,9 @@ def test_visible_keypoints_clips_off_canvas_points_and_zeroes_nan() -> None:
     fully-on-canvas placement: an in-bounds point, negative-x, y-beyond, x-beyond, a point exactly at the `img_size`
     boundary (pinning the half-open `x < img_size` semantics — the boundary itself is *not* visible), and a NaN point.
 
+    Visibility is decided on the incoming edge-space coordinates, while a surviving point is reported in pixel-centre
+    space, so the visible triple sits half a pixel below its input and the zeroed placeholders stay exactly zero.
+
     """
     img_size = 100
     points = np.array([
@@ -350,7 +353,7 @@ def test_visible_keypoints_clips_off_canvas_points_and_zeroes_nan() -> None:
 
     triples = _visible_keypoints(points, img_size)
 
-    assert triples[0] == (50.0, 50.0, 2)
+    assert triples[0] == (49.5, 49.5, 2)
     for triple in triples[1:]:
         assert triple == (0.0, 0.0, 0)
 

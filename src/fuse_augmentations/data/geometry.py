@@ -124,6 +124,62 @@ def place_points(
     return points + np.asarray(center, dtype=np.float64)
 
 
+#: Distance between a pixel's edge-space and centre-space coordinate. Pillow fills pixel
+#: ``floor(x)`` for a vertex at ``x``, so an outline authored for the rasterizer is in *edge* space
+#: (pixel ``i`` spans ``[i, i + 1)``), while the matrices in
+#: :mod:`~fuse_augmentations.targets` resample images -- and therefore move keypoints -- in *centre*
+#: space (pixel ``i`` is the point ``i``). The two differ by half a pixel each way, which becomes a
+#: full pixel under any reflection, so a point field has to declare which space it is in.
+PIXEL_CENTRE_OFFSET = 0.5
+
+
+def to_pixel_centre(points: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Convert edge-space coordinates to the pixel-centre space the point transforms assume.
+
+    Args:
+        points: Coordinates in edge space, any shape ending in the coordinate axis.
+
+    Returns:
+        The same array shifted by ``-`` :data:`PIXEL_CENTRE_OFFSET`.
+
+    Examples:
+        ```pycon
+        >>> import numpy as np
+        >>> from fuse_augmentations.data.geometry import to_pixel_centre
+        >>> to_pixel_centre(np.array([[3.0, 4.0]]))
+        array([[2.5, 3.5]])
+
+        ```
+
+    """
+    return np.asarray(points, dtype=np.float64) - PIXEL_CENTRE_OFFSET
+
+
+def to_pixel_edge(points: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Convert pixel-centre coordinates back to the edge space the rasterizer and writers use.
+
+    Inverse of :func:`to_pixel_centre`; the dataset writers apply it so an exported COCO or YOLO
+    file stays in one space with the ``bbox`` beside it.
+
+    Args:
+        points: Coordinates in pixel-centre space, any shape ending in the coordinate axis.
+
+    Returns:
+        The same array shifted by ``+`` :data:`PIXEL_CENTRE_OFFSET`.
+
+    Examples:
+        ```pycon
+        >>> import numpy as np
+        >>> from fuse_augmentations.data.geometry import to_pixel_edge
+        >>> to_pixel_edge(np.array([[2.5, 3.5]]))
+        array([[3., 4.]])
+
+        ```
+
+    """
+    return np.asarray(points, dtype=np.float64) + PIXEL_CENTRE_OFFSET
+
+
 def polygon_to_bbox_xyxy(points: NDArray[np.float64]) -> tuple[float, float, float, float]:
     """Return the axis-aligned bounding box ``(x_min, y_min, x_max, y_max)`` of a polygon.
 
