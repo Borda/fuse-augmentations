@@ -81,4 +81,4 @@ Two limits worth stating outright, because a proxy is easy to over-read:
 - It does not rank architectures on real images. A knob that costs 0.05 mAP on drawn shapes may cost nothing, or everything, on photographs.
 - It measures the pipeline's sensitivity to each nuisance, which is what a regression gate needs, and nothing about absolute detectability.
 
-A held-out mAP table over these bands remains desirable and belongs downstream, where a training loop already exists: `ultralytics` is not a dependency or an extra here, and reimplementing one inside a data generator to measure that generator would be the wrong place for it.
+A held-out mAP table over these bands remains desirable and belongs downstream in `lucid_yolo`, which already has the training loop and the held-out gate — this package is referenced from its tests and has no training code of its own. `ultralytics` is neither a dependency nor an extra here, and reimplementing a training loop inside a data generator to measure that generator would be the wrong place for it. The follow-up is therefore filed against that gate rather than against this repository.
