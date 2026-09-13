@@ -36,6 +36,14 @@ import importlib
 import itertools
 from typing import TYPE_CHECKING, Any
 
+from fuse_augmentations.data.backgrounds import (
+    Background,
+    GradientBackground,
+    ImpulseNoiseBackground,
+    NoiseBackground,
+    SolidBackground,
+    TextureBackground,
+)
 from fuse_augmentations.data.config import (
     ClassEntry,
     ClassMode,
@@ -76,6 +84,7 @@ __all__ = [
     "DEFAULT_SHAPES",
     "SHAPE_FAMILIES",
     "Annotation",
+    "Background",
     "ClassEntry",
     "ClassMode",
     "ClassVocabulary",
@@ -83,16 +92,21 @@ __all__ = [
     "Color",
     "DatasetWriter",
     "Fill",
+    "GradientBackground",
+    "ImpulseNoiseBackground",
     "KeypointSchema",
+    "NoiseBackground",
     "OutputFormat",
     "Sample",
     "Shape",
     "ShapeFamily",
+    "SolidBackground",
     "SplitRatios",
     "SyntheticConfig",
     "SyntheticGenerator",
     "SyntheticIterableDataset",
     "Task",
+    "TextureBackground",
     "YoloWriter",
     "class_id",
     "class_names",

@@ -20,6 +20,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from fuse_augmentations.data.families import (
     DEFAULT_SHAPES,
@@ -27,6 +28,9 @@ from fuse_augmentations.data.families import (
     describe_keypoint_mismatch,
     keypoint_schema_for,
 )
+
+if TYPE_CHECKING:
+    from fuse_augmentations.data.backgrounds import Background
 
 _SPLIT_SUM_TOL = 1e-6
 
@@ -630,7 +634,16 @@ class SyntheticConfig:
         overlap_iou: Reject a candidate whose IoU with any kept box exceeds this.
         boundary_tolerance: Max fraction of a box allowed outside the canvas.
         max_placement_attempts: Retry cap per object before giving up.
-        background: RGB background fill.
+        background: What fills the canvas before any object is drawn. Either a plain fill — a
+            :class:`Color`, an ``(r, g, b)`` triple, or a :class:`Fill` — or a
+            :class:`~fuse_augmentations.data.backgrounds.Background` such as
+            :class:`~fuse_augmentations.data.backgrounds.NoiseBackground` or
+            :class:`~fuse_augmentations.data.backgrounds.TextureBackground`. A plain fill is
+            normalized to a :class:`~fuse_augmentations.data.backgrounds.SolidBackground` at
+            construction, so ``config.background`` always reads back as a background object and the
+            default draws exactly the flat grey canvas it always did. A background renders from its
+            own side stream, never from the placement stream, so switching one on never moves an
+            object at a fixed seed.
         rotate: Apply a random rotation to each polygonal shape.
         asymmetry_jitter: Max fraction, in ``[0, 0.5)``, by which one randomly chosen half of a
             shape — left or right of its own local vertical axis, before rotation — is narrowed,
@@ -711,7 +724,7 @@ class SyntheticConfig:
     overlap_iou: float = 0.1
     boundary_tolerance: float = 0.05
     max_placement_attempts: int = 100
-    background: tuple[int, int, int] = (128, 128, 128)
+    background: ColorLike | Background = (128, 128, 128)
     rotate: bool = True
     asymmetry_jitter: float = 0.0
     class_mode: ClassMode = ClassMode.SHAPE
@@ -734,6 +747,7 @@ class SyntheticConfig:
         # arrives here raw and is the documented spelling -- coerce it rather than reject it.
         object.__setattr__(self, "task", Task(self.task))
         self._normalize_colors()
+        self._normalize_background()
         if self.img_size <= 0:
             raise ValueError(f"img_size must be positive, got {self.img_size}")
         if not 1 <= self.min_objects <= self.max_objects:
@@ -770,6 +784,31 @@ class SyntheticConfig:
         if not self.colors:
             raise ValueError("colors must name at least one Color, got an empty sequence")
         object.__setattr__(self, "colors", tuple(Fill.parse(value) for value in self.colors))
+
+    def _normalize_background(self) -> None:
+        """Replace :attr:`background` with the :class:`Background` it stands for.
+
+        Same boundary-normalization reasoning as :meth:`_normalize_colors`, applied to the canvas:
+        the field accepts a bare fill *or* a background object, and everything past construction
+        holds a background. A bare fill becomes a
+        :class:`~fuse_augmentations.data.backgrounds.SolidBackground`, which is exactly the flat
+        canvas the generator drew before backgrounds were types, so an existing configuration keeps
+        its pixels. This is also the first validation the field has ever had — it used to be handed
+        to Pillow unchecked.
+
+        The import is deferred rather than made at module scope because
+        :mod:`~fuse_augmentations.data.backgrounds` imports this module for its fill union; the cycle
+        is real and broken here, at the one runtime point that needs the concrete class.
+
+        Raises:
+            ValueError: If ``background`` is neither a :class:`Background` nor a valid fill.
+
+        """
+        from fuse_augmentations.data.backgrounds import Background, SolidBackground
+
+        if isinstance(self.background, Background):
+            return
+        object.__setattr__(self, "background", SolidBackground(color=Fill.parse(self.background)))
 
     def _validate_vocabulary(self) -> None:
         """Reject an unusable shape/color tuple, a non-:class:`Task` task, or an unannotatable pairing.

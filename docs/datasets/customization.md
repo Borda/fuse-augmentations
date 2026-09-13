@@ -42,6 +42,45 @@ print(counts)
 
 `task` and `class_mode` are config fields only. `generate_dataset` takes no `task=` argument of its own — pass it as a keyword and it flows into the config, or set it on a `SyntheticConfig` you build yourself, but not both. Earlier releases accepted it in both places and cross-checked them, which meant a `None` sentinel, a conflict error, and a paragraph explaining which one won; one owner removes all three.
 
+### Choosing a background
+
+`background` accepts a plain fill — a `Color`, an `(r, g, b)` triple, or a `Fill` — or one of the background types, which carry their own parameters and render themselves. The mode *is* the type: a `NoiseBackground` has a `sigma` and a `TextureBackground` does not, so there is no combination of mode and parameter that has to be rejected by hand.
+
+| type                     | parameters                                              | what it changes                                                     |
+| ------------------------ | ------------------------------------------------------- | ------------------------------------------------------------------- |
+| `SolidBackground`        | `color`                                                 | one flat fill — the default, and what a bare triple normalizes to   |
+| `GradientBackground`     | `stops`, `direction`, `radial`                          | a linear or radial ramp, so intensity is no longer one global value |
+| `NoiseBackground`        | `base`, `sigma`                                         | per-pixel Gaussian grain, which removes the trivial edge detector   |
+| `ImpulseNoiseBackground` | `base`, `amount`, `salt_ratio`                          | salt-and-pepper pixels, heavy-tailed and blur-resistant             |
+| `TextureBackground`      | `base`, `amplitude`, `frequency`, `octaves`, `quantize` | value noise at a chosen scale, so false positives become possible   |
+
+Every background draws from a side stream of its own, never from the placement stream, so switching one on at a fixed seed leaves every object exactly where it was:
+
+```python
+from fuse_augmentations.data import NoiseBackground, SyntheticConfig, SyntheticGenerator
+
+flat = SyntheticConfig(img_size=64, max_objects=3)
+noisy = SyntheticConfig(img_size=64, max_objects=3, background=NoiseBackground(sigma=24.0))
+
+placements = [[a.bbox_xyxy for a in s.annotations] for s in SyntheticGenerator(flat).generate(3, seed=1)]
+unmoved = [[a.bbox_xyxy for a in s.annotations] for s in SyntheticGenerator(noisy).generate(3, seed=1)]
+
+print(placements == unmoved)
+print(type(SyntheticConfig().background).__name__)
+```
+
+<details>
+<summary>The same placements under a different canvas</summary>
+
+```
+True
+SolidBackground
+```
+
+</details>
+
+`config.background` reads back as a background object whichever spelling went in, so a caller that wants the flat fill asks for `config.background.color.rgb` rather than for the field itself. Keep `NoiseBackground.sigma` at or below `32` for any run scored against a rasterized-ink oracle: the oracle finds ink by colour distance, Gaussian noise is unbounded, and its tail — not its mean — is what starts producing false ink above that.
+
 ### Breaking left/right symmetry
 
 Most shapes are drawn mirror-symmetric about their own vertical axis in canonical orientation (every geometric shape, every symbol, most letters), so their oriented bounding box otherwise always shows identical left/right margins — real oriented objects (vehicles, ships) rarely are. `asymmetry_jitter` (default `0.0`, a fraction in `[0, 0.5)`) narrows a randomly chosen half — left or right of that axis, before rotation — of each placed object by up to that fraction, independently per instance. The animal silhouettes and roughly two-thirds of the letters are already asymmetric on their own (a letter's own strokes rarely balance left-right the way a symbol's outline is authored to), so the jitter is redundant orientation variety for them rather than the sole source of it — it still applies uniformly to every shape but `circle`, which is excluded for the separate reason below:

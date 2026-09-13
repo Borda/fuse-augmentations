@@ -70,7 +70,7 @@ def test_polygon_is_emitted_half_a_pixel_below_the_outline_that_was_drawn() -> N
     for sample in generator.generate(5, seed=0):
         annotation = sample.annotations[0]
         redrawn = _rasterize([float(v) for v in to_pixel_edge(np.asarray(annotation.polygon))], IMG_SIZE)
-        drawn = np.any(sample.image.astype(np.int64) != np.asarray(config.background, dtype=np.int64), axis=2)
+        drawn = np.any(sample.image.astype(np.int64) != np.asarray(config.background.color.rgb, dtype=np.int64), axis=2)
         assert np.array_equal(redrawn, drawn)
 
 
@@ -129,13 +129,13 @@ def test_polygon_and_box_both_track_the_ink_through_a_reflection(name: str, tran
         )
 
         warped = (out_image[0].permute(1, 2, 0).numpy() * 255.0).round().astype(np.uint8)
-        ink = np.any(warped.astype(np.int64) != np.asarray(config.background, dtype=np.int64), axis=2)
+        ink = np.any(warped.astype(np.int64) != np.asarray(config.background.color.rgb, dtype=np.int64), axis=2)
         points = to_pixel_edge(out_points[0].numpy())  # back to the ink's own edge space
         assert np.array_equal(_rasterize([float(v) for v in points.reshape(-1)], IMG_SIZE), ink), name
 
         # The box is one pixel wider than the outline is long: its edges bound the ink pixels that
         # the outline's own endpoints fall inside.
-        x_min, x_max, y_min, y_max = _ink_extent(warped, config.background)
+        x_min, x_max, y_min, y_max = _ink_extent(warped, config.background.color.rgb)
         box = out_box[0, 0].numpy()
         for lo, hi, axis in ((x_min, x_max, 0), (y_min, y_max, 1)):
             assert lo <= box[axis] < lo + 1, name
@@ -161,7 +161,9 @@ def test_coco_segmentation_ring_redraws_the_exported_image(tmp_path) -> None:
     for record in records["annotations"]:
         index = int(by_image[record["image_id"]].removeprefix("img_").removesuffix(".jpg"))
         redrawn = _rasterize(record["segmentation"][0], IMG_SIZE)
-        drawn = np.any(samples[index].image.astype(np.int64) != np.asarray(config.background, dtype=np.int64), axis=2)
+        drawn = np.any(
+            samples[index].image.astype(np.int64) != np.asarray(config.background.color.rgb, dtype=np.int64), axis=2
+        )
         assert np.array_equal(redrawn, drawn)
         x, y, width, height = record["bbox"]
         assert (x, y, x + width, y + height) == pytest.approx(samples[index].annotations[0].bbox_xyxy)

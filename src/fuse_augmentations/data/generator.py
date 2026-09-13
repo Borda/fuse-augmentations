@@ -1,6 +1,7 @@
 """Seeded synthetic-image generator producing format-agnostic samples.
 
-:class:`SyntheticGenerator` draws colored shapes on a gray canvas, rejecting
+:class:`SyntheticGenerator` draws colored shapes on a canvas that
+:mod:`~fuse_augmentations.data.backgrounds` fills — flat grey by default — rejecting
 placements that fall off the canvas or overlap existing objects, and returns a
 :class:`~fuse_augmentations.data.sample.Sample` carrying every annotation
 representation (polygon, axis-aligned box, oriented box). All randomness flows
@@ -157,6 +158,30 @@ class SyntheticGenerator:
         self.vocabulary = class_vocabulary(config.class_mode, config.shapes, config.colors)
         self.class_names = self.vocabulary.names
         self.keypoint_schema = keypoint_schema_for(config.shapes)
+        self._needs_side_stream = config.background.consumes_randomness
+
+    def _side_stream(self, rng: np.random.Generator) -> np.random.Generator | None:
+        """Return the child stream every non-placement draw comes from, or ``None`` when none is needed.
+
+        Args:
+            rng: The caller's generator, reserved for object placement and never drawn from here.
+
+        Returns:
+            A fresh child of ``rng``, or ``None`` when nothing in this configuration draws.
+
+        :meth:`numpy.random.Generator.spawn` advances the parent's seed-sequence child counter, not
+        its bit stream, so the placements that follow are bit-identical whether or not a child was
+        taken — which is what lets a background be switched on without moving an object at a fixed
+        seed. A child is nonetheless taken only when something will draw from it, so a configuration
+        that uses no such knob leaves even the child counter where it was. The child is taken per
+        :meth:`sample` call, so two images in one stream get independent non-placement randomness.
+
+        Deferring the draws to the end of :meth:`sample` instead would be correct within one image
+        and wrong across a stream: :meth:`generate` reuses one generator for every sample, so draws
+        made after image *n*'s placements would shift image *n+1*'s.
+
+        """
+        return rng.spawn(1)[0] if self._needs_side_stream else None
 
     def _attempt_placement(self, rng: np.random.Generator, kept: list[_BBox]) -> _Placement | None:
         """Draw one candidate shape; return it if in-bounds and non-overlapping, else ``None``.
@@ -199,7 +224,9 @@ class SyntheticGenerator:
         """Generate one image and its annotations.
 
         Args:
-            rng: Random generator driving object count, shapes, colors, and placement.
+            rng: Random generator driving object count, shapes, colors, and placement. The
+                background draws from a child of it rather than from it directly (see
+                :meth:`_side_stream`), so what fills the canvas never moves what is on it.
 
         Returns:
             A :class:`Sample` with an RGB ``uint8`` image and one annotation per drawn shape.
@@ -223,7 +250,8 @@ class SyntheticGenerator:
 
         """
         cfg = self.config
-        canvas = Image.new("RGB", (cfg.img_size, cfg.img_size), cfg.background)
+        side = self._side_stream(rng)
+        canvas = Image.fromarray(cfg.background.render(side, cfg.img_size))
         draw = ImageDraw.Draw(canvas)
         num_objects = int(rng.integers(cfg.min_objects, cfg.max_objects + 1))
 
