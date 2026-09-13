@@ -132,6 +132,7 @@ nav:
       - Shape families: datasets/shapes.md
       - Tasks and keypoints: datasets/tasks.md
       - Annotation formats: datasets/outputs.md
+      - Difficulty bands: datasets/difficulty.md
       - Customization and extension: datasets/customization.md
   - Applications:
       - Overview: applications/index.md

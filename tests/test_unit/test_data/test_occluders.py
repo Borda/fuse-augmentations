@@ -174,9 +174,9 @@ def test_occluders_are_byte_reproducible_for_a_seed() -> None:
 def test_the_coco_writer_counts_a_demoted_landmark(tmp_path) -> None:
     """COCO's `num_keypoints` counts every labelled point, visible or not, so a demoted one still counts.
 
-    The writers needed no change for this — `_keypoint_triples` branches on `visibility > 0` and the
-    count does the same — and that is exactly the claim worth checking rather than assuming, since a
-    writer that silently dropped visibility 1 would export a structurally valid, quietly lossy file.
+    The writers needed no change for this — `_keypoint_triples` branches on `visibility > 0` and the count does the same
+    — and that is exactly the claim worth checking rather than assuming, since a writer that silently dropped visibility
+    1 would export a structurally valid, quietly lossy file.
 
     """
     import json
