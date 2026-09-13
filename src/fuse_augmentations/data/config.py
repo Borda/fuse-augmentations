@@ -31,6 +31,7 @@ from fuse_augmentations.data.families import (
 
 if TYPE_CHECKING:
     from fuse_augmentations.data.backgrounds import Background
+    from fuse_augmentations.data.degradations import Degradation
 
 _SPLIT_SUM_TOL = 1e-6
 
@@ -725,6 +726,7 @@ class SyntheticConfig:
     boundary_tolerance: float = 0.05
     max_placement_attempts: int = 100
     background: ColorLike | Background = (128, 128, 128)
+    degrade: tuple[Degradation, ...] = ()
     rotate: bool = True
     asymmetry_jitter: float = 0.0
     class_mode: ClassMode = ClassMode.SHAPE
@@ -748,6 +750,7 @@ class SyntheticConfig:
         object.__setattr__(self, "task", Task(self.task))
         self._normalize_colors()
         self._normalize_background()
+        self._validate_degradations()
         if self.img_size <= 0:
             raise ValueError(f"img_size must be positive, got {self.img_size}")
         if not 1 <= self.min_objects <= self.max_objects:
@@ -809,6 +812,26 @@ class SyntheticConfig:
         if isinstance(self.background, Background):
             return
         object.__setattr__(self, "background", SolidBackground(color=Fill.parse(self.background)))
+
+    def _validate_degradations(self) -> None:
+        """Reject a ``degrade`` tuple holding anything that is not a :class:`Degradation`.
+
+        The effects are applied in order to the finished image, so a stray tuple element would
+        surface as an attribute error deep inside rendering rather than at the point the bad tuple
+        was written. The import is deferred for the same cycle-breaking reason as
+        :meth:`_normalize_background`'s.
+
+        Raises:
+            ValueError: If any element is not a
+                :class:`~fuse_augmentations.data.degradations.Degradation`.
+
+        """
+        from fuse_augmentations.data.degradations import Degradation
+
+        object.__setattr__(self, "degrade", tuple(self.degrade))
+        invalid = [step for step in self.degrade if not isinstance(step, Degradation)]
+        if invalid:
+            raise ValueError(f"degrade must contain only Degradation instances, got {invalid!r}")
 
     def _validate_vocabulary(self) -> None:
         """Reject an unusable shape/color tuple, a non-:class:`Task` task, or an unannotatable pairing.

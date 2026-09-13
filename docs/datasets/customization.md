@@ -81,6 +81,52 @@ SolidBackground
 
 `config.background` reads back as a background object whichever spelling went in, so a caller that wants the flat fill asks for `config.background.color.rgb` rather than for the field itself. Keep `NoiseBackground.sigma` at or below `32` for any run scored against a rasterized-ink oracle: the oracle finds ink by colour distance, Gaussian noise is unbounded, and its tail — not its mean — is what starts producing false ink above that.
 
+### Baking degradations into the pixels
+
+`degrade` takes a tuple of pointwise effects applied, in order, after the last shape is drawn. Each changes pixel *values* and never pixel *positions*, so no label moves — anything geometric belongs to `FusedCompose`, not here.
+
+| effect                 | parameter           | what it costs a model                                                     |
+| ---------------------- | ------------------- | ------------------------------------------------------------------------- |
+| `GaussianNoise(sigma)` | 0–32                | edge localisation and small-object recall                                 |
+| `GaussianBlur(radius)` | 0–3 px              | corner keypoints, and the OBB angle on a square-ish shape                 |
+| `JPEG(quality)`        | 1–95                | block artefacts around thin letter strokes                                |
+| `Contrast(factor)`     | 0.3–1.0             | colour-mode classes converge toward each other                            |
+| `ColorCast(gain)`      | per channel 0.7–1.3 | red-versus-green separation under a white balance error                   |
+| `Vignette(strength)`   | 0–0.6               | objects near the border darken, which interacts with `boundary_tolerance` |
+| `Quantize(levels)`     | 2–256               | flat fills band, a cheap stand-in for low bit depth                       |
+
+This is not a duplicate of the augmentation pipeline. A `degrade` tuple describes pixels baked into an on-disk dataset — a fixed property of the data, replayable from its seed — where a transform in a training loop resamples every epoch, and a dataset can carry both:
+
+```python
+from fuse_augmentations.data import (
+    JPEG,
+    GaussianBlur,
+    SyntheticConfig,
+    SyntheticGenerator,
+)
+
+plain = SyntheticConfig(img_size=64, max_objects=3)
+degraded = SyntheticConfig(img_size=64, max_objects=3, degrade=(GaussianBlur(radius=1.0), JPEG(quality=50)))
+
+boxes = [a.bbox_xyxy for s in SyntheticGenerator(plain).generate(2, seed=0) for a in s.annotations]
+unmoved = [a.bbox_xyxy for s in SyntheticGenerator(degraded).generate(2, seed=0) for a in s.annotations]
+
+print(boxes == unmoved)
+print(len(SyntheticConfig().degrade))
+```
+
+<details>
+<summary>Degraded pixels, identical labels</summary>
+
+```
+True
+0
+```
+
+</details>
+
+The tuple is a tuple because order matters: blurring and then compressing is not the same picture as compressing and then blurring. Each step takes `uint8` and returns `uint8`, so quantisation error accumulates between steps rather than being carried in float to the end — which is what a real camera pipeline does.
+
 ### Breaking left/right symmetry
 
 Most shapes are drawn mirror-symmetric about their own vertical axis in canonical orientation (every geometric shape, every symbol, most letters), so their oriented bounding box otherwise always shows identical left/right margins — real oriented objects (vehicles, ships) rarely are. `asymmetry_jitter` (default `0.0`, a fraction in `[0, 0.5)`) narrows a randomly chosen half — left or right of that axis, before rotation — of each placed object by up to that fraction, independently per instance. The animal silhouettes and roughly two-thirds of the letters are already asymmetric on their own (a letter's own strokes rarely balance left-right the way a symbol's outline is authored to), so the jitter is redundant orientation variety for them rather than the sole source of it — it still applies uniformly to every shape but `circle`, which is excluded for the separate reason below:

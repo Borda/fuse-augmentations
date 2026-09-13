@@ -58,6 +58,18 @@ from fuse_augmentations.data.config import (
     class_names,
     class_vocabulary,
 )
+from fuse_augmentations.data.degradations import (
+    JPEG as JPEG,
+)
+from fuse_augmentations.data.degradations import (
+    ColorCast,
+    Contrast,
+    Degradation,
+    GaussianBlur,
+    GaussianNoise,
+    Quantize,
+    Vignette,
+)
 from fuse_augmentations.data.families import (
     ALL_SHAPES,
     DEFAULT_SHAPES,
@@ -82,6 +94,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ALL_SHAPES",
     "DEFAULT_SHAPES",
+    "JPEG",
     "SHAPE_FAMILIES",
     "Annotation",
     "Background",
@@ -90,13 +103,19 @@ __all__ = [
     "ClassVocabulary",
     "CocoWriter",
     "Color",
+    "ColorCast",
+    "Contrast",
     "DatasetWriter",
+    "Degradation",
     "Fill",
+    "GaussianBlur",
+    "GaussianNoise",
     "GradientBackground",
     "ImpulseNoiseBackground",
     "KeypointSchema",
     "NoiseBackground",
     "OutputFormat",
+    "Quantize",
     "Sample",
     "Shape",
     "ShapeFamily",
@@ -107,6 +126,7 @@ __all__ = [
     "SyntheticIterableDataset",
     "Task",
     "TextureBackground",
+    "Vignette",
     "YoloWriter",
     "class_id",
     "class_names",

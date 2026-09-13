@@ -158,7 +158,9 @@ class SyntheticGenerator:
         self.vocabulary = class_vocabulary(config.class_mode, config.shapes, config.colors)
         self.class_names = self.vocabulary.names
         self.keypoint_schema = keypoint_schema_for(config.shapes)
-        self._needs_side_stream = config.background.consumes_randomness
+        self._needs_side_stream = config.background.consumes_randomness or any(
+            step.consumes_randomness for step in config.degrade
+        )
 
     def _side_stream(self, rng: np.random.Generator) -> np.random.Generator | None:
         """Return the child stream every non-placement draw comes from, or ``None`` when none is needed.
@@ -290,7 +292,12 @@ class SyntheticGenerator:
                 f"placement budget of {budget} attempts (placed {len(annotations)}); relax overlap_iou/"
                 f"boundary_tolerance, lower min_objects, or raise max_placement_attempts"
             )
-        return Sample(image=np.asarray(canvas), annotations=annotations, width=cfg.img_size, height=cfg.img_size)
+        # ``np.array`` rather than ``np.asarray``: the degradation chain needs a buffer it owns,
+        # and ``asarray`` may hand back a view onto Pillow's own.
+        image = np.array(canvas, dtype=np.uint8)
+        for step in cfg.degrade:
+            image = step.apply(image, side if step.consumes_randomness else None)
+        return Sample(image=image, annotations=annotations, width=cfg.img_size, height=cfg.img_size)
 
     def generate(self, num_images: int, seed: int | np.random.SeedSequence | None = None) -> Iterator[Sample]:
         """Lazily yield ``num_images`` samples from a fresh seeded generator.

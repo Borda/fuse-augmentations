@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from fuse_augmentations.data._render import require_stream, to_uint8
 from fuse_augmentations.data.config import ColorLike, Fill
 
 if TYPE_CHECKING:
@@ -61,42 +62,6 @@ INK_SAFE_SIGMA = 32.0
 def _rgb(color: ColorLike) -> NDArray[np.float32]:
     """Return a fill as a ``(3,)`` float array, validating the spelling on the way through."""
     return np.asarray(Fill.parse(color).rgb, dtype=np.float32)
-
-
-def _to_canvas(values: NDArray[np.float32]) -> NDArray[np.uint8]:
-    """Round a float canvas to the writable, C-contiguous ``uint8`` array a renderer must return.
-
-    Args:
-        values: ``(img_size, img_size, 3)`` float values in any range.
-
-    Returns:
-        The same canvas clipped to ``[0, 255]`` and rounded once, as a fresh ``uint8`` array. One
-        rounding rather than several is what keeps two implementations of the same ramp agreeing.
-
-    """
-    return np.ascontiguousarray(np.clip(np.rint(values), 0.0, 255.0).astype(np.uint8))
-
-
-def _require_stream(rng: np.random.Generator | None, mode: str) -> np.random.Generator:
-    """Return the side stream a drawing background was promised, or say who broke the contract.
-
-    Args:
-        rng: The stream handed to :meth:`Background.render`.
-        mode: The class name, so the message names the background that needs one.
-
-    Returns:
-        ``rng`` unchanged.
-
-    Raises:
-        TypeError: If ``rng`` is ``None``. Only a background whose
-            :attr:`Background.consumes_randomness` is ``False`` is handed ``None``, so reaching here
-            means the two disagree — a caller error, and one worth naming rather than letting it
-            surface as an attribute error on ``None``.
-
-    """
-    if rng is None:
-        raise TypeError(f"{mode} draws randomness but was handed no side stream; consumes_randomness says it needs one")
-    return rng
 
 
 class Background(ABC):
@@ -222,7 +187,7 @@ class GradientBackground(Background):
     def render(self, rng: np.random.Generator | None, img_size: int) -> NDArray[np.uint8]:
         """Return the ramp, interpolating between the stops in float and rounding once."""
         first, second = (_rgb(stop) for stop in self.stops)
-        return _to_canvas(first + self._ramp(rng, img_size)[..., None] * (second - first))
+        return to_uint8(first + self._ramp(rng, img_size)[..., None] * (second - first))
 
     def _ramp(self, rng: np.random.Generator | None, img_size: int) -> NDArray[np.float32]:
         """Return the scalar field the stops are interpolated over, normalized to ``[0, 1]``.
@@ -239,7 +204,7 @@ class GradientBackground(Background):
         if self.direction is not None:
             angle = float(self.direction)
         else:
-            angle = float(_require_stream(rng, type(self).__name__).uniform(0.0, 2.0 * math.pi))
+            angle = float(require_stream(rng, type(self).__name__).uniform(0.0, 2.0 * math.pi))
         field = math.cos(angle) * columns + math.sin(angle) * rows
         span = float(field.max() - field.min())
         return np.asarray((field - field.min()) / max(span, 1e-6), dtype=np.float32)
@@ -283,9 +248,9 @@ class NoiseBackground(Background):
 
     def render(self, rng: np.random.Generator | None, img_size: int) -> NDArray[np.uint8]:
         """Return the base colour plus one Gaussian field, added rather than multiplied."""
-        stream = _require_stream(rng, type(self).__name__)
+        stream = require_stream(rng, type(self).__name__)
         noise = stream.standard_normal((img_size, img_size, 3)).astype(np.float32) * float(self.sigma)
-        return _to_canvas(_rgb(self.base) + noise)
+        return to_uint8(_rgb(self.base) + noise)
 
 
 @dataclass(frozen=True)
@@ -333,13 +298,13 @@ class ImpulseNoiseBackground(Background):
         which is the whole point of impulse noise and the reason it survives a blur.
 
         """
-        stream = _require_stream(rng, type(self).__name__)
+        stream = require_stream(rng, type(self).__name__)
         canvas = np.broadcast_to(_rgb(self.base), (img_size, img_size, 3)).copy()
         selected = stream.random((img_size, img_size)) < float(self.amount)
         salt = stream.random((img_size, img_size)) < float(self.salt_ratio)
         canvas[selected & salt] = 255.0
         canvas[selected & ~salt] = 0.0
-        return _to_canvas(canvas)
+        return to_uint8(canvas)
 
 
 @dataclass(frozen=True)
@@ -397,8 +362,8 @@ class TextureBackground(Background):
         ``base``, so the same ``amplitude`` would mean different things on a dark and a light canvas.
 
         """
-        field = self._field(_require_stream(rng, type(self).__name__), img_size)
-        return _to_canvas(_rgb(self.base) + float(self.amplitude) * field[..., None])
+        field = self._field(require_stream(rng, type(self).__name__), img_size)
+        return to_uint8(_rgb(self.base) + float(self.amplitude) * field[..., None])
 
     def _field(self, rng: np.random.Generator, img_size: int) -> NDArray[np.float32]:
         """Return the summed, normalized and optionally posterized value-noise field in ``[-1, 1]``.
