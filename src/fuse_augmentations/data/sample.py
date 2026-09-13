@@ -181,6 +181,52 @@ class Annotation:
                 )
 
 
+@dataclass(frozen=True, eq=False)
+class SceneRecord:
+    """What the renderer knows about a scene that its annotations do not say.
+
+    The side-car for everything that describes a whole image rather than one object in it. Hanging a
+    field per feature off :class:`Sample` would grow its public surface every time the generator
+    learns something new, and an untyped ``dict`` would be unlike every other field in the module;
+    one typed record means later additions land here and touch no consumer.
+
+    ``eq=False`` is load-bearing rather than stylistic. A generated ``__eq__`` compares field tuples,
+    so two populated records would raise ``ValueError: The truth value of an array with more than one
+    element is ambiguous`` instead of returning a bool, and ``hash()`` would raise ``TypeError``.
+    Falling back to identity comparison is well defined for every record and is what a raster
+    side-car should offer anyway: comparing two masks is the caller's business, not this type's.
+
+    Args:
+        occluder_mask: ``(height, width)`` boolean raster, ``True`` where an occluder covers the
+            pixel, or ``None`` when no occluder was asked for. ``None`` rather than an all-``False``
+            array on purpose, so "no occluders" is distinguishable from "occluders that happened to
+            miss". The buffer is marked read-only before it is stored: ``frozen`` stops the field
+            being rebound and does nothing to stop a caller mutating what it points at, and a mutated
+            mask would silently disagree with the visibility flags already computed from it.
+        background_source: Identifier of the image a photographic background was cropped from, or
+            ``None`` for a procedural one.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.sample import SceneRecord
+        >>> SceneRecord().occluder_mask is None
+        True
+
+        ```
+
+    """
+
+    occluder_mask: NDArray[np.bool_] | None = None
+    background_source: str | None = None
+
+
+#: The record every sample carries until something fills one in. Shared rather than built per sample,
+#: which is safe precisely because it is empty and frozen: both its fields are immutable scalars, so
+#: no sample can reach another through it. Never replace this with a ``default_factory`` "for
+#: safety" — that would allocate per sample and buy nothing.
+_EMPTY_SCENE = SceneRecord()
+
+
 @dataclass(frozen=True)
 class Sample:
     """A rendered image and its annotations.
@@ -190,6 +236,9 @@ class Sample:
         annotations: Object annotations, one per drawn shape.
         width: Image width in pixels.
         height: Image height in pixels.
+        scene: What the renderer knows about the scene as a whole — see :class:`SceneRecord`.
+            Defaults to a shared empty record, so every existing construction keeps working and a
+            consumer that never asks about the scene never notices it.
 
     Examples:
         ```pycon
@@ -198,6 +247,8 @@ class Sample:
         >>> img = np.zeros((4, 4, 3), dtype=np.uint8)
         >>> Sample(img, [], width=4, height=4).width
         4
+        >>> Sample(img, [], width=4, height=4).scene.background_source is None
+        True
 
         ```
 
@@ -207,3 +258,4 @@ class Sample:
     annotations: list[Annotation]
     width: int
     height: int
+    scene: SceneRecord = _EMPTY_SCENE

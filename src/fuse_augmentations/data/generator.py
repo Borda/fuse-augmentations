@@ -49,7 +49,7 @@ from fuse_augmentations.data.config import Fill, Task, class_vocabulary
 from fuse_augmentations.data.families import keypoint_schema_for, place_keypoints, shape_outline
 from fuse_augmentations.data.geometry import bbox_iou, polygon_to_bbox_xyxy, to_pixel_centre
 from fuse_augmentations.data.primitives import PrimitiveShape
-from fuse_augmentations.data.sample import Annotation, Sample
+from fuse_augmentations.data.sample import _EMPTY_SCENE, Annotation, Sample, SceneRecord
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -62,21 +62,29 @@ _BBox = tuple[float, float, float, float]
 #: the landmark table (``None`` off the keypoints task or for a shape with no schema).
 _Placement = tuple["Shape", Fill, "NDArray[np.float64]", float, "NDArray[np.float64] | None"]
 
-#: COCO visibility flags emitted for a landmark: ``2`` is "labeled and visible", ``0`` is
-#: "not labeled". The intermediate ``1`` ("labeled but not visible") never occurs here — the
-#: placement loop rejects overlapping objects, so only the canvas frame or an absent
-#: hind limb (a NaN row from :mod:`~fuse_augmentations.data.animals`) can hide a
-#: landmark.
+#: COCO visibility flags emitted for a landmark: ``2`` is "labeled and visible", ``1`` is "labeled
+#: but not visible", ``0`` is "not labeled". A landmark is hidden by the canvas frame or by an absent
+#: optional point (a NaN row from :mod:`~fuse_augmentations.data.animals`), and occluded when
+#: ``occluders`` put an unlabelled shape over it — the placement loop rejects overlapping *labelled*
+#: objects, so one labelled shape never covers another's landmark.
 _KEYPOINT_VISIBLE = 2
+_KEYPOINT_OCCLUDED = 1
 _KEYPOINT_HIDDEN = 0
 
 
-def _visible_keypoints(points: NDArray[np.float64], img_size: int) -> tuple[tuple[float, float, int], ...]:
+def _visible_keypoints(
+    points: NDArray[np.float64], img_size: int, occluder_mask: NDArray[np.bool_] | None = None
+) -> tuple[tuple[float, float, int], ...]:
     """Tag each landmark with its COCO visibility flag, zeroing the ones off the canvas.
 
     Args:
         points: ``(num_keypoints, 2)`` landmark coordinates in image pixels.
         img_size: Canvas side length in pixels.
+        occluder_mask: ``(img_size, img_size)`` raster of what an occluder covers, or ``None``. A
+            landmark inside the canvas but under the mask is demoted from :data:`_KEYPOINT_VISIBLE`
+            to :data:`_KEYPOINT_OCCLUDED`, keeping its coordinates — COCO's "labeled but not
+            visible". An already-hidden point is never promoted: it is off the canvas, so the mask
+            has nothing to say about it.
 
     Returns:
         One ``(x, y, visibility)`` triple per landmark, in input order: the coordinates converted to
@@ -97,8 +105,11 @@ def _visible_keypoints(points: NDArray[np.float64], img_size: int) -> tuple[tupl
         if not inside:
             triples.append((0.0, 0.0, _KEYPOINT_HIDDEN))
             continue
+        # The incoming coordinates are edge-space, where Pillow fills pixel ``floor(x)`` for a
+        # vertex at ``x`` -- the same index the stencil was rasterized under.
+        covered = occluder_mask is not None and bool(occluder_mask[int(y), int(x)])
         centre = to_pixel_centre(np.array([x, y], dtype=np.float64))
-        triples.append((float(centre[0]), float(centre[1]), _KEYPOINT_VISIBLE))
+        triples.append((float(centre[0]), float(centre[1]), _KEYPOINT_OCCLUDED if covered else _KEYPOINT_VISIBLE))
     return tuple(triples)
 
 
@@ -161,6 +172,7 @@ class SyntheticGenerator:
         self._needs_side_stream = (
             config.background.consumes_randomness
             or bool(config.distractors)
+            or bool(config.occluders)
             or any(step.consumes_randomness for step in config.degrade)
         )
 
@@ -256,6 +268,7 @@ class SyntheticGenerator:
         count: int,
         *,
         respect_boundary: bool = True,
+        stencil: ImageDraw.ImageDraw | None = None,
     ) -> list[_BBox]:
         """Draw ``count`` unlabelled shapes and return the boxes they covered.
 
@@ -266,6 +279,8 @@ class SyntheticGenerator:
             respect_boundary: Keep items inside ``cfg.boundary_tolerance``. ``True`` for distractors,
                 which are background clutter; ``False`` for an occluder, which is realistic precisely
                 when it runs off the frame.
+            stencil: A parallel one-bit canvas to paint the same outlines onto, or ``None``. Only the
+                occluders use it, to record what they cover.
 
         Returns:
             One box per item that was actually placed, in draw order.
@@ -292,7 +307,10 @@ class SyntheticGenerator:
                 if placed is None:
                     continue
                 _shape, color, poly, _angle, _points = placed
-                draw.polygon([(float(x), float(y)) for x, y in poly], fill=color.rgb)
+                outline = [(float(x), float(y)) for x, y in poly]
+                draw.polygon(outline, fill=color.rgb)
+                if stencil is not None:
+                    stencil.polygon(outline, fill=1)
                 covered.append(polygon_to_bbox_xyxy(poly))
                 break
         return covered
@@ -334,47 +352,102 @@ class SyntheticGenerator:
             self._draw_clutter(draw, side, cfg.distractors)
         num_objects = int(rng.integers(cfg.min_objects, cfg.max_objects + 1))
 
-        annotations: list[Annotation] = []
+        placements: list[_Placement] = []
         kept: list[_BBox] = []
         # Retry failed placements against a shared budget so we reach num_objects when feasible
         # instead of silently dropping objects; the budget bounds RNG draws deterministically.
         budget = num_objects * cfg.max_placement_attempts
         for _ in range(budget):
-            if len(annotations) >= num_objects:
+            if len(placements) >= num_objects:
                 break
             placed = self._attempt_placement(rng, kept)
             if placed is None:
                 continue
-            shape, color, poly, angle, points = placed
             # The rasterizer and the AABB both read the outline in edge space; only the point
             # fields are converted, because only they travel through a pixel-centre matrix.
-            draw.polygon([(float(x), float(y)) for x, y in poly], fill=color.rgb)
-            bbox = polygon_to_bbox_xyxy(poly)
-            kept.append(bbox)
-            class_id = self.vocabulary.id_of(shape, color)
-            annotations.append(
-                Annotation(
-                    class_id=class_id,
-                    class_name=self.class_names[class_id],
-                    polygon=[float(v) for v in to_pixel_centre(poly).reshape(-1)],
-                    bbox_xyxy=bbox,
-                    angle=angle,
-                    keypoints=None if points is None else _visible_keypoints(points, cfg.img_size),
-                    keypoint_schema=None if points is None else self.keypoint_schema,
-                )
-            )
-        if len(annotations) < cfg.min_objects:
+            draw.polygon([(float(x), float(y)) for x, y in placed[2]], fill=placed[1].rgb)
+            kept.append(polygon_to_bbox_xyxy(placed[2]))
+            placements.append(placed)
+        if len(placements) < cfg.min_objects:
             raise RuntimeError(
                 f"could not place the required min_objects={cfg.min_objects} shapes within the "
-                f"placement budget of {budget} attempts (placed {len(annotations)}); relax overlap_iou/"
+                f"placement budget of {budget} attempts (placed {len(placements)}); relax overlap_iou/"
                 f"boundary_tolerance, lower min_objects, or raise max_placement_attempts"
             )
+        # Occluders go on last of the canvas-side steps, so they cover the labelled shapes rather
+        # than sit behind them -- which is also why annotations are built only after this point.
+        occluder_mask = self._draw_occluders(draw, side) if cfg.occluders and side is not None else None
+        annotations = [
+            self._annotate(placed, bbox, occluder_mask) for placed, bbox in zip(placements, kept, strict=True)
+        ]
         # ``np.array`` rather than ``np.asarray``: the degradation chain needs a buffer it owns,
         # and ``asarray`` may hand back a view onto Pillow's own.
         image = np.array(canvas, dtype=np.uint8)
         for step in cfg.degrade:
             image = step.apply(image, side if step.consumes_randomness else None)
-        return Sample(image=image, annotations=annotations, width=cfg.img_size, height=cfg.img_size)
+        return Sample(
+            image=image,
+            annotations=annotations,
+            width=cfg.img_size,
+            height=cfg.img_size,
+            scene=SceneRecord(occluder_mask=occluder_mask) if occluder_mask is not None else _EMPTY_SCENE,
+        )
+
+    def _annotate(self, placed: _Placement, bbox: _BBox, occluder_mask: NDArray[np.bool_] | None) -> Annotation:
+        """Turn one accepted placement into its annotation.
+
+        Args:
+            placed: The tuple :meth:`_attempt_placement` returned.
+            bbox: The axis-aligned box already measured from its outline.
+            occluder_mask: What an occluder covers, or ``None`` when none were drawn.
+
+        Returns:
+            The annotation, with landmark visibility resolved against the mask.
+
+        Built after the occluders rather than inside the placement loop, because a landmark's
+        visibility depends on what was drawn over it and the occluders are drawn last. The polygon
+        and the box are unaffected either way: a COCO polygon describes the object, not its visible
+        part, so the mask a writer rasterizes from it is **amodal**. A consumer wanting a modal mask
+        subtracts ``sample.scene.occluder_mask`` from it.
+
+        """
+        shape, color, poly, angle, points = placed
+        class_id = self.vocabulary.id_of(shape, color)
+        return Annotation(
+            class_id=class_id,
+            class_name=self.class_names[class_id],
+            polygon=[float(v) for v in to_pixel_centre(poly).reshape(-1)],
+            bbox_xyxy=bbox,
+            angle=angle,
+            keypoints=None if points is None else _visible_keypoints(points, self.config.img_size, occluder_mask),
+            keypoint_schema=None if points is None else self.keypoint_schema,
+        )
+
+    def _draw_occluders(self, draw: ImageDraw.ImageDraw, rng: np.random.Generator) -> NDArray[np.bool_]:
+        """Draw the occluders over everything already on the canvas and return what they cover.
+
+        Args:
+            draw: The canvas, already carrying the background, the clutter and the labelled shapes.
+            rng: The side stream, so an occluder never moves the object it covers.
+
+        Returns:
+            An ``(img_size, img_size)`` read-only boolean raster, ``True`` where an occluder covers
+            the pixel.
+
+        The mask is rasterized from the same outlines into a parallel one-bit image rather than
+        recovered from the finished pixels, which would be unable to tell an occluder from an object
+        that happened to share its colour. It is marked read-only before it leaves: a frozen
+        :class:`~fuse_augmentations.data.sample.SceneRecord` stops the field being rebound and does
+        nothing to stop a caller mutating the buffer, and a mutated mask would disagree with the
+        visibility flags already computed from it.
+
+        """
+        cfg = self.config
+        stencil = Image.new("1", (cfg.img_size, cfg.img_size), 0)
+        self._draw_clutter(draw, rng, cfg.occluders, respect_boundary=False, stencil=ImageDraw.Draw(stencil))
+        mask = np.asarray(stencil, dtype=bool).copy()
+        mask.flags.writeable = False
+        return mask
 
     def generate(self, num_images: int, seed: int | np.random.SeedSequence | None = None) -> Iterator[Sample]:
         """Lazily yield ``num_images`` samples from a fresh seeded generator.

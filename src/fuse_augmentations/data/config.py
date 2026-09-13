@@ -747,6 +747,7 @@ class SyntheticConfig:
     background: ColorLike | Background = (128, 128, 128)
     degrade: tuple[Degradation, ...] = ()
     distractors: int = 0
+    occluders: int = 0
     distractor_shapes: tuple[Shape, ...] | None = None
     distractor_colors: tuple[Fill, ...] | None = None
     rotate: bool = True
@@ -790,6 +791,8 @@ class SyntheticConfig:
             raise ValueError(f"max_placement_attempts must be >= 1, got {self.max_placement_attempts}")
         if self.distractors < 0:
             raise ValueError(f"distractors must be non-negative, got {self.distractors}")
+        if self.occluders < 0:
+            raise ValueError(f"occluders must be non-negative, got {self.occluders}")
         if not 0.0 <= self.asymmetry_jitter < 0.5:
             raise ValueError(f"asymmetry_jitter must be within [0, 0.5), got {self.asymmetry_jitter}")
         self._validate_vocabulary()
@@ -889,13 +892,14 @@ class SyntheticConfig:
             object.__setattr__(self, "distractor_colors", tuple(f for f in DISTRACTOR_PALETTE if f.rgb not in claimed))
         else:
             object.__setattr__(self, "distractor_colors", tuple(Fill.parse(f) for f in self.distractor_colors))
-        if not self.distractors:
+        if not (self.distractors or self.occluders):
             return
         pools = (("distractor_shapes", self.distractor_shapes), ("distractor_colors", self.distractor_colors))
         for name, pool in pools:
             if not pool:
                 raise ValueError(
-                    f"distractors={self.distractors} was asked for but {name} resolved to an empty pool; "
+                    f"clutter was asked for (distractors={self.distractors}, occluders={self.occluders}) "
+                    f"but {name} resolved to an empty pool; "
                     f"pass {name}= explicitly, or narrow shapes/colors so a complement remains"
                 )
 

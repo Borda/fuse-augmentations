@@ -156,6 +156,48 @@ True
 
 Both pools default to a complement so clutter never wears a class's own appearance: `distractor_shapes` is every shape `shapes` does not use, and `distractor_colors` is the packaged `DISTRACTOR_PALETTE` minus any RGB triple `colors` already claims. The colour complement is taken against that palette rather than against `colors` itself because `colors` defaults to the whole `Color` vocabulary, which would leave nothing to draw with; asking for clutter when either pool really is empty raises at construction and names which one it was. Placement is best effort and carries no IoU constraint — being overlapped is the point — so an item that cannot be placed within its own attempt budget is skipped rather than raised over.
 
+### Occluding the objects
+
+`occluders` draws that many unlabelled shapes *over* the labelled ones, from the same two distractor pools. It is the one knob that touches a label, and the only one: a landmark it covers is demoted from COCO visibility `2` to `1`, while polygons and boxes stay exactly where they were. Occluders respect neither `boundary_tolerance` nor `overlap_iou` — an occluder that runs half off the frame is a realistic occluder.
+
+What was covered is published on the sample rather than left implicit:
+
+```python
+from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
+from fuse_augmentations.data.animals import AnimalShape
+
+config = SyntheticConfig(
+    img_size=96,
+    task="keypoints",
+    shapes=(AnimalShape.DUCK, AnimalShape.CAMEL),
+    min_objects=3,
+    max_objects=3,
+    min_size_ratio=0.2,
+    max_size_ratio=0.35,
+    occluders=8,
+)
+
+sample = next(iter(SyntheticGenerator(config).generate(1, seed=0)))
+flags = {triple[2] for annotation in sample.annotations for triple in annotation.keypoints}
+
+print(sorted(flags))
+print(sample.scene.occluder_mask.shape)
+print(next(iter(SyntheticGenerator(SyntheticConfig(img_size=32)).generate(1, seed=0))).scene.occluder_mask)
+```
+
+<details>
+<summary>Visibility flags under occlusion</summary>
+
+```
+[1, 2]
+(96, 96)
+None
+```
+
+</details>
+
+`sample.scene` is a `SceneRecord` — one typed side-car for everything describing the whole image rather than one object in it, so later additions land there and touch no consumer. It compares by identity rather than by field, because a generated equality over a raster field raises instead of returning a bool, and the mask buffer is read-only: a mutated mask would silently disagree with the visibility flags already computed from it.
+
 ### Breaking left/right symmetry
 
 Most shapes are drawn mirror-symmetric about their own vertical axis in canonical orientation (every geometric shape, every symbol, most letters), so their oriented bounding box otherwise always shows identical left/right margins — real oriented objects (vehicles, ships) rarely are. `asymmetry_jitter` (default `0.0`, a fraction in `[0, 0.5)`) narrows a randomly chosen half — left or right of that axis, before rotation — of each placed object by up to that fraction, independently per instance. The animal silhouettes and roughly two-thirds of the letters are already asymmetric on their own (a letter's own strokes rarely balance left-right the way a symbol's outline is authored to), so the jitter is redundant orientation variety for them rather than the sole source of it — it still applies uniformly to every shape but `circle`, which is excluded for the separate reason below:

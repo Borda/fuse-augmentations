@@ -119,6 +119,12 @@ This matters only for a consumer that *samples* at the landmark — a heatmap ta
 
 Every landmark is a pure rigid transform (translate/scale/rotate) of its packaged template position — zero articulation, zero intra-class deformation — so a model trained on this data learns template identity plus a similarity-transform regression, not articulated pose; the dataset exercises the COCO/YOLO pose formats end-to-end, it is not a substitute for articulated-pose training data.
 
+### Occluded landmarks
+
+`v=1` — labelled but not visible — appears only when a run sets `occluders`. An occluder is an unlabelled shape drawn *over* the labelled objects, so a landmark underneath it is still known exactly and simply cannot be seen; it keeps its coordinates and is demoted from `2` to `1` rather than zeroed. A landmark the canvas frame already clipped stays at `0` and is never promoted, since the mask has nothing to say about a point outside the image.
+
+Polygons and boxes are untouched by an occluder, which follows COCO: a polygon describes the object, not the part of it that happens to be visible. The mask a writer rasterizes from that polygon is therefore **amodal**, and `sample.scene.occluder_mask` publishes what was drawn over it so a consumer wanting a modal mask can subtract the two. Without occluders, `scene.occluder_mask` is `None` rather than an all-`False` array, so "none were asked for" stays distinguishable from "some were drawn and missed".
+
 ### Absent landmarks
 
 `ear` and the four hind-leg points (`hind_knee_*`, `hind_limb_*`) are the only landmarks an animal may lack — a whale's silhouette shows pectoral flippers (its front limbs) but no hind legs, and neither a whale nor a fish has an external ear to annotate. The packaged table carries a `(nan, nan)` row for an absent landmark rather than a faked point, always paired with `v=0`; every writer branches on that visibility flag, not on the coordinates, so an absent landmark is emitted as the documented `(0.0, 0.0, v=0)` placeholder with no special-casing for NaN. `fish` and `whale` lack all five (11 of 16 landmarks present); the other ten animals have all 16.

@@ -83,7 +83,7 @@ from fuse_augmentations.data.families import (
 )
 from fuse_augmentations.data.generator import SyntheticGenerator
 from fuse_augmentations.data.keypoints import KeypointSchema
-from fuse_augmentations.data.sample import Annotation, Sample
+from fuse_augmentations.data.sample import Annotation, Sample, SceneRecord
 from fuse_augmentations.data.writers import CocoWriter, DatasetWriter, YoloWriter, get_writer, register_writer
 
 if TYPE_CHECKING:
@@ -119,6 +119,7 @@ __all__ = [
     "OutputFormat",
     "Quantize",
     "Sample",
+    "SceneRecord",
     "Shape",
     "ShapeFamily",
     "SolidBackground",
