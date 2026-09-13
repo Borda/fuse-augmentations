@@ -1,0 +1,16 @@
+{
+  "detection-color-primitives-64": "aff272ebc00273eb828821381cb3750ba8d5d70151f375b45154f91154199cda",
+  "detection-customfill-primitives-64": "d1777ea460707f95e3d426e3ac050c388d99f3b659b4adfbe214ddb006614c6e",
+  "detection-dense-small-primitives-64": "03eb836d3b12d823229ddffd04c508d571179699510935c8d13b8a289c1ebe80",
+  "detection-jitter-primitives-64": "f938eb8a935142a5d7bc15dbd07100d9bc1c9cf6c02d5dea1227040c00c7f552",
+  "detection-norotate-primitives-64": "b82a8f747436bdfd6e9261a655e5c672070b35e35f8df75aa5408803b3c618a8",
+  "detection-shape-animals-64": "62a55bb1d5020c0f091645fb972b8fdfa95ead2eaa9a33bad09f17659f6d1cea",
+  "detection-shape-letters-64": "821e01ba5e3fba17576df02315da69493518ca05e85138de8a6ca35740219f60",
+  "detection-shape-primitives-192": "900dab2594a28ef73130b97346c2e8a3b3ef44f610ec2dabc4fc6a97005546de",
+  "detection-shape-primitives-64": "30f467ffa23c4eba1fbcd313c34370aff9f291dceebe2d791dc413a03c1b24e6",
+  "detection-shapecolor-primitives-64": "d151b8a0f4e854dcac66e1b85abbfd8715184a31af3382b157b8feee0fcb9b80",
+  "keypoints-shape-animals-192": "312a95c0297098743a8cc6a24ab92fac7f0f475f881dcbe9d6d1fe1989186d26",
+  "keypoints-shape-animals-64": "8c39681c40ed10a49d66961395d0122b1f4bc316129731c501f670c3ae8f8606",
+  "obb-shape-primitives-64": "bf57a137ac39775ac61fd613ba3249a38ea8e8cca621fed19425202e39e11ee3",
+  "segmentation-shape-primitives-64": "30f467ffa23c4eba1fbcd313c34370aff9f291dceebe2d791dc413a03c1b24e6"
+}
