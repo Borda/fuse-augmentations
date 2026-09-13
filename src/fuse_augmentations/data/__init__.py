@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 from fuse_augmentations.data.backgrounds import (
     Background,
     GradientBackground,
+    ImageBackground,
     ImpulseNoiseBackground,
     NoiseBackground,
     SolidBackground,
@@ -113,6 +114,7 @@ __all__ = [
     "GaussianBlur",
     "GaussianNoise",
     "GradientBackground",
+    "ImageBackground",
     "ImpulseNoiseBackground",
     "KeypointSchema",
     "NoiseBackground",

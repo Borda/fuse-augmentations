@@ -113,6 +113,23 @@ def _visible_keypoints(
     return tuple(triples)
 
 
+def _scene(occluder_mask: NDArray[np.bool_] | None, background_source: str | None) -> SceneRecord:
+    """Return the side-car for one sample, reusing the shared empty record when there is nothing to say.
+
+    Args:
+        occluder_mask: What an occluder covered, or ``None``.
+        background_source: What a photographic background was cropped from, or ``None``.
+
+    Returns:
+        A populated :class:`SceneRecord`, or the shared empty one, which allocates nothing and is
+        safe to share precisely because both its fields are immutable scalars.
+
+    """
+    if occluder_mask is None and background_source is None:
+        return _EMPTY_SCENE
+    return SceneRecord(occluder_mask=occluder_mask, background_source=background_source)
+
+
 def _boundary_overlap(bbox: _BBox, img_size: int) -> float:
     """Return the fraction of ``bbox`` area lying outside a square canvas.
 
@@ -346,7 +363,8 @@ class SyntheticGenerator:
         """
         cfg = self.config
         side = self._side_stream(rng)
-        canvas = Image.fromarray(cfg.background.render(side, cfg.img_size))
+        pixels, background_source = cfg.background.render_with_source(side, cfg.img_size)
+        canvas = Image.fromarray(pixels)
         draw = ImageDraw.Draw(canvas)
         if cfg.distractors and side is not None:
             self._draw_clutter(draw, side, cfg.distractors)
@@ -390,7 +408,7 @@ class SyntheticGenerator:
             annotations=annotations,
             width=cfg.img_size,
             height=cfg.img_size,
-            scene=SceneRecord(occluder_mask=occluder_mask) if occluder_mask is not None else _EMPTY_SCENE,
+            scene=_scene(occluder_mask, background_source),
         )
 
     def _annotate(self, placed: _Placement, bbox: _BBox, occluder_mask: NDArray[np.bool_] | None) -> Annotation:

@@ -81,6 +81,38 @@ SolidBackground
 
 `config.background` reads back as a background object whichever spelling went in, so a caller that wants the flat fill asks for `config.background.color.rgb` rather than for the field itself. Keep `NoiseBackground.sigma` at or below `32` for any run scored against a rasterized-ink oracle: the oracle finds ink by colour distance, Gaussian noise is unbounded, and its tail — not its mean — is what starts producing false ink above that.
 
+### Photographic backgrounds
+
+`ImageBackground` crops the canvas out of your own pictures, which buys the spatial statistics of real scenes without any labelling cost — the labels still come from the shapes drawn on top. It is the only mode that reads files the package does not ship, and the only one whose parameter has no default: there is nothing to ship a default directory from, and an empty one is refused at construction rather than rendered as black.
+
+```python
+import tempfile
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+from fuse_augmentations.data import ImageBackground, SyntheticConfig, SyntheticGenerator
+
+with tempfile.TemporaryDirectory() as folder:
+    Image.fromarray(np.full((64, 64, 3), 90, np.uint8)).save(Path(folder) / "wall.png")
+    config = SyntheticConfig(img_size=48, background=ImageBackground(Path(folder)))
+    sample = next(iter(SyntheticGenerator(config).generate(1, seed=0)))
+
+print(sample.scene.background_source)
+```
+
+<details>
+<summary>Which picture the sample stood on</summary>
+
+```
+wall.png
+```
+
+</details>
+
+Which file a sample was cropped from reaches `sample.scene.background_source` as a POSIX-form path relative to `image_dir`, so a photographic dataset stays traceable rather than merely reproducible in principle. Files are listed in sorted order, so a seed picks the same picture on any machine; a picture smaller than the canvas is scaled up proportionally rather than refused; and `grayscale=True` keeps the structure while dropping the colour, which matters when the run's classes are colour-named and a photographic canvas would otherwise compete with them. The directory listing is cached per process — a background reading a directory that changes underneath it has no reproducible meaning anyway.
+
 ### Baking degradations into the pixels
 
 `degrade` takes a tuple of pointwise effects applied, in order, after the last shape is drawn. Each changes pixel *values* and never pixel *positions*, so no label moves — anything geometric belongs to `FusedCompose`, not here.

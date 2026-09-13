@@ -36,6 +36,8 @@ from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -45,6 +47,7 @@ from fuse_augmentations.data.config import ColorLike, Fill
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
+    from PIL.Image import Image as PILImage
 
 #: The grey every mode falls back to, and the fill the generator drew before backgrounds were types.
 #: Spelled once here so the default of five dataclasses cannot drift apart.
@@ -57,6 +60,13 @@ DEFAULT_BASE: tuple[int, int, int] = (128, 128, 128)
 #: pixels at sigma 8, 16 and 32, then 36 at 48 and 248 at 64. A single stray pixel widens the
 #: oracle's box, so the bound is the last value that produced none.
 INK_SAFE_SIGMA = 32.0
+
+#: File suffixes :class:`ImageBackground` will open, lowercased.
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"})
+
+#: Directories whose listing is remembered. A handful covers any real program; the bound keeps a
+#: caller that builds paths programmatically from retaining one listing per path forever.
+_DIRECTORY_CACHE_SIZE = 32
 
 
 def _rgb(color: ColorLike) -> NDArray[np.float32]:
@@ -97,6 +107,28 @@ class Background(ABC):
             A writable, C-contiguous RGB canvas.
 
         """
+
+    def render_with_source(
+        self, rng: np.random.Generator | None, img_size: int
+    ) -> tuple[NDArray[np.uint8], str | None]:
+        """Return the canvas together with whatever names where its pixels came from.
+
+        Args:
+            rng: The side stream, exactly as :meth:`render` takes it.
+            img_size: Square canvas side length in pixels.
+
+        Returns:
+            The canvas and a provenance string, or ``None`` when the mode is procedural and there is
+            nothing outside the process to name.
+
+        This is what the generator calls, and what ends up in
+        :attr:`~fuse_augmentations.data.sample.SceneRecord.background_source`. It is not abstract: a
+        procedural mode has no source, so the default delegates to :meth:`render` and reports
+        ``None``, which means a third-party background implementing only :meth:`render` keeps
+        working. Only a mode reading files outside the package overrides it.
+
+        """
+        return self.render(rng, img_size), None
 
 
 @dataclass(frozen=True)
@@ -389,3 +421,126 @@ class TextureBackground(Background):
             return field
         levels = int(self.quantize) - 1
         return np.asarray(np.rint((field + 1.0) * 0.5 * levels) / levels * 2.0 - 1.0, dtype=np.float32)
+
+
+@lru_cache(maxsize=_DIRECTORY_CACHE_SIZE)
+def _scan(image_dir: Path) -> tuple[Path, ...]:
+    """Return the readable images in a directory, sorted, cached per directory for the process.
+
+    Args:
+        image_dir: Directory to list.
+
+    Returns:
+        Every file whose suffix names an image format, in sorted order so a seed selects the same
+        file on every machine rather than in whatever order the filesystem happens to return.
+
+    Raises:
+        ValueError: If the path is not a directory, or holds no image this package can open.
+
+    Cached because the alternative is a directory listing per generated image, which turns a cheap
+    background into a syscall-bound one. The cost is that a file added to the directory mid-process
+    is not picked up; a background reading a directory that changes underneath it has no reproducible
+    meaning anyway, which is the reason to prefer the stale listing here.
+
+    """
+    if not image_dir.is_dir():
+        raise ValueError(f"ImageBackground.image_dir must be an existing directory, got {image_dir}")
+    files = tuple(sorted(path for path in image_dir.iterdir() if path.suffix.lower() in _IMAGE_SUFFIXES))
+    if not files:
+        raise ValueError(
+            f"ImageBackground.image_dir holds no image this package can open: {image_dir} "
+            f"(looked for {', '.join(sorted(_IMAGE_SUFFIXES))})"
+        )
+    return files
+
+
+@dataclass(frozen=True)
+class ImageBackground(Background):
+    """Random crops of the caller's own photographs.
+
+    The only mode that reads the outside world, and the only one whose parameter has no default:
+    there is nothing to ship a default directory from, and a silently empty one is the failure worth
+    refusing outright rather than rendering as black.
+
+    What it buys is real texture statistics — the spatial correlations, gradients and clutter of
+    photographs — without any labelling cost, since the labels still come from the shapes drawn on
+    top. Which file and which crop were used is reported through
+    :attr:`~fuse_augmentations.data.sample.SceneRecord.background_source`, so a sample can be traced
+    back to what it stood on.
+
+    Args:
+        image_dir: Directory of images to crop from. Required; scanned and validated at construction.
+        grayscale: Drop the colour of the crop, leaving its structure. Useful when the run's classes
+            are colour-named and a photographic canvas would otherwise compete with them.
+
+    Raises:
+        ValueError: If ``image_dir`` is not a directory or holds no readable image.
+
+    Examples:
+        ```pycon
+        >>> import numpy as np
+        >>> from pathlib import Path
+        >>> from PIL import Image
+        >>> import tempfile
+        >>> with tempfile.TemporaryDirectory() as folder:
+        ...     Image.fromarray(np.full((40, 40, 3), 90, np.uint8)).save(Path(folder) / "a.png")
+        ...     canvas, source = ImageBackground(Path(folder)).render_with_source(np.random.default_rng(0), 16)
+        >>> canvas.shape, source
+        ((16, 16, 3), 'a.png')
+
+        ```
+
+    """
+
+    image_dir: Path
+    grayscale: bool = False
+
+    def __post_init__(self) -> None:
+        """Normalize the directory to a :class:`~pathlib.Path` and refuse one with nothing in it."""
+        object.__setattr__(self, "image_dir", Path(self.image_dir))
+        _scan(self.image_dir)
+
+    def render(self, rng: np.random.Generator | None, img_size: int) -> NDArray[np.uint8]:
+        """Return one random crop, discarding which file it came from."""
+        return self.render_with_source(rng, img_size)[0]
+
+    def render_with_source(
+        self, rng: np.random.Generator | None, img_size: int
+    ) -> tuple[NDArray[np.uint8], str | None]:
+        """Return one random crop and the name of the file it was taken from.
+
+        Three draws, always in this order and always all three: the file index, then the crop's left and top offsets.
+        The offsets are drawn even when only one position is possible, so the draw count does not depend on how large
+        the chosen file happens to be.
+
+        """
+        from PIL import Image
+
+        stream = require_stream(rng, type(self).__name__)
+        files = _scan(self.image_dir)
+        chosen = files[int(stream.integers(len(files)))]
+        with Image.open(chosen) as opened:
+            picture = opened.convert("L" if self.grayscale else "RGB")
+            picture = _at_least(picture, img_size)
+            left = int(stream.integers(picture.width - img_size + 1))
+            top = int(stream.integers(picture.height - img_size + 1))
+            crop = picture.crop((left, top, left + img_size, top + img_size)).convert("RGB")
+        source = PurePath(chosen.relative_to(self.image_dir)).as_posix()
+        return np.ascontiguousarray(np.asarray(crop, dtype=np.uint8)), source
+
+
+def _at_least(picture: PILImage, img_size: int) -> PILImage:
+    """Return a picture whose every side is at least ``img_size``, upscaling proportionally if not.
+
+    A file smaller than the canvas has no crop to give, and refusing it would make the mode depend on the caller pre-
+    sizing a directory. Scaling the short side up keeps the aspect ratio, so the texture statistics the mode exists for
+    are stretched rather than distorted.
+
+    """
+    if picture.width >= img_size and picture.height >= img_size:
+        return picture
+    from PIL import Image
+
+    scale = img_size / min(picture.width, picture.height)
+    size = (max(img_size, round(picture.width * scale)), max(img_size, round(picture.height * scale)))
+    return picture.resize(size, Image.Resampling.BICUBIC)
