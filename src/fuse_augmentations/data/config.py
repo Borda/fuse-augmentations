@@ -204,6 +204,25 @@ ColorLike = Color | tuple[int, int, int] | Fill
 #: vocabulary, normalized, i.e. the behavior that predated the field existing.
 DEFAULT_COLORS: tuple[Fill, ...] = tuple(Fill.parse(color) for color in Color)
 
+#: Fills unlabelled clutter is drawn from when :attr:`SyntheticConfig.distractor_colors` is not
+#: given. Six neutrals and secondaries deliberately outside the :class:`Color` vocabulary, so the
+#: default configuration — whose ``colors`` is all three named members — still has a complement to
+#: draw clutter from. Taking the complement of ``colors`` against :data:`DEFAULT_COLORS` instead
+#: would be empty out of the box, which would make ``distractors=3`` refuse on a stock config.
+#: The complement is compared on the RGB triple rather than on the whole :class:`Fill`, because a
+#: fill also carries a name: ordinary set subtraction would leave ``Fill((96, 106, 120))`` available
+#: as clutter for a user who had claimed that exact triple under a name of their own, painting
+#: unlabelled pixels in a colour a labelled class owns — invisible to the vocabulary, and fatal
+#: under :attr:`ClassMode.COLOR`.
+DISTRACTOR_PALETTE: tuple[Fill, ...] = (
+    Fill(rgb=(96, 106, 120), name="slate"),
+    Fill(rgb=(198, 178, 134), name="sand"),
+    Fill(rgb=(124, 90, 62), name="brown"),
+    Fill(rgb=(48, 132, 132), name="teal"),
+    Fill(rgb=(128, 72, 128), name="plum"),
+    Fill(rgb=(112, 124, 56), name="olive"),
+)
+
 
 class Task(str, Enum):
     """Annotation task the dataset targets.
@@ -727,6 +746,9 @@ class SyntheticConfig:
     max_placement_attempts: int = 100
     background: ColorLike | Background = (128, 128, 128)
     degrade: tuple[Degradation, ...] = ()
+    distractors: int = 0
+    distractor_shapes: tuple[Shape, ...] | None = None
+    distractor_colors: tuple[Fill, ...] | None = None
     rotate: bool = True
     asymmetry_jitter: float = 0.0
     class_mode: ClassMode = ClassMode.SHAPE
@@ -751,6 +773,7 @@ class SyntheticConfig:
         self._normalize_colors()
         self._normalize_background()
         self._validate_degradations()
+        self._resolve_distractor_pools()
         if self.img_size <= 0:
             raise ValueError(f"img_size must be positive, got {self.img_size}")
         if not 1 <= self.min_objects <= self.max_objects:
@@ -765,6 +788,8 @@ class SyntheticConfig:
             raise ValueError(f"boundary_tolerance must be within [0, 1], got {self.boundary_tolerance}")
         if self.max_placement_attempts < 1:
             raise ValueError(f"max_placement_attempts must be >= 1, got {self.max_placement_attempts}")
+        if self.distractors < 0:
+            raise ValueError(f"distractors must be non-negative, got {self.distractors}")
         if not 0.0 <= self.asymmetry_jitter < 0.5:
             raise ValueError(f"asymmetry_jitter must be within [0, 0.5), got {self.asymmetry_jitter}")
         self._validate_vocabulary()
@@ -832,6 +857,47 @@ class SyntheticConfig:
         invalid = [step for step in self.degrade if not isinstance(step, Degradation)]
         if invalid:
             raise ValueError(f"degrade must contain only Degradation instances, got {invalid!r}")
+
+    def _resolve_distractor_pools(self) -> None:
+        """Replace each distractor pool with the concrete tuple clutter is drawn from.
+
+        Both pools default to ``None``, meaning "the complement of what the labelled objects use", so
+        clutter is never drawn in a shape or a colour a class owns. The shape complement is taken
+        against :data:`~fuse_augmentations.data.families.ALL_SHAPES`, which is large enough that a run
+        would have to name all 49 to empty it; the colour complement is taken against
+        :data:`DISTRACTOR_PALETTE` rather than :data:`DEFAULT_COLORS`, since the latter is exactly
+        what ``colors`` defaults to and would leave nothing behind on a stock configuration.
+
+        Fills are compared on their RGB triple, never as whole :class:`Fill` objects: a fill carries
+        a name as well as a triple, so subtracting the objects would leave a palette entry available
+        for clutter in the very pixels a user had claimed for a labelled class under a name of their
+        own.
+
+        Raises:
+            ValueError: If clutter was asked for and either pool resolved to nothing, naming which of
+                the two was empty.
+
+        """
+        from fuse_augmentations.data.families import ALL_SHAPES
+
+        claimed = {fill.rgb for fill in self.colors}
+        if self.distractor_shapes is None:
+            object.__setattr__(self, "distractor_shapes", tuple(s for s in ALL_SHAPES if s not in self.shapes))
+        else:
+            object.__setattr__(self, "distractor_shapes", tuple(self.distractor_shapes))
+        if self.distractor_colors is None:
+            object.__setattr__(self, "distractor_colors", tuple(f for f in DISTRACTOR_PALETTE if f.rgb not in claimed))
+        else:
+            object.__setattr__(self, "distractor_colors", tuple(Fill.parse(f) for f in self.distractor_colors))
+        if not self.distractors:
+            return
+        pools = (("distractor_shapes", self.distractor_shapes), ("distractor_colors", self.distractor_colors))
+        for name, pool in pools:
+            if not pool:
+                raise ValueError(
+                    f"distractors={self.distractors} was asked for but {name} resolved to an empty pool; "
+                    f"pass {name}= explicitly, or narrow shapes/colors so a complement remains"
+                )
 
     def _validate_vocabulary(self) -> None:
         """Reject an unusable shape/color tuple, a non-:class:`Task` task, or an unannotatable pairing.

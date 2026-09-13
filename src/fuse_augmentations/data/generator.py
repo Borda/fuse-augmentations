@@ -158,8 +158,10 @@ class SyntheticGenerator:
         self.vocabulary = class_vocabulary(config.class_mode, config.shapes, config.colors)
         self.class_names = self.vocabulary.names
         self.keypoint_schema = keypoint_schema_for(config.shapes)
-        self._needs_side_stream = config.background.consumes_randomness or any(
-            step.consumes_randomness for step in config.degrade
+        self._needs_side_stream = (
+            config.background.consumes_randomness
+            or bool(config.distractors)
+            or any(step.consumes_randomness for step in config.degrade)
         )
 
     def _side_stream(self, rng: np.random.Generator) -> np.random.Generator | None:
@@ -185,16 +187,39 @@ class SyntheticGenerator:
         """
         return rng.spawn(1)[0] if self._needs_side_stream else None
 
-    def _attempt_placement(self, rng: np.random.Generator, kept: list[_BBox]) -> _Placement | None:
+    def _attempt_placement(
+        self,
+        rng: np.random.Generator,
+        kept: list[_BBox],
+        shapes: tuple[Shape, ...] | None = None,
+        colors: tuple[Fill, ...] | None = None,
+        *,
+        with_landmarks: bool = True,
+        respect_boundary: bool = True,
+    ) -> _Placement | None:
         """Draw one candidate shape; return it if in-bounds and non-overlapping, else ``None``.
 
         Exactly one candidate is sampled per call (fixed RNG draw order: shape, color, size, centre x, centre y, angle
         when rotation applies, then an asymmetry skew when ``asymmetry_jitter`` is set), so the caller controls the
-        retry budget and the RNG consumption stays deterministic for a given seed.
+        retry budget and the RNG consumption stays deterministic for a given seed. That order is the same whichever
+        pools are passed, so the unlabelled callers below cannot perturb it.
 
-        The shape is drawn from ``cfg.shapes`` and the color from ``cfg.colors`` rather than the full :class:`Shape` and
-        :class:`Color` vocabularies, so widening either enum never changes what an existing seeded configuration
-        produces.
+        Args:
+            rng: The stream to draw this candidate from. Labelled objects pass the caller's placement stream;
+                unlabelled clutter passes the side stream, so clutter never moves an object.
+            kept: Boxes the candidate must not overlap beyond ``cfg.overlap_iou``. Pass an empty list for clutter,
+                which is meant to be overlapped and has no IoU constraint of its own.
+            shapes: Shape pool to draw from; ``cfg.shapes`` when ``None``. Drawing from the run's own pool rather than
+                the full :class:`Shape` vocabulary is why widening either enum never changes an existing seeded
+                configuration.
+            colors: Fill pool to draw from; ``cfg.colors`` when ``None``.
+            with_landmarks: Compute the landmark table when the run's task asks for one. ``False`` for clutter, which
+                is never annotated and so never carries landmarks whatever ``cfg.task`` says.
+            respect_boundary: Reject a candidate falling further outside the canvas than ``cfg.boundary_tolerance``.
+                ``False`` for an occluder, which is realistic precisely when it runs off the frame.
+
+        Returns:
+            The sampled placement, or ``None`` when it was rejected.
 
         Landmarks (the last tuple element — ``None`` off the keypoints task or for a shape with no schema) are a pure
         function of the placement that was just sampled, so computing them consumes no further randomness and leaves
@@ -202,7 +227,8 @@ class SyntheticGenerator:
 
         """
         cfg = self.config
-        shapes, colors = cfg.shapes, cfg.colors
+        shapes = cfg.shapes if shapes is None else shapes
+        colors = cfg.colors if colors is None else colors
         shape = shapes[int(rng.integers(len(shapes)))]
         color = colors[int(rng.integers(len(colors)))]
         size_px = float(rng.uniform(cfg.min_size_ratio, cfg.max_size_ratio)) * cfg.img_size
@@ -215,12 +241,61 @@ class SyntheticGenerator:
         )
         poly = shape_outline(shape.value, center, size_px, angle, skew)
         bbox = polygon_to_bbox_xyxy(poly)
-        if _boundary_overlap(bbox, cfg.img_size) > cfg.boundary_tolerance:
+        if respect_boundary and _boundary_overlap(bbox, cfg.img_size) > cfg.boundary_tolerance:
             return None
         if any(bbox_iou(bbox, other) > cfg.overlap_iou for other in kept):
             return None
-        keypoints = place_keypoints(shape, center, size_px, angle, skew) if cfg.task is Task.KEYPOINTS else None
+        wants_landmarks = with_landmarks and cfg.task is Task.KEYPOINTS
+        keypoints = place_keypoints(shape, center, size_px, angle, skew) if wants_landmarks else None
         return shape, color, poly, angle, keypoints
+
+    def _draw_clutter(
+        self,
+        draw: ImageDraw.ImageDraw,
+        rng: np.random.Generator,
+        count: int,
+        *,
+        respect_boundary: bool = True,
+    ) -> list[_BBox]:
+        """Draw ``count`` unlabelled shapes and return the boxes they covered.
+
+        Args:
+            draw: The canvas to paint onto.
+            rng: The side stream — never the placement stream, so clutter cannot move an object.
+            count: How many items to attempt.
+            respect_boundary: Keep items inside ``cfg.boundary_tolerance``. ``True`` for distractors,
+                which are background clutter; ``False`` for an occluder, which is realistic precisely
+                when it runs off the frame.
+
+        Returns:
+            One box per item that was actually placed, in draw order.
+
+        Each item gets its own ``max_placement_attempts`` budget and is silently skipped when it runs
+        out. Nothing raises: clutter is unlabelled, so a missing piece costs a dataset nothing, where
+        a missing labelled object would cost it a class balance. No IoU constraint applies either —
+        being overlapped is the entire point — and no landmark table is ever computed, whatever
+        ``cfg.task`` says.
+
+        """
+        cfg = self.config
+        covered: list[_BBox] = []
+        for _ in range(count):
+            for _attempt in range(cfg.max_placement_attempts):
+                placed = self._attempt_placement(
+                    rng,
+                    [],
+                    cfg.distractor_shapes,
+                    cfg.distractor_colors,
+                    with_landmarks=False,
+                    respect_boundary=respect_boundary,
+                )
+                if placed is None:
+                    continue
+                _shape, color, poly, _angle, _points = placed
+                draw.polygon([(float(x), float(y)) for x, y in poly], fill=color.rgb)
+                covered.append(polygon_to_bbox_xyxy(poly))
+                break
+        return covered
 
     def sample(self, rng: np.random.Generator) -> Sample:
         """Generate one image and its annotations.
@@ -255,6 +330,8 @@ class SyntheticGenerator:
         side = self._side_stream(rng)
         canvas = Image.fromarray(cfg.background.render(side, cfg.img_size))
         draw = ImageDraw.Draw(canvas)
+        if cfg.distractors and side is not None:
+            self._draw_clutter(draw, side, cfg.distractors)
         num_objects = int(rng.integers(cfg.min_objects, cfg.max_objects + 1))
 
         annotations: list[Annotation] = []

@@ -127,6 +127,35 @@ True
 
 The tuple is a tuple because order matters: blurring and then compressing is not the same picture as compressing and then blurring. Each step takes `uint8` and returns `uint8`, so quantisation error accumulates between steps rather than being carried in float to the end — which is what a real camera pipeline does.
 
+### Adding unlabelled clutter
+
+`distractors` draws that many shapes *under* the labelled objects, from shapes and colours no class owns. Nothing about them reaches an annotation — no class id, no box, no landmark table — so what they cost a model is the ability to find objects by asking "is there a shape here" instead of "which shape is this":
+
+```python
+from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
+
+plain = SyntheticConfig(img_size=64, max_objects=4)
+cluttered = SyntheticConfig(img_size=64, max_objects=4, distractors=6)
+
+labels = [len(s.annotations) for s in SyntheticGenerator(plain).generate(3, seed=0)]
+unchanged = [len(s.annotations) for s in SyntheticGenerator(cluttered).generate(3, seed=0)]
+
+print(labels == unchanged)
+print([fill.name for fill in SyntheticConfig(distractors=1).distractor_colors])
+```
+
+<details>
+<summary>Clutter in the pixels, nothing in the labels</summary>
+
+```
+True
+['slate', 'sand', 'brown', 'teal', 'plum', 'olive']
+```
+
+</details>
+
+Both pools default to a complement so clutter never wears a class's own appearance: `distractor_shapes` is every shape `shapes` does not use, and `distractor_colors` is the packaged `DISTRACTOR_PALETTE` minus any RGB triple `colors` already claims. The colour complement is taken against that palette rather than against `colors` itself because `colors` defaults to the whole `Color` vocabulary, which would leave nothing to draw with; asking for clutter when either pool really is empty raises at construction and names which one it was. Placement is best effort and carries no IoU constraint — being overlapped is the point — so an item that cannot be placed within its own attempt budget is skipped rather than raised over.
+
 ### Breaking left/right symmetry
 
 Most shapes are drawn mirror-symmetric about their own vertical axis in canonical orientation (every geometric shape, every symbol, most letters), so their oriented bounding box otherwise always shows identical left/right margins — real oriented objects (vehicles, ships) rarely are. `asymmetry_jitter` (default `0.0`, a fraction in `[0, 0.5)`) narrows a randomly chosen half — left or right of that axis, before rotation — of each placed object by up to that fraction, independently per instance. The animal silhouettes and roughly two-thirds of the letters are already asymmetric on their own (a letter's own strokes rarely balance left-right the way a symbol's outline is authored to), so the jitter is redundant orientation variety for them rather than the sole source of it — it still applies uniformly to every shape but `circle`, which is excluded for the separate reason below:

@@ -45,6 +45,7 @@ from fuse_augmentations.data.backgrounds import (
     TextureBackground,
 )
 from fuse_augmentations.data.config import (
+    DISTRACTOR_PALETTE,
     ClassEntry,
     ClassMode,
     ClassVocabulary,
@@ -94,6 +95,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ALL_SHAPES",
     "DEFAULT_SHAPES",
+    "DISTRACTOR_PALETTE",
     "JPEG",
     "SHAPE_FAMILIES",
     "Annotation",
