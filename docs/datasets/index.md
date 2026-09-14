@@ -9,6 +9,8 @@ description: Generate COCO and YOLO datasets of colored shapes for detection, se
 
 It supports two annotation formats — **COCO** and **YOLO** — across four tasks — **detection**, **segmentation**, **oriented bounding box (OBB)**, and **keypoints / pose**.
 
+How hard the samples are to read is set by ordinary config fields rather than by a difficulty preset: `background` picks the canvas, `degrade` bakes camera effects into the pixels, and `distractors` / `occluders` add unlabelled shapes under and over the labelled ones. Each is pictured in [Customization and extension](customization.md), and [Difficulty bands](difficulty.md) combines them into three suggested settings.
+
 ## Install
 
 Rendering uses [Pillow](https://python-pillow.github.io/), which ships as a base dependency — nothing extra to install:
@@ -53,4 +55,5 @@ Pass a real path instead of the temporary directory to keep the dataset. The sam
 - [Shape families](shapes.md) — the four vocabularies (geometric, animals, symbols, letters), the visual shape reference, and how to select shapes and colors.
 - [Tasks and keypoints](tasks.md) — the four annotation tasks and every family's keypoint schema.
 - [Annotation formats](outputs.md) — COCO and YOLO on-disk layouts, plus the in-memory streaming training feed.
+- [Difficulty bands](difficulty.md) — suggested easy/moderate/hard knob combinations, pictured, and the training-free statistics that rank them.
 - [Customization and extension](customization.md) — reproducibility knobs, custom splits and fills, registering new families and writers, and editing the packaged assets.

@@ -70,3 +70,22 @@ test-oldest:
 
 clean-envs:
 	rm -rf $(addprefix $(ENV_PREFIX)-,$(EXTRAS)) "$(ENV_PREFIX)-oldest"
+
+# Rewrite both checked-in snapshots after a deliberate change to a shape, a keypoint table, or the
+# renderer. They are separate files with separate switches (`_golden_geometry.npz` holds unit-space
+# outlines and landmark tables, `_baseline_digests.json` holds whole-stream hashes), and editing one
+# SVG moves both, so a change that regenerates only the file whose test happened to fail first leaves
+# the other red on the next run. This target does both, in that order.
+#
+# It is not a way past a failure you did not intend. The snapshots are what tell you a "pure refactor"
+# moved a vertex; regenerate only once you have looked at what moved and agree it should have. For a
+# shape or keypoint edit that also means re-rendering the previews (AGENTS.md) and looking at them:
+# `python examples/render_shape_reference.py` and `python examples/animate_synthetic_dataset.py
+# --shapes <family> --task all`, both of which need the `cli` extra for `fire`.
+.PHONY: regen-data-snapshots
+regen-data-snapshots:
+	@echo "=== regenerating tests/test_unit/test_data/_golden_geometry.npz"
+	@FUSE_REGEN_GOLDEN=1 $(UV) run pytest tests/test_unit/test_data/test_golden_geometry.py -q
+	@echo "=== regenerating tests/test_unit/test_data/_baseline_digests.json"
+	@FUSE_REGEN_BASELINE=1 $(UV) run pytest tests/test_unit/test_data/test_baseline_digests.py -q
+	@git --no-pager diff --stat -- tests/test_unit/test_data/

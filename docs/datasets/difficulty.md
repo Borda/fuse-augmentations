@@ -17,6 +17,10 @@ Everything a band sets is an ordinary `SyntheticConfig` field. Copy a row, chang
 | moderate | `TextureBackground(frequency=8)`, primitives, size ratio 0.08–0.25, `distractors=3`, `degrade=(GaussianBlur(0.5), JPEG(75))` | structure at object scale makes a false positive possible, and the clutter forces classification rather than blob-finding                      |
 | hard     | the same canvas and chain, `shapes=tuple(LetterShape)`, size ratio 0.03–0.25, `distractors=6`                                | the clutter is drawn by the same process as the targets, so it cannot be rejected by "is this a shape"; 0.03 at 256 px is an eight-pixel glyph |
 
+![One sample from each band, at the 256-pixel canvas the numbers below were measured on](../assets/datasets/gallery-difficulty.webp)
+
+Each tile is one sample from the row above it, rendered at 256 pixels because the bands are size *ratios*: `0.03` of that canvas is the eight-pixel glyph the hard band is named for, and a band rendered smaller would quietly stop being the band in the table. What the sheet shows that the numbers cannot is how little of the hard tile is a labelled object — most of its ink is clutter drawn by the same process as the targets. Regenerate it with `python examples/render_scene_gallery.py --sheets difficulty`.
+
 ```python
 from fuse_augmentations.data import (
     JPEG,

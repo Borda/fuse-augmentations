@@ -19,6 +19,15 @@ Important: this package is not a general drop-in replacement for Kornia, TorchVi
 - [Known limitations](https://borda.github.io/fuse-augmentations/known-limitations/): Unsafe, approximate, unsupported, and unverified behavior.
 - [FAQ](https://borda.github.io/fuse-augmentations/faq/): Direct answers to common developer and researcher questions.
 
+## Synthetic data
+
+- [Synthetic shape datasets](https://borda.github.io/fuse-augmentations/datasets/): Generating labelled COCO and YOLO datasets of drawn shapes.
+- [Shape families](https://borda.github.io/fuse-augmentations/datasets/shapes/): The geometric, animal, symbol, and letter vocabularies, with a visual reference.
+- [Tasks and keypoints](https://borda.github.io/fuse-augmentations/datasets/tasks/): Detection, segmentation, OBB, and keypoint annotations, with per-family landmark schemas.
+- [Annotation formats](https://borda.github.io/fuse-augmentations/datasets/outputs/): COCO and YOLO on-disk layouts and the in-memory streaming feed.
+- [Difficulty bands](https://borda.github.io/fuse-augmentations/datasets/difficulty/): Easy, moderate, and hard knob combinations and the training-free statistics ranking them.
+- [Customization and extension](https://borda.github.io/fuse-augmentations/datasets/customization/): Backgrounds, baked degradations, unlabelled clutter, custom splits, and new families or writers.
+
 ## Research and reference
 
 - [Quality and fidelity](https://borda.github.io/fuse-augmentations/research/quality-and-fidelity/): Why fewer resampling passes can help and why native pixels differ.

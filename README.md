@@ -311,7 +311,7 @@ For ragged detector targets, import `augment_detection_batch` from the package r
 
 ## 🎨 Synthetic datasets
 
-Generate small labelled datasets of colored shapes — no training loop, no Lightning. Draw `square`/`rectangle`/`triangle`/`circle` in red/green/blue and export **COCO** or **YOLO** for **detection**, **segmentation**, or **oriented bounding box (OBB)**.
+Generate small labelled datasets of colored shapes — no training loop, no Lightning. Draw from four vocabularies — geometric primitives, animal silhouettes, symbols, and letters — and export **COCO** or **YOLO** for **detection**, **segmentation**, **oriented bounding box (OBB)**, or **keypoints**.
 
 ```python
 import tempfile
@@ -342,7 +342,13 @@ print(counts)
 
 Swap `fmt="yolo"`, `task="obb"`, or `class_mode="color"` for other layouts, tasks, and class schemes.
 
-`rectangle` plus random per-shape rotation give oriented boxes real orientation; all generation is seeded for byte-identical output. Generation streams — feed a training loop straight from `SyntheticGenerator.generate(n)` or a `DataLoader` via `SyntheticIterableDataset`, with no disk round-trip and bounded memory even for huge datasets. See the [synthetic datasets docs](docs/datasets/index.md) and `examples/generate_synthetic_dataset.py`.
+`rectangle` plus random per-shape rotation give oriented boxes real orientation; all generation is seeded for byte-identical output. Generation streams — feed a training loop straight from `SyntheticGenerator.generate(n)` or a `DataLoader` via `SyntheticIterableDataset`, with no disk round-trip and bounded memory even for huge datasets.
+
+How hard the samples are to read is a set of ordinary config fields: `background` picks the canvas (flat, gradient, Gaussian or impulse noise, value-noise texture, or crops of your own pictures), `degrade` bakes camera effects into the pixels, and `distractors`/`occluders` add unlabelled shapes under and over the labelled ones.
+
+![Every background mode under one seed, with the objects in identical positions](https://raw.githubusercontent.com/Borda/fuse-augmentations/main/docs/assets/datasets/gallery-backgrounds.webp)
+
+Each knob draws from a side stream of its own rather than from the placement stream, which is what the sheet above shows: eight canvases, one seed, the same three shapes in the same three places. See the [synthetic datasets docs](docs/datasets/index.md), the [difficulty bands](docs/datasets/difficulty.md), and `examples/generate_synthetic_dataset.py`.
 
 ## 🧭 Where it fits
 

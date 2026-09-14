@@ -54,6 +54,10 @@ print(counts)
 | `ImpulseNoiseBackground` | `base`, `amount`, `salt_ratio`                          | salt-and-pepper pixels, heavy-tailed and blur-resistant             |
 | `TextureBackground`      | `base`, `amplitude`, `frequency`, `octaves`, `quantize` | value noise at a chosen scale, so false positives become possible   |
 
+![Every background mode under one seed, with the objects in identical positions](../assets/datasets/gallery-backgrounds.webp)
+
+Read that sheet across rather than tile by tile: every tile is the same seed, and the three shapes sit in the same three places on all eight canvases. That is not a rendering coincidence — it is the contract below, pictured. The last two tiles come from `ImageBackground`, covered in the next section. Regenerate this sheet and the two below it with `python examples/render_scene_gallery.py`.
+
 Every background draws from a side stream of its own, never from the placement stream, so switching one on at a fixed seed leaves every object exactly where it was:
 
 ```python
@@ -134,6 +138,10 @@ Which file a sample was cropped from reaches `sample.scene.background_source` as
 | `Vignette(strength)`   | 0–0.6               | objects near the border darken, which interacts with `boundary_tolerance` |
 | `Quantize(levels)`     | 2–256               | flat fills band, a cheap stand-in for low bit depth                       |
 
+![One scene, clean and then under each degradation on its own](../assets/datasets/gallery-degradations.webp)
+
+Each tile carries one effect at its labelled strength — stronger than the defaults in most cases, because a tile this size has to show what the knob does rather than what a conservative default looks like. The first tile is the same scene with `degrade=()`. Every tile has the same labels: not one of these effects moves a pixel, only recolours it.
+
 This is not a duplicate of the augmentation pipeline. A `degrade` tuple describes pixels baked into an on-disk dataset — a fixed property of the data, replayable from its seed — where a transform in a training loop resamples every epoch, and a dataset can carry both:
 
 ```python
@@ -176,6 +184,10 @@ Note what sits downstream of this chain: `generate_dataset` writes every image a
 The tuple is a tuple because order matters: blurring and then compressing is not the same picture as compressing and then blurring. Each step takes `uint8` and returns `uint8`, so quantisation error accumulates between steps rather than being carried in float to the end — which is what a real camera pipeline does.
 
 ### Adding unlabelled clutter
+
+![The same scene with distractors, with occluders, and with both](../assets/datasets/gallery-clutter.webp)
+
+Two knobs add ink that no annotation mentions, and the sheet is ordered so the difference between them is visible: `distractors` go under the labelled objects, `occluders` go over them. The last tile runs both. The three labelled shapes are in the same places in all four tiles, exactly as they are across the backgrounds sheet — clutter is drawn from a side stream too. `occluders` has its own section below.
 
 `distractors` draws that many shapes *under* the labelled objects, from shapes and colours no class owns. Nothing about them reaches an annotation — no class id, no box, no landmark table — so what they cost a model is the ability to find objects by asking "is there a shape here" instead of "which shape is this":
 
