@@ -1,19 +1,34 @@
 name: CI perf regression gate
 
 # Triggers:
-#   - Pull requests touching src/ or experiments/ (gate fires on code changes only)
-#   - Manual dispatch (re-run on demand or to update baseline)
-#   - Weekly schedule (Monday 03:17 UTC) for trend tracking even without PRs
+#   - Pull requests touching the fusion core (gate fires only where a regression is possible)
+#   - Pushes to main touching the same paths (keeps trend visible in Actions even without a PR)
+#   - Manual dispatch (re-run on demand)
+#   - Weekly schedule (Monday 03:17 UTC) for trend tracking even without pushes
+#
+# `src/fuse_augmentations/data/**` is excluded from the path filters: it's the
+# annotation/dataset module and never touches the fusion core that
+# `experiments/optimize_score.py` exercises (imports only `fuse_aug.Compose` /
+# `ReorderPolicy`). Without this exclusion, PRs to that module were flapping the gate
+# on pure runner-timing noise for code the benchmark structurally can't measure.
 on:
   pull_request:
     paths:
-      - "src/**"
+      - "src/fuse_augmentations/**"
+      - "!src/fuse_augmentations/data/**"
+      - "experiments/**"
+  push:
+    branches: [main]
+    paths:
+      - "src/fuse_augmentations/**"
+      - "!src/fuse_augmentations/data/**"
       - "experiments/**"
   workflow_dispatch: {}
   schedule:
     - cron: "17 3 * * 1"
 
-# Cancel superseded PR runs; keep scheduled/main runs.
+# Cancel superseded PR runs; keep push/scheduled runs on main uncanceled so their
+# trend data in the job summary always reflects a completed run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -22,16 +37,130 @@ defaults:
   run:
     shell: bash
 
+env:
+  UV_TORCH_BACKEND: cpu
+  PYTHON_VERSION: "3.12"
+
 jobs:
-  perf-gate:
+  # Benchmark the last 5 commits on main (HEAD~0 .. HEAD~4), one per matrix leg, in
+  # parallel. No committed baseline file anywhere -- the reference is recomputed from
+  # actual git history on every run, so it can never go stale, and a squash-push of
+  # several commits at once still has each individual commit sampled (a per-push
+  # rolling file would only ever see the push's final state).
+  #
+  # Only `src/` is swapped to the historical commit -- `experiments/optimize_score.py`,
+  # pyproject.toml, and every dependency stay pinned to the ref under test (the same
+  # checkout `perf-gate` benchmarks). If the harness itself was checked out per-commit
+  # instead, each leg would measure with whatever benchmark methodology existed at that
+  # historical commit, which is not comparable to the ref-under-test's methodology --
+  # the baseline and the gated score would be two different statistics.
+  #
+  # `continue-on-error: true` tolerates a leg-level infra failure (OOM, evicted runner,
+  # transient install failure) without failing the whole workflow: a failed leg simply
+  # uploads no sample, and `ci_perf_baseline_aggregate.py --min-samples 3` (see
+  # aggregate-baseline below) decides whether enough of the remaining 4 legs succeeded.
+  benchmark-history:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    env:
-      UV_TORCH_BACKEND: cpu
-      PYTHON_VERSION: "3.12"
-    # Total budget: ~10 min install + ~60 s benchmark + buffer.
+    timeout-minutes: 20
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [0, 1, 2, 3, 4]
+
+    steps:
+      - name: 📥 Checkout ref under test
+        uses: actions/checkout@v4
+
+      - name: 📥 Fetch main history
+        run: git fetch origin main --depth=10
+
+      - name: ⏪ Overlay src/ from main~${{ matrix.n }} (harness stays at the ref under test)
+        run: |
+          HIST_SHA=$(git rev-parse "FETCH_HEAD~${{ matrix.n }}")
+          echo "Benchmarking src/ as of $HIST_SHA against the current experiments/optimize_score.py"
+          git checkout "$HIST_SHA" -- src/fuse_augmentations src/fuse_aug
+
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+
+      - name: 🐍 Install uv
+        uses: astral-sh/setup-uv@v7.2.0
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+          activate-environment: true
+
+      - name: 📦 Install package with all extras
+        timeout-minutes: 10
+        run: uv pip install -e ".[all]"
+
+      - name: 🏃 Run benchmark and record score
+        timeout-minutes: 15
+        run: |
+          uv run python experiments/optimize_score.py | tee /tmp/bench_raw.txt
+          grep '^real_score=' /tmp/bench_raw.txt | cut -d= -f2 > "${{ matrix.n }}.txt"
+          cat "${{ matrix.n }}.txt"
+
+      - name: 📤 Upload sample
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-history-${{ matrix.n }}
+          path: ${{ matrix.n }}.txt
+          retention-days: 14
+
+  # Downloads all 5 samples, medians them into the number the live gate compares
+  # against, and prints the full breakdown to the job summary for visibility.
+  aggregate-baseline:
+    needs: benchmark-history
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      baseline_score: ${{ steps.agg.outputs.score }}
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 📥 Download all history samples
+        uses: actions/download-artifact@v4
+        with:
+          pattern: perf-history-*
+          path: history
+          merge-multiple: true
+
+      - name: 📊 Aggregate (median of last 5 main commits)
+        id: agg
+        run: |
+          python3 .github/scripts/ci_perf_baseline_aggregate.py \
+            --dir history \
+            --out avg.txt \
+            --min-samples 3 \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+          echo "score=$(cat avg.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: 📤 Upload aggregate
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-baseline-avg
+          path: avg.txt
+          retention-days: 14
+
+  # Benchmarks the ref under test (PR head, or main's tip for push/schedule/dispatch)
+  # and gates it against the dynamic baseline computed above.
+  perf-gate:
+    needs: aggregate-baseline
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      BASELINE_SCORE: ${{ needs.aggregate-baseline.outputs.baseline_score }}
 
     steps:
       - name: 📥 Checkout
@@ -48,17 +177,12 @@ jobs:
           python-version: "${{ env.PYTHON_VERSION }}"
           activate-environment: true
 
-      # [all] covers albumentations + kornia + torchvision needed by optimize_score.py.
       - name: 📦 Install package with all extras
         timeout-minutes: 10
         run: |
           uv pip install -e ".[all]"
           uv pip list
 
-      # optimize_score.py prints two lines:
-      #   real_score=X.XXXX
-      #   theoretical_target=X.XXXX
-      # Extract both, write ci_score.json for the gate and artifact upload.
       - name: 🏃 Run benchmark
         timeout-minutes: 15
         run: |
@@ -67,26 +191,18 @@ jobs:
           THEORETICAL=$(grep '^theoretical_target=' /tmp/bench_raw.txt | cut -d= -f2)
           python3 -c "import json,os; score={'real_score':float('$REAL_SCORE'),'theoretical_target':float('$THEORETICAL'),'runner':os.environ.get('RUNNER_OS','ubuntu-latest'),'python_version':os.environ.get('PYTHON_VERSION','3.12'),'git_sha':os.environ.get('GITHUB_SHA','unknown')[:12]}; json.dump(score,open('ci_score.json','w'),indent=2); print('ci_score.json written:',score)"
 
-      # Gate logic (see .github/scripts/ci_perf_gate_compare.py for details):
-      #   - Baseline absent -> neutral pass + bootstrap instructions in summary.
-      #   - Baseline present -> fail if real_score < baseline * 0.90.
-      # Threshold is 0.90, not 0.95: the benchmark's run-to-run variance on
-      # shared GitHub-hosted runners is ~5-7% peak-to-peak for identical code
-      # (observed real_score 1.569-1.687 across runs on the same commit), so a
-      # 5% margin sat inside the noise band and flagged noise as regressions.
-      # 0.90 still catches a genuine >10% regression. Refresh the baseline via
-      # `workflow_dispatch` when the fusion core legitimately changes speed.
-      # Summary is written before the exit so it appears even on gate failure.
-      - name: 🔍 Compare against baseline and write summary
+      # Threshold is 0.90, not 0.95: prior observed run-to-run variance on shared
+      # GitHub-hosted runners was ~5-7% peak-to-peak for identical code even before
+      # the thread-pinning/median hardening in optimize_score.py. 0.90 still catches
+      # a genuine >10% regression against the dynamic baseline above.
+      - name: 🔍 Compare against dynamic baseline and write summary
         run: |
           python3 .github/scripts/ci_perf_gate_compare.py \
             --current ci_score.json \
-            --baseline .github/perf_baseline/ci_baseline_score.json \
+            --baseline-score "$BASELINE_SCORE" \
             --threshold 0.90 \
-            ${GITHUB_STEP_SUMMARY:+--summary-file "$GITHUB_STEP_SUMMARY"}
+            --summary-file "$GITHUB_STEP_SUMMARY"
 
-      # Always upload regardless of gate result so the artifact is available
-      # for both debugging regressions and bootstrapping a new baseline.
       - name: 📤 Upload score artifact
         if: always()
         uses: actions/upload-artifact@v4
