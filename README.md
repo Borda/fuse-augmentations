@@ -346,9 +346,9 @@ Swap `fmt="yolo"`, `task="obb"`, or `class_mode="color"` for other layouts, task
 
 How hard the samples are to read is a set of ordinary config fields: `background` picks the canvas (flat, gradient, Gaussian or impulse noise, value-noise texture, or crops of your own pictures), `degrade` bakes camera effects into the pixels, and `distractors`/`occluders` add unlabelled shapes under and over the labelled ones.
 
-![Every background mode under one seed, with the objects in identical positions](https://raw.githubusercontent.com/Borda/fuse-augmentations/main/docs/assets/datasets/gallery-backgrounds.webp)
+![A value-noise canvas, bare and then carrying its objects and their boxes](https://raw.githubusercontent.com/Borda/fuse-augmentations/main/docs/assets/datasets/scene/backgrounds/texture.webp)
 
-Each knob draws from a side stream of its own rather than from the placement stream, which is what the sheet above shows: eight canvases, one seed, the same three shapes in the same three places. See the [synthetic datasets docs](docs/datasets/index.md), the [difficulty bands](docs/datasets/difficulty.md), and `examples/generate_synthetic_dataset.py`.
+Above is one such knob, `TextureBackground()`: the canvas it paints, and the same canvas carrying its objects and their exported boxes. The docs picture every mode this way. Each knob draws from a side stream of its own rather than from the placement stream, so at a fixed seed switching one on cannot move an object — the shapes land in the same three places on every canvas. See the [synthetic datasets docs](docs/datasets/index.md), the [difficulty bands](docs/datasets/difficulty.md), and `examples/generate_synthetic_dataset.py`.
 
 ## 🧭 Where it fits
 

@@ -1,6 +1,6 @@
 """Animate synthetic-dataset previews, one looping clip per annotation task.
 
-The static companion (three PNGs under ``docs/assets/datasets``) showed a single
+The static companion (three PNGs under ``docs/assets/datasets/tasks``) showed a single
 frame per task. This script renders a short looping animation instead: it draws a
 fixed, seeded stream of synthetic images and, for every task, cycles through them
 showing each image first bare and then with its yellow annotation overlay drawn
@@ -290,7 +290,7 @@ def render(
 
 
 def main(
-    output_dir: str = "docs/assets/datasets",
+    output_dir: str = "docs/assets/datasets/tasks",
     task: str = "all",
     img_size: int = 320,
     num_images: int | None = None,

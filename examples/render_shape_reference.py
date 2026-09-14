@@ -8,7 +8,7 @@ mirror-symmetric about its own vertical axis (see :mod:`~fuse_augmentations.data
 rendering at that authored angle is what keeps a reference recognizable: an ``arrow`` pointing up,
 a ``house`` with its roof up, a ``kite`` on its long axis.
 
-The box drawn in blue is the shape's plain axis-aligned **detection** box (``bbox``) at this
+The box drawn in yellow is the shape's plain axis-aligned **detection** box (``bbox``) at this
 reference orientation. Since :func:`~fuse_augmentations.data.geometry.polygon_to_obb` derives the
 oriented box in the shape's own upright frame, this same box *is* what the **OBB** task exports at
 this unrotated pose — the generator's rotated samples carry it turned rigidly with the shape (see
@@ -73,7 +73,15 @@ _INK = (0, 0, 0)
 _FILL = (222, 222, 222)
 _PAPER = (255, 255, 255)
 #: Drawn for the plain axis-aligned detection box (not the rotated OBB — see the module docstring).
-_BBOX_RGB = (0, 102, 255)
+#: Yellow, matching ``render_scene_gallery.py`` and ``animate_synthetic_dataset.py``, so a box means the
+#: same thing in a field-guide still, a scene preview and a clip. Nothing in the drawing vocabulary is
+#: yellow: the nearest fill anywhere is the ``sand`` clutter at 25.9 CIEDE2000, and the object fills the
+#: generator draws from are 43.9 (green) or further.
+_BBOX_RGB = (255, 255, 0)
+#: A dark keyline drawn immediately outside the box. Yellow on this white page is a 1.07:1 contrast
+#: ratio -- invisible as a one-pixel line -- so the keyline carries the contrast (21:1) and the yellow
+#: carries the meaning. The scene previews need no such thing: they draw over a mid-grey canvas.
+_BBOX_KEYLINE = (60, 60, 60)
 #: Matches ``animate_synthetic_dataset.py``'s ``_KEYPOINT_COLORS[1]`` — drawn for landmark dots and
 #: the skeleton; more visible than yellow at this dot/line size.
 _KEYPOINT_RGB = (255, 165, 0)
@@ -117,7 +125,7 @@ def _fit_size(name: str) -> float:
 
 
 def _draw_shape(draw: ImageDraw.ImageDraw, name: str, size: float) -> None:
-    """Draw one shape's outline (filled light gray, black edge) and its blue detection box.
+    """Draw one shape's outline (filled light gray, black edge) and its yellow detection box.
 
     The box is the plain axis-aligned bounding box over the outline at this reference orientation —
     which, at an unrotated pose, is exactly the upright-frame oriented box
@@ -128,6 +136,7 @@ def _draw_shape(draw: ImageDraw.ImageDraw, name: str, size: float) -> None:
     poly = shape_outline(name, _SHAPE_CENTER, size)
     draw.polygon([(float(x), float(y)) for x, y in poly], outline=_INK, fill=_FILL, width=2)
     x1, y1, x2, y2 = polygon_to_bbox_xyxy(poly)
+    draw.rectangle((x1 - 1, y1 - 1, x2 + 1, y2 + 1), outline=_BBOX_KEYLINE, width=1)
     draw.rectangle((x1, y1, x2, y2), outline=_BBOX_RGB, width=1)
 
 

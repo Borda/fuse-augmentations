@@ -17,9 +17,65 @@ Everything a band sets is an ordinary `SyntheticConfig` field. Copy a row, chang
 | moderate | `TextureBackground(frequency=8)`, primitives, size ratio 0.08–0.25, `distractors=3`, `degrade=(GaussianBlur(0.5), JPEG(75))` | structure at object scale makes a false positive possible, and the clutter forces classification rather than blob-finding                      |
 | hard     | the same canvas and chain, `shapes=tuple(LetterShape)`, size ratio 0.03–0.25, `distractors=6`                                | the clutter is drawn by the same process as the targets, so it cannot be rejected by "is this a shape"; 0.03 at 256 px is an eight-pixel glyph |
 
-![One sample from each band, at the 256-pixel canvas the numbers below were measured on](../assets/datasets/gallery-difficulty.webp)
+One scene per band, annotated three ways. The objects are held still across the three pictures so the overlays are comparable: the axis-aligned box each `detection` run exports, the oriented box `obb` exports for the same object, and the polygon `segmentation` exports. A seed produces the same scene whatever task is configured, so nothing but the drawn overlay differs between them.
 
-Each tile is one sample from the row above it, rendered at 256 pixels because the bands are size *ratios*: `0.03` of that canvas is the eight-pixel glyph the hard band is named for, and a band rendered smaller would quietly stop being the band in the table. What the sheet shows that the numbers cannot is how little of the hard tile is a labelled object — most of its ink is clutter drawn by the same process as the targets. Regenerate it with `python examples/render_scene_gallery.py --sheets difficulty`.
+=== "easy"
+
+    ![The easy band's canvas and its detection boxes](../assets/datasets/scene/bands/easy-detection.webp)
+
+    ![The same easy scene under oriented boxes](../assets/datasets/scene/bands/easy-obb.webp)
+
+    ![The same easy scene under segmentation outlines](../assets/datasets/scene/bands/easy-segmentation.webp)
+
+=== "moderate"
+
+    ![The moderate band's canvas and its detection boxes](../assets/datasets/scene/bands/moderate-detection.webp)
+
+    ![The same moderate scene under oriented boxes](../assets/datasets/scene/bands/moderate-obb.webp)
+
+    ![The same moderate scene under segmentation outlines](../assets/datasets/scene/bands/moderate-segmentation.webp)
+
+=== "hard"
+
+    ![The hard band's canvas and its detection boxes](../assets/datasets/scene/bands/hard-detection.webp)
+
+    ![The same hard scene under oriented boxes](../assets/datasets/scene/bands/hard-obb.webp)
+
+    ![The same hard scene under segmentation outlines](../assets/datasets/scene/bands/hard-segmentation.webp)
+
+Both halves are rendered at 256 pixels because the bands are size *ratios*: `0.03` of that canvas is the eight-pixel glyph the hard band is named for, and a band rendered smaller would quietly stop being the band in the table. What the pictures show that the numbers cannot is how little of a hard sample is a labelled object — most of its ink is unlabelled clutter drawn by the same process as the targets, over a canvas whose own structure sits at object scale. The overlays are where the band's cost lands unevenly: an eight-pixel glyph still takes a readable box, while its outline and its rotation are most of a stroke wide and effectively unrecoverable. The keypoints task has no tab here because only the hard band's vocabulary carries landmarks — the [tasks page](tasks.md) shows it per family. Regenerate them with `python examples/render_scene_gallery.py --groups difficulty`.
+
+### The knobs a band is made of
+
+A band is nothing but the fields in its row, and each of those is pictured on its own under [Customization and extension](customization.md). Reading a band as its parts is the fastest way to see which part is costing a model what:
+
+=== "the canvas"
+
+    `NoiseBackground(sigma=12)` for easy, `TextureBackground(frequency=8)` for the other two. Grain removes the trivial edge detector; structure at object scale is what makes a false positive possible at all.
+
+    ![Per-pixel Gaussian grain, bare and with objects](../assets/datasets/scene/backgrounds/noise.webp)
+
+    ![Value noise at object scale, bare and with objects](../assets/datasets/scene/backgrounds/texture.webp)
+
+=== "the clutter"
+
+    `distractors=3` for moderate, `distractors=6` for hard. Drawn from the same process as the targets and carrying no annotation, so "is there a shape here" stops being a usable detector — only the boxes separate them.
+
+    ![Unlabelled shapes drawn under the objects](../assets/datasets/scene/clutter/distractors.webp)
+
+=== "the degradations"
+
+    `degrade=(GaussianBlur(0.5), JPEG(75))` for moderate and hard. Both are shown here at stronger settings than the bands use, so what they do is visible: blur costs corner keypoints and the OBB angle, JPEG costs thin strokes.
+
+    ![Blur on a bare canvas and on the scene](../assets/datasets/scene/degradations/gaussian-blur.webp)
+
+    ![JPEG blocking on a bare canvas and on the scene](../assets/datasets/scene/degradations/jpeg.webp)
+
+=== "the vocabulary"
+
+    `shapes=tuple(LetterShape)` is what makes the hard band hard at small sizes: 26 classes whose silhouettes differ by a stroke, rather than four whose silhouettes differ by a corner count. The [shape families](shapes.md) page pictures every member.
+
+    ![Synthetic detection sample with letter shapes](../assets/datasets/tasks/letters-detection.webp)
 
 ```python
 from fuse_augmentations.data import (

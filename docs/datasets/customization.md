@@ -54,9 +54,33 @@ print(counts)
 | `ImpulseNoiseBackground` | `base`, `amount`, `salt_ratio`                          | salt-and-pepper pixels, heavy-tailed and blur-resistant             |
 | `TextureBackground`      | `base`, `amplitude`, `frequency`, `octaves`, `quantize` | value noise at a chosen scale, so false positives become possible   |
 
-![Every background mode under one seed, with the objects in identical positions](../assets/datasets/gallery-backgrounds.webp)
+Each picture below is a pair: on the left the canvas that mode painted, on the right that same canvas with the objects drawn onto it and their exported `bbox_xyxy` in yellow. The left half is there because a texture or a photographic crop stops being readable once shapes cover it.
 
-Read that sheet across rather than tile by tile: every tile is the same seed, and the three shapes sit in the same three places on all eight canvases. That is not a rendering coincidence — it is the contract below, pictured. The last two tiles come from `ImageBackground`, covered in the next section. Regenerate this sheet and the two below it with `python examples/render_scene_gallery.py`.
+=== "SolidBackground()"
+
+    ![A flat fill, bare and with objects](../assets/datasets/scene/backgrounds/solid.webp)
+
+=== "GradientBackground()"
+
+    ![A linear ramp, bare and with objects](../assets/datasets/scene/backgrounds/gradient.webp)
+
+=== "GradientBackground(radial=True)"
+
+    ![A radial ramp, bare and with objects](../assets/datasets/scene/backgrounds/gradient-radial.webp)
+
+=== "NoiseBackground(sigma=24)"
+
+    ![Per-pixel Gaussian grain, bare and with objects](../assets/datasets/scene/backgrounds/noise.webp)
+
+=== "ImpulseNoiseBackground()"
+
+    ![Salt-and-pepper pixels, bare and with objects](../assets/datasets/scene/backgrounds/impulse.webp)
+
+=== "TextureBackground()"
+
+    ![Value noise at object scale, bare and with objects](../assets/datasets/scene/backgrounds/texture.webp)
+
+Every picture is rendered from one seed, so the three shapes sit in the same three places on every canvas above. That is not a rendering coincidence — it is the contract below, pictured. Regenerate them with `python examples/render_scene_gallery.py --groups backgrounds`, and the rest of this page's pictures by dropping the flag.
 
 Every background draws from a side stream of its own, never from the placement stream, so switching one on at a fixed seed leaves every object exactly where it was:
 
@@ -122,6 +146,16 @@ wall.png
 
 </details>
 
+=== "ImageBackground(folder)"
+
+    ![A crop of a picture on disk, bare and with objects](../assets/datasets/scene/backgrounds/image.webp)
+
+=== "ImageBackground(folder, grayscale=True)"
+
+    ![The same crop with its colour dropped](../assets/datasets/scene/backgrounds/image-grayscale.webp)
+
+The two pictures above crop from a directory of generated pictures rather than photographs, since what the mode does with a file does not depend on what the file is of. `grayscale=True` is the right-hand one: same structure, no colour to compete with a colour-named class.
+
 Which file a sample was cropped from reaches `sample.scene.background_source` as a POSIX-form path relative to `image_dir`, so a photographic dataset stays traceable rather than merely reproducible in principle. The directory is searched recursively, and every candidate is opened before the directory is accepted, so a corrupt file or a subdirectory that merely happens to end in `.png` is refused where you can see it rather than from inside the renderer. Files are listed in sorted order, so a seed picks the same picture on any machine; a picture smaller than the canvas is scaled up proportionally rather than refused; and `grayscale=True` keeps the structure while dropping the colour, which matters when the run's classes are colour-named and a photographic canvas would otherwise compete with them. The directory listing is cached per process — a background reading a directory that changes underneath it has no reproducible meaning anyway.
 
 ### Baking degradations into the pixels
@@ -138,9 +172,41 @@ Which file a sample was cropped from reaches `sample.scene.background_source` as
 | `Vignette(strength)`   | 0–0.6               | objects near the border darken, which interacts with `boundary_tolerance` |
 | `Quantize(levels)`     | 2–256               | flat fills band, a cheap stand-in for low bit depth                       |
 
-![One scene, clean and then under each degradation on its own](../assets/datasets/gallery-degradations.webp)
+Each picture pairs the effect on a bare canvas with the effect on the full scene, at the strength its tab names — stronger than the defaults in most cases, because a panel this size has to show what the knob does rather than what a conservative default looks like.
 
-Each tile carries one effect at its labelled strength — stronger than the defaults in most cases, because a tile this size has to show what the knob does rather than what a conservative default looks like. The first tile is the same scene with `degrade=()`. Every tile has the same labels: not one of these effects moves a pixel, only recolours it.
+=== "none"
+
+    ![The scene with no degradation](../assets/datasets/scene/degradations/none.webp)
+
+=== "GaussianNoise(sigma=16)"
+
+    ![Gaussian noise on a bare canvas and on the scene](../assets/datasets/scene/degradations/gaussian-noise.webp)
+
+=== "GaussianBlur(radius=1.5)"
+
+    ![Blur on a bare canvas and on the scene](../assets/datasets/scene/degradations/gaussian-blur.webp)
+
+=== "JPEG(quality=15)"
+
+    ![JPEG blocking on a bare canvas and on the scene](../assets/datasets/scene/degradations/jpeg.webp)
+
+=== "Contrast(factor=0.45)"
+
+    ![Reduced contrast on a bare canvas and on the scene](../assets/datasets/scene/degradations/contrast.webp)
+
+=== "ColorCast(gain=(1.3, 1.0, 0.7))"
+
+    ![A white-balance error on a bare canvas and on the scene](../assets/datasets/scene/degradations/color-cast.webp)
+
+=== "Vignette(strength=0.7)"
+
+    ![Corner darkening on a bare canvas and on the scene](../assets/datasets/scene/degradations/vignette.webp)
+
+=== "Quantize(levels=4)"
+
+    ![Banding on a bare canvas and on the scene](../assets/datasets/scene/degradations/quantize.webp)
+
+The pairing separates two costs that look alike in a single image. A degradation runs over the whole image, so the left panel is the effect on flat pixels and the right is the same effect where an edge has to survive it: `GaussianNoise` and `Quantize` visibly change the empty canvas, while `GaussianBlur` and `JPEG` leave it almost untouched and spend themselves entirely on the boundaries. Every picture carries the same boxes — not one of these effects moves a pixel, only recolours it.
 
 This is not a duplicate of the augmentation pipeline. A `degrade` tuple describes pixels baked into an on-disk dataset — a fixed property of the data, replayable from its seed — where a transform in a training loop resamples every epoch, and a dataset can carry both:
 
@@ -185,9 +251,25 @@ The tuple is a tuple because order matters: blurring and then compressing is not
 
 ### Adding unlabelled clutter
 
-![The same scene with distractors, with occluders, and with both](../assets/datasets/gallery-clutter.webp)
+=== "neither"
 
-Two knobs add ink that no annotation mentions, and the sheet is ordered so the difference between them is visible: `distractors` go under the labelled objects, `occluders` go over them. The last tile runs both. The three labelled shapes are in the same places in all four tiles, exactly as they are across the backgrounds sheet — clutter is drawn from a side stream too. `occluders` has its own section below.
+    ![The scene with no unlabelled ink](../assets/datasets/scene/clutter/none.webp)
+
+=== "distractors=6"
+
+    ![Unlabelled shapes drawn under the objects](../assets/datasets/scene/clutter/distractors.webp)
+
+=== "occluders=3"
+
+    ![Unlabelled shapes drawn over the objects](../assets/datasets/scene/clutter/occluders.webp)
+
+=== "distractors=6, occluders=3"
+
+    ![Both knobs at once](../assets/datasets/scene/clutter/both.webp)
+
+Two knobs add ink that no annotation mentions: `distractors` go under the labelled objects, `occluders` go over them, and the last picture runs both. Only the three labelled shapes carry a box, in all four — every other mark is unlabelled and stays that way, which is the entire point of these knobs. Those three sit in the same places throughout, as they do across the backgrounds above, since clutter draws from a side stream too.
+
+These four show no bare canvas, unlike every picture above: neither knob touches the canvas, so that panel would be the same flat grey four times. `occluders` has its own section below.
 
 `distractors` draws that many shapes *under* the labelled objects, from shapes and colours no class owns. Nothing about them reaches an annotation — no class id, no box, no landmark table — so what they cost a model is the ability to find objects by asking "is there a shape here" instead of "which shape is this":
 

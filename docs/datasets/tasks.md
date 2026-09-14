@@ -13,25 +13,25 @@ Each task exposes a different annotation representation. In the looping previews
 
     Axis-aligned boxes.
 
-    ![Synthetic detection sample with axis-aligned boxes](../assets/datasets/geometry-detection.webp)
+    ![Synthetic detection sample with axis-aligned boxes](../assets/datasets/tasks/geometry-detection.webp)
 
 === "Segmentation"
 
     Filled-shape polygons.
 
-    ![Synthetic segmentation sample with polygon outlines](../assets/datasets/geometry-segmentation.webp)
+    ![Synthetic segmentation sample with polygon outlines](../assets/datasets/tasks/geometry-segmentation.webp)
 
 === "OBB"
 
     Oriented boxes, derived in each shape's own upright frame: the box is the shape's axis-aligned box in its pre-rotation pose, turned rigidly with the shape — its sides always run along and across the shape's own (symmetry) axis, the way a human annotator would draw it, rather than the minimum-area rectangle, which for shapes like `kite` or `arrow` would lean off the shape's axis.
 
-    ![Synthetic OBB sample with oriented boxes](../assets/datasets/geometry-obb.webp)
+    ![Synthetic OBB sample with oriented boxes](../assets/datasets/tasks/geometry-obb.webp)
 
 === "Keypoints / pose"
 
     Animal silhouettes with the sixteen landmark points and skeleton edges.
 
-    ![Synthetic keypoint sample with landmark overlays](../assets/datasets/animals-keypoints.webp)
+    ![Synthetic keypoint sample with landmark overlays](../assets/datasets/tasks/animals-keypoints.webp)
 
 Regenerate these clips with `python examples/animate_synthetic_dataset.py`.
 

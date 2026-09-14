@@ -11,7 +11,7 @@ Shapes are drawn on a gray canvas at random positions, sizes, and rotations, in 
 
 ### Shape reference
 
-A field-guide-style lookup of every shape and its plain axis-aligned detection box (blue), upright at its own authored orientation exactly as drawn — not sampled from the generator, so no random color, rotation, or `asymmetry_jitter`. Every symbol and animal is authored mirror-symmetric about its own vertical axis, so this is what keeps a reference recognizable: an `arrow` pointing up, a `house` with its roof up, a `kite` on its long axis. The blue box here is the detection box at this fixed reference position — and since the oriented box (see [Tasks](tasks.md#tasks)) is derived in the shape's own upright frame, it is also exactly what the OBB task exports at this unrotated pose; the generator's rotated samples carry the same box turned rigidly with the shape. Animals, symbols, and letters also show their keypoint schema (dots and skeleton) in orange, matching the animated previews' occluded-keypoint color.
+A field-guide-style lookup of every shape and its plain axis-aligned detection box (yellow, on a dark keyline that carries the contrast this white page does not give yellow), upright at its own authored orientation exactly as drawn — not sampled from the generator, so no random color, rotation, or `asymmetry_jitter`. Every symbol and animal is authored mirror-symmetric about its own vertical axis, so this is what keeps a reference recognizable: an `arrow` pointing up, a `house` with its roof up, a `kite` on its long axis. The box here is the detection box at this fixed reference position — and since the oriented box (see [Tasks](tasks.md#tasks)) is derived in the shape's own upright frame, it is also exactly what the OBB task exports at this unrotated pose; the generator's rotated samples carry the same box turned rigidly with the shape. Animals, symbols, and letters also show their keypoint schema (dots and skeleton) in orange, matching the animated previews' occluded-keypoint color.
 
 === "Geometric"
 
@@ -155,19 +155,19 @@ All four tasks work on animal shapes; `keypoints` is available for the animal, s
 
 === "Detection"
 
-    ![Synthetic detection sample with animal silhouettes](../assets/datasets/animals-detection.webp)
+    ![Synthetic detection sample with animal silhouettes](../assets/datasets/tasks/animals-detection.webp)
 
 === "Segmentation"
 
-    ![Synthetic segmentation sample with animal silhouettes](../assets/datasets/animals-segmentation.webp)
+    ![Synthetic segmentation sample with animal silhouettes](../assets/datasets/tasks/animals-segmentation.webp)
 
 === "OBB"
 
-    ![Synthetic OBB sample with animal silhouettes](../assets/datasets/animals-obb.webp)
+    ![Synthetic OBB sample with animal silhouettes](../assets/datasets/tasks/animals-obb.webp)
 
 === "Keypoints / pose"
 
-    ![Synthetic keypoint sample with animal silhouettes](../assets/datasets/animals-keypoints.webp)
+    ![Synthetic keypoint sample with animal silhouettes](../assets/datasets/tasks/animals-keypoints.webp)
 
 Regenerate these clips with `python examples/animate_synthetic_dataset.py --shapes animals --task all`.
 
@@ -222,19 +222,19 @@ A dataset can draw from the animal family, the symbol family, or the letter fami
 
 === "Detection"
 
-    ![Synthetic detection sample with symbol shapes](../assets/datasets/symbols-detection.webp)
+    ![Synthetic detection sample with symbol shapes](../assets/datasets/tasks/symbols-detection.webp)
 
 === "Segmentation"
 
-    ![Synthetic segmentation sample with symbol shapes](../assets/datasets/symbols-segmentation.webp)
+    ![Synthetic segmentation sample with symbol shapes](../assets/datasets/tasks/symbols-segmentation.webp)
 
 === "OBB"
 
-    ![Synthetic OBB sample with symbol shapes](../assets/datasets/symbols-obb.webp)
+    ![Synthetic OBB sample with symbol shapes](../assets/datasets/tasks/symbols-obb.webp)
 
 === "Keypoints / pose"
 
-    ![Synthetic keypoint sample with symbol shapes](../assets/datasets/symbols-keypoints.webp)
+    ![Synthetic keypoint sample with symbol shapes](../assets/datasets/tasks/symbols-keypoints.webp)
 
 Regenerate these clips with `python examples/animate_synthetic_dataset.py --shapes symbols --task all`.
 
@@ -287,19 +287,19 @@ All four tasks work on letter shapes, and every output format behaves exactly as
 
 === "Detection"
 
-    ![Synthetic detection sample with letter shapes](../assets/datasets/letters-detection.webp)
+    ![Synthetic detection sample with letter shapes](../assets/datasets/tasks/letters-detection.webp)
 
 === "Segmentation"
 
-    ![Synthetic segmentation sample with letter shapes](../assets/datasets/letters-segmentation.webp)
+    ![Synthetic segmentation sample with letter shapes](../assets/datasets/tasks/letters-segmentation.webp)
 
 === "OBB"
 
-    ![Synthetic OBB sample with letter shapes](../assets/datasets/letters-obb.webp)
+    ![Synthetic OBB sample with letter shapes](../assets/datasets/tasks/letters-obb.webp)
 
 === "Keypoints / pose"
 
-    ![Synthetic keypoint sample with letter shapes](../assets/datasets/letters-keypoints.webp)
+    ![Synthetic keypoint sample with letter shapes](../assets/datasets/tasks/letters-keypoints.webp)
 
 Regenerate these clips with `python examples/animate_synthetic_dataset.py --shapes letters --task all`.
 
