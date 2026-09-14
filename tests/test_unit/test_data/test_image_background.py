@@ -170,6 +170,48 @@ def test_a_directory_of_unreadable_suffixes_is_refused(tmp_path: Path) -> None:
         ImageBackground(folder)
 
 
+def test_a_file_that_only_looks_like_an_image_is_refused(tmp_path: Path) -> None:
+    """A corrupt file with an image suffix is caught at construction, not from inside rendering.
+
+    Filtering on the filename alone made "readable" a promise about the suffix: the directory was accepted and the first
+    generated image then raised `UnidentifiedImageError` from deep inside the renderer, far from the directory that
+    caused it.
+
+    """
+    folder = tmp_path / "broken"
+    folder.mkdir()
+    (folder / "corrupt.png").write_bytes(b"this is not a png")
+
+    with pytest.raises(ValueError, match="none could be parsed"):
+        ImageBackground(folder)
+
+
+def test_a_subdirectory_named_like_an_image_is_not_an_image(tmp_path: Path) -> None:
+    """A directory called `shots.png` matched the suffix filter and counted as a usable image."""
+    folder = tmp_path / "d"
+    folder.mkdir()
+    (folder / "shots.png").mkdir()
+
+    with pytest.raises(ValueError, match="holds no image"):
+        ImageBackground(folder)
+
+
+def test_images_in_subdirectories_are_found_and_keep_their_path(tmp_path: Path) -> None:
+    """The scan recurses, so provenance is a real relative path rather than always a bare filename.
+
+    The field was converted to POSIX form for portability, which only means something once a path can contain a
+    separator; before the scan recursed it never could.
+
+    """
+    folder = tmp_path / "shoot"
+    (folder / "roll_one").mkdir(parents=True)
+    Image.fromarray(np.full((40, 40, 3), 70, dtype=np.uint8)).save(folder / "roll_one" / "frame.png")
+
+    _canvas, source = ImageBackground(folder).render_with_source(np.random.default_rng(0), IMG_SIZE)
+
+    assert source == "roll_one/frame.png"
+
+
 def test_the_mode_cannot_be_reached_without_a_directory() -> None:
     """`image_dir` has no default, so there is no way to ask for this mode without saying where from."""
     with pytest.raises(TypeError):

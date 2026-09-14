@@ -15,8 +15,25 @@ from ._difficulty import BANDS, SMALL_AREA, ProxyStats, measure, measure_bands, 
 
 #: Axes that must fall from easy to hard, and those that must rise. Split rather than signed so a
 #: failure message names the axis in the direction a reader thinks about it.
+#:
+#: The comparison is **strict** on every axis that is strictly ordered today, because a non-strict
+#: one cannot tell a ladder from a flat line: three identical bands satisfy ``values == sorted(values)``
+#: on all six axes at once. That is not hypothetical — measuring the three bands with their clutter
+#: silently disabled drives ``clutter_coverage`` to ``[0.0, 0.0, 0.0]`` and every non-strict
+#: assertion, including the small-object floor, still passes.
 _FALLING = ("mean_area", "p10_area", "boundary_contrast", "background_snr")
-_RISING = ("small_fraction", "clutter_coverage")
+_RISING = ("clutter_coverage",)
+
+#: ``small_fraction`` is the one axis that legitimately ties: the easy and moderate bands both hold
+#: no object below the small-object threshold, so ``[0.0, 0.0, 0.298]`` is correct and strictness
+#: would reject it. It is pinned by the absolute floor below instead, which is what makes the tie
+#: safe rather than merely tolerated.
+_TYING = "small_fraction"
+
+#: Floor on the clutter the two clutter-bearing bands must actually paint. An ordering assertion
+#: alone cannot distinguish "more clutter" from "no clutter anywhere", so the ladder needs one
+#: absolute number per axis that can collapse to zero.
+_MIN_MODERATE_CLUTTER = 0.005
 
 
 @pytest.fixture(scope="module")

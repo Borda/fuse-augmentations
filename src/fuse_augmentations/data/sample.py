@@ -219,6 +219,26 @@ class SceneRecord:
     occluder_mask: NDArray[np.bool_] | None = None
     background_source: str | None = None
 
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore a record and re-clear the mask's writability, which pickling does not carry.
+
+        Args:
+            state: The instance dictionary being restored.
+
+        ``ndarray.__reduce__`` does not preserve the ``WRITEABLE`` flag, so a mask that was read-only
+        when it was written comes back writable — and this is the ordinary path, not an exotic one:
+        :class:`~fuse_augmentations.data.datasets.SyntheticIterableDataset` is a torch
+        ``IterableDataset``, so every sample crosses a pickle boundary under ``num_workers > 0``.
+        Without this the freeze would be a guarantee that held only in the process that made it.
+
+        Restoring through ``__dict__`` rather than ``__init__``: unpickling a dataclass bypasses the
+        constructor, so a ``__post_init__`` freeze would never run.
+
+        """
+        self.__dict__.update(state)
+        if self.occluder_mask is not None:
+            self.occluder_mask.flags.writeable = False
+
 
 #: The record every sample carries until something fills one in. Shared rather than built per sample,
 #: which is safe precisely because it is empty and frozen: both its fields are immutable scalars, so
@@ -232,7 +252,10 @@ class Sample:
     """A rendered image and its annotations.
 
     Args:
-        image: RGB image, shape ``(height, width, 3)``, dtype ``uint8``.
+        image: RGB image, shape ``(height, width, 3)``, dtype ``uint8``. Writable exactly when the
+            run configured a ``degrade`` chain: without one the array is the renderer's own read-only
+            view onto Pillow's buffer, which is what it has always been and costs no copy, while a
+            chain produces a buffer the sample owns. Copy it before writing if you need to write.
         annotations: Object annotations, one per drawn shape.
         width: Image width in pixels.
         height: Image height in pixels.

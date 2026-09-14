@@ -661,7 +661,10 @@ class SyntheticConfig:
             :class:`~fuse_augmentations.data.backgrounds.TextureBackground`. A plain fill is
             normalized to a :class:`~fuse_augmentations.data.backgrounds.SolidBackground` at
             construction, so ``config.background`` always reads back as a background object and the
-            default draws exactly the flat grey canvas it always did. A background renders from its
+            default draws exactly the flat grey canvas it always did. The field used to be handed
+            straight to Pillow, so a colour *name* such as ``"white"`` or ``"#204080"`` rendered;
+            those are rejected now, since this is the first validation the field has had — pass the
+            triple instead. A background renders from its
             own side stream, never from the placement stream, so switching one on never moves an
             object at a fixed seed.
         rotate: Apply a random rotation to each polygonal shape.
@@ -774,7 +777,7 @@ class SyntheticConfig:
         self._normalize_colors()
         self._normalize_background()
         self._validate_degradations()
-        self._resolve_distractor_pools()
+        self._normalize_distractor_pools()
         if self.img_size <= 0:
             raise ValueError(f"img_size must be positive, got {self.img_size}")
         if not 1 <= self.min_objects <= self.max_objects:
@@ -861,40 +864,32 @@ class SyntheticConfig:
         if invalid:
             raise ValueError(f"degrade must contain only Degradation instances, got {invalid!r}")
 
-    def _resolve_distractor_pools(self) -> None:
-        """Replace each distractor pool with the concrete tuple clutter is drawn from.
+    def _normalize_distractor_pools(self) -> None:
+        """Normalize an explicitly given distractor pool, and refuse a clutter request nothing can fill.
 
-        Both pools default to ``None``, meaning "the complement of what the labelled objects use", so
-        clutter is never drawn in a shape or a colour a class owns. The shape complement is taken
-        against :data:`~fuse_augmentations.data.families.ALL_SHAPES`, which is large enough that a run
-        would have to name all 49 to empty it; the colour complement is taken against
-        :data:`DISTRACTOR_PALETTE` rather than :data:`DEFAULT_COLORS`, since the latter is exactly
-        what ``colors`` defaults to and would leave nothing behind on a stock configuration.
-
-        Fills are compared on their RGB triple, never as whole :class:`Fill` objects: a fill carries
-        a name as well as a triple, so subtracting the objects would leave a palette entry available
-        for clutter in the very pixels a user had claimed for a labelled class under a name of their
-        own.
+        Only what the caller actually passed is normalized. The complements stay *derived*, on
+        :attr:`resolved_distractor_shapes` and :attr:`resolved_distractor_colors`, rather than being
+        written back over the fields — writing them back made the defaults survive a
+        :func:`dataclasses.replace` that changed what they were derived from, so
+        ``replace(config, shapes=(AnimalShape.DUCK,))`` kept a pool still containing ``DUCK`` and
+        clutter was drawn as unlabelled duplicates of a real class, with no error anywhere. That
+        idiom is live in this repository, so the failure was reachable rather than theoretical.
 
         Raises:
-            ValueError: If clutter was asked for and either pool resolved to nothing, naming which of
+            ValueError: If clutter was asked for and either pool resolves to nothing, naming which of
                 the two was empty.
 
         """
-        from fuse_augmentations.data.families import ALL_SHAPES
-
-        claimed = {fill.rgb for fill in self.colors}
-        if self.distractor_shapes is None:
-            object.__setattr__(self, "distractor_shapes", tuple(s for s in ALL_SHAPES if s not in self.shapes))
-        else:
+        if self.distractor_shapes is not None:
             object.__setattr__(self, "distractor_shapes", tuple(self.distractor_shapes))
-        if self.distractor_colors is None:
-            object.__setattr__(self, "distractor_colors", tuple(f for f in DISTRACTOR_PALETTE if f.rgb not in claimed))
-        else:
+        if self.distractor_colors is not None:
             object.__setattr__(self, "distractor_colors", tuple(Fill.parse(f) for f in self.distractor_colors))
         if not (self.distractors or self.occluders):
             return
-        pools = (("distractor_shapes", self.distractor_shapes), ("distractor_colors", self.distractor_colors))
+        pools = (
+            ("distractor_shapes", self.resolved_distractor_shapes),
+            ("distractor_colors", self.resolved_distractor_colors),
+        )
         for name, pool in pools:
             if not pool:
                 raise ValueError(
@@ -902,6 +897,57 @@ class SyntheticConfig:
                     f"but {name} resolved to an empty pool; "
                     f"pass {name}= explicitly, or narrow shapes/colors so a complement remains"
                 )
+
+    @property
+    def resolved_distractor_shapes(self) -> tuple[Shape, ...]:
+        """Return the shapes clutter is actually drawn from.
+
+        :attr:`distractor_shapes` when it was given, otherwise the complement of :attr:`shapes`
+        against :data:`~fuse_augmentations.data.families.ALL_SHAPES`, so clutter never wears the
+        silhouette of a class. Derived on read rather than stored, which is what keeps it correct
+        after a :func:`dataclasses.replace` that changed ``shapes``.
+
+        Examples:
+            ```pycon
+            >>> from fuse_augmentations.data.config import SyntheticConfig
+            >>> from fuse_augmentations.data.primitives import PrimitiveShape
+            >>> config = SyntheticConfig(img_size=32, shapes=(PrimitiveShape.SQUARE,))
+            >>> PrimitiveShape.SQUARE in config.resolved_distractor_shapes
+            False
+
+            ```
+
+        """
+        from fuse_augmentations.data.families import ALL_SHAPES
+
+        if self.distractor_shapes is not None:
+            return self.distractor_shapes
+        return tuple(shape for shape in ALL_SHAPES if shape not in self.shapes)
+
+    @property
+    def resolved_distractor_colors(self) -> tuple[Fill, ...]:
+        """Return the fills clutter is actually drawn from.
+
+        :attr:`distractor_colors` when it was given, otherwise :data:`DISTRACTOR_PALETTE` minus any
+        entry whose RGB triple :attr:`colors` already claims. Compared on the triple rather than on
+        the whole :class:`Fill`, since a fill also carries a name and a user may claim a palette
+        colour under one of their own. Derived on read, for the same reason as
+        :attr:`resolved_distractor_shapes`.
+
+        Examples:
+            ```pycon
+            >>> from fuse_augmentations.data.config import DISTRACTOR_PALETTE, Fill, SyntheticConfig
+            >>> config = SyntheticConfig(img_size=32, colors=(Fill(rgb=DISTRACTOR_PALETTE[0].rgb),))
+            >>> DISTRACTOR_PALETTE[0] in config.resolved_distractor_colors
+            False
+
+            ```
+
+        """
+        if self.distractor_colors is not None:
+            return self.distractor_colors
+        claimed = {fill.rgb for fill in self.colors}
+        return tuple(fill for fill in DISTRACTOR_PALETTE if fill.rgb not in claimed)
 
     def _validate_vocabulary(self) -> None:
         """Reject an unusable shape/color tuple, a non-:class:`Task` task, or an unannotatable pairing.

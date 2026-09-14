@@ -38,7 +38,7 @@ print(counts)
 
 </details>
 
-`SyntheticConfig` knobs: `img_size`, `min_objects`/`max_objects`, `min_size_ratio`/`max_size_ratio`, `overlap_iou`, `boundary_tolerance`, `rotate`, `asymmetry_jitter`, `background`, `class_mode`, `task`, `shapes`, `colors`. Overlapping candidates (IoU above `overlap_iou`) and out-of-bounds candidates (more than `boundary_tolerance` outside the frame) are rejected during placement.
+`SyntheticConfig` knobs: `img_size`, `min_objects`/`max_objects`, `min_size_ratio`/`max_size_ratio`, `overlap_iou`, `boundary_tolerance`, `rotate`, `asymmetry_jitter`, `background`, `degrade`, `distractors`, `distractor_shapes`, `distractor_colors`, `occluders`, `class_mode`, `task`, `shapes`, `colors`. Overlapping candidates (IoU above `overlap_iou`) and out-of-bounds candidates (more than `boundary_tolerance` outside the frame) are rejected during placement.
 
 `task` and `class_mode` are config fields only. `generate_dataset` takes no `task=` argument of its own — pass it as a keyword and it flows into the config, or set it on a `SyntheticConfig` you build yourself, but not both. Earlier releases accepted it in both places and cross-checked them, which meant a `None` sentinel, a conflict error, and a paragraph explaining which one won; one owner removes all three.
 
@@ -79,7 +79,7 @@ SolidBackground
 
 </details>
 
-`config.background` reads back as a background object whichever spelling went in, so a caller that wants the flat fill asks for `config.background.color.rgb` rather than for the field itself. Keep `NoiseBackground.sigma` at or below `32` for any run scored against a rasterized-ink oracle: the oracle finds ink by colour distance, Gaussian noise is unbounded, and its tail — not its mean — is what starts producing false ink above that.
+`config.background` reads back as a background object whichever spelling went in, so a caller that wants the flat fill asks for `config.background.color.rgb` rather than for the field itself. Two spellings that used to work no longer do: the field was previously handed straight to Pillow, so a colour *name* (`background="white"`, `background="#204080"`) reached `Image.new` and rendered. It is now validated like every other fill and raises at construction. Pass the triple — `(255, 255, 255)` — or a `Color` member. This is the first validation the field has ever had, and it is also what rejects a typo that previously rendered as black. Keep `NoiseBackground.sigma` at or below `32` for any run scored against a rasterized-ink oracle: the oracle finds ink by colour distance, Gaussian noise is unbounded, and its tail — not its mean — is what starts producing false ink above that.
 
 ### Photographic backgrounds
 
@@ -111,7 +111,7 @@ wall.png
 
 </details>
 
-Which file a sample was cropped from reaches `sample.scene.background_source` as a POSIX-form path relative to `image_dir`, so a photographic dataset stays traceable rather than merely reproducible in principle. Files are listed in sorted order, so a seed picks the same picture on any machine; a picture smaller than the canvas is scaled up proportionally rather than refused; and `grayscale=True` keeps the structure while dropping the colour, which matters when the run's classes are colour-named and a photographic canvas would otherwise compete with them. The directory listing is cached per process — a background reading a directory that changes underneath it has no reproducible meaning anyway.
+Which file a sample was cropped from reaches `sample.scene.background_source` as a POSIX-form path relative to `image_dir`, so a photographic dataset stays traceable rather than merely reproducible in principle. The directory is searched recursively, and every candidate is opened before the directory is accepted, so a corrupt file or a subdirectory that merely happens to end in `.png` is refused where you can see it rather than from inside the renderer. Files are listed in sorted order, so a seed picks the same picture on any machine; a picture smaller than the canvas is scaled up proportionally rather than refused; and `grayscale=True` keeps the structure while dropping the colour, which matters when the run's classes are colour-named and a photographic canvas would otherwise compete with them. The directory listing is cached per process — a background reading a directory that changes underneath it has no reproducible meaning anyway.
 
 ### Baking degradations into the pixels
 
@@ -157,6 +157,8 @@ True
 
 </details>
 
+Note what sits downstream of this chain: `generate_dataset` writes every image as JPEG at quality 95, so a dataset on disk already carries one lossy encode whatever `degrade` says. `JPEG(quality)` is therefore a second, harsher pass rather than the only one, and the exact `(255, 255, 255)`/`(0, 0, 0)` endpoints `ImpulseNoiseBackground` produces are softened by ringing on the way to disk — they survive intact only for a `Sample` consumed in memory. The floor of the difficulty ladder is set by the writer, not by the config.
+
 The tuple is a tuple because order matters: blurring and then compressing is not the same picture as compressing and then blurring. Each step takes `uint8` and returns `uint8`, so quantisation error accumulates between steps rather than being carried in float to the end — which is what a real camera pipeline does.
 
 ### Adding unlabelled clutter
@@ -173,7 +175,7 @@ labels = [len(s.annotations) for s in SyntheticGenerator(plain).generate(3, seed
 unchanged = [len(s.annotations) for s in SyntheticGenerator(cluttered).generate(3, seed=0)]
 
 print(labels == unchanged)
-print([fill.name for fill in SyntheticConfig(distractors=1).distractor_colors])
+print([fill.name for fill in SyntheticConfig(distractors=1).resolved_distractor_colors])
 ```
 
 <details>
@@ -186,7 +188,7 @@ True
 
 </details>
 
-Both pools default to a complement so clutter never wears a class's own appearance: `distractor_shapes` is every shape `shapes` does not use, and `distractor_colors` is the packaged `DISTRACTOR_PALETTE` minus any RGB triple `colors` already claims. The colour complement is taken against that palette rather than against `colors` itself because `colors` defaults to the whole `Color` vocabulary, which would leave nothing to draw with; asking for clutter when either pool really is empty raises at construction and names which one it was. Placement is best effort and carries no IoU constraint — being overlapped is the point — so an item that cannot be placed within its own attempt budget is skipped rather than raised over.
+Both pools default to a complement so clutter never wears a class's own appearance: `distractor_shapes` is every shape `shapes` does not use, and `distractor_colors` is the packaged `DISTRACTOR_PALETTE` minus any RGB triple `colors` already claims. The fields read back as whatever you passed — `None` included — and `resolved_distractor_shapes` / `resolved_distractor_colors` give the concrete pools, derived on read so they stay correct after a `dataclasses.replace` that changed `shapes` or `colors`. The colour complement is taken against that palette rather than against `colors` itself because `colors` defaults to the whole `Color` vocabulary, which would leave nothing to draw with; asking for clutter when either pool really is empty raises at construction and names which one it was. Placement is best effort and carries no IoU constraint — being overlapped is the point — so an item that cannot be placed within its own attempt budget is skipped rather than raised over.
 
 ### Occluding the objects
 

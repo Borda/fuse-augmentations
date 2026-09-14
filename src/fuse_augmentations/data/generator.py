@@ -67,6 +67,12 @@ _Placement = tuple["Shape", Fill, "NDArray[np.float64]", float, "NDArray[np.floa
 #: optional point (a NaN row from :mod:`~fuse_augmentations.data.animals`), and occluded when
 #: ``occluders`` put an unlabelled shape over it — the placement loop rejects overlapping *labelled*
 #: objects, so one labelled shape never covers another's landmark.
+#: One side stream per consumer, in this fixed order: background, distractors, occluders,
+#: degradations. Four children rather than one shared child, so a knob's draw count cannot shift a
+#: different knob's — two backgrounds painting byte-identical canvases while consuming different
+#: numbers of draws would otherwise place different clutter.
+_SIDE_STREAM_ROLES = 4
+
 _KEYPOINT_VISIBLE = 2
 _KEYPOINT_OCCLUDED = 1
 _KEYPOINT_HIDDEN = 0
@@ -105,8 +111,11 @@ def _visible_keypoints(
         if not inside:
             triples.append((0.0, 0.0, _KEYPOINT_HIDDEN))
             continue
-        # The incoming coordinates are edge-space, where Pillow fills pixel ``floor(x)`` for a
-        # vertex at ``x`` -- the same index the stencil was rasterized under.
+        # Edge-space coordinates index the stencil directly. Which pixels an outline covers is the
+        # rasterizer's answer, not a geometric one -- Pillow fills *through* a max vertex, so a
+        # polygon spanning 2..6 paints columns 2 through 6 inclusive. The canvas and the stencil take
+        # the same outline through the same rasterizer, so a landmark flagged occluded is always one
+        # that occluder-coloured pixels actually cover.
         covered = occluder_mask is not None and bool(occluder_mask[int(y), int(x)])
         centre = to_pixel_centre(np.array([x, y], dtype=np.float64))
         triples.append((float(centre[0]), float(centre[1]), _KEYPOINT_OCCLUDED if covered else _KEYPOINT_VISIBLE))
@@ -193,28 +202,39 @@ class SyntheticGenerator:
             or any(step.consumes_randomness for step in config.degrade)
         )
 
-    def _side_stream(self, rng: np.random.Generator) -> np.random.Generator | None:
-        """Return the child stream every non-placement draw comes from, or ``None`` when none is needed.
+    def _side_streams(self, rng: np.random.Generator) -> tuple[np.random.Generator | None, ...]:
+        """Return one child stream per non-placement consumer, or four ``None`` when nothing draws.
 
         Args:
             rng: The caller's generator, reserved for object placement and never drawn from here.
 
         Returns:
-            A fresh child of ``rng``, or ``None`` when nothing in this configuration draws.
+            Four streams in the order :data:`_SIDE_STREAM_ROLES` counts — background, distractors,
+            occluders, degradations — or four ``None`` when this configuration draws nothing at all.
 
         :meth:`numpy.random.Generator.spawn` advances the parent's seed-sequence child counter, not
-        its bit stream, so the placements that follow are bit-identical whether or not a child was
-        taken — which is what lets a background be switched on without moving an object at a fixed
-        seed. A child is nonetheless taken only when something will draw from it, so a configuration
-        that uses no such knob leaves even the child counter where it was. The child is taken per
-        :meth:`sample` call, so two images in one stream get independent non-placement randomness.
+        its bit stream, so the placements that follow are bit-identical whether or not children were
+        taken — which is what lets a knob be switched on without moving an object at a fixed seed.
+        Children are nonetheless taken only when something will draw, so a configuration using no
+        such knob leaves even the child counter where it was.
+
+        One child **per consumer** rather than one shared child, because a shared child couples every
+        knob to every other: the background draws first, so changing it shifts what the distractors
+        then draw. Two backgrounds painting byte-identical canvases while consuming different numbers
+        of draws demonstrably placed different clutter before this split, which would also have made
+        a per-knob proxy measurement unattributable.
+
+        Each :meth:`sample` call takes its own children, so two images in one stream get independent
+        non-placement randomness.
 
         Deferring the draws to the end of :meth:`sample` instead would be correct within one image
         and wrong across a stream: :meth:`generate` reuses one generator for every sample, so draws
         made after image *n*'s placements would shift image *n+1*'s.
 
         """
-        return rng.spawn(1)[0] if self._needs_side_stream else None
+        if not self._needs_side_stream:
+            return (None,) * _SIDE_STREAM_ROLES
+        return tuple(rng.spawn(_SIDE_STREAM_ROLES))
 
     def _attempt_placement(
         self,
@@ -316,8 +336,8 @@ class SyntheticGenerator:
                 placed = self._attempt_placement(
                     rng,
                     [],
-                    cfg.distractor_shapes,
-                    cfg.distractor_colors,
+                    cfg.resolved_distractor_shapes,
+                    cfg.resolved_distractor_colors,
                     with_landmarks=False,
                     respect_boundary=respect_boundary,
                 )
@@ -337,8 +357,9 @@ class SyntheticGenerator:
 
         Args:
             rng: Random generator driving object count, shapes, colors, and placement. The
-                background draws from a child of it rather than from it directly (see
-                :meth:`_side_stream`), so what fills the canvas never moves what is on it.
+                background, the clutter, the occluders and the degradations each draw from a child
+                of it rather than from it directly (see :meth:`_side_streams`), so none of them moves
+                an object and none of them moves another.
 
         Returns:
             A :class:`Sample` with an RGB ``uint8`` image and one annotation per drawn shape.
@@ -362,12 +383,14 @@ class SyntheticGenerator:
 
         """
         cfg = self.config
-        side = self._side_stream(rng)
-        pixels, background_source = cfg.background.render_with_source(side, cfg.img_size)
+        canvas_stream, clutter_stream, occluder_stream, degrade_stream = self._side_streams(rng)
+        pixels, background_source = cfg.background.render_with_source(
+            canvas_stream if cfg.background.consumes_randomness else None, cfg.img_size
+        )
         canvas = Image.fromarray(pixels)
         draw = ImageDraw.Draw(canvas)
-        if cfg.distractors and side is not None:
-            self._draw_clutter(draw, side, cfg.distractors)
+        if cfg.distractors and clutter_stream is not None:
+            self._draw_clutter(draw, clutter_stream, cfg.distractors)
         num_objects = int(rng.integers(cfg.min_objects, cfg.max_objects + 1))
 
         placements: list[_Placement] = []
@@ -394,15 +417,18 @@ class SyntheticGenerator:
             )
         # Occluders go on last of the canvas-side steps, so they cover the labelled shapes rather
         # than sit behind them -- which is also why annotations are built only after this point.
-        occluder_mask = self._draw_occluders(draw, side) if cfg.occluders and side is not None else None
+        occluder_mask = (
+            self._draw_occluders(draw, occluder_stream) if cfg.occluders and occluder_stream is not None else None
+        )
         annotations = [
             self._annotate(placed, bbox, occluder_mask) for placed, bbox in zip(placements, kept, strict=True)
         ]
-        # ``np.array`` rather than ``np.asarray``: the degradation chain needs a buffer it owns,
-        # and ``asarray`` may hand back a view onto Pillow's own.
-        image = np.array(canvas, dtype=np.uint8)
+        # ``np.asarray`` when nothing will touch the pixels, exactly as before degradations existed:
+        # it may hand back a read-only view onto Pillow's own buffer, which costs no copy. A chain
+        # needs a buffer it owns, so that case — and only that case — pays for ``np.array``.
+        image = np.array(canvas, dtype=np.uint8) if cfg.degrade else np.asarray(canvas)
         for step in cfg.degrade:
-            image = step.apply(image, side if step.consumes_randomness else None)
+            image = step.apply(image, degrade_stream if step.consumes_randomness else None)
         return Sample(
             image=image,
             annotations=annotations,

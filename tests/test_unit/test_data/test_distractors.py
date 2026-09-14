@@ -9,6 +9,8 @@ clutter is allowed to look like.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -64,8 +66,8 @@ def test_distractors_work_on_a_stock_configuration() -> None:
     """
     config = SyntheticConfig(img_size=64, distractors=3)
 
-    assert config.distractor_colors == DISTRACTOR_PALETTE
-    assert len(config.distractor_shapes) == len(ALL_SHAPES) - len(config.shapes)
+    assert config.resolved_distractor_colors == DISTRACTOR_PALETTE
+    assert len(config.resolved_distractor_shapes) == len(ALL_SHAPES) - len(config.shapes)
 
 
 def test_a_palette_entry_claimed_under_another_name_is_withheld() -> None:
@@ -79,7 +81,7 @@ def test_a_palette_entry_claimed_under_another_name_is_withheld() -> None:
     slate = DISTRACTOR_PALETTE[0].rgb
     config = SyntheticConfig(img_size=64, colors=(Fill(rgb=slate, name="my-grey"),), distractors=2)
 
-    assert all(fill.rgb != slate for fill in config.distractor_colors)
+    assert all(fill.rgb != slate for fill in config.resolved_distractor_colors)
 
 
 def test_an_exhausted_colour_pool_is_refused_with_the_empty_set_named() -> None:
@@ -100,7 +102,7 @@ def test_an_exhausted_pool_is_tolerated_while_no_clutter_is_asked_for() -> None:
     """The pools resolve on every config, but only a nonzero `distractors` makes an empty one an error."""
     config = SyntheticConfig(img_size=64, shapes=ALL_SHAPES)
 
-    assert config.distractor_shapes == ()
+    assert config.resolved_distractor_shapes == ()
 
 
 def test_explicit_pools_override_the_complement() -> None:
@@ -112,8 +114,8 @@ def test_explicit_pools_override_the_complement() -> None:
         distractor_colors=((10, 20, 30),),
     )
 
-    assert config.distractor_shapes == (PrimitiveShape.CIRCLE,)
-    assert config.distractor_colors == (Fill(rgb=(10, 20, 30)),)
+    assert config.resolved_distractor_shapes == (PrimitiveShape.CIRCLE,)
+    assert config.resolved_distractor_colors == (Fill(rgb=(10, 20, 30)),)
 
 
 def test_clutter_carries_no_landmarks_under_the_keypoints_task() -> None:
@@ -179,3 +181,37 @@ def test_the_palette_stays_separable_from_the_class_vocabulary_under_harsh_contr
     separation = np.linalg.norm(clutter[:, None, :] - claimed[None, :, :], axis=2)
 
     assert float(separation.min()) >= _MIN_SEPARATION, separation.min()
+
+
+def test_replacing_shapes_rederives_the_clutter_pool() -> None:
+    """`dataclasses.replace` on `shapes` must not leave clutter wearing a silhouette a class now owns.
+
+    Writing the resolved complement back over the field made the *default* survive a change to what
+    it was derived from: the second construction saw a concrete tuple instead of `None` and kept it.
+    Clutter was then drawn as unlabelled duplicates of a real class, with nothing raised anywhere —
+    and `replace` on a config is an idiom already used inside this repository.
+
+    """
+    base = SyntheticConfig(img_size=32, distractors=2)
+
+    moved = replace(base, shapes=(AnimalShape.DUCK,))
+
+    assert set(moved.shapes) & set(moved.resolved_distractor_shapes) == set()
+
+
+def test_replacing_colors_rederives_the_clutter_pool() -> None:
+    """The same defect on the colour axis: a newly claimed RGB must leave the clutter palette."""
+    slate = DISTRACTOR_PALETTE[0].rgb
+    base = SyntheticConfig(img_size=32, distractors=2)
+
+    moved = replace(base, colors=(Fill(rgb=slate, name="mine"),))
+
+    assert all(fill.rgb != slate for fill in moved.resolved_distractor_colors)
+
+
+def test_replacing_into_an_empty_pool_still_refuses() -> None:
+    """Deriving on read keeps the refusal honest too, rather than only the pool."""
+    base = SyntheticConfig(img_size=32, distractors=2)
+
+    with pytest.raises(ValueError, match="distractor_shapes resolved to an empty pool"):
+        replace(base, shapes=ALL_SHAPES)

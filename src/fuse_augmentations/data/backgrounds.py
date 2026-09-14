@@ -162,8 +162,15 @@ class SolidBackground(Background):
         return False
 
     def render(self, rng: np.random.Generator | None, img_size: int) -> NDArray[np.uint8]:
-        """Return a canvas of one repeated colour, ignoring ``rng`` entirely."""
-        return np.ascontiguousarray(np.broadcast_to(_rgb(self.color).astype(np.uint8), (img_size, img_size, 3)))
+        """Return a canvas of one repeated colour, ignoring ``rng`` entirely.
+
+        Built with :func:`numpy.full` rather than a broadcast view made contiguous: at ``img_size=1`` every axis is
+        length one, so the broadcast result is *already* flagged C-contiguous and :func:`numpy.ascontiguousarray` hands
+        it straight back — read-only, which breaks the writability half of the base class's contract at exactly one
+        canvas size.
+
+        """
+        return np.full((img_size, img_size, 3), _rgb(self.color).astype(np.uint8), dtype=np.uint8)
 
 
 @dataclass(frozen=True)
@@ -348,11 +355,19 @@ class TextureBackground(Background):
 
     Args:
         base: The colour the field deviates around.
-        amplitude: Peak deviation from ``base`` in 8-bit units.
+        amplitude: Maximum deviation from ``base`` in 8-bit units — an upper bound rather than a
+            value reached. The octaves are summed and divided by their weight total, so a
+            multi-octave field spans less than the full ``[-1, 1]`` and its peak falls short of
+            ``amplitude`` by however much the octaves failed to align; at ``octaves=5`` the largest
+            deviation measured over eight seeds was 46 of a requested 48. Only ``octaves=1`` reaches
+            the bound.
         frequency: Lattice cells across the image at the first octave.
         octaves: Number of octaves summed, each at twice the frequency and half the weight.
-        quantize: Number of levels to posterize the field to before it is mapped to colour, or
-            ``None`` for a continuous field.
+        quantize: Number of levels the normalized ``[-1, 1]`` range is divided into before the field
+            is mapped to colour, or ``None`` for a continuous field. The count of levels a rendered
+            canvas actually shows is this or fewer, for the reason given under ``amplitude``: a
+            multi-octave field does not span the whole range, so some levels have nothing in them.
+            ``octaves=1`` shows exactly this many.
 
     Raises:
         ValueError: If ``amplitude`` is negative, ``frequency`` is not positive, ``octaves`` is below
@@ -431,8 +446,15 @@ def _scan(image_dir: Path) -> tuple[Path, ...]:
         image_dir: Directory to list.
 
     Returns:
-        Every file whose suffix names an image format, in sorted order so a seed selects the same
-        file on every machine rather than in whatever order the filesystem happens to return.
+        Every readable image under the directory, recursively, in sorted order so a seed selects the
+        same file on every machine rather than in whatever order the filesystem happens to return.
+
+        Three filters, and the last one is the point: the suffix must name an image format, the path
+        must be a *file* — a directory named ``shots.png`` otherwise counted as one — and Pillow must
+        be able to parse the header. Without that last check the promise of "readable" was only a
+        promise about the filename, and a corrupt file was accepted at construction and then raised
+        :class:`PIL.UnidentifiedImageError` from inside rendering, far from the directory that caused
+        it.
 
     Raises:
         ValueError: If the path is not a directory, or holds no image this package can open.
@@ -445,11 +467,25 @@ def _scan(image_dir: Path) -> tuple[Path, ...]:
     """
     if not image_dir.is_dir():
         raise ValueError(f"ImageBackground.image_dir must be an existing directory, got {image_dir}")
-    files = tuple(sorted(path for path in image_dir.iterdir() if path.suffix.lower() in _IMAGE_SUFFIXES))
+    from PIL import Image, UnidentifiedImageError
+
+    candidates = sorted(
+        path for path in image_dir.rglob("*") if path.is_file() and path.suffix.lower() in _IMAGE_SUFFIXES
+    )
+    readable = []
+    for path in candidates:
+        try:
+            with Image.open(path) as probe:
+                probe.verify()
+        except (OSError, UnidentifiedImageError):
+            continue
+        readable.append(path)
+    files = tuple(readable)
     if not files:
         raise ValueError(
             f"ImageBackground.image_dir holds no image this package can open: {image_dir} "
-            f"(looked for {', '.join(sorted(_IMAGE_SUFFIXES))})"
+            f"(searched recursively for {', '.join(sorted(_IMAGE_SUFFIXES))}; "
+            f"{len(candidates)} matched by name but none could be parsed)"
         )
     return files
 
@@ -526,7 +562,7 @@ class ImageBackground(Background):
             top = int(stream.integers(picture.height - img_size + 1))
             crop = picture.crop((left, top, left + img_size, top + img_size)).convert("RGB")
         source = PurePath(chosen.relative_to(self.image_dir)).as_posix()
-        return np.ascontiguousarray(np.asarray(crop, dtype=np.uint8)), source
+        return np.array(crop, dtype=np.uint8), source
 
 
 def _at_least(picture: PILImage, img_size: int) -> PILImage:

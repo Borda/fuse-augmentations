@@ -24,6 +24,7 @@ from fuse_augmentations.data.backgrounds import (
     TextureBackground,
 )
 from fuse_augmentations.data.config import Color, Fill, SyntheticConfig
+from fuse_augmentations.data.degradations import Contrast
 from fuse_augmentations.data.generator import SyntheticGenerator
 
 IMG_SIZE = 32
@@ -123,6 +124,34 @@ def test_draw_counts_match_the_documented_script(name: str) -> None:
     script(twin)
 
     assert actual.random() == twin.random(), name
+
+
+@pytest.mark.parametrize("size", [1, 2, 33])
+def test_a_solid_canvas_is_writable_at_every_size(size: int) -> None:
+    """The writability contract holds at `img_size=1`, where a broadcast view is already contiguous.
+
+    At one pixel every axis is length one, so `ascontiguousarray` hands the read-only broadcast view straight back and
+    the copy that was meant to make it writable never happens. The renderer draws polygons into this array, so the
+    contract is not decorative.
+
+    """
+    canvas = SolidBackground((10, 20, 30)).render(None, size)
+
+    assert canvas.flags["WRITEABLE"], size
+    assert canvas.shape == (size, size, 3)
+
+
+def test_a_quantized_texture_shows_its_documented_level_count_at_one_octave() -> None:
+    """At a single octave the field spans the whole range, so `quantize` means exactly what it says.
+
+    Above one octave it does not: the octaves are summed and divided by their weight total, so the
+    field spans less than `[-1, 1]` and some levels hold nothing — `quantize=8` at `octaves=3`
+    measures 7. The docstrings state that; this pins the one case where the count is exact.
+
+    """
+    field = TextureBackground(octaves=1, frequency=8.0, quantize=8)._field(np.random.default_rng(0), 128)
+
+    assert len(np.unique(field)) == 8
 
 
 def test_a_bare_triple_still_names_a_flat_canvas() -> None:
@@ -258,3 +287,39 @@ def test_an_unusable_parameter_is_refused_at_construction(background: Callable[[
     """Each mode validates its own parameters, which is the point of typing the mode at all."""
     with pytest.raises(ValueError, match=message):
         background()
+
+
+def test_one_knob_does_not_move_another_knob() -> None:
+    """Each non-placement consumer owns its own side stream, so knobs cannot shift each other.
+
+    `ImpulseNoiseBackground(amount=0.0)` paints exactly what `SolidBackground` paints while consuming two draws rather
+    than none, which isolates the coupling from every pixel difference. Under one shared side child the background's
+    draws shifted what the distractors drew next — 1341 pixels differed on this configuration — so two byte-identical
+    canvases carried different clutter, and a proxy statistic could not be attributed to the knob that was changed.
+
+    """
+    flat = SolidBackground((128, 128, 128))
+    silent = ImpulseNoiseBackground(base=(128, 128, 128), amount=0.0)
+    assert np.array_equal(flat.render(None, 32), silent.render(np.random.default_rng(0), 32))
+
+    def scene(background: Background) -> np.ndarray:
+        config = SyntheticConfig(img_size=96, min_objects=1, max_objects=1, distractors=5, background=background)
+        return next(iter(SyntheticGenerator(config).generate(1, seed=0))).image
+
+    assert np.array_equal(scene(flat), scene(silent))
+
+
+def test_an_undegraded_sample_does_not_copy_the_canvas() -> None:
+    """A run with no degradation chain hands back Pillow's own buffer, exactly as it always did.
+
+    Copying unconditionally would cost a full canvas per sample — 1.2 MB at `img_size=640` — for every caller including
+    the ones that asked for nothing, and would flip the image's writeable flag as a side effect no release note
+    mentioned.
+
+    """
+    plain = next(iter(SyntheticGenerator(SyntheticConfig(img_size=64)).generate(1, seed=0)))
+    degraded_config = SyntheticConfig(img_size=64, degrade=(Contrast(factor=0.8),))
+    degraded = next(iter(SyntheticGenerator(degraded_config).generate(1, seed=0)))
+
+    assert plain.image.flags["WRITEABLE"] is False
+    assert degraded.image.flags["WRITEABLE"] is True

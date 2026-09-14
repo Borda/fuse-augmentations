@@ -9,6 +9,8 @@ something to subtract.
 
 from __future__ import annotations
 
+import pickle
+
 import numpy as np
 import pytest
 
@@ -190,3 +192,20 @@ def test_the_coco_writer_counts_a_demoted_landmark(tmp_path) -> None:
     assert any(1 in row for row in flags), "no demoted landmark reached the exported file"
     counted = [sum(1 for flag in row if flag > 0) for row in flags]
     assert [record["num_keypoints"] for record in records] == counted
+
+
+def test_the_mask_stays_read_only_across_a_pickle_round_trip() -> None:
+    """The freeze must survive a process boundary, which every DataLoader worker crosses.
+
+    `ndarray.__reduce__` does not carry the WRITEABLE flag, so without `SceneRecord.__setstate__` the mask came back
+    writable — and `SyntheticIterableDataset` is a torch `IterableDataset`, so this is the ordinary path under
+    `num_workers > 0`, not an exotic one. A guarantee that held only in the process that made it would be worse than
+    none, since the docstring promises otherwise.
+
+    """
+    sample = next(iter(SyntheticGenerator(_keypoint_config(occluders=4)).generate(1, seed=0)))
+
+    revived = pickle.loads(pickle.dumps(sample))  # noqa: S301 - round-tripping our own object
+
+    assert revived.scene.occluder_mask.flags["WRITEABLE"] is False
+    assert np.array_equal(revived.scene.occluder_mask, sample.scene.occluder_mask)

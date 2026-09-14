@@ -123,7 +123,7 @@ def _clutter_coverage(sample: Sample, config: SyntheticConfig) -> float:
     if not config.distractors:
         return 0.0
     painted = np.zeros(sample.image.shape[:2], dtype=bool)
-    for fill in config.distractor_colors:
+    for fill in config.resolved_distractor_colors:
         painted |= np.all(sample.image == np.asarray(fill.rgb, dtype=np.uint8), axis=2)
     return float((painted & ~_object_mask(sample, config.img_size)).mean())
 

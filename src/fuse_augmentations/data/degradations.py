@@ -78,7 +78,11 @@ class Degradation(ABC):
             rng: The side stream, or ``None`` when :attr:`consumes_randomness` is ``False``.
 
         Returns:
-            A ``uint8`` image of the same shape. Steps compose by handing this to the next one.
+            A ``uint8`` image of the same shape, in a buffer the caller owns. The Pillow-backed steps
+            build theirs with :func:`numpy.array` rather than :func:`numpy.asarray` for that reason:
+            an ``asarray`` of a Pillow image is a read-only view onto the library's own memory, so a
+            chain ending on one would hand back a sample whose writability depended on which effect
+            happened to run last.
 
         """
 
@@ -164,7 +168,7 @@ class GaussianBlur(Degradation):
         from PIL import Image, ImageFilter
 
         blurred = Image.fromarray(image).filter(ImageFilter.GaussianBlur(radius=float(self.radius)))
-        return np.ascontiguousarray(np.asarray(blurred, dtype=np.uint8))
+        return np.array(blurred, dtype=np.uint8)
 
 
 @dataclass(frozen=True)
@@ -208,7 +212,7 @@ class JPEG(Degradation):
         buffer = io.BytesIO()
         Image.fromarray(image).save(buffer, format="JPEG", quality=int(self.quality))
         buffer.seek(0)
-        return np.ascontiguousarray(np.asarray(Image.open(buffer).convert("RGB"), dtype=np.uint8))
+        return np.array(Image.open(buffer).convert("RGB"), dtype=np.uint8)
 
 
 @dataclass(frozen=True)
@@ -248,7 +252,7 @@ class Contrast(Degradation):
         from PIL import Image, ImageEnhance
 
         enhanced = ImageEnhance.Contrast(Image.fromarray(image)).enhance(float(self.factor))
-        return np.ascontiguousarray(np.asarray(enhanced, dtype=np.uint8))
+        return np.array(enhanced, dtype=np.uint8)
 
 
 @dataclass(frozen=True)
