@@ -1,4 +1,12 @@
 {
+  "bg-gradient-radial-64": "6c2d3f80ca701fc79c27fc62d96d4d65ac72e6233bf4dac9433b839752a65c66",
+  "bg-gradient-sampled-64": "aa796298bbba4a8ad9f76ed6ec580d649808ed00e75cb9dcea8e920ef74c2760",
+  "bg-impulse-64": "d13b811edd63bea85f4fda9aabd09bdf21a4d0d1d9ffcc1a0b915d57415a8b3c",
+  "bg-noise-64": "ec2955890e0357444c722def6e9e6851c3c862d2f8a179bcfa816fc0d81fbc69",
+  "bg-texture-64": "8cb377a7c130a36f9ba2c80260bb3c403bac4da5a095161e099dda90a9a4c921",
+  "bg-texture-quantized-64": "36eb9d267c0f8e1f7ab9f5cf54f1db7ef595f783e6754f52955209e3db9b9097",
+  "degrade-chain-64": "97ae2369bffa9312c8421bdd5dc57cd49b46eb90140403833df69fa4a00deee9",
+  "degrade-noise-cast-vignette-64": "93319c20bf356a66814647997977f1c0c12555cf932480795090d0d09f754e6d",
   "detection-color-primitives-64": "aff272ebc00273eb828821381cb3750ba8d5d70151f375b45154f91154199cda",
   "detection-customfill-primitives-64": "d1777ea460707f95e3d426e3ac050c388d99f3b659b4adfbe214ddb006614c6e",
   "detection-dense-small-primitives-64": "03eb836d3b12d823229ddffd04c508d571179699510935c8d13b8a289c1ebe80",
@@ -9,8 +17,11 @@
   "detection-shape-primitives-192": "900dab2594a28ef73130b97346c2e8a3b3ef44f610ec2dabc4fc6a97005546de",
   "detection-shape-primitives-64": "30f467ffa23c4eba1fbcd313c34370aff9f291dceebe2d791dc413a03c1b24e6",
   "detection-shapecolor-primitives-64": "d151b8a0f4e854dcac66e1b85abbfd8715184a31af3382b157b8feee0fcb9b80",
+  "distractors-64": "1eb5d7293b340ff61d20d3ff99bfd3f03427ef23ccdec447da333cfb204d23d6",
+  "everything-96": "23a00f73bf677474e14f87dd7d5a40e3d8cc2ac9e16a9ea844acb7c04fa7bae3",
   "keypoints-shape-animals-192": "312a95c0297098743a8cc6a24ab92fac7f0f475f881dcbe9d6d1fe1989186d26",
   "keypoints-shape-animals-64": "8c39681c40ed10a49d66961395d0122b1f4bc316129731c501f670c3ae8f8606",
   "obb-shape-primitives-64": "bf57a137ac39775ac61fd613ba3249a38ea8e8cca621fed19425202e39e11ee3",
+  "occluders-keypoints-96": "dd1610f68012020e2e122877824707004a9596ac1a92fc37f4160ca97521c25d",
   "segmentation-shape-primitives-64": "30f467ffa23c4eba1fbcd313c34370aff9f291dceebe2d791dc413a03c1b24e6"
 }

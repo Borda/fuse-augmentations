@@ -60,10 +60,17 @@ Every background draws from a side stream of its own, never from the placement s
 from fuse_augmentations.data import NoiseBackground, SyntheticConfig, SyntheticGenerator
 
 flat = SyntheticConfig(img_size=64, max_objects=3)
-noisy = SyntheticConfig(img_size=64, max_objects=3, background=NoiseBackground(sigma=24.0))
+noisy = SyntheticConfig(
+    img_size=64,
+    max_objects=3,
+    background=NoiseBackground(sigma=24.0),
+)
 
-placements = [[a.bbox_xyxy for a in s.annotations] for s in SyntheticGenerator(flat).generate(3, seed=1)]
-unmoved = [[a.bbox_xyxy for a in s.annotations] for s in SyntheticGenerator(noisy).generate(3, seed=1)]
+flat_stream = SyntheticGenerator(flat).generate(3, seed=1)
+noisy_stream = SyntheticGenerator(noisy).generate(3, seed=1)
+
+placements = [[a.bbox_xyxy for a in s.annotations] for s in flat_stream]
+unmoved = [[a.bbox_xyxy for a in s.annotations] for s in noisy_stream]
 
 print(placements == unmoved)
 print(type(SyntheticConfig().background).__name__)
@@ -138,10 +145,17 @@ from fuse_augmentations.data import (
 )
 
 plain = SyntheticConfig(img_size=64, max_objects=3)
-degraded = SyntheticConfig(img_size=64, max_objects=3, degrade=(GaussianBlur(radius=1.0), JPEG(quality=50)))
+degraded = SyntheticConfig(
+    img_size=64,
+    max_objects=3,
+    degrade=(GaussianBlur(radius=1.0), JPEG(quality=50)),
+)
 
-boxes = [a.bbox_xyxy for s in SyntheticGenerator(plain).generate(2, seed=0) for a in s.annotations]
-unmoved = [a.bbox_xyxy for s in SyntheticGenerator(degraded).generate(2, seed=0) for a in s.annotations]
+plain_stream = SyntheticGenerator(plain).generate(2, seed=0)
+degraded_stream = SyntheticGenerator(degraded).generate(2, seed=0)
+
+boxes = [a.bbox_xyxy for s in plain_stream for a in s.annotations]
+unmoved = [a.bbox_xyxy for s in degraded_stream for a in s.annotations]
 
 print(boxes == unmoved)
 print(len(SyntheticConfig().degrade))
@@ -171,8 +185,11 @@ from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
 plain = SyntheticConfig(img_size=64, max_objects=4)
 cluttered = SyntheticConfig(img_size=64, max_objects=4, distractors=6)
 
-labels = [len(s.annotations) for s in SyntheticGenerator(plain).generate(3, seed=0)]
-unchanged = [len(s.annotations) for s in SyntheticGenerator(cluttered).generate(3, seed=0)]
+plain_stream = SyntheticGenerator(plain).generate(3, seed=0)
+cluttered_stream = SyntheticGenerator(cluttered).generate(3, seed=0)
+
+labels = [len(s.annotations) for s in plain_stream]
+unchanged = [len(s.annotations) for s in cluttered_stream]
 
 print(labels == unchanged)
 print([fill.name for fill in SyntheticConfig(distractors=1).resolved_distractor_colors])
@@ -212,11 +229,14 @@ config = SyntheticConfig(
 )
 
 sample = next(iter(SyntheticGenerator(config).generate(1, seed=0)))
-flags = {triple[2] for annotation in sample.annotations for triple in annotation.keypoints}
+tables = [annotation.keypoints for annotation in sample.annotations]
+flags = {triple[2] for table in tables for triple in table}
+
+unoccluded = SyntheticGenerator(SyntheticConfig(img_size=32))
 
 print(sorted(flags))
 print(sample.scene.occluder_mask.shape)
-print(next(iter(SyntheticGenerator(SyntheticConfig(img_size=32)).generate(1, seed=0))).scene.occluder_mask)
+print(next(iter(unoccluded.generate(1, seed=0))).scene.occluder_mask)
 ```
 
 <details>

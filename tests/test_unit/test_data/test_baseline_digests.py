@@ -23,7 +23,9 @@ from pathlib import Path
 
 import pytest
 
-from ._baseline import baseline_names, build_baseline
+from fuse_augmentations.data.config import SyntheticConfig
+
+from ._baseline import _FEATURE_MATRIX, _MATRIX, baseline_names, build_baseline
 
 BASELINE_PATH = Path(__file__).parent / "_baseline_digests.json"
 
@@ -60,6 +62,29 @@ def stored() -> dict[str, str]:
 def test_baseline_file_exists() -> None:
     """The snapshot must be checked in; a missing one silently disarms every check below."""
     assert BASELINE_PATH.is_file(), f"missing {BASELINE_PATH.name}; regenerate with FUSE_REGEN_BASELINE=1"
+
+
+def test_the_two_matrices_stay_separate() -> None:
+    """No configuration in the pre-feature matrix may set a knob added after it was snapshotted.
+
+    The two halves of this file carry different guarantees and only stay distinguishable while that holds. `_MATRIX` was
+    snapshotted before backgrounds, degradations, distractors and occluders existed, so its digests prove those knobs
+    are *inert when unset* — a claim no entry generated from the current code can make. `_FEATURE_MATRIX` was generated
+    from the code that implements them, so its digests prove *stability*: one moving means a rendering change, and a
+    reviewer decides whether it was intended.
+
+    Adding a knob-setting configuration to `_MATRIX` would quietly downgrade it to the weaker guarantee while it still
+    read as the stronger one.
+
+    """
+    untouched = SyntheticConfig(img_size=8)
+    for name, (config, _seed) in _MATRIX.items():
+        assert config.background == untouched.background, name
+        assert config.degrade == (), name
+        assert config.distractors == 0, name
+        assert config.occluders == 0, name
+
+    assert set(_MATRIX) & set(_FEATURE_MATRIX) == set()
 
 
 def test_baseline_covers_the_whole_matrix(live: dict[str, str], stored: dict[str, str]) -> None:
