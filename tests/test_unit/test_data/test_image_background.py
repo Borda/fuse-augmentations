@@ -9,6 +9,7 @@ stood on.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -139,10 +140,16 @@ def test_a_picture_smaller_than_the_canvas_is_scaled_up(tmp_path: Path) -> None:
 
 
 def test_a_missing_directory_is_refused_with_its_path_in_the_message(tmp_path: Path) -> None:
-    """The mode fails at construction, not at the first rendered image, and says which path was wrong."""
+    """The mode fails at construction, not at the first rendered image, and says which path was wrong.
+
+    The path is escaped because `match` is a regular expression, not a substring: a Windows `tmp_path` renders as
+    `C:\\Users\\runneradmin\\...`, and `\\U` is an incomplete escape that fails the pattern before the call under test
+    ever runs. On a POSIX runner the raw string happens to be a valid pattern, which is what let this reach CI.
+
+    """
     missing = tmp_path / "nowhere"
 
-    with pytest.raises(ValueError, match=str(missing)):
+    with pytest.raises(ValueError, match=re.escape(str(missing))):
         ImageBackground(missing)
 
 

@@ -899,6 +899,35 @@ class SyntheticConfig:
                 )
 
     @property
+    def resolved_background(self) -> Background:
+        """Return the canvas filler, typed as the :class:`Background` the field always holds.
+
+        :attr:`background` declares the union its *constructor* accepts, because a dataclass builds
+        ``__init__`` from the annotation. Everything past ``__post_init__`` holds a background, but
+        a type checker reading the annotation cannot know that, and rejects
+        ``config.background.render(...)`` on the three fill members of the union. This property is
+        where that invariant is stated once, so no caller has to assert or cast it.
+
+        Examples:
+            ```pycon
+            >>> from fuse_augmentations.data.config import SyntheticConfig
+            >>> type(SyntheticConfig(img_size=32, background=(10, 20, 30)).resolved_background).__name__
+            'SolidBackground'
+
+            ```
+
+        Raises:
+            TypeError: If the field somehow holds a fill, which only a write that bypasses
+                ``__post_init__`` can produce.
+
+        """
+        from fuse_augmentations.data.backgrounds import Background
+
+        if not isinstance(self.background, Background):  # pragma: no cover - __post_init__ normalizes it
+            raise TypeError(f"background holds {type(self.background).__name__}, not a Background")
+        return self.background
+
+    @property
     def resolved_distractor_shapes(self) -> tuple[Shape, ...]:
         """Return the shapes clutter is actually drawn from.
 

@@ -58,6 +58,8 @@ The rasterizer works in edge space, because Pillow fills pixel `floor(x)` for a 
 
 A segmentation-task sample also carries the outline, so the tighter box can be recovered without any change to the pipeline — warp the polygon and take its extent:
 
+<!--phmdoctest-skip-->
+
 ```python
 from fuse_augmentations import FusedCompose
 from fuse_augmentations.data.geometry import polygon_to_bbox_xyxy, to_pixel_edge

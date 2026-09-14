@@ -23,8 +23,8 @@ Examples:
     >>> import numpy as np
     >>> from fuse_augmentations.data.degradations import Contrast, Quantize
     >>> image = np.full((4, 4, 3), 200, dtype=np.uint8)
-    >>> Quantize(levels=2).apply(image, None).max()
-    np.uint8(255)
+    >>> int(Quantize(levels=2).apply(image, None).max())
+    255
     >>> Contrast(factor=0.5).apply(image, None).shape
     (4, 4, 3)
 

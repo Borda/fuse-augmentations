@@ -10,19 +10,23 @@ by a full pixel after any reflection or quarter turn, which is the regression th
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 
 import numpy as np
 import pytest
 import torch
 from PIL import Image, ImageDraw
-from torchvision.transforms import v2 as T
 
 from fuse_augmentations import FusedCompose
+from fuse_augmentations._compat import _TORCHVISION_AVAILABLE
 from fuse_augmentations.data.config import ClassMode, Color, OutputFormat, SyntheticConfig, Task, class_vocabulary
 from fuse_augmentations.data.generator import SyntheticGenerator
 from fuse_augmentations.data.geometry import PIXEL_CENTRE_OFFSET, to_pixel_edge
 from fuse_augmentations.data.primitives import PrimitiveShape
 from fuse_augmentations.data.writers import CocoWriter, YoloWriter
+
+if _TORCHVISION_AVAILABLE:
+    from torchvision.transforms import v2 as T
 
 IMG_SIZE = 128
 
@@ -93,17 +97,18 @@ def test_bbox_stays_in_edge_space_around_the_polygon() -> None:
         assert y2 == pytest.approx(points[:, 1].max() + PIXEL_CENTRE_OFFSET)
 
 
+@pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
 @pytest.mark.parametrize(
-    ("name", "transform"),
+    ("name", "build_transform"),
     [
-        ("identity", T.RandomHorizontalFlip(p=0.0)),
-        ("hflip", T.RandomHorizontalFlip(p=1.0)),
-        ("vflip", T.RandomVerticalFlip(p=1.0)),
-        ("rot90", T.RandomRotation((90.0, 90.0))),
-        ("rot270", T.RandomRotation((270.0, 270.0))),
+        pytest.param("identity", lambda: T.RandomHorizontalFlip(p=0.0), id="identity"),
+        pytest.param("hflip", lambda: T.RandomHorizontalFlip(p=1.0), id="hflip"),
+        pytest.param("vflip", lambda: T.RandomVerticalFlip(p=1.0), id="vflip"),
+        pytest.param("rot90", lambda: T.RandomRotation((90.0, 90.0)), id="rot90"),
+        pytest.param("rot270", lambda: T.RandomRotation((270.0, 270.0)), id="rot270"),
     ],
 )
-def test_polygon_and_box_both_track_the_ink_through_a_reflection(name: str, transform: T.Transform) -> None:
+def test_polygon_and_box_both_track_the_ink_through_a_reflection(name: str, build_transform: Callable) -> None:
     """Polygon and box stay on the warped ink under every exact reflection and quarter turn.
 
     An exact flip or quarter turn permutes pixels without resampling, so the warped ink is as crisp
@@ -115,7 +120,7 @@ def test_polygon_and_box_both_track_the_ink_through_a_reflection(name: str, tran
     """
     config = _config()
     generator = SyntheticGenerator(config)
-    pipeline = FusedCompose([transform], data_keys=["input", "keypoints", "bbox_xyxy"])
+    pipeline = FusedCompose([build_transform()], data_keys=["input", "keypoints", "bbox_xyxy"])
 
     for sample in generator.generate(5, seed=0):
         annotation = sample.annotations[0]

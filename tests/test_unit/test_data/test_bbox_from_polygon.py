@@ -18,9 +18,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import torch
-from torchvision.transforms import v2 as T
 
 from fuse_augmentations import FusedCompose
+from fuse_augmentations._compat import _TORCHVISION_AVAILABLE
 from fuse_augmentations.data.animals import AnimalShape
 from fuse_augmentations.data.config import Color, SyntheticConfig, Task
 from fuse_augmentations.data.generator import SyntheticGenerator
@@ -28,6 +28,14 @@ from fuse_augmentations.data.geometry import polygon_to_bbox_xyxy, to_pixel_edge
 from fuse_augmentations.data.letters import LetterShape
 from fuse_augmentations.data.primitives import PrimitiveShape
 from fuse_augmentations.data.symbols import SymbolShape
+
+if _TORCHVISION_AVAILABLE:
+    from torchvision.transforms import v2 as T
+
+#: Every case here warps through a `torchvision` affine, so the module is skipped whole rather than
+#: test by test. The import sits behind the same flag: an unguarded one fails collection, which
+#: reports as an error rather than as the skip the extras-free CI legs are entitled to.
+pytestmark = pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
 
 IMG_SIZE = 192
 #: Objects are drawn in one color, so the warped ink is found by distance to it rather than by

@@ -196,7 +196,7 @@ class SyntheticGenerator:
         self.class_names = self.vocabulary.names
         self.keypoint_schema = keypoint_schema_for(config.shapes)
         self._needs_side_stream = (
-            config.background.consumes_randomness
+            config.resolved_background.consumes_randomness
             or bool(config.distractors)
             or bool(config.occluders)
             or any(step.consumes_randomness for step in config.degrade)
@@ -384,8 +384,9 @@ class SyntheticGenerator:
         """
         cfg = self.config
         canvas_stream, clutter_stream, occluder_stream, degrade_stream = self._side_streams(rng)
-        pixels, background_source = cfg.background.render_with_source(
-            canvas_stream if cfg.background.consumes_randomness else None, cfg.img_size
+        background = cfg.resolved_background
+        pixels, background_source = background.render_with_source(
+            canvas_stream if background.consumes_randomness else None, cfg.img_size
         )
         canvas = Image.fromarray(pixels)
         draw = ImageDraw.Draw(canvas)
