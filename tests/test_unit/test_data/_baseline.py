@@ -18,16 +18,12 @@ Regenerate deliberately, never incidentally::
 
 The digest covers more than the pixels: the class id, the outline, the axis-aligned box, the angle
 and the landmark table all feed it, so a run that renders identically but relabels an object still
-fails. Every float enters as little-endian ``float64``, so the digest is a property of the numbers
-rather than of their repr.
+fails. How each half enters — pixels exactly, labels onto a grid — is :mod:`._digest`'s subject, and
+the reason the two are treated differently is worth reading before regenerating anything.
 
 """
 
 from __future__ import annotations
-
-import hashlib
-
-import numpy as np
 
 from fuse_augmentations.data.animals import AnimalShape
 from fuse_augmentations.data.backgrounds import (
@@ -46,9 +42,9 @@ from fuse_augmentations.data.degradations import (
     Quantize,
     Vignette,
 )
-from fuse_augmentations.data.generator import SyntheticGenerator
 from fuse_augmentations.data.letters import LetterShape
-from fuse_augmentations.data.sample import Sample
+
+from ._digest import stream_digest
 
 #: Samples drawn per configuration. More than one on purpose: a single sample cannot see a knob that
 #: perturbs the shared :class:`numpy.random.Generator` across a stream, which is exactly the failure
@@ -153,44 +149,6 @@ _FEATURE_MATRIX: dict[str, tuple[SyntheticConfig, int]] = {
 }
 
 
-def _floats(values: object) -> bytes:
-    """Return a flat float sequence as little-endian ``float64`` bytes.
-
-    Args:
-        values: Anything :func:`numpy.asarray` accepts as a float sequence, including an empty one.
-
-    Returns:
-        The values as ``<f8`` bytes, so the digest is fixed by the numbers rather than by the
-        platform's native byte order or by a float's decimal repr.
-
-    """
-    return np.asarray(values, dtype="<f8").reshape(-1).tobytes()
-
-
-def _feed(digest: hashlib._Hash, sample: Sample) -> None:
-    """Fold one sample's pixels and every label field it carries into a running digest.
-
-    Args:
-        digest: The hash object to update in place.
-        sample: The sample to absorb.
-
-    Each field is length-prefixed by the update order alone: the annotation count and the landmark
-    count both enter as their own byte blocks, so two samples that differ only in how their fields
-    split cannot collide.
-
-    """
-    digest.update(sample.image.tobytes())
-    digest.update(_floats([sample.width, sample.height, len(sample.annotations)]))
-    for annotation in sample.annotations:
-        digest.update(_floats([annotation.class_id, annotation.angle]))
-        digest.update(annotation.class_name.encode("utf-8"))
-        digest.update(_floats(annotation.polygon))
-        digest.update(_floats(annotation.bbox_xyxy))
-        keypoints = annotation.keypoints or ()
-        digest.update(_floats([len(keypoints)]))
-        digest.update(_floats([value for triple in keypoints for value in triple]))
-
-
 def baseline_names() -> tuple[str, ...]:
     """Return the configuration names the snapshot covers, in matrix order.
 
@@ -212,10 +170,7 @@ def build_baseline() -> dict[str, str]:
         even though they share a file.
 
     """
-    baseline: dict[str, str] = {}
-    for name, (config, seed) in (*_MATRIX.items(), *_FEATURE_MATRIX.items()):
-        digest = hashlib.sha256()
-        for sample in SyntheticGenerator(config).generate(_STREAM_LENGTH, seed=seed):
-            _feed(digest, sample)
-        baseline[name] = digest.hexdigest()
-    return baseline
+    return {
+        name: stream_digest(config, seed, _STREAM_LENGTH)
+        for name, (config, seed) in (*_MATRIX.items(), *_FEATURE_MATRIX.items())
+    }

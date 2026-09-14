@@ -21,6 +21,7 @@ import json
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from fuse_augmentations.data.config import SyntheticConfig
@@ -28,6 +29,13 @@ from fuse_augmentations.data.config import SyntheticConfig
 from ._baseline import _FEATURE_MATRIX, _MATRIX, baseline_names, build_baseline
 
 BASELINE_PATH = Path(__file__).parent / "_baseline_digests.json"
+
+#: Relative skew applied to `np.cos`/`np.sin` by the portability check below. The whole ladder, in
+#: one place: drift between two floating-point environments is around `1e-16`; this skew is `1e-12`,
+#: four orders above it; the measured flip threshold for this matrix sits two orders higher again,
+#: between `1e-10` (no digest moves) and `1e-9` (two of twenty-five move); and no skew moves a pixel
+#: at all, up to `1e-6` where the sweep stopped.
+_PERTURBATION = 1e-12
 
 
 def _regenerating() -> bool:
@@ -90,6 +98,42 @@ def test_the_two_matrices_stay_separate() -> None:
 def test_baseline_covers_the_whole_matrix(live: dict[str, str], stored: dict[str, str]) -> None:
     """The snapshot names exactly the configurations the matrix builds, no more and no fewer."""
     assert sorted(stored) == sorted(live), "snapshot key set drifted from the configuration matrix"
+
+
+def test_a_floating_point_perturbation_moves_no_digest(monkeypatch: pytest.MonkeyPatch, live: dict[str, str]) -> None:
+    """Skewing the transcendentals the geometry is built from must leave every digest where it was.
+
+    This is the test that keeps the snapshot portable, and it exists because the first version of this file was not.
+    Shape outlines come from `np.cos`/`np.sin` — `primitives.py` builds every vertex from them and `geometry.py` builds
+    every placement rotation from them — and numpy promises no bitwise-identical result for either across SIMD paths and
+    library builds. A snapshot hashing label floats at full `float64` precision therefore pinned the floating-point
+    environment that wrote it: taken on one developer machine, it failed on all 24 CI jobs at once — ubuntu 3.10 through
+    3.14, macOS, Windows and the oldest-dependency job alike — with 19 of 25 digests moved in each.
+
+    Quantizing the labels buys headroom rather than a proof: a value sitting near a grid boundary still crosses it if
+    pushed hard enough, and with 47306 label values in the matrix a few always sit close. The headroom is measured, and
+    `_PERTURBATION` states the ladder. If this test starts failing right after entries are added to the matrix, the
+    first suspicion is one new label value sitting near a grid boundary rather than a portability regression — at this
+    skew the expected number of crossings is around `0.03` and it grows with the matrix, so the remedy is dropping
+    `_PERTURBATION` one order, not loosening the grid.
+
+    Pixels need none of that: a `1e-6` skew, three orders larger again, moves no pixel anywhere in the matrix, because
+    the rasterizer snaps a vertex to a grid far coarser than any drift. That is why the image half of the digest stays
+    exact while the label half cannot.
+
+    """
+    real_cos, real_sin = np.cos, np.sin
+
+    def skewed_cos(values: object) -> object:
+        return real_cos(values) * (1.0 + _PERTURBATION)
+
+    def skewed_sin(values: object) -> object:
+        return real_sin(values) * (1.0 + _PERTURBATION)
+
+    monkeypatch.setattr(np, "cos", skewed_cos)
+    monkeypatch.setattr(np, "sin", skewed_sin)
+
+    assert build_baseline() == live
 
 
 @pytest.mark.parametrize("name", sorted(baseline_names()))
