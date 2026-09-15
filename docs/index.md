@@ -1,9 +1,28 @@
 ---
-title: Fewer resampling passes for image augmentation
-description: Learn where fuse-augmentations safely composes image transforms, what it accelerates, and where its compatibility and parity limits matter.
+title: Image augmentation and synthetic computer vision datasets
+description: Fuse compatible image augmentations and generate synthetic COCO or YOLO datasets for prototyping, convergence checks, and controlled difficulty experiments.
 ---
 
-# Fuse compatible augmentations, once
+# Synthetic vision datasets and fused image augmentation
+
+`fuse-augmentations` generates labelled synthetic computer vision datasets and fuses compatible PyTorch image augmentations. Use generated shapes to prototype a model, check its training pipeline, and explore controlled changes in scene difficulty.
+
+## Generate a synthetic dataset
+
+Start here when you need **COCO or YOLO training data** for **object detection**, **instance segmentation**, **oriented bounding boxes (OBB)**, or **keypoint / pose estimation**. Generate primitives, animal silhouettes, symbols, or letters with reproducible seeds and configurable backgrounds, object sizes, clutter, occlusion, and camera effects. No source images or optional augmentation backend is required.
+
+```bash
+pip install fuse-augmentations
+```
+
+- [Generate your first dataset](datasets/index.md#quickstart) — one Python call, images and labels, train/validation/test splits.
+- [Choose a task and output format](datasets/index.md#choose-your-computer-vision-task) — copy a recipe for your trainer.
+- [Check convergence and scale difficulty](datasets/prototyping.md) — fixed tiny sets, held-out evaluation, and controlled experiments.
+- [Stream into a DataLoader](datasets/outputs.md#in-memory-streaming-and-training-feed) — generate samples without exporting files.
+
+The generator draws synthetic shapes; your application supplies the model and training loop. A passing synthetic experiment checks that setup, while real-world accuracy requires real held-out data.
+
+## Fuse compatible augmentations
 
 `fuse-augmentations` is a PyTorch-based matrix-fusion engine for image augmentation pipelines. It recognizes a finite set of Kornia, TorchVision, and Albumentations transforms—or builds a pipeline directly from numeric ranges—then composes compatible transforms so a geometric chain can use fewer interpolation passes.
 
@@ -46,6 +65,7 @@ The strongest use case is a BCHW tensor pipeline with several consecutive, regis
 | Check an exact supported transform or restriction | [Capabilities](concepts/capabilities.md)             |
 | Understand known unsafe or approximate behavior   | [Known limitations](known-limitations.md)            |
 | Inspect signatures and docstrings                 | [API reference](reference/core.md)                   |
+| Prototype a labelled vision pipeline              | [Synthetic datasets](datasets/index.md)              |
 
 ## Evidence standard
 

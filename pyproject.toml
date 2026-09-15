@@ -4,8 +4,22 @@ requires = [ "setuptools>=61" ]
 
 [project]
 name = "fuse-augmentations"
-description = "Fuse augmentation transforms into a single interpolation pass."
+description = "Synthetic computer vision datasets in COCO/YOLO formats and fused image augmentation for PyTorch."
 readme = "README.md"
+keywords = [
+  "coco",
+  "computer vision",
+  "dataset generator",
+  "image augmentation",
+  "instance segmentation",
+  "keypoints",
+  "object detection",
+  "oriented bounding boxes",
+  "pose estimation",
+  "pytorch",
+  "synthetic data",
+  "yolo",
+]
 license = "Apache-2.0"
 license-files = [ "LICENSE" ]
 authors = [
@@ -51,7 +65,9 @@ optional-dependencies.torchvision = [
   "torchvision>=0.15",
 ]
 urls."Source Code" = "https://github.com/Borda/fuse-augmentations"
+urls."Synthetic Datasets" = "https://borda.github.io/fuse-augmentations/datasets/"
 urls.Changelog = "https://github.com/Borda/fuse-augmentations/blob/main/CHANGELOG.md"
+urls.Documentation = "https://borda.github.io/fuse-augmentations/"
 urls.Homepage = "https://github.com/Borda/fuse-augmentations"
 urls.Issues = "https://github.com/Borda/fuse-augmentations/issues"
 

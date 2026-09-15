@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://squidfunk.github.io/mkdocs-material/schema.json
 site_name: fuse-augmentations
-site_description: Evidence-backed documentation for fusing compatible image augmentation transforms into fewer resampling passes.
+site_description: Evidence-backed documentation for fusing compatible image augmentation transforms and generating synthetic COCO/YOLO datasets.
 site_author: Jiri Borovec
 site_url: https://borda.github.io/fuse-augmentations/
 repo_name: Borda/fuse-augmentations
@@ -129,6 +129,7 @@ nav:
       - Reproducibility: guides/reproducibility.md
   - Synthetic datasets:
       - Overview: datasets/index.md
+      - Prototyping and convergence checks: datasets/prototyping.md
       - Shape families: datasets/shapes.md
       - Tasks and keypoints: datasets/tasks.md
       - Annotation formats: datasets/outputs.md

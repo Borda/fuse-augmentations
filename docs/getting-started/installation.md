@@ -1,6 +1,6 @@
 ---
 title: Install fuse-augmentations
-description: Install the PyTorch fusion engine alone or with Kornia, TorchVision, and Albumentations adapters, then verify the environment.
+description: Install fuse-augmentations for synthetic COCO/YOLO dataset generation and PyTorch image augmentation, with optional backend adapters.
 ---
 
 # Install fuse-augmentations
@@ -17,7 +17,7 @@ The base package requires Python 3.10 or newer and PyTorch 2.2 or newer. Kornia,
 python -m pip install fuse-augmentations
 ```
 
-This installs NumPy, PyTorch, and the package itself. It is enough for [`Compose.from_params`](quickstart.md).
+This installs NumPy, Pillow, PyTorch, and the package itself. It is enough for [synthetic dataset generation](../datasets/index.md) and [`Compose.from_params`](quickstart.md). Generating COCO or YOLO data requires no optional extra, source images, or model download.
 
 ## Optional backends
 

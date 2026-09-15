@@ -1,10 +1,22 @@
 # ⚛️ Fuse augmentations
 
-**Write image augmentation as independent transforms — from Kornia, TorchVision, Albumentations, or plain numeric ranges. Execute compatible geometry with fewer resampling passes, and compatible color as one fused matrix or lookup table.**
+**Generate synthetic computer vision datasets. Fuse compatible image augmentations. Build and test your training pipeline with reproducible data.**
 
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/fuse-augmentations)](https://pypi.org/project/fuse-augmentations/) [![PyPI version](https://img.shields.io/pypi/v/fuse-augmentations)](https://pypi.org/project/fuse-augmentations/) [![Documentation](https://img.shields.io/badge/docs-MkDocs%20Material-4051b5)](https://borda.github.io/fuse-augmentations/) [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/Borda/fuse-augmentations/blob/main/LICENSE) [![CI](https://github.com/Borda/fuse-augmentations/actions/workflows/ci_testing.yml/badge.svg)](https://github.com/Borda/fuse-augmentations/actions/workflows/ci_testing.yml)
 
-`fuse-augmentations` is a PyTorch tensor-first engine for reducing repeated interpolation in image augmentation pipelines. It recognizes a finite set of Kornia, TorchVision, and Albumentations transforms—or builds a pipeline directly from numeric ranges—then composes compatible transform matrices before pixels are sampled.
+`fuse-augmentations` is a Python package for **synthetic dataset generation** and **PyTorch image augmentation**. Generate labelled shapes in COCO or YOLO format for object detection, instance segmentation, oriented bounding boxes, and keypoint / pose estimation. Use fixed seeds and configurable scenes to prototype models, check convergence, and test increasing difficulty.
+
+| I need to…                                          | Start here                                                                             |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Generate a synthetic computer vision dataset        | [Install and generate](#-synthetic-datasets)                                           |
+| Choose detection, segmentation, OBB, or pose labels | [Task recipes](docs/datasets/index.md#choose-your-computer-vision-task)                |
+| Check model convergence or scale difficulty         | [Prototyping guide](docs/datasets/prototyping.md)                                      |
+| Stream samples into a PyTorch DataLoader            | [In-memory generation](docs/datasets/outputs.md#in-memory-streaming-and-training-feed) |
+| Fuse an existing augmentation pipeline              | [Augmentation quickstart](docs/getting-started/quickstart.md)                          |
+
+Synthetic generation uses drawn primitives, animal silhouettes, symbols, and letters; it needs no source images or optional augmentation backend. Your trainer handles learning and evaluation. See the [dataset guide](docs/datasets/index.md) for capabilities and output contracts.
+
+For augmentation, the tensor-first engine recognizes supported Kornia, TorchVision, and Albumentations transforms—or builds a pipeline directly from numeric ranges—then composes compatible transform matrices before pixels are sampled.
 
 ![Animated: three native resamples versus one fused warp](https://raw.githubusercontent.com/Borda/fuse-augmentations/main/docs/assets/images/animated-sequential-vs-fused-albumentations-camera-jitter.webp)
 
@@ -311,7 +323,13 @@ For ragged detector targets, import `augment_detection_batch` from the package r
 
 ## 🎨 Synthetic datasets
 
-Generate small labelled datasets of colored shapes — no training loop, no Lightning. Draw from four vocabularies — geometric primitives, animal silhouettes, symbols, and letters — and export **COCO** or **YOLO** for **detection**, **segmentation**, **oriented bounding box (OBB)**, or **keypoints**.
+```bash
+pip install fuse-augmentations
+```
+
+Generate labelled synthetic data for computer vision prototyping, model convergence checks, and controlled difficulty experiments. Draw from four vocabularies — geometric primitives, animal silhouettes, symbols, and letters — and export **COCO** or **YOLO** for **detection**, **segmentation**, **oriented bounding box (OBB)**, or **keypoints**. Your application supplies the model and training loop.
+
+Start with the [prototyping and convergence guide](docs/datasets/prototyping.md): check a loader on a small export, overfit fixed easy samples, then evaluate held-out data while increasing scene difficulty. Passing a synthetic check does not establish accuracy on real images.
 
 ```python
 import tempfile
@@ -342,7 +360,7 @@ print(counts)
 
 Swap `fmt="yolo"`, `task="obb"`, or `class_mode="color"` for other layouts, tasks, and class schemes.
 
-`rectangle` plus random per-shape rotation give oriented boxes real orientation; all generation is seeded for byte-identical output. Generation streams — feed a training loop straight from `SyntheticGenerator.generate(n)` or a `DataLoader` via `SyntheticIterableDataset`, with no disk round-trip and bounded memory even for huge datasets.
+`rectangle` plus random per-shape rotation give oriented boxes real orientation. A fixed seed and configuration reproduce generation in the same environment. Feed samples from `SyntheticGenerator.generate(n, seed=...)` or a `DataLoader` via `SyntheticIterableDataset` without a disk round-trip. Direct generation and YOLO export keep sample storage bounded; COCO export retains per-split annotation metadata, and DataLoader batching/prefetching adds memory. See [output and streaming contracts](docs/datasets/outputs.md).
 
 How hard the samples are to read is a set of ordinary config fields: `background` picks the canvas (flat, gradient, Gaussian or impulse noise, value-noise texture, or crops of your own pictures), `degrade` bakes camera effects into the pixels, and `distractors`/`occluders` add unlabelled shapes under and over the labelled ones.
 

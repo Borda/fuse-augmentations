@@ -1,9 +1,11 @@
 ---
 title: Difficulty bands
-description: Suggested knob combinations for easy, moderate and hard synthetic runs, with the training-free statistics that rank them.
+description: Scale synthetic dataset difficulty with object size, backgrounds, clutter and degradations. Compare easy, moderate and hard configurations using training-free statistics.
 ---
 
 # Difficulty bands
+
+For a model experiment, start with [Prototyping and convergence checks](prototyping.md#3-increase-difficulty-deliberately): hold evaluation data fixed, vary one factor, and distinguish robustness from retraining at each difficulty. The bands below combine several factors; they are not an automatic curriculum or measured model-accuracy levels.
 
 There is no `difficulty=` parameter, no preset constructor and no CLI flag. Difficulty is a property of a *combination* of knobs rather than of any one of them — a large solid primitive on a noisy canvas is still separable on colour alone, while an eight-pixel glyph beside clutter drawn by the same process is not — so this page maps whole configurations to a suggested band instead of hiding them behind a name.
 
