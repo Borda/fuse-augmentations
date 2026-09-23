@@ -18,13 +18,17 @@ def test_top_level_facade_is_accessible() -> None:
 
 
 def test_legacy_data_module_reexports_synth_datasets() -> None:
-    """`fuse_augmentations.data` re-exports the exact same objects as `synth_datasets`."""
+    """`fuse_augmentations.data` re-exports every `synth_datasets` name plus the legacy dataset class."""
     import fuse_augmentations.data as legacy
     import synth_datasets
 
-    assert legacy.__all__ == synth_datasets.__all__
+    # `SyntheticIterableDataset` is deliberately left out of `synth_datasets.__all__` (it is the only
+    # torch-dependent name, kept resolvable via lazy __getattr__ so `from synth_datasets import *`
+    # stays torch-free); the legacy shim restores it explicitly, so its __all__ has that one extra name.
+    assert set(legacy.__all__) == {*synth_datasets.__all__, "SyntheticIterableDataset"}
     assert legacy.generate_dataset is synth_datasets.generate_dataset
     assert legacy.SyntheticGenerator is synth_datasets.SyntheticGenerator
+    assert legacy.SyntheticIterableDataset is synth_datasets.SyntheticIterableDataset
 
 
 def test_all_exported_names_resolve() -> None:
