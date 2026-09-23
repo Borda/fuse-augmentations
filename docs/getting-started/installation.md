@@ -64,17 +64,22 @@ The extras enable adapter support; they do not make every upstream transform or 
 ## Verify the installation
 
 ```bash
+python -c "import synth_datasets"
+```
+
+This check uses only the base installation. For the image-augmentation features, verify the optional `torch` extra:
+
+```bash
 python -c "import torch, fuse_augmentations"
 ```
 
-The same smoke check is executable in the generated documentation test suite:
+The base smoke check is executable in the generated documentation test suite:
 
 ```python
-import torch
-import fuse_augmentations
+import synth_datasets
 
-assert torch.__version__
-assert fuse_augmentations.__version__
+assert callable(synth_datasets.generate_dataset)
+assert synth_datasets.__version__
 ```
 
 Both import namespaces expose the same objects:

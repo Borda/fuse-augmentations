@@ -100,7 +100,7 @@ _PALETTE_CYCLE = (
     "#469990",
 )
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "src" / "fuse_augmentations" / "data"
+DATA_DIR = Path(__file__).resolve().parents[1] / "src" / "synth_datasets"
 SVG_NS = "http://www.w3.org/2000/svg"
 ZOO_NS = "https://github.com/Borda/fuse-augmentations/ns/zoo"
 ET.register_namespace("", SVG_NS)

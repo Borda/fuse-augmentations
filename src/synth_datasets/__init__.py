@@ -215,7 +215,9 @@ def __dir__() -> list[str]:
 
 
 def _assign_splits(num_images: int, split_ratios: SplitRatios) -> dict[str, int]:
-    """Return per-split image counts summing exactly to ``num_images``.
+    """Return per-split counts summing to ``num_images`` using largest remainders.
+
+    Equal remainders are awarded in the configured split order.
 
     Args:
         num_images: Total images to distribute.
@@ -226,9 +228,14 @@ def _assign_splits(num_images: int, split_ratios: SplitRatios) -> dict[str, int]
 
     """
     ratios = split_ratios.to_dict()
-    counts = {name: round(frac * num_images) for name, frac in ratios.items()}
-    first = next(iter(counts))
-    counts[first] += num_images - sum(counts.values())
+    total_ratio = sum(ratios.values())
+    exact = {name: frac * num_images / total_ratio for name, frac in ratios.items()}
+    counts = {name: int(value) for name, value in exact.items()}
+    remainder = num_images - sum(counts.values())
+    # SplitRatios tolerates tiny sum drift; normalize above so that drift cannot create a negative remainder.
+    by_remainder = sorted(exact, key=lambda name: exact[name] - counts[name], reverse=True)
+    for name in by_remainder[:remainder]:
+        counts[name] += 1
     return {name: count for name, count in counts.items() if count > 0}
 
 

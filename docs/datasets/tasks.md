@@ -48,7 +48,7 @@ Each annotation field is in the coordinate space of the transform that moves it,
 
 The split is not a quirk of the dataset; it mirrors the core, which resamples images and moves point fields on pixel centres while conjugating boxes to pixel edges (see [Known limitations](../known-limitations.md)). The two spaces differ by half a pixel each way, which is invisible under identity and a generic-angle rotation but becomes a **full pixel** under any flip or quarter turn — so a field that travels through the wrong matrix lands one pixel off its own ink.
 
-The rasterizer works in edge space, because Pillow fills pixel `floor(x)` for a vertex at `x`. Adding `0.5` to `polygon` therefore redraws the exact shape that was generated, which is what `tests/test_unit/test_data/test_coordinate_convention.py` asserts pixel for pixel.
+The rasterizer works in edge space, because Pillow fills pixel `floor(x)` for a vertex at `x`. Adding `0.5` to `polygon` therefore redraws the exact shape that was generated, which is what `tests/test_integration/test_synth_datasets_coordinate_convention.py` asserts pixel for pixel.
 
 **Exported files carry one convention throughout.** Both writers convert the point fields back to edge space at the file boundary, so a COCO record's `segmentation`, `keypoints` and `bbox` are read in a single coordinate system, as COCO and YOLO consumers expect. The split above applies to the in-memory `Annotation` only.
 
@@ -80,7 +80,7 @@ Measured against the axis-aligned extent of the rendered ink, over six single-ob
 | animals   | 0.51                   | 0.96                        |
 | letters   | 0.83                   | 0.97                        |
 
-How much a box loosens depends on how much of it the object fills, which is why animals — thin limbs, tails — lose most and letters least. Adding 12° of shear does not close the gap. `tests/test_unit/test_data/test_bbox_from_polygon.py` pins the ordering and its size.
+How much a box loosens depends on how much of it the object fills, which is why animals — thin limbs, tails — lose most and letters least. Adding 12° of shear does not close the gap. `tests/test_integration/test_synth_datasets_bbox_from_polygon.py` pins the ordering and its size.
 
 `augment_detection_batch` cannot do this for you: it accepts exactly `data_keys=["input", "bbox_xyxy"]` and a `boxes`/`labels` target mapping, so no polygon reaches that boundary. The recipe above lives in caller code.
 

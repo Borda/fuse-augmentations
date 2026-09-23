@@ -49,6 +49,17 @@ def test_custom_split_ratios(tmp_path: Path) -> None:
     assert counts == {"train": 5, "val": 5}
 
 
+def test_custom_split_counts_match_written_files_when_rounded_total_is_too_large(tmp_path: Path) -> None:
+    """Rounding custom splits must not report images the shared stream cannot write."""
+    ratios = SplitRatios.custom({"a": 0.1, "b": 0.3, "c": 0.3, "d": 0.3})
+
+    counts = generate_dataset(tmp_path, num_images=5, fmt="coco", split_ratios=ratios, img_size=32, seed=0)
+
+    assert counts == {"a": 1, "b": 2, "c": 1, "d": 1}
+    assert sum(counts.values()) == 5
+    assert {split: len(list((tmp_path / split).glob("*.jpg"))) for split in counts} == counts
+
+
 def test_coco_file_counts_match(tmp_path: Path) -> None:
     """COCO format file counts match metadata."""
     counts = generate_dataset(tmp_path, num_images=10, fmt="coco", seed=1)
