@@ -46,6 +46,18 @@ jobs:
           uv pip list
       - name: 🚫 Confirm torch did not sneak in
         run: "! uv pip show torch"
+      - name: 🧯 Confirm the torch-extra message fires
+        # The augmentation stack is torch-only, so importing it here must fail -- but with the
+        # actionable "install the extra" message from src/fuse_augmentations/__init__.py, not a raw
+        # ModuleNotFoundError from somewhere deep inside the package. Exit status is checked
+        # separately from the message so a shell with `pipefail` cannot turn the expected failure
+        # into a red step.
+        run: |
+          if python -c 'import fuse_augmentations' 2> "${RUNNER_TEMP}/import_err.txt"; then
+            echo "::error::importing fuse_augmentations succeeded without torch installed"
+            exit 1
+          fi
+          grep -qF 'fuse-augmentations[torch]' "${RUNNER_TEMP}/import_err.txt"
       - name: 🧪 Run torch-free tests and doctests
         run: pytest src/synth_datasets tests/test_unit/test_synth_datasets --ignore=src/synth_datasets/datasets.py -v
 
