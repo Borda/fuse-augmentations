@@ -57,7 +57,8 @@ from synth_datasets.letters import LETTER_KEYPOINT_SCHEMA, LetterShape, letter_k
 from synth_datasets.primitives import PrimitiveShape
 from synth_datasets.symbols import SYMBOL_KEYPOINT_SCHEMA, SymbolShape, symbol_keypoints
 
-if TYPE_CHECKING:
+    from synth_datasets.keypoints import KeypointSchema
+    from numpy.typing import NDArray
     from collections.abc import Callable
 
     from numpy.typing import NDArray
