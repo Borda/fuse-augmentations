@@ -16,6 +16,7 @@ Examples:
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from typing import Any
 
@@ -83,7 +84,10 @@ try:
         TransformSpec,
     )
 except ModuleNotFoundError as exc:
-    if (exc.name or "").split(".")[0] != "torch":
+    # Only a missing top-level ``torch`` means the extra was never installed. A missing torch
+    # *submodule* (too old or half-installed torch) must surface verbatim, and so must the
+    # ``exc.name == "torch"`` case where torch does import -- there the real fault lies elsewhere.
+    if exc.name != "torch" or importlib.util.find_spec("torch") is not None:
         raise
     raise ModuleNotFoundError(
         "fuse_augmentations requires the 'torch' extra for its augmentation API: "
@@ -138,12 +142,21 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:  # noqa: ANN401 - module-level lazy attribute access
-    """Lazily expose the dataset-generation facade, deferring the datasets subpackage and Pillow until first use."""
+    """Lazily expose the dataset-generation facade, deferring :mod:`synth_datasets` and Pillow until first use.
+
+    Imported from :mod:`synth_datasets` rather than the ``fuse_augmentations.data`` re-export shim:
+    both reach the identical object, but the shim costs an extra module plus its star import.
+    """
     if name == "generate_dataset":
-        from fuse_augmentations.data import generate_dataset
+        from synth_datasets import generate_dataset
 
         return generate_dataset
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    """List the module's attributes, including the lazily-resolved ones absent from ``globals()``."""
+    return sorted(set(globals()) | set(__all__))
 
 
 _PATH_PACKAGE = os.path.realpath(os.path.dirname(__file__))

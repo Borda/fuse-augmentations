@@ -13,12 +13,15 @@ specifics; this namespace exports the pieces a dataset-building caller needs.
 
 This package is standalone and torch-free: ``import synth_datasets`` never touches
 :mod:`fuse_augmentations`, so it installs and imports without the ``torch`` extra.
-:class:`SyntheticIterableDataset` is the only torch-dependent name in this namespace and is
-resolved lazily on first attribute access, so even a torch-installed environment only pays that
-import cost when the name is actually used. ``fuse_augmentations.data`` re-exports this package for
+:class:`SyntheticIterableDataset` is the only torch-dependent name in this namespace, deliberately
+left out of :data:`__all__` and resolved lazily on first attribute access instead — when
+``synth_datasets`` is imported directly, even a torch-installed environment only pays that import
+cost when the name is actually used. ``fuse_augmentations.data`` re-exports this package for
 backward compatibility, but that path still runs the parent :mod:`fuse_augmentations` package's
-eager augmentation-stack import (and therefore requires ``torch``) — prefer importing
-``synth_datasets`` directly when only dataset generation is needed.
+eager augmentation-stack import (and therefore requires ``torch`` regardless) and re-imports
+:class:`SyntheticIterableDataset` explicitly to restore the legacy name, so the laziness above does
+not hold through that shim — prefer importing ``synth_datasets`` directly when only dataset
+generation is needed.
 
 Examples:
     ```pycon
@@ -37,6 +40,7 @@ from __future__ import annotations
 
 import importlib
 import itertools
+from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
 from synth_datasets.backgrounds import (
@@ -94,7 +98,17 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
-    from synth_datasets.datasets import SyntheticIterableDataset
+    # Explicit re-export (`as` same name): keeps this name resolvable to static type checkers even
+    # though it is intentionally left out of __all__ below -- see the module docstring and __getattr__.
+    from synth_datasets.datasets import SyntheticIterableDataset as SyntheticIterableDataset
+
+try:
+    # `synth_datasets` ships inside the `fuse-augmentations` distribution (see pyproject.toml's
+    # packages.find.include), not its own -- this lookup breaks if synth_datasets is ever split into
+    # its own distribution and must be repointed at that distribution's name then.
+    __version__ = version("fuse-augmentations")
+except PackageNotFoundError:  # pragma: no cover - only hit for an unbuilt/uninstalled checkout
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     "ALL_SHAPES",
@@ -131,7 +145,6 @@ __all__ = [
     "SplitRatios",
     "SyntheticConfig",
     "SyntheticGenerator",
-    "SyntheticIterableDataset",
     "Task",
     "TextureBackground",
     "Vignette",
@@ -160,17 +173,45 @@ def __getattr__(name: str) -> Any:  # noqa: ANN401 - module-level attribute acce
         name: The attribute being looked up on this module.
 
     Returns:
-        The resolved object. Names in :data:`_LAZY` are exported here like any other; they are
-        simply imported late.
+        The resolved object. :data:`_LAZY` names resolve by attribute access exactly like the rest
+        of this namespace's public surface; they are simply imported late, and -- unlike the rest --
+        deliberately excluded from :data:`__all__` so ``from synth_datasets import *`` stays
+        torch-free.
 
     Raises:
         AttributeError: If ``name`` is neither exported nor deferred.
+        ModuleNotFoundError: If resolving ``name`` requires :mod:`torch` and it is not installed; the
+            re-raised error carries an actionable ``pip install torch`` message instead of the raw one.
 
     """
     module_path = _LAZY.get(name)
     if module_path is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    return getattr(importlib.import_module(module_path), name)
+    try:
+        module = importlib.import_module(module_path)
+    except ModuleNotFoundError as exc:
+        # Exact match, not a prefix/split check: a missing submodule *within* torch (e.g. torch.jit)
+        # is a different problem and must not be mislabelled as torch itself being absent.
+        if exc.name != "torch":
+            raise
+        raise ModuleNotFoundError(
+            f"{name!r} requires the 'torch' package, which is not installed: run `pip install torch`.",
+            name="torch",
+        ) from exc
+    return getattr(module, name)
+
+
+def __dir__() -> list[str]:
+    """List module attributes for ``dir()`` and tab-completion, :data:`_LAZY` names included (:pep:`562`).
+
+    Returns:
+        Sorted names combining this module's regular globals, :data:`__all__`, and the deferred names
+        in :data:`_LAZY` -- the latter are not assigned in the module namespace until :func:`__getattr__`
+        resolves them, so without this override ``dir(synth_datasets)`` would omit them even though
+        they are reachable via attribute access.
+
+    """
+    return sorted({*globals(), *__all__, *_LAZY})
 
 
 def _assign_splits(num_images: int, split_ratios: SplitRatios) -> dict[str, int]:
