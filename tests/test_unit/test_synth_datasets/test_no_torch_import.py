@@ -81,12 +81,11 @@ print("OK")
 def test_importing_synth_datasets_does_not_import_torch_or_fuse_augmentations() -> None:
     """`import synth_datasets` and dataset generation never touch `sys.modules['torch']` or `['fuse_augmentations']`.
 
-    Runs in a fresh subprocess so an already-torch-loaded test session cannot mask a regression, and drives
-    every format/task combination plus the two code paths with their own deferred, call-time imports
-    (`ImageBackground` and the `GaussianBlur`/`JPEG` degradations, both of which defer `from PIL import ...`
-    to inside a method rather than the module top) — a torch import added in that same deferred style would
-    be invisible to a probe that only imports the package and writes one plain YOLO/detection dataset, which
-    is all the previous version of this test exercised.
+    Runs in a fresh subprocess so an already-torch-loaded test session cannot mask a regression, and drives every
+    format/task combination plus the two code paths with their own deferred, call-time imports (`ImageBackground` and
+    the `GaussianBlur`/`JPEG` degradations, both of which defer `from PIL import ...` to inside a method rather than the
+    module top) — a torch import added in that same deferred style would be invisible to a probe that only imports the
+    package and writes one plain YOLO/detection dataset, which is all the previous version of this test exercised.
 
     """
     result = subprocess.run(  # noqa: S603 - fixed script, no untrusted input

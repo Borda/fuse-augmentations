@@ -50,9 +50,9 @@ def _run_with_stub_torch(tmp_path: Path, exception_name: str) -> str:
 def test_absent_torch_still_degrades_to_none(tmp_path: Path) -> None:
     """A genuinely absent torch (`ModuleNotFoundError`) still degrades `conftest.torch` to `None`.
 
-    This is the guard's intended, unchanged behaviour: an environment that never installed torch (the
-    torch-free `synth_datasets` CI leg, or a torch-free dev checkout) collects the test session without
-    torch, exactly as it did before the F8 narrowing.
+    This is the guard's intended, unchanged behaviour: an environment that never installed torch (the torch-free
+    `synth_datasets` CI leg, or a torch-free dev checkout) collects the test session without torch, exactly as it did
+    before the F8 narrowing.
 
     """
     output = _run_with_stub_torch(tmp_path, "ModuleNotFoundError")

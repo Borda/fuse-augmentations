@@ -1,17 +1,17 @@
 """Regression tests for `.github/scripts/min_deps.py`'s `_replace_min_versions` pinning logic.
 
-`min_deps.py` is not a package (`testpaths` excludes `.github`), and its module docstring's doctest never
-runs for the same reason, so `_replace_min_versions` had zero executable coverage despite this PR modifying
-it to pin new extras. A regression here would silently miswrite the oldest-dependencies CI leg. These tests
-load the script by path — the established pattern this project already uses for `experiments/` scripts in
-`tests/test_unit/test_benchmarks.py` — and drive it against a throwaway fixture `pyproject.toml`.
+`min_deps.py` is not a package (`testpaths` excludes `.github`), and its module docstring's doctest never runs for the
+same reason, so `_replace_min_versions` had zero executable coverage despite this PR modifying it to pin new extras. A
+regression here would silently miswrite the oldest-dependencies CI leg. These tests load the script by path — the
+established pattern this project already uses for `experiments/` scripts in `tests/test_unit/test_benchmarks.py` — and
+drive it against a throwaway fixture `pyproject.toml`.
 
 Known gap: `tomlkit` (what `min_deps.py` itself imports) is commented out of the `dev` dependency group in
-`pyproject.toml` — only the CI `oldest`-deps leg installs it, ad hoc, before invoking `min_deps.py` directly
-as a script. This module is scoped to `tests/` only, so it cannot add `tomlkit` to `dev` itself; it guards
-with `pytest.importorskip` instead. That means these tests run for real wherever `tomlkit` happens to be
-installed (including, today, the `oldest`-deps leg's own environment right after that install step) and skip
-cleanly everywhere else, rather than failing collection for every other CI leg and local dev checkout.
+`pyproject.toml` — only the CI `oldest`-deps leg installs it, ad hoc, before invoking `min_deps.py` directly as a
+script. This module is scoped to `tests/` only, so it cannot add `tomlkit` to `dev` itself; it guards with
+`pytest.importorskip` instead. That means these tests run for real wherever `tomlkit` happens to be installed
+(including, today, the `oldest`-deps leg's own environment right after that install step) and skip cleanly everywhere
+else, rather than failing collection for every other CI leg and local dev checkout.
 
 """
 
@@ -77,9 +77,9 @@ def pyproject_file(tmp_path: Path) -> Path:
 def test_pins_every_ge_specifier_across_all_three_sections(pyproject_file: Path) -> None:
     """Every `>=` requirement in dependencies, optional-dependencies, and dependency-groups is pinned to `==`.
 
-    The fixture covers all three sections `_replace_min_versions` walks (`[project.dependencies]`,
-    `[project.optional-dependencies]`, `[dependency-groups]`), each with one `>=` requirement, so a
-    regression that stops walking any one section shows up as a shorter `changed` list.
+    The fixture covers all three sections `_replace_min_versions` walks (`[project.dependencies]`, `[project.optional-
+    dependencies]`, `[dependency-groups]`), each with one `>=` requirement, so a regression that stops walking any one
+    section shows up as a shorter `changed` list.
 
     """
     min_deps = _load_min_deps()
@@ -92,8 +92,8 @@ def test_pins_every_ge_specifier_across_all_three_sections(pyproject_file: Path)
 def test_leaves_non_ge_specifiers_untouched(pyproject_file: Path) -> None:
     """A requirement without `>=` (already exact-pinned, or a different operator) is not rewritten.
 
-    `pyyaml==6.0` and `requests<3` sit alongside `>=` requirements in the same fixture sections; this
-    confirms the `">=" in req` guard is selective rather than rewriting every requirement it walks past.
+    `pyyaml==6.0` and `requests<3` sit alongside `>=` requirements in the same fixture sections; this confirms the `">="
+    in req` guard is selective rather than rewriting every requirement it walks past.
 
     """
     min_deps = _load_min_deps()

@@ -144,8 +144,9 @@ __all__ = [
 def __getattr__(name: str) -> Any:  # noqa: ANN401 - module-level lazy attribute access
     """Lazily expose the dataset-generation facade, deferring :mod:`synth_datasets` and Pillow until first use.
 
-    Imported from :mod:`synth_datasets` rather than the ``fuse_augmentations.data`` re-export shim:
-    both reach the identical object, but the shim costs an extra module plus its star import.
+    Imported from :mod:`synth_datasets` rather than the ``fuse_augmentations.data`` re-export shim: both reach the
+    identical object, but the shim costs an extra module plus its star import.
+
     """
     if name == "generate_dataset":
         from synth_datasets import generate_dataset
