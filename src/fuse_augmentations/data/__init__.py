@@ -1,9 +1,10 @@
-"""Backward-compatible alias for :mod:`synth_datasets`.
+"""Package-level re-export facade for :mod:`synth_datasets`.
 
 The synthetic detection / segmentation / OBB / keypoint dataset generator used to live here. It has
 moved to the standalone top-level package :mod:`synth_datasets`, which installs and imports without
-the ``torch`` extra. This module now only re-exports that package's public API so existing
-``fuse_augmentations.data`` imports keep working.
+the ``torch`` extra. This module re-exports the package-level public API for migration, but it does
+not preserve former submodule paths such as ``fuse_augmentations.data.geometry``; import those from
+``synth_datasets`` instead.
 
 Prefer ``import synth_datasets`` for new code, especially when only dataset generation is needed:
 importing ``fuse_augmentations.data`` still runs the parent :mod:`fuse_augmentations` package's

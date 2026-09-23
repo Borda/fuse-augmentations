@@ -15,7 +15,7 @@ The generator supports detection (axis-aligned boxes), segmentation (polygons), 
 
 ## Do I need real images, torch, or an optional augmentation backend?
 
-No, not for dataset generation. The base package (`pip install fuse-augmentations`, no extras) includes Pillow and NumPy for rendering and can generate its drawn-shape data without torch, Kornia, TorchVision, or Albumentations — `import synth_datasets` never imports torch. Torch and the adapter backends are only for the image-augmentation engine (`pip install "fuse-augmentations[torch]"` or an adapter extra). The generator is not a photorealistic renderer, so use real held-out images when deciding whether a model transfers to production. See [Shape families](datasets/shapes.md) and [Installation](getting-started/installation.md).
+No extras are needed for direct dataset generation: the base package (`pip install fuse-augmentations`) includes Pillow and NumPy, and `import synth_datasets` never imports torch. Torch is required for the image-augmentation engine and for `SyntheticIterableDataset` when using a PyTorch `DataLoader`; install `fuse-augmentations[torch]` for either. The generator is not a photorealistic renderer, so use real held-out images when deciding whether a model transfers to production. See [Shape families](datasets/shapes.md) and [Installation](getting-started/installation.md).
 
 ## Does the package train models or provide a difficulty setting?
 

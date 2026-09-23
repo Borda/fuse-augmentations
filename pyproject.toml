@@ -54,7 +54,7 @@ optional-dependencies.all = [
   "albumentations>=2.0.0",
   "kornia>=0.6.12",
   "torch>=2.2",
-  "torchvision>=0.15",
+  "torchvision>=0.17",
 ]
 optional-dependencies.cli = [
   "fire>=0.6",
@@ -68,7 +68,7 @@ optional-dependencies.torch = [
 ]
 optional-dependencies.torchvision = [
   "torch>=2.2",
-  "torchvision>=0.15",
+  "torchvision>=0.17",
 ]
 urls."Source Code" = "https://github.com/Borda/fuse-augmentations"
 urls."Synthetic Datasets" = "https://borda.github.io/fuse-augmentations/datasets/"

@@ -66,12 +66,15 @@ jobs:
         run: |
           pip install setuptools wheel build
           python -m build
-      - name: 🚀 Install and smoke-test package
+      - name: 🚀 Install and smoke-test base package and torch extra
         working-directory: dist
         run: |
           ls -lh
           pip install $(python -c "import glob ; print(' '.join(glob.glob('*.whl')))")
           pip show fuse-augmentations
+          python -c "import importlib.util, sys; assert importlib.util.find_spec('torch') is None; import synth_datasets; assert 'torch' not in sys.modules"
+          package_wheel=$(basename *.whl)
+          pip install "./${package_wheel}[torch]"
           python -c "import fuse_augmentations; print(fuse_augmentations.__version__)"
 
   pkg-install-watcher:

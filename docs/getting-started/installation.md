@@ -5,7 +5,7 @@ description: Install fuse-augmentations for synthetic COCO/YOLO dataset generati
 
 # Install fuse-augmentations
 
-The base package requires Python 3.10 or newer. PyTorch is only required for the image-augmentation engine — it is the `torch` extra, not a base dependency. Kornia, TorchVision, and Albumentations are optional on top of that because the native builder can create a useful augmentation pipeline without them.
+The base package requires Python 3.10 or newer. Direct generation through `synth_datasets` is torch-free. PyTorch is an optional `torch` extra required by the image-augmentation engine and by `SyntheticIterableDataset` for PyTorch `DataLoader` integration. Kornia, TorchVision, and Albumentations are optional on top of that because the native builder can create a useful augmentation pipeline without them.
 
 !!! note "Project maturity"
 
@@ -18,6 +18,8 @@ python -m pip install fuse-augmentations
 ```
 
 This installs NumPy, Pillow, and the package itself — no torch. It is enough for [synthetic dataset generation](../datasets/index.md) via `import synth_datasets`, which never imports torch. Generating COCO or YOLO data requires no optional extra, source images, or model download.
+
+The `SyntheticIterableDataset` wrapper and its PyTorch `DataLoader` integration require the `torch` extra below; direct use of `SyntheticGenerator` and `generate_dataset` does not.
 
 ## Image augmentation (needs torch)
 
