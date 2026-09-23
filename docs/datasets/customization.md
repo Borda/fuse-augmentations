@@ -12,7 +12,7 @@ Pass `seed=` for byte-identical output; all randomness flows through a single `n
 ```python
 import tempfile
 
-from fuse_augmentations.data import SplitRatios, generate_dataset
+from synth_datasets import SplitRatios, generate_dataset
 
 with tempfile.TemporaryDirectory() as out_dir:
     counts = generate_dataset(
@@ -85,7 +85,7 @@ Every picture is rendered from one seed, so the three shapes sit in the same thr
 Every background draws from a side stream of its own, never from the placement stream, so switching one on at a fixed seed leaves every object exactly where it was:
 
 ```python
-from fuse_augmentations.data import NoiseBackground, SyntheticConfig, SyntheticGenerator
+from synth_datasets import NoiseBackground, SyntheticConfig, SyntheticGenerator
 
 flat = SyntheticConfig(img_size=64, max_objects=3)
 noisy = SyntheticConfig(
@@ -127,7 +127,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from fuse_augmentations.data import ImageBackground, SyntheticConfig, SyntheticGenerator
+from synth_datasets import ImageBackground, SyntheticConfig, SyntheticGenerator
 
 with tempfile.TemporaryDirectory() as folder:
     Image.fromarray(np.full((64, 64, 3), 90, np.uint8)).save(Path(folder) / "wall.png")
@@ -211,7 +211,7 @@ The pairing separates two costs that look alike in a single image. A degradation
 This is not a duplicate of the augmentation pipeline. A `degrade` tuple describes pixels baked into an on-disk dataset — a fixed property of the data, replayable from its seed — where a transform in a training loop resamples every epoch, and a dataset can carry both:
 
 ```python
-from fuse_augmentations.data import (
+from synth_datasets import (
     JPEG,
     GaussianBlur,
     SyntheticConfig,
@@ -274,7 +274,7 @@ These four show no bare canvas, unlike every picture above: neither knob touches
 `distractors` draws that many shapes *under* the labelled objects, from shapes and colours no class owns. Nothing about them reaches an annotation — no class id, no box, no landmark table — so what they cost a model is the ability to find objects by asking "is there a shape here" instead of "which shape is this":
 
 ```python
-from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
+from synth_datasets import SyntheticConfig, SyntheticGenerator
 
 plain = SyntheticConfig(img_size=64, max_objects=4)
 cluttered = SyntheticConfig(img_size=64, max_objects=4, distractors=6)
@@ -308,8 +308,8 @@ Both pools default to a complement so clutter never wears a class's own appearan
 What was covered is published on the sample rather than left implicit:
 
 ```python
-from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
-from fuse_augmentations.data.animals import AnimalShape
+from synth_datasets import SyntheticConfig, SyntheticGenerator
+from synth_datasets.animals import AnimalShape
 
 config = SyntheticConfig(
     img_size=96,
@@ -351,7 +351,7 @@ None
 Most shapes are drawn mirror-symmetric about their own vertical axis in canonical orientation (every geometric shape, every symbol, most letters), so their oriented bounding box otherwise always shows identical left/right margins — real oriented objects (vehicles, ships) rarely are. `asymmetry_jitter` (default `0.0`, a fraction in `[0, 0.5)`) narrows a randomly chosen half — left or right of that axis, before rotation — of each placed object by up to that fraction, independently per instance. The animal silhouettes and roughly two-thirds of the letters are already asymmetric on their own (a letter's own strokes rarely balance left-right the way a symbol's outline is authored to), so the jitter is redundant orientation variety for them rather than the sole source of it — it still applies uniformly to every shape but `circle`, which is excluded for the separate reason below:
 
 ```pycon
->>> from fuse_augmentations.data.config import SyntheticConfig
+>>> from synth_datasets.config import SyntheticConfig
 >>> SyntheticConfig(asymmetry_jitter=0.15).asymmetry_jitter
 0.15
 
@@ -364,7 +364,7 @@ Most shapes are drawn mirror-symmetric about their own vertical axis in canonica
 `SplitRatios` names train/val/test because that is what almost every caller wants, not because the set is closed. `SplitRatios.custom` takes any names at all:
 
 ```python
-from fuse_augmentations.data import SplitRatios
+from synth_datasets import SplitRatios
 
 holdout = SplitRatios.custom({"train": 0.6, "calib": 0.2, "test": 0.2})
 print(holdout.to_dict())
@@ -388,7 +388,7 @@ The arithmetic is unchanged: fractions must be non-negative and sum to 1, or con
 A `Fill` carries the RGB to draw with and, when it came from a named `Color`, that name. A raw triple has no name, so `Fill.label` falls back to the hex value — which is what keeps class naming well defined under `ClassMode.COLOR` and `ClassMode.SHAPE_COLOR` without inventing color names:
 
 ```python
-from fuse_augmentations.data import (
+from synth_datasets import (
     ClassMode,
     Color,
     DEFAULT_SHAPES,
@@ -413,11 +413,11 @@ print(class_names(ClassMode.SHAPE_COLOR, DEFAULT_SHAPES, gold.colors)[:2])
 
 ## Extending the vocabulary
 
-Every shape family — the analytic primitives, the animals, the symbols, the letters — is registered once in `fuse_augmentations.data.families`, and every other module reads that registry rather than naming the families itself:
+Every shape family — the analytic primitives, the animals, the symbols, the letters — is registered once in `synth_datasets.families`, and every other module reads that registry rather than naming the families itself:
 
 ```python
-from fuse_augmentations.data import SHAPE_FAMILIES, family_of
-from fuse_augmentations.data.animals import AnimalShape
+from synth_datasets import SHAPE_FAMILIES, family_of
+from synth_datasets.animals import AnimalShape
 
 summary = [(f.name, len(f.members), f.has_keypoints) for f in SHAPE_FAMILIES]
 print(summary)
@@ -441,7 +441,7 @@ A `ShapeFamily` carries its members, an outline accessor, and — for a keypoint
 `OutputFormat` is a closed enum, but the writer table behind it is not. `register_writer` accepts any key, and `generate_dataset(fmt=...)` will then resolve it:
 
 ```python
-from fuse_augmentations.data import (
+from synth_datasets import (
     ClassMode,
     DEFAULT_SHAPES,
     Task,
@@ -474,7 +474,7 @@ UltralyticsWriter
 
 ### Editing the packaged assets
 
-All three asset-backed families are read by one parser (`fuse_augmentations.data.svgio`) and edited by one tool:
+All three asset-backed families are read by one parser (`synth_datasets.svgio`) and edited by one tool:
 
 ```bash
 python examples/edit_shape_keypoints.py duck      # an animal silhouette

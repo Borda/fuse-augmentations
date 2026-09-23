@@ -29,7 +29,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from fuse_augmentations import generate_dataset
+from synth_datasets import generate_dataset
 
 with tempfile.TemporaryDirectory() as out_dir:
     counts = generate_dataset(
@@ -91,7 +91,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from fuse_augmentations.data import NoiseBackground, SyntheticConfig, SyntheticGenerator
+from synth_datasets import NoiseBackground, SyntheticConfig, SyntheticGenerator
 
 baseline = SyntheticConfig(
     img_size=128,
@@ -148,7 +148,7 @@ For a curriculum, construct the next configuration in your trainer after an expl
 import numpy as np
 from torch.utils.data import DataLoader
 
-from fuse_augmentations.data import SyntheticIterableDataset
+from synth_datasets import SyntheticIterableDataset
 
 dataset = SyntheticIterableDataset(
     num_images=8,

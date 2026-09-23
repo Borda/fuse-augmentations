@@ -80,13 +80,13 @@ A band is nothing but the fields in its row, and each of those is pictured on it
     ![Synthetic detection sample with letter shapes](../assets/datasets/tasks/letters-detection.webp)
 
 ```python
-from fuse_augmentations.data import (
+from synth_datasets import (
     JPEG,
     GaussianBlur,
     SyntheticConfig,
     TextureBackground,
 )
-from fuse_augmentations.data.letters import LetterShape
+from synth_datasets.letters import LetterShape
 
 hard = SyntheticConfig(
     img_size=256,

@@ -15,6 +15,40 @@ defaults:
     shell: bash
 
 jobs:
+  synth-datasets-no-torch:
+    # `torch` moved from a hard dependency to the `torch` extra: `synth_datasets` installs and
+    # imports without it (see src/synth_datasets/__init__.py). This leg proves that promise by never
+    # installing torch at all, rather than relying on --group dev (which does need torch, for the
+    # rest of the suite) to happen to omit it. Scoped to the torch-free surface only; the augmentation
+    # stack and its cross-package integration tests need torch and run in `pytester` below.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: "3.10"
+    timeout-minutes: 5
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+      - name: 🐍 Install uv
+        uses: astral-sh/setup-uv@v7.2.0
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+          activate-environment: true
+      - name: 📦 Install base package, no extras, no torch
+        timeout-minutes: 5
+        run: |
+          uv pip install -e . "pytest>=8.3,<8.5" "pytest-doctestplus>=1.3" "pyyaml>=6"
+          uv pip list
+      - name: 🚫 Confirm torch did not sneak in
+        run: "! uv pip show torch"
+      - name: 🧪 Run torch-free tests and doctests
+        run: pytest src/synth_datasets tests/test_unit/test_synth_datasets --ignore=src/synth_datasets/datasets.py -v
+
   doctests-only:
     permissions:
       contents: read
@@ -22,7 +56,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        extras: ["none", "all", "albumentations", "kornia", "torchvision"]
+        extras: ["torch", "all", "albumentations", "kornia", "torchvision"]
     env:
       UV_TORCH_BACKEND: cpu
       PYTHON_VERSION: "3.10"
@@ -48,7 +82,7 @@ jobs:
         run: pytest src/ -v
 
   pytester:
-    needs: doctests-only
+    needs: [doctests-only, synth-datasets-no-torch]
     permissions:
       contents: read
     runs-on: ${{ matrix.os }}
@@ -94,7 +128,7 @@ jobs:
         if: matrix.extras == 'all'
         run: python .github/scripts/generate_doc_tests.py
       - name: 🧪 Run tests
-        run: pytest . -v --cov=fuse_augmentations
+        run: pytest . -v --cov=fuse_augmentations --cov=synth_datasets
       - name: 📊 Coverage statistics
         run: |
           coverage report

@@ -1,7 +1,7 @@
 """Pin minimum dependency versions in pyproject.toml for oldest-compatible CI testing.
 
-Replaces all '>=' specifiers with '==' in [project.dependencies] and [dependency-groups]
-sections of pyproject.toml, preserving formatting and comments via tomlkit.
+Replaces all '>=' specifiers with '==' in [project.dependencies], [project.optional-dependencies],
+and [dependency-groups] sections of pyproject.toml, preserving formatting and comments via tomlkit.
 
 The CLI uses ``fire``, which ships in the ``cli`` extra::
 
@@ -38,12 +38,21 @@ def _replace_min_versions(proj_file: str = "pyproject.toml") -> list[str]:
     changed: list[str] = []
 
     # Pin [project.dependencies]
-    deps = doc.get("project", {}).get("dependencies")
+    project = doc.get("project", {})
+    deps = project.get("dependencies")
     if deps:
         for i, req in enumerate(deps):
             if ">=" in req:
                 deps[i] = req.replace(">=", "==")
                 changed.append(deps[i])
+
+    # Pin [project.optional-dependencies] (extras, e.g. "torch", "kornia", "all")
+    optional_deps = project.get("optional-dependencies", {})
+    for extra_name in optional_deps:
+        for i, req in enumerate(optional_deps[extra_name]):
+            if ">=" in req:
+                optional_deps[extra_name][i] = req.replace(">=", "==")
+                changed.append(optional_deps[extra_name][i])
 
     # Pin [dependency-groups]
     # Entries can be strings (requirements) or dicts (include-group references per PEP 735)

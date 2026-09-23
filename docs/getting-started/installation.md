@@ -5,7 +5,7 @@ description: Install fuse-augmentations for synthetic COCO/YOLO dataset generati
 
 # Install fuse-augmentations
 
-The base package requires Python 3.10 or newer and PyTorch 2.2 or newer. Kornia, TorchVision, and Albumentations are optional because the native builder can create a useful pipeline without them.
+The base package requires Python 3.10 or newer. PyTorch is only required for the image-augmentation engine — it is the `torch` extra, not a base dependency. Kornia, TorchVision, and Albumentations are optional on top of that because the native builder can create a useful augmentation pipeline without them.
 
 !!! note "Project maturity"
 
@@ -17,11 +17,21 @@ The base package requires Python 3.10 or newer and PyTorch 2.2 or newer. Kornia,
 python -m pip install fuse-augmentations
 ```
 
-This installs NumPy, Pillow, PyTorch, and the package itself. It is enough for [synthetic dataset generation](../datasets/index.md) and [`Compose.from_params`](quickstart.md). Generating COCO or YOLO data requires no optional extra, source images, or model download.
+This installs NumPy, Pillow, and the package itself — no torch. It is enough for [synthetic dataset generation](../datasets/index.md) via `import synth_datasets`, which never imports torch. Generating COCO or YOLO data requires no optional extra, source images, or model download.
+
+## Image augmentation (needs torch)
+
+`Compose`, `FusedCompose`, `AugmentationSequential`, and everything else at the `fuse_augmentations` package root need the `torch` extra:
+
+```bash
+python -m pip install "fuse-augmentations[torch]"
+```
+
+This is enough for [`Compose.from_params`](quickstart.md) with no optional adapter backend.
 
 ## Optional backends
 
-Install only the adapter ecosystems you use:
+Install only the adapter ecosystems you use — each of these already includes the `torch` extra:
 
 === "Kornia"
 

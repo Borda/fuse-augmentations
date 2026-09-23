@@ -62,7 +62,7 @@ A segmentation-task sample also carries the outline, so the tighter box can be r
 
 ```python
 from fuse_augmentations import FusedCompose
-from fuse_augmentations.data.geometry import polygon_to_bbox_xyxy, to_pixel_edge
+from synth_datasets.geometry import polygon_to_bbox_xyxy, to_pixel_edge
 
 pipeline = FusedCompose(transforms, data_keys=["input", "keypoints"])
 warped_image, warped_points = pipeline(image, polygon)

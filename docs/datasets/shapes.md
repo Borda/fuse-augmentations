@@ -122,8 +122,8 @@ Pass `shapes=` (or the CLI's `--shapes animals`) to draw the twelve animal silho
 Name the members explicitly, or take the first `N` of them with `tuple(AnimalShape)`:
 
 ```python
-from fuse_augmentations.data.animals import AnimalShape
-from fuse_augmentations.data.config import SyntheticConfig, Task
+from synth_datasets.animals import AnimalShape
+from synth_datasets.config import SyntheticConfig, Task
 
 explicit = SyntheticConfig(
     task=Task.KEYPOINTS,
@@ -192,8 +192,8 @@ There is no plain-triangle symbol: it would collide in name with the geometric f
 `tuple(SymbolShape)` mirrors `tuple(AnimalShape)` — name the members explicitly, or take a stable prefix:
 
 ```python
-from fuse_augmentations.data.config import SyntheticConfig, Task
-from fuse_augmentations.data.symbols import SymbolShape
+from synth_datasets.config import SyntheticConfig, Task
+from synth_datasets.symbols import SymbolShape
 
 explicit = SyntheticConfig(
     task=Task.KEYPOINTS,
@@ -257,8 +257,8 @@ The 15 named keypoint slots give every letter the same landmark vocabulary (a fi
 `tuple(LetterShape)` mirrors `tuple(AnimalShape)`/`tuple(SymbolShape)` — name the members explicitly, or take a stable prefix:
 
 ```python
-from fuse_augmentations.data.config import SyntheticConfig, Task
-from fuse_augmentations.data.letters import LetterShape
+from synth_datasets.config import SyntheticConfig, Task
+from synth_datasets.letters import LetterShape
 
 explicit = SyntheticConfig(
     task=Task.KEYPOINTS,

@@ -7,15 +7,15 @@ description: Answers about synthetic computer vision datasets, COCO/YOLO generat
 
 ## Can I generate synthetic computer-vision datasets?
 
-Yes. `fuse_augmentations.data` draws labelled shapes from geometric, animal, symbol, and letter families. `generate_dataset` writes COCO or YOLO files, `SyntheticGenerator` yields in-memory `Sample` objects, and `SyntheticIterableDataset` streams samples to a PyTorch `DataLoader`. See [Synthetic data generation](datasets/index.md).
+Yes. `synth_datasets` draws labelled shapes from geometric, animal, symbol, and letter families. `generate_dataset` writes COCO or YOLO files, `SyntheticGenerator` yields in-memory `Sample` objects, and `SyntheticIterableDataset` streams samples to a PyTorch `DataLoader`. See [Synthetic data generation](datasets/index.md).
 
 ## Which synthetic-data tasks and formats are supported?
 
 The generator supports detection (axis-aligned boxes), segmentation (polygons), oriented bounding boxes (OBB), and keypoints/pose. On disk, it writes COCO or YOLO; the in-memory stream exposes `Sample` annotations. Keypoints require one keypoint-bearing family — animals, symbols, or letters — because geometric primitives have no pose schema. See [Tasks and keypoints](datasets/tasks.md) and [Annotation formats](datasets/outputs.md).
 
-## Do I need real images or an optional augmentation backend?
+## Do I need real images, torch, or an optional augmentation backend?
 
-No. The base package includes Pillow for rendering and can generate its drawn-shape data without Kornia, TorchVision, or Albumentations. These optional backends are for augmentation adapters, not required for dataset generation. The generator is not a photorealistic renderer, so use real held-out images when deciding whether a model transfers to production. See [Shape families](datasets/shapes.md) and [Installation](getting-started/installation.md).
+No, not for dataset generation. The base package (`pip install fuse-augmentations`, no extras) includes Pillow and NumPy for rendering and can generate its drawn-shape data without torch, Kornia, TorchVision, or Albumentations — `import synth_datasets` never imports torch. Torch and the adapter backends are only for the image-augmentation engine (`pip install "fuse-augmentations[torch]"` or an adapter extra). The generator is not a photorealistic renderer, so use real held-out images when deciding whether a model transfers to production. See [Shape families](datasets/shapes.md) and [Installation](getting-started/installation.md).
 
 ## Does the package train models or provide a difficulty setting?
 

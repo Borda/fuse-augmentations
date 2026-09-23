@@ -8,6 +8,11 @@ Versions below `0.12.0` are `dev0` snapshots, each cut from its own `bump vX` co
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `torch` moved from a hard dependency to the `torch` extra. `pip install fuse-augmentations` no longer installs torch; the augmentation engine (`Compose`, `FusedCompose`, `AugmentationSequential`, and everything else at the `fuse_augmentations` package root) now needs `pip install "fuse-augmentations[torch]"` (or any adapter extra — `kornia`, `torchvision`, `albumentations`, `all` — which each now pull `torch` explicitly). Importing `fuse_augmentations` without torch installed raises a clear `ModuleNotFoundError` naming the extra, instead of a raw error from deep inside a submodule.
+- The synthetic-dataset generator moved from `fuse_augmentations.data` to a new standalone top-level package, `synth_datasets` (`pip install fuse-augmentations` alone is enough; `import synth_datasets`). It is entirely torch-free — `import synth_datasets` and `generate_dataset(...)` never import torch, even when torch is installed. `fuse_augmentations.data` and `fuse_augmentations.generate_dataset` still work as backward-compatible aliases, but that import path still runs through the parent `fuse_augmentations` package and therefore still needs the `torch` extra.
+
 ## [0.14.0] - 2026-09-23
 
 Synthetic-dataset scene realism: image-crop backgrounds, procedural background types, distractor clutter, occluders, pixel-value degradations, and a measured difficulty ladder; plus a 1px label-emission fix.

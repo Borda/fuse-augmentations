@@ -24,7 +24,7 @@ The generator draws synthetic shapes; your application supplies the model and tr
 
 ## Fuse compatible augmentations
 
-`fuse-augmentations` is a PyTorch-based matrix-fusion engine for image augmentation pipelines. It recognizes a finite set of Kornia, TorchVision, and Albumentations transforms—or builds a pipeline directly from numeric ranges—then composes compatible transforms so a geometric chain can use fewer interpolation passes.
+`fuse-augmentations` is a PyTorch-based matrix-fusion engine for image augmentation pipelines. It recognizes a finite set of Kornia, TorchVision, and Albumentations transforms—or builds a pipeline directly from numeric ranges—then composes compatible transforms so a geometric chain can use fewer interpolation passes. This part of the package needs the `torch` extra: `pip install "fuse-augmentations[torch]"` — see [Install](getting-started/installation.md).
 
 The strongest use case is a BCHW tensor pipeline with several consecutive, registered geometric transforms. Reducing repeated resampling can preserve more image detail, lower peak tensor memory, and accelerate long CPU chains.
 

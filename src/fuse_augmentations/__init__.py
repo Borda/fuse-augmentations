@@ -20,60 +20,77 @@ import os
 from typing import Any
 
 from fuse_augmentations.__about__ import *  # noqa: F403
-from fuse_augmentations.affine.matrix import (
-    LetterboxGeometry,
-    letterbox_geometry,
-    letterbox_matrix,
-)
-from fuse_augmentations.affine.segment import (
-    CropResizeSegment,
-    ExactAffineSegment,
-    FusedAffineSegment,
-    FusedColorSegment,
-    FusedLUTSegment,
-    ProjectiveSegment,
-    build_segments,
-)
-from fuse_augmentations.converters import NumpyToTorchConverter, TorchToNumpyConverter
-from fuse_augmentations.detection import augment_detection_batch
 
-# Import from the implementation module (not the ``compose`` compatibility
-# shim, whose runtime ``__getattr__`` forwarding is invisible to static doc
-# tooling such as griffe/mkdocstrings). ``compose`` stays a valid import and
-# pickle path for historical payloads.
-from fuse_augmentations.pipeline import (
-    AugmentationSequential,
-    Compose,
-    FusedCompose,
-)
-from fuse_augmentations.targets import (
-    clip_bbox_xyxy,
-    corners_to_rboxes,
-    instance_keep_mask,
-    mirror_rboxes,
-    orientation_reversed,
-    permute_keypoint_pairs,
-    rbox_envelopes,
-    rboxes_to_corners,
-    shift_rboxes,
-    transform_bbox_xywh,
-    transform_bbox_xyxy,
-    transform_keypoints,
-    transform_mask,
-    transform_rboxes,
-)
-from fuse_augmentations.types import (
-    BackendConverter,
-    ClipPolicyStr,
-    InterpolationMode,
-    PaddingMode,
-    RandomnessPolicy,
-    ReorderPolicy,
-    SegmentDescriptor,
-    TransformAdapter,
-    TransformCategory,
-    TransformSpec,
-)
+# The augmentation stack is torch-dependent end to end (nn.Module subclasses, Tensor-typed public
+# API); importing any of it eagerly imports torch. Dataset generation alone does not need this --
+# use ``import synth_datasets`` instead, which never runs this package's __init__. The try/except
+# below only turns a confusing ModuleNotFoundError raised deep inside e.g. converters.py into an
+# actionable one; it does not make this package importable without torch (see plan/CLAUDE notes:
+# that would require lazy __getattr__ loading here, deliberately out of scope for now).
+try:
+    from fuse_augmentations.affine.matrix import (
+        LetterboxGeometry,
+        letterbox_geometry,
+        letterbox_matrix,
+    )
+    from fuse_augmentations.affine.segment import (
+        CropResizeSegment,
+        ExactAffineSegment,
+        FusedAffineSegment,
+        FusedColorSegment,
+        FusedLUTSegment,
+        ProjectiveSegment,
+        build_segments,
+    )
+    from fuse_augmentations.converters import NumpyToTorchConverter, TorchToNumpyConverter
+    from fuse_augmentations.detection import augment_detection_batch
+
+    # Import from the implementation module (not the ``compose`` compatibility
+    # shim, whose runtime ``__getattr__`` forwarding is invisible to static doc
+    # tooling such as griffe/mkdocstrings). ``compose`` stays a valid import and
+    # pickle path for historical payloads.
+    from fuse_augmentations.pipeline import (
+        AugmentationSequential,
+        Compose,
+        FusedCompose,
+    )
+    from fuse_augmentations.targets import (
+        clip_bbox_xyxy,
+        corners_to_rboxes,
+        instance_keep_mask,
+        mirror_rboxes,
+        orientation_reversed,
+        permute_keypoint_pairs,
+        rbox_envelopes,
+        rboxes_to_corners,
+        shift_rboxes,
+        transform_bbox_xywh,
+        transform_bbox_xyxy,
+        transform_keypoints,
+        transform_mask,
+        transform_rboxes,
+    )
+    from fuse_augmentations.types import (
+        BackendConverter,
+        ClipPolicyStr,
+        InterpolationMode,
+        PaddingMode,
+        RandomnessPolicy,
+        ReorderPolicy,
+        SegmentDescriptor,
+        TransformAdapter,
+        TransformCategory,
+        TransformSpec,
+    )
+except ModuleNotFoundError as exc:
+    if (exc.name or "").split(".")[0] != "torch":
+        raise
+    raise ModuleNotFoundError(
+        "fuse_augmentations requires the 'torch' extra for its augmentation API: "
+        'install with `pip install "fuse-augmentations[torch]"`. Dataset generation alone does '
+        "not need torch -- use `import synth_datasets` instead.",
+        name="torch",
+    ) from exc
 
 __all__ = [
     "AugmentationSequential",

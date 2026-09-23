@@ -162,9 +162,13 @@ Gaussian blur is a narrow exception: consecutive Gaussian blurs fold into one op
 pip install fuse-augmentations
 ```
 
-The base package requires Python 3.10+ and PyTorch 2.2+. It includes the native/direct builder.
+The base package requires Python 3.10+ and needs no PyTorch install: it is enough for [synthetic dataset generation](#-synthetic-datasets) (`import synth_datasets`), which is entirely torch-free. The image-augmentation engine below needs the `torch` extra:
 
-Install optional adapter ecosystems only when needed:
+```bash
+pip install "fuse-augmentations[torch]"
+```
+
+Install optional adapter ecosystems only when needed — each already pulls in `torch`:
 
 ```bash
 pip install "fuse-augmentations[kornia]"
@@ -173,7 +177,7 @@ pip install "fuse-augmentations[albumentations]"
 pip install "fuse-augmentations[all]"
 ```
 
-## 🚀 Quick start: no optional augmentation backend
+## 🚀 Quick start: augmentation core, no optional backend
 
 ```python
 import torch
@@ -327,6 +331,8 @@ For ragged detector targets, import `augment_detection_batch` from the package r
 pip install fuse-augmentations
 ```
 
+This is all you need — dataset generation lives in the standalone `synth_datasets` package (`import synth_datasets`), which never imports torch and needs no extra. `from fuse_augmentations import generate_dataset` still works as a compatibility alias, but that route imports the torch-dependent augmentation engine above and therefore needs `pip install "fuse-augmentations[torch]"`.
+
 Generate labelled synthetic data for computer vision prototyping, model convergence checks, and controlled difficulty experiments. Draw from four vocabularies — geometric primitives, animal silhouettes, symbols, and letters — and export **COCO** or **YOLO** for **detection**, **segmentation**, **oriented bounding box (OBB)**, or **keypoints**. Your application supplies the model and training loop.
 
 Start with the [prototyping and convergence guide](docs/datasets/prototyping.md): check a loader on a small export, overfit fixed easy samples, then evaluate held-out data while increasing scene difficulty. Passing a synthetic check does not establish accuracy on real images.
@@ -334,7 +340,7 @@ Start with the [prototyping and convergence guide](docs/datasets/prototyping.md)
 ```python
 import tempfile
 
-from fuse_augmentations import generate_dataset
+from synth_datasets import generate_dataset
 
 with tempfile.TemporaryDirectory() as out_dir:
     # COCO detection, 70/20/10 split, reproducible (pass a real path to keep it)

@@ -104,7 +104,7 @@ Iterate samples directly (no I/O):
 ```python
 # phmdoctest:skip
 import numpy as np
-from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
+from synth_datasets import SyntheticConfig, SyntheticGenerator
 
 gen = SyntheticGenerator(SyntheticConfig(img_size=256))
 for sample in gen.generate(1000, seed=0):  # lazy: one Sample at a time
@@ -116,7 +116,7 @@ Or plug straight into a PyTorch `DataLoader` via `SyntheticIterableDataset` (exp
 ```python
 from torch.utils.data import DataLoader
 
-from fuse_augmentations.data import SyntheticIterableDataset
+from synth_datasets import SyntheticIterableDataset
 
 ds = SyntheticIterableDataset(num_images=8, img_size=64, class_mode="shape", seed=0)
 loader = DataLoader(ds, batch_size=4, collate_fn=list)
@@ -144,7 +144,7 @@ Build a fresh dataset and `DataLoader` for every epoch. Keep `persistent_workers
 ```python
 from torch.utils.data import DataLoader
 
-from fuse_augmentations.data import SyntheticIterableDataset
+from synth_datasets import SyntheticIterableDataset
 
 rank, world_size = 1, 2
 persistent_workers = False
