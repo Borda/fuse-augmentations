@@ -65,8 +65,7 @@ from synth_datasets.generator import _SIDE_STREAM_ROLES
 from synth_datasets.geometry import PIXEL_CENTRE_OFFSET
 from synth_datasets.letters import LetterShape
 
-    from synth_datasets.backgrounds import Background
-    from synth_datasets.degradations import Degradation
+if TYPE_CHECKING:
     from collections.abc import Callable
 
     from synth_datasets.backgrounds import Background
