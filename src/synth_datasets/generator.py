@@ -184,11 +184,9 @@ class SyntheticGenerator:
         """Store config and precompute the class vocabulary and keypoint schema this run uses.
 
         The vocabulary is narrowed to ``config.shapes``, the same list every writer declares as its
-        ``categories``/``names`` block, so an annotation's ``class_id`` always resolves against the
-        vocabulary written beside it (see
-        :func:`~synth_datasets.config.class_vocabulary`). The schema is resolved once here
-        and stamped onto every landmark-bearing annotation, so a table always travels with the
-        family that produced it.
+        ``categories``/``names`` block, so an annotation's ``class_id`` always resolves against the vocabulary written
+        beside it (see :func:`~synth_datasets.config.class_vocabulary`). The schema is resolved once here and stamped
+        onto every landmark-bearing annotation, so a table always travels with the family that produced it.
 
         """
         self.config = config

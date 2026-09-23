@@ -42,6 +42,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+from fuse_augmentations.data.generator import _SIDE_STREAM_ROLES
+from fuse_augmentations.data.geometry import PIXEL_CENTRE_OFFSET
+from fuse_augmentations.data.letters import LetterShape
 from PIL import Image, ImageDraw, ImageFont
 
 from fuse_augmentations.data import (
@@ -61,9 +64,6 @@ from fuse_augmentations.data import (
     TextureBackground,
     Vignette,
 )
-from fuse_augmentations.data.generator import _SIDE_STREAM_ROLES
-from fuse_augmentations.data.geometry import PIXEL_CENTRE_OFFSET
-from fuse_augmentations.data.letters import LetterShape
 
 if TYPE_CHECKING:
     from collections.abc import Callable

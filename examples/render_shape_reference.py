@@ -48,21 +48,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PIL import Image, ImageDraw
-
 from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_SCHEMA, AnimalShape, animal_keypoints
 from fuse_augmentations.data.families import shape_outline
 from fuse_augmentations.data.geometry import polygon_to_bbox_xyxy
 from fuse_augmentations.data.letters import LETTER_KEYPOINT_SCHEMA, LetterShape, letter_keypoints
 from fuse_augmentations.data.primitives import PrimitiveShape
 from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_SCHEMA, SymbolShape, symbol_keypoints
+from PIL import Image, ImageDraw
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from numpy.typing import NDArray
-
     from fuse_augmentations.data.keypoints import KeypointSchema
+    from numpy.typing import NDArray
 
 _CANVAS = 200
 #: Pixels reserved on every side of the canvas so a fitted shape's stroke width and keypoint dot

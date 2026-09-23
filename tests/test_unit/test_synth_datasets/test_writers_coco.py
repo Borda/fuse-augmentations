@@ -314,8 +314,8 @@ def test_keypoints_num_keypoints_excludes_absent_landmarks(tmp_path: Path) -> No
 def test_letter_shape_dataset_emits_a_single_segmentation_ring(tmp_path: Path) -> None:
     """A letter's `segmentation` is one ring, exactly like every other single-polygon family.
 
-    A letter is one outline polygon (see `synth_datasets.letters`), not a pile of disjoint stroke ribbons, so
-    this must behave identically to a symbol or animal run rather than needing any letter-specific handling.
+    A letter is one outline polygon (see `synth_datasets.letters`), not a pile of disjoint stroke ribbons, so this must
+    behave identically to a symbol or animal run rather than needing any letter-specific handling.
 
     """
     doc, _samples, names = _write(

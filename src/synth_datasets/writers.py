@@ -57,15 +57,14 @@ _IMAGE_STEM = "img_{index:06d}"
 def _covers(entry: ClassEntry, schema: KeypointSchema) -> bool:
     """Return whether ``schema`` can describe the landmarks of the class ``entry`` names.
 
-    This used to be two functions that rebuilt structure out of a class *name*: one recreated the
-    full color-by-shape cross product to test membership, the other recovered the shape half with
-    ``name.partition("_")``. Both were correct only while no shape value and no color value
-    contained an underscore. :class:`~synth_datasets.config.ClassEntry` carries the shape
-    itself, so the test is now what it always meant: does this class name a shape of the run's own
+    This used to be two functions that rebuilt structure out of a class *name*: one recreated the full color-by-shape
+    cross product to test membership, the other recovered the shape half with ``name.partition("_")``. Both were correct
+    only while no shape value and no color value contained an underscore. :class:`~synth_datasets.config.ClassEntry`
+    carries the shape itself, so the test is now what it always meant: does this class name a shape of the run's own
     keypoint family?
 
-    A ``ClassMode.COLOR`` entry names no shape at all (``entry.shape is None``) yet is still drawn
-    as whichever family the run was restricted to, so it is always covered.
+    A ``ClassMode.COLOR`` entry names no shape at all (``entry.shape is None``) yet is still drawn as whichever family
+    the run was restricted to, so it is always covered.
 
     """
     return entry.shape is None or str(entry.shape.value) in schema.shape_values

@@ -2,8 +2,8 @@
 
 Split out of :mod:`._baseline` so it can be run against a checkout that predates the background and degradation modules:
 that module imports them to describe its feature matrix, this one imports nothing beyond
-:class:`~synth_datasets.sample.Sample`. Regenerating the pre-feature half of the snapshot means copying this
-file into a worktree at the older commit, which only works while it stays importable there.
+:class:`~synth_datasets.sample.Sample`. Regenerating the pre-feature half of the snapshot means copying this file into a
+worktree at the older commit, which only works while it stays importable there.
 
 The digest deliberately treats its two inputs differently, because they do not share a failure mode.
 

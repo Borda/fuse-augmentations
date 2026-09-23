@@ -1,17 +1,15 @@
 """Keypoint-schema type and outline/landmark normalization shared by every keypoint family.
 
-:class:`KeypointSchema` is the one artifact a keypoint-bearing shape family (
-:mod:`~synth_datasets.animals`, :mod:`~synth_datasets.symbols`) hands to the rest
-of the pipeline: a fixed landmark-name list, the skeleton edges a viewer draws between them, and the
-permutation a horizontal flip applies. :func:`~synth_datasets.config.class_names` and the
-writers never need to know how a family's outline or landmark table was built, only its schema.
+:class:`KeypointSchema` is the one artifact a keypoint-bearing shape family ( :mod:`~synth_datasets.animals`,
+:mod:`~synth_datasets.symbols`) hands to the rest of the pipeline: a fixed landmark-name list, the skeleton edges a
+viewer draws between them, and the permutation a horizontal flip applies. :func:`~synth_datasets.config.class_names` and
+the writers never need to know how a family's outline or landmark table was built, only its schema.
 
-The normalization helpers below place an outline at a zero area centroid (center of mass, not the
-vertex mean — see :func:`_polygon_centroid`) and a unit larger-extent, and
-map a landmark table through *the outline's own* transform so a landmark can never drift off the
-silhouette it annotates. They live here, underneath every shape family, so
-:mod:`~synth_datasets.animals` (SVG-traced) and :mod:`~synth_datasets.symbols`
-(analytic) can both use them without either importing the other.
+The normalization helpers below place an outline at a zero area centroid (center of mass, not the vertex mean — see
+:func:`_polygon_centroid`) and a unit larger-extent, and map a landmark table through *the outline's own* transform so a
+landmark can never drift off the silhouette it annotates. They live here, underneath every shape family, so
+:mod:`~synth_datasets.animals` (SVG-traced) and :mod:`~synth_datasets.symbols` (analytic) can both use them without
+either importing the other.
 
 """
 

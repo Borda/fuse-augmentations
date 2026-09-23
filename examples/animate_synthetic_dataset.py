@@ -58,15 +58,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
-from PIL import Image, ImageDraw
-
-from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
 from fuse_augmentations.data.animals import AnimalShape
 from fuse_augmentations.data.config import DEFAULT_SHAPES, Task, keypoint_schema_for
 from fuse_augmentations.data.geometry import PIXEL_CENTRE_OFFSET
 from fuse_augmentations.data.letters import LetterShape
 from fuse_augmentations.data.sample import Annotation, Sample
 from fuse_augmentations.data.symbols import SymbolShape
+from PIL import Image, ImageDraw
+
+from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
 
 if TYPE_CHECKING:
     from fuse_augmentations.data.keypoints import KeypointSchema
