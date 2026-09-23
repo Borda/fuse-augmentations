@@ -44,30 +44,32 @@ classifiers = [
 dynamic = [ "version" ]
 dependencies = [
   "numpy",
-  "pillow>=10",
+  "pillow>=12.3",
 ]
 optional-dependencies.albumentations = [
   "albumentations>=2.0.0",
-  "torch>=2.2",
+  "fuse-augmentations[torch]",
 ]
 optional-dependencies.all = [
   "albumentations>=2.0.0",
+  "fuse-augmentations[torch]",
   "kornia>=0.6.12",
-  "torch>=2.2",
   "torchvision>=0.17",
 ]
 optional-dependencies.cli = [
   "fire>=0.6",
 ]
 optional-dependencies.kornia = [
+  "fuse-augmentations[torch]",
   "kornia>=0.6.12",
-  "torch>=2.2",
 ]
+# Single literal home of the torch floor: every other extra reaches it through the
+# self-reference above, so the version lives in exactly one place.
 optional-dependencies.torch = [
   "torch>=2.2",
 ]
 optional-dependencies.torchvision = [
-  "torch>=2.2",
+  "fuse-augmentations[torch]",
   "torchvision>=0.17",
 ]
 urls."Source Code" = "https://github.com/Borda/fuse-augmentations"
@@ -120,7 +122,7 @@ benchmark = [
 [tool.setuptools]
 packages.find.where = [ "src" ]
 packages.find.include = [ "fuse_aug*", "fuse_augmentations*", "synth_datasets*" ]
-package-data.synth_datasets = [ "letters/*.svg", "symbols/*.svg", "zoo/*.svg" ]
+package-data.synth_datasets = [ "letters/*.svg", "symbols/*.svg", "zoo/*.md", "zoo/*.svg" ]
 dynamic.version.attr = "fuse_augmentations.__about__.__version__"
 
 [tool.ruff]
