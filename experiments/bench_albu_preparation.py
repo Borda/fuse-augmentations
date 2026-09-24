@@ -7,7 +7,6 @@ otherwise idle host. Results exclude decode, transfer and model execution.
 
 """
 
-import argparse
 import cProfile
 import io
 import json
@@ -47,12 +46,9 @@ def measure(call):
     return {"median_ms": float(np.median(elapsed)), "p95_ms": float(np.percentile(elapsed, 95))}
 
 
-def main():
+def main(output: str, revision: str) -> None:
     """Persist timings, revision label, and one attributed preparation profile."""
-    parser = argparse.ArgumentParser()
-    parser.add_argument("output", type=Path)
-    parser.add_argument("--revision", required=True)
-    args = parser.parse_args()
+    output_path = Path(output)
     torch.set_num_threads(1)
     rows = []
     for batch in (1, 8, 32):
@@ -69,11 +65,11 @@ def main():
     profiler.runcall(lambda: [pipe._segments[0]._compose_matrices(image) for _ in range(20)])
     stream = io.StringIO()
     pstats.Stats(profiler, stream=stream).sort_stats("cumulative").print_stats(20)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
         json.dumps(
             {
-                "revision": args.revision,
+                "revision": revision,
                 "platform": platform.platform(),
                 "python": platform.python_version(),
                 "fuse_augmentations": __version__,
@@ -97,8 +93,10 @@ def main():
         )
         + "\n"
     )
-    print(args.output)
+    print(output_path)
 
 
 if __name__ == "__main__":
-    main()
+    import fire
+
+    fire.Fire(main)

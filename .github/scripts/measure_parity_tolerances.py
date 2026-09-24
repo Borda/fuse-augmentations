@@ -407,7 +407,7 @@ def _render_doc(measured: dict[str, float]) -> str:
             " calls take -- and are measured in intensity levels, so their numbers are not comparable to the"
             " float rows and are gated with their own one-level allowance. These are measurements, not"
             " promises: they record what the current implementations do, and"
-            " `.github/workflows/ci_parity-gate.yml` fails when one drifts past its recorded bound."
+            " `.github/workflows/ci_gate-parity.yml` fails when one drifts past its recorded bound."
         ),
         "",
         (

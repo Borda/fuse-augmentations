@@ -74,7 +74,7 @@ The action-aware tool completed all 72 native/fused rows: six sequences, three b
 
 [All live/incremental peaks, preexisting bytes, CREATE counts, tracemalloc and RSS deltas](../assets/benchmarks/cv-wave3-memory.json). These are Torch tensor-timeline metrics, not total process memory. NumPy/OpenCV allocations are outside that timeline; near-zero Albumentations tensor peaks do not mean zero memory use. RSS deltas and tracemalloc describe different scopes and are not substitutes for transient total-process peaks. The profiler warned about an allocation made before profiling whose size was unknown, so baseline accounting is limited to visible events.
 
-Run `NO_ALBUMENTATIONS_UPDATE=1 python experiments/bench_memory.py --devices cpu --batch-sizes 1 8 --warmup 3 --json`. Old memory ratios below remain withdrawn. No CUDA/MPS memory result was collected.
+Run `NO_ALBUMENTATIONS_UPDATE=1 python experiments/bench_memory.py --devices '["cpu"]' --batch-sizes '[1,8]' --warmup 3 --json`. Old memory ratios below remain withdrawn. No CUDA/MPS memory result was collected.
 
 ??? abstract "Historical test environment"
 

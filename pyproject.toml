@@ -80,6 +80,7 @@ urls.Issues = "https://github.com/Borda/fuse-augmentations/issues"
 # so this project declares no entries of its own (an empty group is dropped by pyproject-fmt).
 [dependency-groups]
 dev = [
+  "fire>=0.6",
   "hypothesis>=6.100",
   "matplotlib>=3.7",
   "mypy==1.19.1",

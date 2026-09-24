@@ -83,7 +83,7 @@ jobs:
       - name: 📌 Pin minimum dependencies
         if: matrix.requires == 'oldest'
         run: |
-          uv pip install tomlkit
+          uv pip install tomlkit fire
           python .github/scripts/min_deps.py
       - name: 📦 Install dependencies
         timeout-minutes: 5

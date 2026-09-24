@@ -30,13 +30,14 @@ Usage::
 
     uv run python experiments/bench_gpu_batch.py            # full sweep
     uv run python experiments/bench_gpu_batch.py --quick    # fast smoke run
+    uv run python experiments/bench_gpu_batch.py --batch-sizes '[1,8,32]'
 
 """
 
 from __future__ import annotations
 
-import argparse
 import copy
+import json
 import platform
 import statistics
 import sys
@@ -591,38 +592,42 @@ def _print_results_table(results: list[dict[str, Any]]) -> None:
     Console(width=200).print(table)
 
 
-def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--devices", nargs="+", default=None, help="Subset of devices (cpu cuda mps).")
-    parser.add_argument("--batch-sizes", nargs="+", type=int, default=[1, 8, 32], help="Batch sizes to sweep.")
-    parser.add_argument("--warmup", type=int, default=10, help="Warmup iterations (>=10 recommended).")
-    parser.add_argument("--measure", type=int, default=30, help="Measured iterations (>=30 recommended).")
-    parser.add_argument("--quick", action="store_true", help="Fast smoke run: fewer iters, batch 1+8 only.")
-    return parser.parse_args(argv)
+def main(
+    devices: list[str] | str | None = None,
+    batch_sizes: list[int] | int | None = None,
+    warmup: int = 10,
+    measure: int = 30,
+    quick: bool = False,
+) -> None:
+    """Run the GPU/batch benchmark, write the JSON output, and print the results table.
 
+    Args:
+        devices: Device names to benchmark, as one name or a list, or all available devices.
+        batch_sizes: Batch sizes to sweep, as one size or a list, or 1, 8, and 32 by default.
+        warmup: Warmup iterations before each measurement.
+        measure: Timed iterations per measurement.
+        quick: Limit iterations and batch sizes for a smoke run.
 
-def main(argv: list[str] | None = None) -> None:
-    """Run the GPU/batch benchmark, write the JSON output, and print the results table."""
-    import json
-
-    args = _parse_args(argv)
+    """
     torch.manual_seed(0)
     np.random.seed(0)
 
-    warmup, measure = args.warmup, args.measure
-    batch_sizes = args.batch_sizes
-    if args.quick:
+    if isinstance(devices, str):
+        devices = [devices]
+    if isinstance(batch_sizes, int):
+        batch_sizes = [batch_sizes]
+    batch_sizes = [1, 8, 32] if batch_sizes is None else batch_sizes
+    if quick:
         warmup, measure = min(warmup, 5), min(measure, 10)
         batch_sizes = [b for b in batch_sizes if b <= QUICK_MAX_BATCH] or [1, QUICK_MAX_BATCH]
 
     sequences, source = _load_sequences()
     cfg = BenchConfig(
-        devices=_discover_devices(args.devices),
+        devices=_discover_devices(devices),
         batch_sizes=batch_sizes,
         warmup=warmup,
         measure=measure,
-        quick=args.quick,
+        quick=quick,
         sequences=sequences,
     )
 
@@ -644,4 +649,6 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import fire
+
+    fire.Fire(main)

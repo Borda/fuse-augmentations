@@ -1,4 +1,14 @@
-"""Generate ignored pytest modules from Python examples in Markdown files."""
+"""Generate ignored pytest modules from Python examples in Markdown files.
+
+The CLI uses ``fire``, which ships in the ``cli`` extra::
+
+    pip install "fuse-augmentations[cli]"
+
+Usage::
+
+    python .github/scripts/generate_doc_tests.py
+
+"""
 
 from __future__ import annotations
 
@@ -80,4 +90,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import fire
+
+    fire.Fire(main)

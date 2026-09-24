@@ -26,8 +26,10 @@ PyTorch training workflow and avoiding tensor round-trips.
 Usage::
 
     uv run python experiments/optimize_score.py
+    uv run python experiments/optimize_score.py --repetitions 3
 
-Outputs two lines::
+Each repetition measures the complete case bank. The final score is the median
+of those repetitions. Standard output remains two lines::
 
     real_score=X.XXXX
     theoretical_target=X.XXXX
@@ -36,11 +38,27 @@ Outputs two lines::
 
 from __future__ import annotations
 
+import os
+
+# Thread counts must be pinned before numpy/torch/cv2 size their internal pools at
+# import time -- setting them later (e.g. via torch.set_num_threads alone) leaves
+# OpenCV's and OpenBLAS's pools free to contend with other processes on shared
+# GitHub-hosted runners, which was a measured source of run-to-run score noise.
+# Assigned unconditionally rather than via setdefault: a runner or caller that
+# exports OMP_NUM_THREADS=8 would otherwise win, silently reintroducing exactly
+# the pool contention this pinning exists to remove.
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import copy
 import statistics
+import sys
 import time
 
 import albumentations as A
+import cv2
 import kornia.augmentation as K
 import numpy as np
 import torch
@@ -49,30 +67,61 @@ import torchvision.transforms.v2 as tv
 from fuse_aug import Compose as FuseCompose
 from fuse_aug import ReorderPolicy
 
-WARMUP_REPS: int = 10
-NUM_REPEATS: int = 50
+cv2.setNumThreads(1)
+torch.set_num_threads(1)
+# Must stay at module scope: set_num_interop_threads raises RuntimeError once any inter-op parallel
+# work has started, so it cannot be moved into main() or any later call site.
+torch.set_num_interop_threads(1)
+
+WARMUP_REPS: int = 20
+# Timed calls are grouped into batches; each batch contributes its per-call average, and the reported
+# figure is the median of those averages. A median over *individual* calls would be a branch-selection
+# statistic on these pipelines: they mix p=0.5 and p=1.0 transforms, so the per-call distribution is
+# bimodal and the median jumps between branches depending on which one happens to clear half the
+# samples. Averaging inside a batch absorbs the Bernoulli branch mix; the median across batches still
+# rejects scheduler outliers.
+NUM_BATCHES: int = 10
+BATCH_SIZE: int = 10
 _IMAGE_TENSOR: torch.Tensor = torch.zeros(1, 3, 256, 256)
 _IMAGE_NDARRAY: np.ndarray = np.zeros((256, 256, 3), dtype=np.uint8)
 
 
 def _bench(func: object) -> float:
-    """Return mean ms per call for BCHW tensor input (warmup + REPS timed repetitions)."""
+    """Return median ms per call for BCHW tensor input (warmup + NUM_BATCHES timed batches).
+
+    Median of per-batch averages, not of individual call timings: averaging within a batch absorbs the p=0.5 branch mix
+    these pipelines contain, while the median across batches still rejects a single scheduler-jitter outlier -- the
+    failure mode that made single-mean timings on shared runners noisy enough to trip the CI perf-regression gate on
+    unrelated PRs.
+
+    """
     for _ in range(WARMUP_REPS):
         func(_IMAGE_TENSOR)  # type: ignore[operator]
-    t_start = time.perf_counter()
-    for _ in range(NUM_REPEATS):
-        func(_IMAGE_TENSOR)  # type: ignore[operator]
-    return (time.perf_counter() - t_start) / NUM_REPEATS * 1000.0
+    batch_means_ms: list[float] = []
+    for _ in range(NUM_BATCHES):
+        t_start = time.perf_counter()
+        for _ in range(BATCH_SIZE):
+            func(_IMAGE_TENSOR)  # type: ignore[operator]
+        batch_means_ms.append((time.perf_counter() - t_start) * 1000.0 / BATCH_SIZE)
+    return statistics.median(batch_means_ms)
 
 
 def _bench_albu(func: object) -> float:
-    """Return mean ms per call for Albumentations dict-input (warmup + REPS timed repetitions)."""
+    """Return median ms per call for Albumentations dict-input (warmup + NUM_BATCHES timed batches).
+
+    Same median-of-batch-averages strategy as :func:`_bench`, for the same reason: the Albumentations cases also mix
+    p=0.5 and p=1.0 transforms.
+
+    """
     for _ in range(WARMUP_REPS):
         func(image=_IMAGE_NDARRAY)  # type: ignore[operator]
-    t_start = time.perf_counter()
-    for _ in range(NUM_REPEATS):
-        func(image=_IMAGE_NDARRAY)  # type: ignore[operator]
-    return (time.perf_counter() - t_start) / NUM_REPEATS * 1000.0
+    batch_means_ms: list[float] = []
+    for _ in range(NUM_BATCHES):
+        t_start = time.perf_counter()
+        for _ in range(BATCH_SIZE):
+            func(image=_IMAGE_NDARRAY)  # type: ignore[operator]
+        batch_means_ms.append((time.perf_counter() - t_start) * 1000.0 / BATCH_SIZE)
+    return statistics.median(batch_means_ms)
 
 
 # ---------------------------------------------------------------------------
@@ -268,8 +317,8 @@ _MIXED_AGR_CASES: list[tuple[str, int, list, list, list]] = [
 ]
 
 
-def main() -> None:
-    """Run all 45 cases and print the composite score and theoretical target."""
+def _measure_once() -> tuple[float, float]:
+    """Measure the complete 45-case score and its fixed theoretical target once."""
     # Fix random state for reproducibility across runs.
     torch.manual_seed(0)
     np.random.seed(0)
@@ -340,9 +389,39 @@ def main() -> None:
     )
     theoretical_target = statistics.geometric_mean(all_num_geometric_ops)
 
-    print(f"real_score={score:.4f}")
-    print(f"theoretical_target={theoretical_target:.4f}")
+    return score, theoretical_target
+
+
+def main(repetitions: int = 3) -> None:
+    """Print the median score from complete benchmark repetitions.
+
+    Args:
+        repetitions: Number of complete 45-case measurements, at least one.
+
+    Raises:
+        ValueError: If ``repetitions`` is not positive.
+        RuntimeError: If the theoretical target changes between repetitions.
+
+    """
+    if repetitions < 1:
+        raise ValueError("repetitions must be at least 1")
+
+    scores: list[float] = []
+    targets: set[float] = set()
+    for trial in range(1, repetitions + 1):
+        score, target = _measure_once()
+        scores.append(score)
+        targets.add(target)
+        print(f"repetition={trial}/{repetitions} real_score={score:.4f}", file=sys.stderr)
+
+    if len(targets) != 1:
+        raise RuntimeError("theoretical_target changed between repetitions")
+
+    print(f"real_score={statistics.median(scores):.4f}")
+    print(f"theoretical_target={targets.pop():.4f}")
 
 
 if __name__ == "__main__":
-    main()
+    import fire
+
+    fire.Fire(main)
