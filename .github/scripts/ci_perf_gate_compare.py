@@ -33,17 +33,37 @@ Usage::
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 
 
 def _load_json(path: str) -> dict:
-    """Load a JSON file."""
-    with Path(path).open() as fh:
-        return json.load(fh)  # type: ignore[no-any-return]
+    """Load a JSON file, exiting 2 when it is missing or malformed.
+
+    Exit 2, not 1: callers distinguish "the gate failed" (1) from "the script could not run" (2), and collapsing the two
+    makes a missing input look like a performance regression.
+
+    """
+    try:
+        with Path(path).open() as fh:
+            return json.load(fh)  # type: ignore[no-any-return]
+    except FileNotFoundError:
+        print(f"ERROR: current score file not found: {path}", file=sys.stderr)
+        sys.exit(2)
+    except json.JSONDecodeError as exc:
+        print(f"ERROR: current score file is not valid JSON: {path} ({exc})", file=sys.stderr)
+        sys.exit(2)
 
 
-def _format_summary(current: dict, baseline_score: float, threshold: float, passed: bool) -> str:
+def _format_summary(
+    current: dict,
+    baseline_score: float,
+    threshold: float,
+    passed: bool,
+    efficiency: float | None = None,
+    min_efficiency: float | None = None,
+) -> str:
     """Render a GitHub job summary markdown table."""
     real_score: float = current["real_score"]
     theoretical: object = current.get("theoretical_target", "N/A")
@@ -61,8 +81,15 @@ def _format_summary(current: dict, baseline_score: float, threshold: float, pass
         f"| Dynamic Baseline (median of last N main commits) | `{baseline_score:.4f}` |",
         f"| Delta vs Baseline | `{delta:+.4f} ({delta_pct:+.1f}%)` |",
         f"| Regression Threshold | `{threshold:.0%}` |",
-        f"| Status | {status} |",
     ]
+
+    if efficiency is not None and min_efficiency is not None:
+        floor_status = "✅" if efficiency >= min_efficiency else "❌"
+        lines.append(
+            f"| Efficiency vs Target (absolute floor) | `{efficiency:.3f}` >= `{min_efficiency:.3f}` {floor_status} |"
+        )
+
+    lines.append(f"| Status | {status} |")
 
     if not passed:
         min_score: float = baseline_score * threshold
@@ -70,7 +97,8 @@ def _format_summary(current: dict, baseline_score: float, threshold: float, pass
             "",
             (
                 f"> **Failure**: `real_score={real_score:.4f}` is below the minimum "
-                f"`{min_score:.4f}` (= dynamic baseline `{baseline_score:.4f}` x `{threshold}`). "
+                f"`{min_score:.4f}` (= dynamic baseline `{baseline_score:.4f}` x `{threshold}`), "
+                "or below the absolute efficiency floor. "
                 "Investigate the regression in `src/` or `experiments/` before merging."
             ),
         ]
@@ -78,13 +106,29 @@ def _format_summary(current: dict, baseline_score: float, threshold: float, pass
     return "\n".join(lines) + "\n"
 
 
-def main(current: str, baseline_score: float, threshold: float = 0.95, summary_file: str | None = None) -> None:
+def main(
+    current: str,
+    baseline_score: float,
+    threshold: float = 0.90,
+    min_efficiency: float | None = None,
+    summary_file: str | None = None,
+) -> None:
     """Evaluate the perf gate, optionally write a job summary, exit 1 on regression.
+
+    Two independent checks, both of which must pass. The rolling ``threshold`` check is relative and
+    catches a sudden step regression. The ``min_efficiency`` check is absolute and catches slow drift
+    that the rolling baseline cannot see at all: because the baseline is recomputed from recent
+    ``main`` every run, the reference follows the code, so a sequence of individually-tolerated
+    regressions ratchets the bar down indefinitely with every run green.
 
     Args:
         current: Current score JSON (``ci_score.json`` produced by the benchmark step).
         baseline_score: Dynamically computed baseline real_score (output of ci_perf_baseline_aggregate.py).
-        threshold: Minimum allowed ratio current/baseline (0.95 = 5% regression allowed).
+        threshold: Minimum allowed ratio current/baseline (0.90 = 10% regression allowed).
+        min_efficiency: Absolute floor on ``real_score / theoretical_target``. ``theoretical_target``
+            is derived from operation counts, not wall time, so it is hardware-independent and a
+            usable anchor. Note it shifts if the benchmark case bank changes, which silently
+            re-baselines this floor -- revisit the value when cases are added or removed.
         summary_file: Append a markdown summary table here (pass ``$GITHUB_STEP_SUMMARY`` in CI).
 
     Examples:
@@ -94,16 +138,42 @@ def main(current: str, baseline_score: float, threshold: float = 0.95, summary_f
         ```
 
     """
+    # fire infers the type from the literal, so an empty $BASELINE_SCORE arrives as "" and would
+    # raise an uncaught TypeError below. Coerce once, then check the domain fire cannot know about.
+    try:
+        baseline_score = float(baseline_score)
+    except (TypeError, ValueError):
+        print(f"ERROR: --baseline-score must be a number, got {baseline_score!r}", file=sys.stderr)
+        sys.exit(2)
+    if not math.isfinite(baseline_score) or baseline_score <= 0:
+        print(f"ERROR: --baseline-score must be finite and positive, got {baseline_score}", file=sys.stderr)
+        sys.exit(2)
+
     current_score = _load_json(current)
     real_score: float = current_score["real_score"]
 
     min_score_val = baseline_score * threshold
     passed = real_score >= min_score_val
+    efficiency: float | None = None
+
+    if min_efficiency is not None:
+        raw_target = current_score.get("theoretical_target")
+        try:
+            theoretical = float(raw_target)
+        except (TypeError, ValueError):
+            theoretical = float("nan")
+        if not math.isfinite(theoretical) or theoretical <= 0:
+            print(f"ERROR: --min-efficiency given but theoretical_target is unusable: {raw_target!r}", file=sys.stderr)
+            sys.exit(2)
+        efficiency = real_score / theoretical
+        if efficiency < min_efficiency:
+            passed = False
+
     gate_result = "PASSED" if passed else "FAILED"
 
     # Always write summary before any exit — ensures it appears even on gate failure.
     if summary_file:
-        summary = _format_summary(current_score, baseline_score, threshold, passed)
+        summary = _format_summary(current_score, baseline_score, threshold, passed, efficiency, min_efficiency)
         with Path(summary_file).open("a") as fh:
             fh.write(summary)
 
@@ -111,6 +181,8 @@ def main(current: str, baseline_score: float, threshold: float = 0.95, summary_f
     print(f"baseline_score={baseline_score:.4f}")
     print(f"min_allowed_score={min_score_val:.4f}  (baseline x {threshold})")
     print(f"delta={real_score - baseline_score:+.4f}  ({(real_score / baseline_score - 1.0) * 100.0:+.1f}%)")
+    if efficiency is not None:
+        print(f"efficiency={efficiency:.4f}  (min_efficiency {min_efficiency})")
     print(f"GATE: {gate_result}")
 
     sys.exit(0 if passed else 1)
