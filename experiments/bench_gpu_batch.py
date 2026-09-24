@@ -593,8 +593,8 @@ def _print_results_table(results: list[dict[str, Any]]) -> None:
 
 
 def main(
-    devices: list[str] | None = None,
-    batch_sizes: list[int] | None = None,
+    devices: list[str] | str | None = None,
+    batch_sizes: list[int] | int | None = None,
     warmup: int = 10,
     measure: int = 30,
     quick: bool = False,
@@ -602,8 +602,8 @@ def main(
     """Run the GPU/batch benchmark, write the JSON output, and print the results table.
 
     Args:
-        devices: Device names to benchmark, or all available devices.
-        batch_sizes: Batch sizes to sweep, or 1, 8, and 32 by default.
+        devices: Device names to benchmark, as one name or a list, or all available devices.
+        batch_sizes: Batch sizes to sweep, as one size or a list, or 1, 8, and 32 by default.
         warmup: Warmup iterations before each measurement.
         measure: Timed iterations per measurement.
         quick: Limit iterations and batch sizes for a smoke run.

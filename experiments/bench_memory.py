@@ -787,8 +787,8 @@ def _select_sequences(sequences: list[Sequence], quick: bool) -> list[Sequence]:
 
 
 def main(
-    devices: list[str] | None = None,
-    batch_sizes: list[int] | None = None,
+    devices: list[str] | str | None = None,
+    batch_sizes: list[int] | int | None = None,
     warmup: int = 3,
     quick: bool = False,
     json: bool = False,
@@ -796,8 +796,8 @@ def main(
     """Run the memory benchmark and print the aligned table (+ optional JSON).
 
     Args:
-        devices: Device names to benchmark, or all available devices.
-        batch_sizes: Batch sizes to sweep, or the standard sizes.
+        devices: Device names to benchmark, as one name or a list, or all available devices.
+        batch_sizes: Batch sizes to sweep, as one size or a list, or the standard sizes.
         warmup: Warmup iterations before measuring.
         quick: Use the small smoke-test sequence and batch sweep.
         json: Write a JSON dump to ``experiments/results/``.
@@ -806,6 +806,10 @@ def main(
     torch.manual_seed(0)
     np.random.seed(0)
 
+    if isinstance(devices, str):
+        devices = [devices]
+    if isinstance(batch_sizes, int):
+        batch_sizes = [batch_sizes]
     sequences, source = _load_sequences()
     sequences = _select_sequences(sequences, quick)
     warmup = min(warmup, 2) if quick else warmup

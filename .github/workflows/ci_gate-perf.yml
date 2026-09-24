@@ -295,8 +295,21 @@ jobs:
         run: python3 -m pip install "fire>=0.6"
 
       - name: 🧮 Assemble current score JSON from the repeated benchmark median
+        shell: python
         run: |
-          python3 -c "import json,os; score={'real_score':float(os.environ['PR_SCORE']),'theoretical_target':float(os.environ['PR_THEORETICAL']),'runner':os.environ.get('RUNNER_OS','ubuntu-latest'),'python_version':os.environ.get('PYTHON_VERSION','3.12'),'git_sha':os.environ.get('GITHUB_SHA','unknown')[:12]}; json.dump(score,open('ci_score.json','w'),indent=2); print('ci_score.json written:',score)"
+          import json
+          import os
+          from pathlib import Path
+
+          score = {
+              "real_score": float(os.environ["PR_SCORE"]),
+              "theoretical_target": float(os.environ["PR_THEORETICAL"]),
+              "runner": os.environ.get("RUNNER_OS", "ubuntu-latest"),
+              "python_version": os.environ.get("PYTHON_VERSION", "3.12"),
+              "git_sha": os.environ.get("GITHUB_SHA", "unknown")[:12],
+          }
+          Path("ci_score.json").write_text(json.dumps(score, indent=2), encoding="utf-8")
+          print("ci_score.json written:", score)
 
       # Two independent checks, both must pass: the rolling PERF_THRESHOLD (relative, catches
       # a sudden step regression) and PERF_MIN_EFFICIENCY (absolute, catches slow drift the
