@@ -42,10 +42,13 @@ import os
 # import time -- setting them later (e.g. via torch.set_num_threads alone) leaves
 # OpenCV's and OpenBLAS's pools free to contend with other processes on shared
 # GitHub-hosted runners, which was a measured source of run-to-run score noise.
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+# Assigned unconditionally rather than via setdefault: a runner or caller that
+# exports OMP_NUM_THREADS=8 would otherwise win, silently reintroducing exactly
+# the pool contention this pinning exists to remove.
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import copy
 import statistics
@@ -63,42 +66,59 @@ from fuse_aug import ReorderPolicy
 
 cv2.setNumThreads(1)
 torch.set_num_threads(1)
+# Must stay at module scope: set_num_interop_threads raises RuntimeError once any inter-op parallel
+# work has started, so it cannot be moved into main() or any later call site.
 torch.set_num_interop_threads(1)
 
 WARMUP_REPS: int = 20
-NUM_REPEATS: int = 100
+# Timed calls are grouped into batches; each batch contributes its per-call average, and the reported
+# figure is the median of those averages. A median over *individual* calls would be a branch-selection
+# statistic on these pipelines: they mix p=0.5 and p=1.0 transforms, so the per-call distribution is
+# bimodal and the median jumps between branches depending on which one happens to clear half the
+# samples. Averaging inside a batch absorbs the Bernoulli branch mix; the median across batches still
+# rejects scheduler outliers.
+NUM_BATCHES: int = 10
+BATCH_SIZE: int = 10
 _IMAGE_TENSOR: torch.Tensor = torch.zeros(1, 3, 256, 256)
 _IMAGE_NDARRAY: np.ndarray = np.zeros((256, 256, 3), dtype=np.uint8)
 
 
 def _bench(func: object) -> float:
-    """Return median ms per call for BCHW tensor input (warmup + REPS timed repetitions).
+    """Return median ms per call for BCHW tensor input (warmup + NUM_BATCHES timed batches).
 
-    Median (not mean) so a single scheduler-jitter outlier among REPS calls can't swing the reported time -- the failure
-    mode that made single-mean timings on shared runners noisy enough to trip the CI perf-regression gate on unrelated
-    PRs.
+    Median of per-batch averages, not of individual call timings: averaging within a batch absorbs the p=0.5 branch mix
+    these pipelines contain, while the median across batches still rejects a single scheduler-jitter outlier -- the
+    failure mode that made single-mean timings on shared runners noisy enough to trip the CI perf-regression gate on
+    unrelated PRs.
 
     """
     for _ in range(WARMUP_REPS):
         func(_IMAGE_TENSOR)  # type: ignore[operator]
-    timings_ms: list[float] = []
-    for _ in range(NUM_REPEATS):
+    batch_means_ms: list[float] = []
+    for _ in range(NUM_BATCHES):
         t_start = time.perf_counter()
-        func(_IMAGE_TENSOR)  # type: ignore[operator]
-        timings_ms.append((time.perf_counter() - t_start) * 1000.0)
-    return statistics.median(timings_ms)
+        for _ in range(BATCH_SIZE):
+            func(_IMAGE_TENSOR)  # type: ignore[operator]
+        batch_means_ms.append((time.perf_counter() - t_start) * 1000.0 / BATCH_SIZE)
+    return statistics.median(batch_means_ms)
 
 
 def _bench_albu(func: object) -> float:
-    """Return median ms per call for Albumentations dict-input (warmup + REPS timed repetitions)."""
+    """Return median ms per call for Albumentations dict-input (warmup + NUM_BATCHES timed batches).
+
+    Same median-of-batch-averages strategy as :func:`_bench`, for the same reason: the Albumentations cases also mix
+    p=0.5 and p=1.0 transforms.
+
+    """
     for _ in range(WARMUP_REPS):
         func(image=_IMAGE_NDARRAY)  # type: ignore[operator]
-    timings_ms: list[float] = []
-    for _ in range(NUM_REPEATS):
+    batch_means_ms: list[float] = []
+    for _ in range(NUM_BATCHES):
         t_start = time.perf_counter()
-        func(image=_IMAGE_NDARRAY)  # type: ignore[operator]
-        timings_ms.append((time.perf_counter() - t_start) * 1000.0)
-    return statistics.median(timings_ms)
+        for _ in range(BATCH_SIZE):
+            func(image=_IMAGE_NDARRAY)  # type: ignore[operator]
+        batch_means_ms.append((time.perf_counter() - t_start) * 1000.0 / BATCH_SIZE)
+    return statistics.median(batch_means_ms)
 
 
 # ---------------------------------------------------------------------------
