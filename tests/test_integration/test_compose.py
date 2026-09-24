@@ -1,6 +1,6 @@
 """Integration tests for _compose.py: shape, dtype, device, passthrough, and warp-count correctness.
 
-Requires kornia >= 0.6.12.
+Requires kornia >= 0.7.4.
 
 """
 
@@ -18,7 +18,7 @@ from fuse_augmentations._compat import _KORNIA_AVAILABLE
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
 
-pytestmark = [pytest.mark.integration, pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia >= 0.6.12 required")]
+pytestmark = [pytest.mark.integration, pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia >= 0.7.4 required")]
 
 
 class TestSingleTransformNoFusion:

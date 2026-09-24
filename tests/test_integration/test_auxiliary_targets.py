@@ -1,6 +1,6 @@
 """Integration tests for auxiliary target support (masks, bboxes, keypoints).
 
-Covers spec tests #32--38. Requires kornia >= 0.6.12.
+Covers spec tests #32--38. Requires kornia >= 0.7.4.
 
 """
 

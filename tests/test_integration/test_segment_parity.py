@@ -1,6 +1,6 @@
 """Integration parity tests for FusedAffineSegment.
 
-Requires kornia >= 0.6.12.
+Requires kornia >= 0.7.4.
 
 For single-transform tests, the fused path and Kornia native produce identical results because both perform a single
 ``grid_sample``.
