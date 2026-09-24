@@ -24,12 +24,11 @@ is not importable in this environment.
 
 from __future__ import annotations
 
-import importlib.util
 import json
+import os
 import statistics
 import subprocess
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -61,30 +60,34 @@ def _run_script(script: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _load_optimize_score() -> types.ModuleType:
-    """Import ``experiments/optimize_score.py`` by path -- ``experiments/`` has no ``__init__.py``."""
-    spec = importlib.util.spec_from_file_location("optimize_score", _OPTIMIZE_SCORE_PATH)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def test_collection_preserves_parent_thread_environment():
+    """Importing the test module must not pin thread settings in the pytest process."""
+    inherited = {
+        "OMP_NUM_THREADS": "7",
+        "MKL_NUM_THREADS": "8",
+        "OPENBLAS_NUM_THREADS": "9",
+        "NUMEXPR_NUM_THREADS": "10",
+    }
+    result = subprocess.run(  # noqa: S603 - the interpreter and test module path are project-controlled
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, os, runpy, sys; "
+                "runpy.run_path(sys.argv[1]); "
+                "print(json.dumps({name: os.environ[name] for name in json.loads(sys.argv[2])}))"
+            ),
+            str(Path(__file__).resolve()),
+            json.dumps(list(inherited)),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, **inherited},
+    )
 
-
-try:
-    _optimize_score: types.ModuleType | None = _load_optimize_score()
-    _OPTIMIZE_SCORE_IMPORT_ERROR: str | None = None
-except ImportError as exc:
-    # Pre-existing local environment issue (e.g. a scipy binary incompatibility pulled in via kornia /
-    # albumentations), not something a fix to the perf-gate scripts should be blocked on. Meaningful
-    # in CI where the full dependency set imports cleanly; skipped here rather than erroring.
-    _optimize_score = None
-    _OPTIMIZE_SCORE_IMPORT_ERROR = str(exc)
-
-_skip_no_optimize_score = pytest.mark.skipif(
-    _optimize_score is None,
-    reason=f"experiments/optimize_score.py did not import: {_OPTIMIZE_SCORE_IMPORT_ERROR}",
-)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == inherited
 
 
 @_skip_no_fire
@@ -183,6 +186,41 @@ class TestGateCompareThresholdBoundary:
 
         assert result.returncode == expected_exit
 
+    @pytest.mark.parametrize(
+        ("real_score", "floor", "expected_causes"),
+        [
+            pytest.param(2.5, 0.2, {"rolling ratio"}, id="ratio-only"),
+            pytest.param(3.2, 0.4, {"absolute efficiency floor"}, id="floor-only"),
+            pytest.param(2.5, 0.4, {"rolling ratio", "absolute efficiency floor"}, id="both"),
+        ],
+    )
+    def test_failed_summary_names_only_failed_checks(
+        self, tmp_path: Path, real_score: float, floor: float, expected_causes: set[str]
+    ):
+        """The summary names each failed threshold without blaming a passing one."""
+        current = tmp_path / "current.json"
+        current.write_text(json.dumps({"real_score": real_score, "theoretical_target": 10.0}))
+        summary = tmp_path / "summary.md"
+
+        result = _run_script(
+            _GATE_SCRIPT,
+            "--current",
+            str(current),
+            "--baseline-score",
+            "4.0",
+            "--threshold",
+            "0.75",
+            "--min-efficiency",
+            str(floor),
+            "--summary-file",
+            str(summary),
+        )
+
+        assert result.returncode == 1
+        text = summary.read_text()
+        causes = {cause for cause in ("rolling ratio", "absolute efficiency floor") if f"**Failure**: {cause}" in text}
+        assert causes == expected_causes
+
 
 @_skip_no_fire
 class TestGateCompareNonFiniteBaseline:
@@ -213,35 +251,51 @@ class TestGateCompareNonFiniteBaseline:
         assert "finite and positive" in result.stderr
 
 
-@_skip_no_optimize_score
 class TestBenchStatistic:
     """``_bench`` returns the median of per-batch averages, not a plain mean or a per-call median."""
 
-    def test_bench_returns_median_of_batch_averages(self, monkeypatch: pytest.MonkeyPatch):
+    def test_bench_returns_median_of_batch_averages(self):
         """``_bench``'s return value matches ``median(batch_means)``, distinct from ``mean(batch_means)``.
 
-        ``time.perf_counter`` is replaced (via the module's own ``time`` name, not the global stdlib module) with a
-        deterministic sequence: most batches "take" 1ms, a fifth of them "take" 100ms -- an outlier pattern designed so
-        the median and the mean of the batch averages disagree sharply. A silent regression from ``statistics.median``
-        to ``statistics.mean`` in ``_bench`` (or a revert to timing individual calls instead of batches) changes the
-        returned value and fails this test.
+        The isolated child supplies deterministic batch times, leaving collection's process-wide OpenCV and PyTorch
+        thread settings untouched.
 
         """
-        module = _optimize_score
-        n_batches = module.NUM_BATCHES
-        batch_size = module.BATCH_SIZE
-        n_slow = max(1, n_batches // 5)
-        elapsed_seconds = [0.001] * (n_batches - n_slow) + [0.1] * n_slow
+        code = """
+import importlib.util
+import json
+import sys
+import types
 
-        perf_values: list[float] = []
-        for elapsed in elapsed_seconds:
-            perf_values.extend([0.0, elapsed])
-        counter = iter(perf_values)
-        fake_time = types.SimpleNamespace(perf_counter=lambda: next(counter))
-        monkeypatch.setattr(module, "time", fake_time)
+spec = importlib.util.spec_from_file_location("optimize_score", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+try:
+    spec.loader.exec_module(module)
+except ImportError as exc:
+    print(f"IMPORT_ERROR: {exc}")
+    sys.exit(3)
+n_batches = module.NUM_BATCHES
+batch_size = module.BATCH_SIZE
+n_slow = max(1, n_batches // 5)
+elapsed_seconds = [0.001] * (n_batches - n_slow) + [0.1] * n_slow
+counter = iter(value for elapsed in elapsed_seconds for value in (0.0, elapsed))
+module.time = types.SimpleNamespace(perf_counter=lambda: next(counter))
+actual = module._bench(lambda _tensor: None)
+print(json.dumps({"actual": actual, "n_batches": n_batches, "batch_size": batch_size}))
+"""
+        result = subprocess.run(  # noqa: S603 - the interpreter and benchmark path are project-controlled
+            [sys.executable, "-c", code, str(_OPTIMIZE_SCORE_PATH)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 3 and result.stdout.startswith("IMPORT_ERROR:"):
+            pytest.skip(result.stdout.strip())
+        assert result.returncode == 0, result.stderr
 
-        result = module._bench(lambda _tensor: None)
-
-        expected_batch_means_ms = [elapsed * 1000.0 / batch_size for elapsed in elapsed_seconds]
-        assert result == pytest.approx(statistics.median(expected_batch_means_ms))
-        assert result != pytest.approx(statistics.mean(expected_batch_means_ms))
+        measured = json.loads(result.stdout.splitlines()[-1])
+        n_slow = max(1, measured["n_batches"] // 5)
+        elapsed_seconds = [0.001] * (measured["n_batches"] - n_slow) + [0.1] * n_slow
+        batch_means_ms = [elapsed * 1000.0 / measured["batch_size"] for elapsed in elapsed_seconds]
+        assert measured["actual"] == pytest.approx(statistics.median(batch_means_ms))
+        assert measured["actual"] != pytest.approx(statistics.mean(batch_means_ms))

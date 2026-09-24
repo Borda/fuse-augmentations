@@ -64,12 +64,12 @@ def _format_summary(
     efficiency: float | None = None,
     min_efficiency: float | None = None,
 ) -> str:
-    """Render a GitHub job summary markdown table."""
+    """Render the gate summary with the actual failed checks named separately."""
     real_score: float = current["real_score"]
     theoretical: object = current.get("theoretical_target", "N/A")
     delta: float = real_score - baseline_score
     delta_pct: float = (real_score / baseline_score - 1.0) * 100.0
-    status = "✅ PASSED" if passed else "❌ FAILED — regression exceeds threshold"
+    status = "✅ PASSED" if passed else "❌ FAILED"
 
     lines = [
         "## Perf Regression Gate",
@@ -92,16 +92,18 @@ def _format_summary(
     lines.append(f"| Status | {status} |")
 
     if not passed:
+        lines.append("")
         min_score: float = baseline_score * threshold
-        lines += [
-            "",
-            (
-                f"> **Failure**: `real_score={real_score:.4f}` is below the minimum "
-                f"`{min_score:.4f}` (= dynamic baseline `{baseline_score:.4f}` x `{threshold}`), "
-                "or below the absolute efficiency floor. "
-                "Investigate the regression in `src/` or `experiments/` before merging."
-            ),
-        ]
+        if real_score < min_score:
+            lines.append(
+                f"> **Failure**: rolling ratio — `real_score={real_score:.4f}` is below "
+                f"`{min_score:.4f}` (= dynamic baseline `{baseline_score:.4f}` x `{threshold}`)."
+            )
+        if efficiency is not None and min_efficiency is not None and efficiency < min_efficiency:
+            lines.append(
+                f"> **Failure**: absolute efficiency floor — `{efficiency:.3f}` is below `{min_efficiency:.3f}`."
+            )
+        lines.append("Investigate the regression in `src/` or `experiments/` before merging.")
 
     return "\n".join(lines) + "\n"
 

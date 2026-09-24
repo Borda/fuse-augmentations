@@ -77,7 +77,7 @@ jobs:
   # each individual commit sampled (a per-push rolling file would only ever see the push's
   # final state).
   #
-  # On a pull_request, main~0 is the merge base and the closest reference commit, so the
+  # On a pull_request, main~0 is the PR's base SHA and the closest reference commit, so the
   # window stays [0,1,2,3,4]. On push/schedule/dispatch, main~0 IS the commit perf-gate
   # benchmarks -- leg 0 would feed its own baseline and be benchmarked twice per run -- so
   # the window shifts to [1,2,3,4,5]. `--depth=10` below already covers either window.
@@ -115,9 +115,13 @@ jobs:
     steps:
       - name: 📥 Checkout ref under test
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: 📥 Fetch main history
-        run: git fetch origin main --depth=10
+        run: git fetch origin "$ANCHOR_SHA" --depth=10
+        env:
+          ANCHOR_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
 
       - name: 🧹 Remove src/ before overlay (overlay checkout never deletes files absent at HIST_SHA)
         run: rm -rf src/fuse_augmentations src/fuse_aug
@@ -172,6 +176,8 @@ jobs:
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: 📥 Download all history samples
         uses: actions/download-artifact@v4
@@ -229,6 +235,8 @@ jobs:
     steps:
       - name: 📥 Checkout ref under test
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
@@ -281,6 +289,8 @@ jobs:
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: 📥 Download all PR trial samples
         uses: actions/download-artifact@v4
@@ -357,6 +367,8 @@ jobs:
 
       - name: 📥 Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
