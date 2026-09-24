@@ -43,14 +43,15 @@ Usage::
     uv run python experiments/bench_memory.py            # full sweep
     uv run python experiments/bench_memory.py --quick    # fast smoke subset
     uv run python experiments/bench_memory.py --json      # also write JSON
+    uv run python experiments/bench_memory.py --devices '["cpu"]' --batch-sizes '[1,8]'
 
 """
 
 from __future__ import annotations
 
-import argparse
 import copy
 import gc
+import json as json_module
 import platform
 import resource
 import subprocess
@@ -778,20 +779,6 @@ def _build_metadata(cfg: BenchConfig, source: str) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--devices", nargs="+", default=None, help="Subset of devices (cpu cuda mps).")
-    parser.add_argument("--batch-sizes", nargs="+", type=int, default=None, help="Batch sizes to sweep (default 1 8).")
-    parser.add_argument("--warmup", type=int, default=3, help="Warmup iterations before measuring (default 3).")
-    parser.add_argument("--quick", action="store_true", help="Fast smoke run: one geo + one mixed + crop probe.")
-    parser.add_argument("--json", action="store_true", help="Also write a JSON dump to experiments/results/.")
-    return parser.parse_args(argv)
-
-
 def _select_sequences(sequences: list[Sequence], quick: bool) -> list[Sequence]:
     """Filter to the --quick subset when requested."""
     if not quick:
@@ -799,24 +786,36 @@ def _select_sequences(sequences: list[Sequence], quick: bool) -> list[Sequence]:
     return [s for s in sequences if s.label in _QUICK_LABELS]
 
 
-def main(argv: list[str] | None = None) -> None:
-    """Run the memory benchmark and print the aligned table (+ optional JSON)."""
-    import json
+def main(
+    devices: list[str] | None = None,
+    batch_sizes: list[int] | None = None,
+    warmup: int = 3,
+    quick: bool = False,
+    json: bool = False,
+) -> None:
+    """Run the memory benchmark and print the aligned table (+ optional JSON).
 
-    args = _parse_args(argv)
+    Args:
+        devices: Device names to benchmark, or all available devices.
+        batch_sizes: Batch sizes to sweep, or the standard sizes.
+        warmup: Warmup iterations before measuring.
+        quick: Use the small smoke-test sequence and batch sweep.
+        json: Write a JSON dump to ``experiments/results/``.
+
+    """
     torch.manual_seed(0)
     np.random.seed(0)
 
     sequences, source = _load_sequences()
-    sequences = _select_sequences(sequences, args.quick)
-    warmup = min(args.warmup, 2) if args.quick else args.warmup
-    batches = tuple(args.batch_sizes) if args.batch_sizes else (_QUICK_BATCHES if args.quick else _FULL_BATCHES)
+    sequences = _select_sequences(sequences, quick)
+    warmup = min(warmup, 2) if quick else warmup
+    batches = tuple(batch_sizes) if batch_sizes else (_QUICK_BATCHES if quick else _FULL_BATCHES)
 
     cfg = BenchConfig(
-        devices=_discover_devices(args.devices),
+        devices=_discover_devices(devices),
         batch_sizes=batches,
         warmup=warmup,
-        quick=args.quick,
+        quick=quick,
         sequences=sequences,
     )
 
@@ -834,12 +833,14 @@ def main(argv: list[str] | None = None) -> None:
     print(f"\nResults: {n_ok} ok, {n_skip} skipped")
     print("Ratios are fused/native; <1.00x means fused uses less. 'allocs≈' = approximate count (MPS).")
 
-    if args.json:
+    if json:
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         out_path = RESULTS_DIR / f"bench_memory_{_platform_slug()}.json"
-        out_path.write_text(json.dumps({"metadata": _build_metadata(cfg, source), "results": results}, indent=2))
+        out_path.write_text(json_module.dumps({"metadata": _build_metadata(cfg, source), "results": results}, indent=2))
         print(f"JSON → {out_path}")
 
 
 if __name__ == "__main__":
-    main()
+    import fire
+
+    fire.Fire(main)

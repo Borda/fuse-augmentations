@@ -121,6 +121,7 @@ Results: `experiments/results/bench_primitive_vs_affine.json`.
 ```bash
 uv run python experiments/bench_gpu_batch.py            # full sweep
 uv run python experiments/bench_gpu_batch.py --quick     # fast smoke run
+uv run python experiments/bench_gpu_batch.py --batch-sizes '[1,8,32]'
 ```
 
 Sweeps CPU (always) plus CUDA/MPS (auto-detected) at batch size 1 and 8 for a representative subset of sequences, reporting median/p10/p90 latency and throughput (img/s) for native vs. fused. Correct per-device synchronization (`torch.cuda.synchronize`/`torch.mps.synchronize`) is applied before/after timing so the numbers reflect real device execution, not async dispatch. Native Albumentations is CPU/NumPy-only, so it's skipped (recorded, not silently dropped) on `cuda`/`mps` device rows.
@@ -150,6 +151,7 @@ Sweeps CPU (always) plus CUDA/MPS (auto-detected) at batch size 1 and 8 for a re
 uv run python experiments/bench_memory.py            # full sweep
 uv run python experiments/bench_memory.py --quick     # fast smoke subset
 uv run python experiments/bench_memory.py --json      # also write JSON
+uv run python experiments/bench_memory.py --devices '["cpu"]' --batch-sizes '[1,8]'
 ```
 
 Same sequence/device/batch matrix as `bench_gpu_batch.py`, but measures peak memory and allocation count instead of latency, testing the hypothesis that fusing an N-op chain into one `grid_sample` both lowers peak memory (no chain of intermediate warped tensors) and cuts allocation count. Uses `torch.profiler` (CPU), `torch.mps.current_allocated_memory()` (MPS), or `max_memory_allocated` (CUDA) depending on which counter is reliable per device.

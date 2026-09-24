@@ -52,7 +52,6 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
-import argparse
 import copy
 import statistics
 import sys
@@ -423,6 +422,6 @@ def main(repetitions: int = 3) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--repetitions", type=int, default=3, help="complete benchmark runs (default: 3)")
-    main(parser.parse_args().repetitions)
+    import fire
+
+    fire.Fire(main)

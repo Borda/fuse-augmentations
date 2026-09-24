@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -445,9 +444,8 @@ def _draw_geometry(
     return lines
 
 
-def main() -> None:
-    """Parse the requested shape from argv and open the interactive editor for whichever family owns it."""
-    shape = sys.argv[1] if len(sys.argv) > 1 else ""
+def main(shape: str = "") -> None:
+    """Open the interactive editor for the named shape, or list valid names."""
     family = find_family(shape) if shape else None
     if family is None:
         listing = "\n".join(f"  {fam.name}: {', '.join(fam.shapes())}" for fam in FAMILIES)
@@ -482,4 +480,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import fire
+
+    fire.Fire(main)

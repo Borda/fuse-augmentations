@@ -142,9 +142,9 @@ jobs:
           python-version: "${{ env.PYTHON_VERSION }}"
           activate-environment: true
 
-      - name: 📦 Install package with all extras
+      - name: 📦 Install package with benchmark and CLI extras
         timeout-minutes: 10
-        run: uv pip install -e ".[all]"
+        run: uv pip install -e ".[all,cli]"
 
       - name: 🏃 Run benchmark and record score
         timeout-minutes: 15
@@ -240,9 +240,9 @@ jobs:
           python-version: "${{ env.PYTHON_VERSION }}"
           activate-environment: true
 
-      - name: 📦 Install package with all extras
+      - name: 📦 Install package with benchmark and CLI extras
         timeout-minutes: 10
-        run: uv pip install -e ".[all]"
+        run: uv pip install -e ".[all,cli]"
 
       - name: 🏃 Run repeated benchmark and record score + theoretical target
         id: score
