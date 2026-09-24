@@ -73,7 +73,7 @@ Every kept commit must not break:
 ## Metric
 
 ```
-command: uv run python experiments/optimize_score.py
+command: uv run python experiments/optimize_score.py --repetitions 1
 direction: higher
 baseline: 1.6671  # CI runner-measured (ubuntu, py3.12); local laptop swings ±5% — trust the runner
 ```
@@ -112,7 +112,7 @@ When the frontier fusions add new modules (e.g. a LUT color segment), extend `sc
 
 ## Notes
 
-`optimize_score.py` runs in ~60 s on the 45-case metric (WARMUP=10 + REPS=50 × 45 cases) — within the 120 s `VERIFY_TIMEOUT_SEC` limit.
+`optimize_score.py --repetitions 1` runs in ~60 s on the 45-case metric (WARMUP=10 + REPS=50 × 45 cases) — within the 120 s `VERIFY_TIMEOUT_SEC` limit. The script defaults to three complete measurements elsewhere.
 
 The 45-case `theoretical_target` ≈ 2.375 = geomean of `nb_geom` across all cases×backends. Albu 2.0.8 dispatches N separate warps (installed-source check) — the formula's assumption holds; actual progress is bounded by colour-op time fractions in the d-group. Kornia d-group with `AGGRESSIVE` is bounded ≈ 1.1–2.1× by colour time even with perfect geo-fusion — expected, not a bug.
 

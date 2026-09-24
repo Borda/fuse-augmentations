@@ -48,13 +48,9 @@ env:
   # independently-drifting literal -- tolerate up to 2 leg failures. Keep this number and the
   # matrix length below in sync if the matrix ever grows or shrinks.
   HIST_EXPECTED_SAMPLES: 5
-  # PR-side trial count: benchmark-pr's matrix below has 3 trials, ALL required -- no
-  # tolerance, so --min-samples equals this number directly wherever it's used (aggregate-pr),
-  # not a second literal. This is the side that decides pass/fail; a median of fewer than 3
-  # degrades toward the "ratio of two noisy single-run means" docs/research/methodology.md:135
-  # warns against. A lost trial fails aggregate-pr loudly, and perf-gate's "Require a baseline"
-  # guard turns that into a loud gate failure rather than a silent skip.
-  PR_EXPECTED_SAMPLES: 3
+  # Measure the complete PR-side score ten times in one benchmark process. The script
+  # reports their median; each complete pass also keeps its own within-case timing batches.
+  PR_REPETITIONS: 10
   # Rolling-vs-baseline threshold: 0.90 = 10% regression tolerance against the dynamic
   # baseline (see docs/research/methodology.md and the compare script's own docstring).
   PERF_THRESHOLD: "0.90"
@@ -121,17 +117,19 @@ jobs:
       - name: 📥 Fetch main history
         run: git fetch origin "$ANCHOR_SHA" --depth=10
         env:
+          # Use the PR's recorded base commit, or this run's commit for other triggers.
+          # A fixed SHA keeps the history window steady if main moves during the run.
           ANCHOR_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
 
       - name: 🧹 Remove src/ before overlay (overlay checkout never deletes files absent at HIST_SHA)
-        run: rm -rf src/fuse_augmentations src/fuse_aug
+        run: rm -rf src
 
       - name: ⏪ Overlay src/ from main~${{ matrix.n }} (harness stays at the ref under test)
         run: |
           set -euo pipefail
           HIST_SHA=$(git rev-parse "FETCH_HEAD~${{ matrix.n }}")
           echo "Benchmarking src/ as of $HIST_SHA against the current experiments/optimize_score.py"
-          git checkout "$HIST_SHA" -- src/fuse_augmentations src/fuse_aug
+          git checkout "$HIST_SHA" -- src
 
       - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
@@ -212,25 +210,18 @@ jobs:
           path: avg.txt
           retention-days: 14
 
-  # Benchmarks the ref under test (PR head, or main's tip for push/schedule/dispatch) as a
-  # 3-trial matrix, one independent process per trial. The baseline above is denoised across
-  # 5 independent processes; the gated side must be too -- docs/research/methodology.md:120
-  # requires "at least five process-level trials" and :135 warns against "a ratio of two
-  # noisy single-run means". The per-call median already in optimize_score.py's own timing
-  # loop only removes WITHIN-process jitter; this removes the larger BETWEEN-process term
-  # (thread placement, runner neighbour load) on the side that actually decides pass/fail.
-  # aggregate-pr below medians the 3 trial scores with the same script used for the
-  # historical baseline, rather than duplicating aggregation logic here.
+  # Benchmarks the ref under test once, with complete-score repetitions handled by
+  # optimize_score.py. This avoids a PR trial matrix and its artifact aggregation job.
+  # Repetitions share one process, so they do not sample between-runner variation; the
+  # historical baseline still samples separate commits on separate runners.
   benchmark-pr:
     permissions:
       contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 30 # steps below budget 10 (install) + 15 (bench) = 25; must exceed the sum
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        trial: [1, 2, 3]
+    outputs:
+      pr_score: ${{ steps.score.outputs.real_score }}
+      pr_theoretical: ${{ steps.score.outputs.theoretical_target }}
 
     steps:
       - name: 📥 Checkout ref under test
@@ -253,91 +244,16 @@ jobs:
         timeout-minutes: 10
         run: uv pip install -e ".[all]"
 
-      - name: 🏃 Run benchmark and record trial score + theoretical target
+      - name: 🏃 Run repeated benchmark and record score + theoretical target
+        id: score
         timeout-minutes: 15
         run: |
           set -euo pipefail
-          mkdir -p pr-scores pr-meta
-          uv run python experiments/optimize_score.py | tee /tmp/bench_raw.txt
-          grep '^real_score=' /tmp/bench_raw.txt | cut -d= -f2 > "pr-scores/${{ matrix.trial }}.txt"
-          grep '^theoretical_target=' /tmp/bench_raw.txt | cut -d= -f2 > "pr-meta/theoretical-${{ matrix.trial }}.txt"
-          cat "pr-scores/${{ matrix.trial }}.txt"
+          uv run python experiments/optimize_score.py --repetitions "$PR_REPETITIONS" | tee /tmp/bench_raw.txt
+          grep '^real_score=' /tmp/bench_raw.txt >> "$GITHUB_OUTPUT"
+          grep '^theoretical_target=' /tmp/bench_raw.txt >> "$GITHUB_OUTPUT"
 
-      - name: 📤 Upload trial sample
-        uses: actions/upload-artifact@v4
-        with:
-          name: perf-pr-${{ matrix.trial }}
-          path: |
-            pr-scores/${{ matrix.trial }}.txt
-            pr-meta/theoretical-${{ matrix.trial }}.txt
-          retention-days: 14
-
-  # Downloads all PR trial samples, medians the real_score across them with the same
-  # aggregation script used for the historical baseline, and separately extracts
-  # theoretical_target -- deterministic (operation counts, not wall time) so it must be
-  # identical across all 3 trials; asserted rather than assumed.
-  aggregate-pr:
-    needs: benchmark-pr
-    permissions:
-      contents: read
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      pr_score: ${{ steps.agg.outputs.score }}
-      pr_theoretical: ${{ steps.theoretical.outputs.value }}
-
-    steps:
-      - name: 📥 Checkout
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: 📥 Download all PR trial samples
-        uses: actions/download-artifact@v4
-        with:
-          pattern: perf-pr-*
-          path: pr
-          merge-multiple: true
-
-      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: "${{ env.PYTHON_VERSION }}"
-
-      - name: 📦 Install CLI dependency
-        run: python3 -m pip install "fire>=0.6"
-
-      - name: 📊 Aggregate (median of ${{ env.PR_EXPECTED_SAMPLES }} PR trials)
-        id: agg
-        run: |
-          python3 .github/scripts/ci_perf_baseline_aggregate.py \
-            --score-dir pr/pr-scores \
-            --out pr_avg.txt \
-            --min-samples "${{ env.PR_EXPECTED_SAMPLES }}" \
-            --expected-samples "${{ env.PR_EXPECTED_SAMPLES }}" \
-            --summary-file "$GITHUB_STEP_SUMMARY"
-          echo "score=$(cat pr_avg.txt)" >> "$GITHUB_OUTPUT"
-
-      - name: 🎯 Extract theoretical target (must be constant across trials)
-        id: theoretical
-        run: |
-          set -euo pipefail
-          UNIQ=$(sort -u pr/pr-meta/*.txt)
-          LINES=$(echo "$UNIQ" | wc -l)
-          if [ "$LINES" -ne 1 ]; then
-            echo "::error::theoretical_target is not constant across PR trials (expected exactly 1 distinct value, got $LINES): $UNIQ"
-            exit 1
-          fi
-          echo "value=$UNIQ" >> "$GITHUB_OUTPUT"
-
-      - name: 📤 Upload PR aggregate
-        uses: actions/upload-artifact@v4
-        with:
-          name: perf-pr-avg
-          path: pr_avg.txt
-          retention-days: 14
-
-  # Gates the median PR score (aggregate-pr) against the dynamic baseline (aggregate-baseline).
+  # Gates the median PR score (benchmark-pr) against the dynamic baseline (aggregate-baseline).
   # No benchmarking happens in this job -- ci_perf_gate_compare.py needs only the `fire` CLI
   # dependency, not the full `[all]` torch/kornia/albumentations/torchvision install the
   # benchmark jobs above need.
@@ -347,7 +263,7 @@ jobs:
   # would additionally run this job on a cancelled run, which matters here because
   # cancel-in-progress is enabled for PR refs.
   perf-gate:
-    needs: [aggregate-baseline, aggregate-pr]
+    needs: [aggregate-baseline, benchmark-pr]
     if: ${{ !cancelled() }}
     permissions:
       contents: read
@@ -355,14 +271,14 @@ jobs:
     timeout-minutes: 10
     env:
       BASELINE_SCORE: ${{ needs.aggregate-baseline.outputs.baseline_score }}
-      PR_SCORE: ${{ needs.aggregate-pr.outputs.pr_score }}
-      PR_THEORETICAL: ${{ needs.aggregate-pr.outputs.pr_theoretical }}
+      PR_SCORE: ${{ needs.benchmark-pr.outputs.pr_score }}
+      PR_THEORETICAL: ${{ needs.benchmark-pr.outputs.pr_theoretical }}
 
     steps:
       - name: 🛡️ Require a baseline and a PR score
-        if: needs.aggregate-baseline.result != 'success' || needs.aggregate-pr.result != 'success'
+        if: needs.aggregate-baseline.result != 'success' || needs.benchmark-pr.result != 'success'
         run: |
-          echo "::error::aggregate-baseline=${{ needs.aggregate-baseline.result }} aggregate-pr=${{ needs.aggregate-pr.result }} -- perf-gate refuses to run without both a computed baseline and a computed PR score."
+          echo "::error::aggregate-baseline=${{ needs.aggregate-baseline.result }} benchmark-pr=${{ needs.benchmark-pr.result }} -- perf-gate refuses to run without both a computed baseline and a computed PR score."
           exit 1
 
       - name: 📥 Checkout
@@ -378,7 +294,7 @@ jobs:
       - name: 📦 Install CLI dependency
         run: python3 -m pip install "fire>=0.6"
 
-      - name: 🧮 Assemble current score JSON from the PR trial median
+      - name: 🧮 Assemble current score JSON from the repeated benchmark median
         run: |
           python3 -c "import json,os; score={'real_score':float(os.environ['PR_SCORE']),'theoretical_target':float(os.environ['PR_THEORETICAL']),'runner':os.environ.get('RUNNER_OS','ubuntu-latest'),'python_version':os.environ.get('PYTHON_VERSION','3.12'),'git_sha':os.environ.get('GITHUB_SHA','unknown')[:12]}; json.dump(score,open('ci_score.json','w'),indent=2); print('ci_score.json written:',score)"
 

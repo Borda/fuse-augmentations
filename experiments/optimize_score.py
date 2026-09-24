@@ -26,8 +26,10 @@ PyTorch training workflow and avoiding tensor round-trips.
 Usage::
 
     uv run python experiments/optimize_score.py
+    uv run python experiments/optimize_score.py --repetitions 3
 
-Outputs two lines::
+Each repetition measures the complete case bank. The final score is the median
+of those repetitions. Standard output remains two lines::
 
     real_score=X.XXXX
     theoretical_target=X.XXXX
@@ -50,8 +52,10 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
+import argparse
 import copy
 import statistics
+import sys
 import time
 
 import albumentations as A
@@ -314,8 +318,8 @@ _MIXED_AGR_CASES: list[tuple[str, int, list, list, list]] = [
 ]
 
 
-def main() -> None:
-    """Run all 45 cases and print the composite score and theoretical target."""
+def _measure_once() -> tuple[float, float]:
+    """Measure the complete 45-case score and its fixed theoretical target once."""
     # Fix random state for reproducibility across runs.
     torch.manual_seed(0)
     np.random.seed(0)
@@ -386,9 +390,39 @@ def main() -> None:
     )
     theoretical_target = statistics.geometric_mean(all_num_geometric_ops)
 
-    print(f"real_score={score:.4f}")
-    print(f"theoretical_target={theoretical_target:.4f}")
+    return score, theoretical_target
+
+
+def main(repetitions: int = 3) -> None:
+    """Print the median score from complete benchmark repetitions.
+
+    Args:
+        repetitions: Number of complete 45-case measurements, at least one.
+
+    Raises:
+        ValueError: If ``repetitions`` is not positive.
+        RuntimeError: If the theoretical target changes between repetitions.
+
+    """
+    if repetitions < 1:
+        raise ValueError("repetitions must be at least 1")
+
+    scores: list[float] = []
+    targets: set[float] = set()
+    for trial in range(1, repetitions + 1):
+        score, target = _measure_once()
+        scores.append(score)
+        targets.add(target)
+        print(f"repetition={trial}/{repetitions} real_score={score:.4f}", file=sys.stderr)
+
+    if len(targets) != 1:
+        raise RuntimeError("theoretical_target changed between repetitions")
+
+    print(f"real_score={statistics.median(scores):.4f}")
+    print(f"theoretical_target={targets.pop():.4f}")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--repetitions", type=int, default=3, help="complete benchmark runs (default: 3)")
+    main(parser.parse_args().repetitions)

@@ -21,23 +21,24 @@ Every script writes its numeric results to `experiments/results/` (JSON +, for t
 
 ## Files
 
-| File                              | Purpose                                                                                                                                                  | Typical runtime                   |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| `optimize_score.py`               | Single composite score (geometric mean of 45 native/fused boost ratios) — the metric an optimization campaign maximizes.                                 | ~30–60 s                          |
-| `bench_augmentation_pipelines.py` | Full per-sequence latency comparison (28 sequences × 3 backends × native/fused) + visual sanity figures.                                                 | ~40–60 s                          |
-| `bench_primitive_vs_affine.py`    | Is routing a single op through the backend's generic `Affine` as cheap as its dedicated primitive? Answers the "can we always fuse via Affine" question. | ~5–10 s                           |
-| `bench_gpu_batch.py`              | Device × batch-size sweep (CPU/CUDA/MPS, batch 1 & 8): latency + throughput.                                                                             | ~1–2 min (`--quick`), longer full |
-| `bench_memory.py`                 | Peak memory and allocation-count comparison, same sequence/device/batch sweep as above.                                                                  | ~1 min (`--quick`), longer full   |
+| File                              | Purpose                                                                                                                                                  | Typical runtime                          |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `optimize_score.py`               | Median of three complete 45-case scores by default; `--repetitions 1` keeps the optimization campaign at one score.                                      | ~90–180 s by default; ~30–60 s per score |
+| `bench_augmentation_pipelines.py` | Full per-sequence latency comparison (28 sequences × 3 backends × native/fused) + visual sanity figures.                                                 | ~40–60 s                                 |
+| `bench_primitive_vs_affine.py`    | Is routing a single op through the backend's generic `Affine` as cheap as its dedicated primitive? Answers the "can we always fuse via Affine" question. | ~5–10 s                                  |
+| `bench_gpu_batch.py`              | Device × batch-size sweep (CPU/CUDA/MPS, batch 1 & 8): latency + throughput.                                                                             | ~1–2 min (`--quick`), longer full        |
+| `bench_memory.py`                 | Peak memory and allocation-count comparison, same sequence/device/batch sweep as above.                                                                  | ~1 min (`--quick`), longer full          |
 
 ______________________________________________________________________
 
 ## `optimize_score.py` — composite optimization metric
 
 ```bash
-uv run python experiments/optimize_score.py
+uv run python experiments/optimize_score.py  # three complete scores by default
+uv run python experiments/optimize_score.py --repetitions 10  # PR gate setting
 ```
 
-Times 45 cases (single-op baselines, pure-geometric chains, mixed geo+colour chains under aggressive reordering) across Kornia, TorchVision, and Albumentations, each native vs. fused, and prints the geometric mean of all 45 boost ratios plus the theoretical ceiling (geomean of each case's `nb_geom`). This is the single number an optimization campaign tries to push toward the ceiling. No JSON/figures are written — it only prints two lines.
+Times 45 cases (single-op baselines, pure-geometric chains, mixed geo+colour chains under aggressive reordering) across Kornia, TorchVision, and Albumentations, each native vs. fused, and prints the geometric mean of all 45 boost ratios plus the theoretical ceiling (geomean of each case's `nb_geom`). This is the single number an optimization campaign tries to push toward the ceiling. `--repetitions` repeats all 45 cases in one process (default 3) and reports the median score; individual repetition scores go to standard error. No JSON/figures are written — standard output stays two lines. At the documented 30–60 seconds per complete score, 10 repetitions take roughly 5–10 minutes of benchmark time, before setup.
 
 **Sample output (short run):**
 

@@ -15,6 +15,8 @@ Covers, per the PR #18 review (finding F15):
    script-error exit code, not a silent gate decision.
 5. ``experiments/optimize_score.py``'s ``_bench`` returns the median of per-batch averages, not a
    plain mean or a per-call median -- a silent revert to the old statistic must fail this test.
+6. The optimization score's default three complete measurements emit their median on the
+   unchanged two-line standard-output contract.
 
 Both scripts use ``fire`` for their CLI (imported lazily under ``if __name__ == "__main__":``), which
 ships in the ``cli`` extra. Every subprocess-invoking test is skipped, not hard-failed, when ``fire``
@@ -299,3 +301,46 @@ print(json.dumps({"actual": actual, "n_batches": n_batches, "batch_size": batch_
         batch_means_ms = [elapsed * 1000.0 / measured["batch_size"] for elapsed in elapsed_seconds]
         assert measured["actual"] == pytest.approx(statistics.median(batch_means_ms))
         assert measured["actual"] != pytest.approx(statistics.mean(batch_means_ms))
+
+
+class TestScoreRepetitions:
+    """Whole-score repetitions report one median without changing the CLI score lines."""
+
+    def test_main_uses_default_three_complete_scores(self):
+        """The default emits the median of three complete measurements, not the last one."""
+        code = """
+import contextlib
+import importlib.util
+import io
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("optimize_score", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+try:
+    spec.loader.exec_module(module)
+except ImportError as exc:
+    print(f"IMPORT_ERROR: {exc}")
+    sys.exit(3)
+samples = iter([(1.0, 2.0), (5.0, 2.0), (3.0, 2.0)])
+calls = []
+def measure():
+    calls.append(1)
+    return next(samples)
+module._measure_once = measure
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    module.main()
+print(json.dumps({"output": output.getvalue(), "calls": len(calls)}))
+"""
+        result = subprocess.run(  # noqa: S603 - the interpreter and benchmark path are project-controlled
+            [sys.executable, "-c", code, str(_OPTIMIZE_SCORE_PATH)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 3 and result.stdout.startswith("IMPORT_ERROR:"):
+            pytest.skip(result.stdout.strip())
+        assert result.returncode == 0, result.stderr
+        measured = json.loads(result.stdout)
+        assert measured == {"output": "real_score=3.0000\ntheoretical_target=2.0000\n", "calls": 3}
