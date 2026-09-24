@@ -1,7 +1,7 @@
 """Backend resolver for canonical operation names.
 
 Maps ``(operation: str, backend: str) -> type`` so that :meth:`FusedCompose.from_config
-<fuse_augmentations.compose.FusedCompose.from_config>` can construct backend-specific transforms from a declarative
+<fused_transforms.compose.FusedCompose.from_config>` can construct backend-specific transforms from a declarative
 :class:`TransformSpec`.
 
 Each backend adapter exposes wrapper classes (e.g. Kornia's ``_RandomRotation``, TorchVision's ``RandomRotation``).
@@ -10,7 +10,7 @@ classes, importing each backend lazily to avoid hard dependencies.
 
 Examples:
     ```pycon
-    >>> from fuse_augmentations.resolver import SUPPORTED_OPS
+    >>> from fused_transforms.resolver import SUPPORTED_OPS
     >>> "rotation" in SUPPORTED_OPS
     True
 

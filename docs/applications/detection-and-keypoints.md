@@ -18,7 +18,7 @@ Skip that postprocessing and you train on boxes that sit outside the image, on o
 ```python
 import torch
 
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 torch.manual_seed(11)
 
@@ -92,7 +92,7 @@ Each mapping requires `boxes` and int64 `labels`. Optional fields are floating s
 ```python
 import torch
 
-from fuse_augmentations import Compose, augment_detection_batch
+from fused_transforms import Compose, augment_detection_batch
 
 images = torch.zeros(1, 1, 16, 16)
 targets = [

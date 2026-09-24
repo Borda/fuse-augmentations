@@ -18,10 +18,10 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
+from fused_transforms._compat import _KORNIA_AVAILABLE
 
 if _KORNIA_AVAILABLE:
-    from fuse_augmentations.adapters.kornia import TRANSFORM_REGISTRY, KorniaAdapter
+    from fused_transforms.adapters.kornia import TRANSFORM_REGISTRY, KorniaAdapter
 else:
     TRANSFORM_REGISTRY = {}  # type: ignore[var-annotated]
     KorniaAdapter = None  # type: ignore[assignment,misc]

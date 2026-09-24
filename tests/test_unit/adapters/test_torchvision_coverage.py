@@ -15,10 +15,10 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations._compat import _TORCHVISION_AVAILABLE
+from fused_transforms._compat import _TORCHVISION_AVAILABLE
 
 if _TORCHVISION_AVAILABLE:
-    from fuse_augmentations.adapters.torchvision import _TRANSFORM_REGISTRY, TorchVisionAdapter
+    from fused_transforms.adapters.torchvision import _TRANSFORM_REGISTRY, TorchVisionAdapter
 else:
     _TRANSFORM_REGISTRY = {}  # type: ignore[var-annotated]
     TorchVisionAdapter = None  # type: ignore[assignment,misc]

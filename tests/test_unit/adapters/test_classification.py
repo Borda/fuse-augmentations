@@ -4,7 +4,7 @@ import warnings
 
 import pytest
 
-from fuse_augmentations._backend import Backend, detect_backend
+from fused_transforms._backend import Backend, detect_backend
 
 
 def _make_mock(module_path: str):

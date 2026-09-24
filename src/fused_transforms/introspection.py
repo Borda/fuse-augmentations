@@ -13,7 +13,7 @@ from typing import cast
 import torch
 from torch import Tensor
 
-from fuse_augmentations.affine.segment import (
+from fused_transforms.affine.segment import (
     AlbuFusedAffineSegment,
     AlbuProjectiveSegment,
     CropResizeSegment,
@@ -25,9 +25,9 @@ from fuse_augmentations.affine.segment import (
     ProjectiveSegment,
     _FusedGeoCropSegment,
 )
-from fuse_augmentations.factories import _DirectParamAdapter
-from fuse_augmentations.planner import _PassthroughSegment
-from fuse_augmentations.types import SegmentDescriptor, TransformAdapter, is_coordinate_changing_passthrough
+from fused_transforms.factories import _DirectParamAdapter
+from fused_transforms.planner import _PassthroughSegment
+from fused_transforms.types import SegmentDescriptor, TransformAdapter, is_coordinate_changing_passthrough
 
 
 class IntrospectionMixin:
@@ -256,7 +256,7 @@ class IntrospectionMixin:
         does not require a :meth:`forward` call.
 
         Returns:
-            List of :class:`~fuse_augmentations.types.SegmentDescriptor`
+            List of :class:`~fused_transforms.types.SegmentDescriptor`
             instances, one per segment. Empty list for an empty pipeline.
             Each descriptor's ``backend`` field is the adapter class name
             (e.g. ``"KorniaAdapter"``) for fused, exact, and projective
@@ -266,7 +266,7 @@ class IntrospectionMixin:
         Examples:
             ```pycon
             >>> import torch
-            >>> from fuse_augmentations.compose import FusedCompose
+            >>> from fused_transforms.compose import FusedCompose
             >>> pipe = FusedCompose([])
             >>> pipe.fusion_plan_descriptors
             []

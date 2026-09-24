@@ -48,13 +48,13 @@ jobs:
         run: "! uv pip show torch"
       - name: 🧯 Confirm the torch-extra message fires
         # The augmentation stack is torch-only, so importing it here must fail -- but with the
-        # actionable "install the extra" message from src/fuse_augmentations/__init__.py, not a raw
+        # actionable "install the extra" message from src/fused_transforms/__init__.py, not a raw
         # ModuleNotFoundError from somewhere deep inside the package. Exit status is checked
         # separately from the message so a shell with `pipefail` cannot turn the expected failure
         # into a red step.
         run: |
-          if python -c 'import fuse_augmentations' 2> "${RUNNER_TEMP}/import_err.txt"; then
-            echo "::error::importing fuse_augmentations succeeded without torch installed"
+          if python -c 'import fused_transforms' 2> "${RUNNER_TEMP}/import_err.txt"; then
+            echo "::error::importing fused_transforms succeeded without torch installed"
             exit 1
           fi
           grep -qF 'vision-synth[torch]' "${RUNNER_TEMP}/import_err.txt"
@@ -140,7 +140,7 @@ jobs:
         if: matrix.extras == 'all'
         run: python .github/scripts/generate_doc_tests.py
       - name: 🧪 Run tests
-        run: pytest . -v --cov=fuse_augmentations --cov=synth_datasets
+        run: pytest . -v --cov=fused_transforms --cov=synth_datasets
       - name: 📊 Coverage statistics
         run: |
           coverage report

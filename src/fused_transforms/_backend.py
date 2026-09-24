@@ -3,13 +3,13 @@
 Inspects transform module paths to determine which backend framework (Kornia, Albumentations, TorchVision) is in use.
 
 Detection is driven by a pluggable adapter registry. The three built-in backends self-register at import time via
-:func:`register_adapter`. Third-party adapters may register through the ``fuse_augmentations.adapters`` entry-point
+:func:`register_adapter`. Third-party adapters may register through the ``fused_transforms.adapters`` entry-point
 group; those are loaded **lazily** on the first detection miss (never at package import) so that ``import
-fuse_augmentations`` neither executes third-party code nor pays their import cost.
+fused_transforms`` neither executes third-party code nor pays their import cost.
 
 Examples:
     ```pycon
-    >>> from fuse_augmentations._backend import detect_backend
+    >>> from fused_transforms._backend import detect_backend
     >>> detect_backend([])
     <Backend.UNKNOWN: 'unknown'>
 
@@ -25,7 +25,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from fuse_augmentations.types import TransformAdapter
+    from fused_transforms.types import TransformAdapter
 
 
 class Backend(Enum):
@@ -38,7 +38,7 @@ class Backend(Enum):
 
 
 #: Name of the entry-point group third-party packages use to register adapters.
-ADAPTERS_ENTRY_POINT_GROUP = "fuse_augmentations.adapters"
+ADAPTERS_ENTRY_POINT_GROUP = "fused_transforms.adapters"
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +70,7 @@ _ENTRYPOINTS_LOADED = False
 def adapter_capabilities(adapter: object) -> frozenset[str]:
     """Return an adapter's declared ``capabilities``, defaulting to empty.
 
-    ``capabilities`` is an optional member of the :class:`~fuse_augmentations.types.TransformAdapter` protocol; adapters
+    ``capabilities`` is an optional member of the :class:`~fused_transforms.types.TransformAdapter` protocol; adapters
     predating it need not define it. This getattr helper keeps the registry backwards-compatible.
 
     Args:
@@ -101,12 +101,12 @@ def register_adapter(
 
     .. warning::
 
-        **Experimental.** ``register_adapter`` and the ``fuse_augmentations.adapters`` entry-point group are a
+        **Experimental.** ``register_adapter`` and the ``fused_transforms.adapters`` entry-point group are a
         provisional third-party extension API. The signature may change until an external adapter validates it.
 
     Args:
         name: Unique registry key for the adapter (re-registering the same name overwrites the prior entry).
-        adapter: An instance implementing the :class:`~fuse_augmentations.types.TransformAdapter` protocol.
+        adapter: An instance implementing the :class:`~fused_transforms.types.TransformAdapter` protocol.
         module_prefixes: One or more module-path prefixes (e.g. ``"mypkg.transforms."``) whose transforms this
             adapter handles. A trailing dot is recommended to avoid spurious prefix collisions.
         backend: The :class:`Backend` enum member this adapter maps to. Defaults to ``Backend.UNKNOWN`` for
@@ -136,7 +136,7 @@ def _load_entrypoints() -> None:
     """Lazily load third-party adapters from the entry-point group (idempotent, failure-isolated).
 
     Called on the first detection miss, never at package import (avoids executing third-party code and paying its import
-    cost on ``import fuse_augmentations``). Each entry point is loaded in isolation; a failing ``load()`` or
+    cost on ``import fused_transforms``). Each entry point is loaded in isolation; a failing ``load()`` or
     ``register()`` is warned and skipped so one broken plugin cannot break detection for the rest.
 
     """
@@ -269,7 +269,7 @@ def detect_backends_per_transform(transforms: list[object]) -> list[Backend | No
     ``class MyRot(torchvision.transforms.RandomRotation)`` in ``__main__``).
 
     Note:
-        This is a semi-public API accessible via ``fuse_augmentations._backend``.
+        This is a semi-public API accessible via ``fused_transforms._backend``.
         It is not part of the stable public surface and may change without notice.
 
     Args:
@@ -367,7 +367,7 @@ def _register_builtins() -> None:
     helper, so an adapter missing the member simply registers with empty capabilities.
 
     """
-    from fuse_augmentations.adapters import AlbumentationsAdapter, KorniaAdapter, TorchVisionAdapter
+    from fused_transforms.adapters import AlbumentationsAdapter, KorniaAdapter, TorchVisionAdapter
 
     register_adapter("kornia", KorniaAdapter(), "kornia.", backend=Backend.KORNIA)
     register_adapter("albumentations", AlbumentationsAdapter(), "albumentations.", backend=Backend.ALBUMENTATIONS)

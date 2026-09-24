@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations.compose import FusedCompose
+from fused_transforms.compose import FusedCompose
 
 
 class TestMisroutedImageKeyword:

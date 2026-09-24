@@ -23,7 +23,7 @@ The `SyntheticIterableDataset` wrapper and its PyTorch `DataLoader` integration 
 
 ## Image augmentation (needs torch)
 
-`Compose`, `FusedCompose`, `AugmentationSequential`, and everything else at the `fuse_augmentations` package root need the `torch` extra:
+`Compose`, `FusedCompose`, `AugmentationSequential`, and everything else at the `fused_transforms` package root need the `torch` extra:
 
 ```bash
 python -m pip install "vision-synth[torch]"
@@ -70,7 +70,7 @@ python -c "import synth_datasets"
 This check uses only the base installation. For the image-augmentation features, verify the optional `torch` extra:
 
 ```bash
-python -c "import torch, fuse_augmentations"
+python -c "import torch, fused_transforms"
 ```
 
 The base smoke check is executable in the generated documentation test suite:
@@ -82,16 +82,13 @@ assert callable(synth_datasets.generate_dataset)
 assert synth_datasets.__version__
 ```
 
-Both import namespaces expose the same objects:
+The augmentation engine lives under a single import namespace:
 
 ```python
-from fuse_aug import Compose as ShortCompose
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
-assert ShortCompose is Compose
+assert Compose.__name__ == "FusedCompose"
 ```
-
-Long-form documentation uses `fuse_augmentations` so the import matches the distribution name.
 
 ## Build these docs locally
 

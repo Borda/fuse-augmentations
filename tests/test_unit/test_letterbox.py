@@ -12,14 +12,14 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations import (
+from fused_transforms import (
     FusedCompose,
     letterbox_geometry,
     letterbox_matrix,
     transform_bbox_xyxy,
     transform_keypoints,
 )
-from fuse_augmentations.affine.matrix import inv3x3
+from fused_transforms.affine.matrix import inv3x3
 
 GREY = 114.0 / 255.0
 

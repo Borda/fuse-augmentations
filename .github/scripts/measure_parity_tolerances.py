@@ -7,7 +7,7 @@ would not contradict anything written there. This script produces the missing nu
 it enforceable.
 
 Each case runs a deterministic transform -- every parameter range collapsed to a single value, every
-probability at 1.0 -- through the backend's own compose and through ``fuse_augmentations.Compose``,
+probability at 1.0 -- through the backend's own compose and through ``fused_transforms.Compose``,
 then reports the maximum absolute per-pixel difference between the two renders. Determinism is what
 makes the comparison meaningful: with no sampling left, any difference is resampling and composition
 behaviour rather than two different random draws.
@@ -44,7 +44,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BOUNDS_PATH = REPO_ROOT / ".github" / "parity_baseline" / "parity_bounds.json"
@@ -395,7 +395,7 @@ def _render_doc(measured: dict[str, float]) -> str:
         "",
         (
             "Maximum absolute per-pixel difference between each backend's own compose and"
-            " `fuse_augmentations.Compose` running the same deterministic transform. Every parameter range"
+            " `fused_transforms.Compose` running the same deterministic transform. Every parameter range"
             " is collapsed to a single value and every probability is 1.0, so no sampling remains and the"
             " number is resampling and composition behaviour rather than two different random draws."
         ),

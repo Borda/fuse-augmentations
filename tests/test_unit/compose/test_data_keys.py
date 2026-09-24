@@ -16,7 +16,7 @@ import warnings
 import pytest
 import torch
 
-from fuse_augmentations.compose import Compose
+from fused_transforms.compose import Compose
 
 
 class TestDataKeysNone:

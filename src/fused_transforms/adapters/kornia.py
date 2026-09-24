@@ -5,7 +5,7 @@ representation and matrix primitives used by ``FusedAffineSegment``.
 
 Examples:
     ```pycon
-    >>> from fuse_augmentations.adapters.kornia import KorniaAdapter
+    >>> from fused_transforms.adapters.kornia import KorniaAdapter
     >>> adapter = KorniaAdapter()
     >>> adapter  # doctest: +ELLIPSIS
     <...KorniaAdapter...>
@@ -23,14 +23,14 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
-from fuse_augmentations.affine.matrix import (
+from fused_transforms.affine.matrix import (
     crop_resize_matrix,
     hflip_matrix,
     perspective_from_points,
     rotation_matrix,
     vflip_matrix,
 )
-from fuse_augmentations.types import PaddingModeStr, SamplingSemantics, TransformCategory
+from fused_transforms.types import PaddingModeStr, SamplingSemantics, TransformCategory
 
 # Doctests that import the optional Kornia backend are skipped when it is not
 # installed (pytest-doctestplus reads this module-level mapping of doctest name
@@ -823,7 +823,7 @@ class KorniaAdapter:
         Kornia scales floats to byte space, computes a 256-bin histogram, derives
         ``step = trunc((N - count(max_nonzero_bin)) / 255)``, then shifts the
         truncated cumulative table by one bin. The returned normalized table is
-        gathered by :class:`~fuse_augmentations.affine.segment.FusedLUTSegment`.
+        gathered by :class:`~fused_transforms.affine.segment.FusedLUTSegment`.
 
         Args:
             transform: A ``RandomEqualize`` transform.

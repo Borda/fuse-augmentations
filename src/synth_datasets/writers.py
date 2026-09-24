@@ -85,7 +85,7 @@ def _edge_flat(flat: list[float]) -> list[float]:
 
     An :class:`~synth_datasets.sample.Annotation` carries outlines, oriented-box corners
     and landmarks in pixel-centre space, because that is the space the point transforms in
-    :mod:`~fuse_augmentations.targets` move them through. ``bbox_xyxy`` stays in edge space for the
+    :mod:`~fused_transforms.targets` move them through. ``bbox_xyxy`` stays in edge space for the
     same reason -- that is the space its own transform assumes. A COCO or YOLO file has no room for
     two conventions: its ``segmentation`` ring, its landmarks and its ``bbox`` are read as one
     coordinate system, and that system is edge space, so the point fields are converted back here,

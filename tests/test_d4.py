@@ -21,9 +21,9 @@ import torch
 import torch.nn.functional as F
 from typing_extensions import Self
 
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
-from fuse_augmentations.affine.matrix import (
+from fused_transforms import Compose
+from fused_transforms._compat import _KORNIA_AVAILABLE
+from fused_transforms.affine.matrix import (
     apply_d4_image,
     classify_d4_batch,
     hflip_matrix,
@@ -84,7 +84,7 @@ class TestClassifyD4Batch:
     @pytest.mark.parametrize("name", _D4_NAMES, ids=list(_D4_NAMES))
     def test_canonical_matrix_classifies_to_its_name(self, name: str) -> None:
         """Each canonical D4 forward matrix classifies back to its own op name."""
-        from fuse_augmentations.affine.matrix import _d4_forward_matrix
+        from fused_transforms.affine.matrix import _d4_forward_matrix
 
         matrix = _d4_forward_matrix(name, SIDE, SIDE).unsqueeze(0).expand(BATCH, -1, -1)
         assert classify_d4_batch(matrix, SIDE, SIDE) == name
@@ -122,7 +122,7 @@ class TestClassifyD4Batch:
     @pytest.mark.parametrize("name", ["rot90", "rot270", "transpose", "anti_transpose"], ids=lambda n: n)
     def test_axis_swap_ops_rejected_on_non_square(self, name: str) -> None:
         """Axis-swapping D4 ops are rejected on non-square images (shape change)."""
-        from fuse_augmentations.affine.matrix import _d4_forward_matrix
+        from fused_transforms.affine.matrix import _d4_forward_matrix
 
         matrix = _d4_forward_matrix(name, height=8, width=16).unsqueeze(0)
         assert classify_d4_batch(matrix, height=8, width=16) is None

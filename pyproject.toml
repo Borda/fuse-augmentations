@@ -79,9 +79,9 @@ urls.Documentation = "https://borda.github.io/vision-synth/"
 urls.Homepage = "https://github.com/Borda/vision-synth"
 urls.Issues = "https://github.com/Borda/vision-synth/issues"
 
-# Experimental third-party adapter extension point (see fuse_augmentations._backend.register_adapter).
+# Experimental third-party adapter extension point (see fused_transforms._backend.register_adapter).
 # Downstream packages expose an adapter by declaring, in THEIR pyproject.toml:
-#   [project.entry-points."fuse_augmentations.adapters"]
+#   [project.entry-points."fused_transforms.adapters"]
 #   my_adapter = "my_pkg.module:register"   # a zero-arg callable that calls register_adapter(...)
 # Entries are loaded LAZILY on the first backend-detection miss, never at package import.
 # The three built-in adapters self-register at import and are intentionally NOT listed here,
@@ -121,9 +121,9 @@ benchmark = [
 
 [tool.setuptools]
 packages.find.where = [ "src" ]
-packages.find.include = [ "fuse_aug*", "fuse_augmentations*", "synth_datasets*" ]
+packages.find.include = [ "fused_transforms*", "synth_datasets*" ]
 package-data.synth_datasets = [ "letters/*.svg", "symbols/*.svg", "zoo/*.md", "zoo/*.svg" ]
-dynamic.version.attr = "fuse_augmentations.__about__.__version__"
+dynamic.version.attr = "fused_transforms.__about__.__version__"
 
 [tool.ruff]
 target-version = "py310"
@@ -176,9 +176,6 @@ lint.per-file-ignores."experiments/**/*.py" = [
   "N",   # relaxed naming (N, X, C, etc. are idiomatic in image/math code)
   "S",   # security rules relaxed for local experiment scripts
 ]
-lint.per-file-ignores."src/fuse_aug/__init__.py" = [
-  "F401", # Star-import re-exports are intentional
-]
 lint.per-file-ignores."tests/**/*.py" = [
   "ANN",   # No type annotations required in tests
   "D",     # No docstrings required in tests
@@ -208,7 +205,7 @@ blank = true
 keep_full_version = true
 
 [tool.mypy]
-files = [ "src/fuse_aug", "src/fuse_augmentations", "src/synth_datasets" ]
+files = [ "src/fused_transforms", "src/synth_datasets" ]
 exclude = [ "^tests/" ]
 ignore_missing_imports = true
 python_version = "3.10"

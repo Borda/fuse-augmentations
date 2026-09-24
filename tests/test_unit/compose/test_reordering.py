@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import torch
 
-from fuse_augmentations.affine.segment import (
+from fused_transforms.affine.segment import (
     ExactAffineSegment,
     FusedAffineSegment,
     build_segments,
     reorder_pointwise,
 )
-from fuse_augmentations.types import TransformCategory
+from fused_transforms.types import TransformCategory
 
 
 class _StubTransform:

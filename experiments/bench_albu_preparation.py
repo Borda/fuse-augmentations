@@ -20,8 +20,8 @@ import albumentations as A
 import numpy as np
 import torch
 
-from fuse_augmentations import Compose
-from fuse_augmentations.__about__ import __version__
+from fused_transforms import Compose
+from fused_transforms.__about__ import __version__
 
 
 def pipeline(seed):
@@ -72,7 +72,7 @@ def main(output: str, revision: str) -> None:
                 "revision": revision,
                 "platform": platform.platform(),
                 "python": platform.python_version(),
-                "fuse_augmentations": __version__,
+                "fused_transforms": __version__,
                 "seed_policy": {"pipeline_streams": 17, "input_generator": 23},
                 "profile_batch": 32,
                 "torch": torch.__version__,

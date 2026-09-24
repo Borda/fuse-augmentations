@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations import FusedCompose, orientation_reversed, permute_keypoint_pairs
+from fused_transforms import FusedCompose, orientation_reversed, permute_keypoint_pairs
 
 #: Three slots: a centre that maps to itself, and one left/right pair.
 PAIRS = (0, 2, 1)

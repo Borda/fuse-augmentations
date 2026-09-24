@@ -10,8 +10,8 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass
 
-from fuse_augmentations._backend import Backend
-from fuse_augmentations.affine.segment import (
+from fused_transforms._backend import Backend
+from fused_transforms.affine.segment import (
     AlbuFusedAffineSegment,
     AlbuProjectiveSegment,
     CropResizeSegment,
@@ -26,7 +26,7 @@ from fuse_augmentations.affine.segment import (
     reorder_aggressive,
     reorder_pointwise,
 )
-from fuse_augmentations.types import (
+from fused_transforms.types import (
     ClipPolicyStr,
     ComposePaddingModeStr,
     ExecutionStr,
@@ -62,15 +62,15 @@ def _adapter_for_backend(backend: Backend) -> TransformAdapter:
 
     """
     if backend == Backend.KORNIA:
-        from fuse_augmentations.adapters.kornia import KorniaAdapter
+        from fused_transforms.adapters.kornia import KorniaAdapter
 
         return KorniaAdapter()
     if backend == Backend.ALBUMENTATIONS:
-        from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
+        from fused_transforms.adapters.albumentations import AlbumentationsAdapter
 
         return AlbumentationsAdapter()
     if backend == Backend.TORCHVISION:
-        from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
+        from fused_transforms.adapters.torchvision import TorchVisionAdapter
 
         return TorchVisionAdapter()
     msg = f"Backend '{backend.value}' not yet supported"

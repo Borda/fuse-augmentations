@@ -19,19 +19,19 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
+from fused_transforms import Compose
+from fused_transforms._compat import _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
 
-    from fuse_augmentations.adapters.kornia import KorniaAdapter
+    from fused_transforms.adapters.kornia import KorniaAdapter
 
 if _TORCHVISION_AVAILABLE:
     import torchvision.transforms.v2 as tv_v2
     import torchvision.transforms.v2.functional as tv_f
 
-    from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
+    from fused_transforms.adapters.torchvision import TorchVisionAdapter
 
 
 def _weighted_luma(image: torch.Tensor, weights: tuple[float, float, float]) -> torch.Tensor:

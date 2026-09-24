@@ -6,7 +6,7 @@ representation used by ``FusedAffineSegment``.
 Supports both ``torchvision.transforms`` (v1) and ``torchvision.transforms.v2``
 namespaces. Each geometric transform samples parameters via TorchVision's
 ``get_params()`` static method and reconstructs the affine matrix from
-``fuse_augmentations.affine.matrix`` primitives.
+``fused_transforms.affine.matrix`` primitives.
 
 Flip transforms (``RandomHorizontalFlip``, ``RandomVerticalFlip``) return a
 minimal parameter dict containing a ``"_batch_size"`` sentinel; ``build_matrix()``
@@ -17,7 +17,7 @@ to function; the module is importable without it.
 
 Examples:
     ```pycon
-    >>> from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
+    >>> from fused_transforms.adapters.torchvision import TorchVisionAdapter
     >>> adapter = TorchVisionAdapter()
     >>> adapter  # doctest: +ELLIPSIS
     <...TorchVisionAdapter...>
@@ -35,14 +35,14 @@ from typing import Any, cast
 import numpy as np
 import torch
 
-from fuse_augmentations.affine.matrix import (
+from fused_transforms.affine.matrix import (
     crop_resize_matrix,
     hflip_matrix,
     perspective_from_points,
     rotation_matrix,
     vflip_matrix,
 )
-from fuse_augmentations.types import PaddingModeStr, SamplingSemantics, TransformCategory
+from fused_transforms.types import PaddingModeStr, SamplingSemantics, TransformCategory
 
 # Doctests that import the optional TorchVision backend are skipped when it is
 # not installed (pytest-doctestplus reads this module-level mapping of doctest
@@ -717,7 +717,7 @@ class TorchVisionAdapter:
         Note:
             The v1 path loops ``batch_size`` times and calls ``torch.stack``, giving
             O(batch_size) allocations. For large batches prefer v2 transforms or use
-            :meth:`~fuse_augmentations.Compose.from_params` to stay in the
+            :meth:`~fused_transforms.Compose.from_params` to stay in the
             fused path and avoid passthrough entirely.
 
         Args:

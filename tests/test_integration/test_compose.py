@@ -12,8 +12,8 @@ import pickle
 import pytest
 import torch
 
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
+from fused_transforms import Compose
+from fused_transforms._compat import _KORNIA_AVAILABLE
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug

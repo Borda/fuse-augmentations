@@ -5,25 +5,25 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
-from fuse_augmentations.affine.segment import FusedColorSegment, build_segments
-from fuse_augmentations.compose import FusedCompose
-from fuse_augmentations.types import ReorderPolicy
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
+from fused_transforms.affine.segment import FusedColorSegment, build_segments
+from fused_transforms.compose import FusedCompose
+from fused_transforms.types import ReorderPolicy
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as albu
 
-    from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
+    from fused_transforms.adapters.albumentations import AlbumentationsAdapter
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
 
-    from fuse_augmentations.adapters.kornia import KorniaAdapter
+    from fused_transforms.adapters.kornia import KorniaAdapter
 
 if _TORCHVISION_AVAILABLE:
     import torchvision.transforms.v2 as tv_v2
 
-    from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
+    from fused_transforms.adapters.torchvision import TorchVisionAdapter
 
 
 @pytest.mark.parametrize(

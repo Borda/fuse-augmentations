@@ -123,7 +123,7 @@ The plan is available immediately after construction:
 ```python
 import torch
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 image = torch.rand(2, 3, 32, 32)
 pipe = Compose.from_params(rotation=(-15.0, 15.0), hflip_p=0.5)

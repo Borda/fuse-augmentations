@@ -1,6 +1,6 @@
 """Affine warp segment classes and matrix primitives."""
 
-from fuse_augmentations.affine.matrix import (
+from fused_transforms.affine.matrix import (
     LetterboxGeometry,
     apply_d4_image,
     classify_d4_batch,
@@ -21,7 +21,7 @@ from fuse_augmentations.affine.matrix import (
     translate_matrix,
     vflip_matrix,
 )
-from fuse_augmentations.affine.segment import (
+from fused_transforms.affine.segment import (
     AlbuFusedAffineSegment,
     AlbuProjectiveSegment,
     CropResizeSegment,

@@ -3,8 +3,8 @@
 Pure mathematical functions that transform masks, bounding boxes, and keypoints
 using precomputed affine matrices or grids from the fused pipeline.
 
-These helpers are called internally by :class:`~fuse_augmentations.affine.segment.FusedAffineSegment` and
-:class:`~fuse_augmentations.affine.segment.ExactAffineSegment` when
+These helpers are called internally by :class:`~fused_transforms.affine.segment.FusedAffineSegment` and
+:class:`~fused_transforms.affine.segment.ExactAffineSegment` when
 ``data_keys`` includes auxiliary targets. They are also exported as public API
 for callers that want to apply the same math outside of the pipeline
 (e.g. to transform a stored transform matrix after the fact).
@@ -17,7 +17,7 @@ The other three functions are differentiable.
 Examples:
     ```pycon
     >>> import torch
-    >>> from fuse_augmentations.targets import transform_keypoints
+    >>> from fused_transforms.targets import transform_keypoints
     >>> keypoints = torch.tensor([[[10.0, 20.0]]])  # (batch_size=1, num_points=1, 2)
     >>> matrix = torch.eye(3).unsqueeze(0)           # identity (1, 3, 3)
     >>> out = transform_keypoints(keypoints, matrix)
@@ -38,7 +38,7 @@ import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import Tensor
 
-from fuse_augmentations.types import MaskInterpolationStr
+from fused_transforms.types import MaskInterpolationStr
 
 #: Guards the visibility division for a box whose unclipped area underflows to zero.
 _AREA_EPS = 1e-12
@@ -445,7 +445,7 @@ def clip_bbox_xyxy(boxes: Tensor, height: float, width: float) -> Tensor:
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.targets import clip_bbox_xyxy
+        >>> from fused_transforms.targets import clip_bbox_xyxy
         >>> boxes = torch.tensor([[[-4.0, -4.0, 6.0, 6.0]]])
         >>> clip_bbox_xyxy(boxes, height=8.0, width=8.0).tolist()
         [[[0.0, 0.0, 6.0, 6.0]]]
@@ -501,7 +501,7 @@ def instance_keep_mask(
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.targets import clip_bbox_xyxy, instance_keep_mask
+        >>> from fused_transforms.targets import clip_bbox_xyxy, instance_keep_mask
         >>> warped = torch.tensor([[[2.0, 2.0, 6.0, 6.0], [-9.0, -9.0, -1.0, -1.0]]])
         >>> clipped = clip_bbox_xyxy(warped, height=8.0, width=8.0)
         >>> instance_keep_mask(warped, clipped, min_size=1.0, min_visibility=0.25).tolist()
@@ -554,7 +554,7 @@ def rboxes_to_corners(rboxes: Tensor) -> Tensor:
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.targets import rboxes_to_corners
+        >>> from fused_transforms.targets import rboxes_to_corners
         >>> box = torch.tensor([[[5.0, 3.0, 4.0, 2.0, 0.0]]])
         >>> rboxes_to_corners(box)[0, 0].tolist()
         [[3.0, 2.0], [7.0, 2.0], [7.0, 4.0], [3.0, 4.0]]
@@ -604,7 +604,7 @@ def corners_to_rboxes(corners: Tensor) -> Tensor:
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.targets import corners_to_rboxes
+        >>> from fused_transforms.targets import corners_to_rboxes
         >>> quad = torch.tensor([[[[3.0, 2.0], [7.0, 2.0], [7.0, 4.0], [3.0, 4.0]]]])
         >>> [round(value, 4) for value in corners_to_rboxes(quad)[0, 0].tolist()]
         [5.0, 3.0, 4.0, 2.0, 0.0]
@@ -664,7 +664,7 @@ def transform_rboxes(rboxes: Tensor, mtx_forward: Tensor, canonicalize: RBoxCano
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.targets import transform_rboxes
+        >>> from fused_transforms.targets import transform_rboxes
         >>> double = torch.eye(3).unsqueeze(0) * 2.0
         >>> double[0, 2, 2] = 1.0
         >>> box = torch.tensor([[[1.0, 2.0, 4.0, 2.0, 0.0]]])
@@ -713,7 +713,7 @@ def mirror_rboxes(rboxes: Tensor, width: int, canonicalize: RBoxCanonicalizer | 
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.targets import mirror_rboxes
+        >>> from fused_transforms.targets import mirror_rboxes
         >>> box = torch.tensor([[[3.0, 5.0, 8.0, 4.0, 0.25]]])
         >>> [round(value, 4) for value in mirror_rboxes(box, width=10)[0, 0].tolist()]
         [6.0, 5.0, 8.0, 4.0, 2.8916]
@@ -756,7 +756,7 @@ def shift_rboxes(
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.targets import shift_rboxes
+        >>> from fused_transforms.targets import shift_rboxes
         >>> box = torch.tensor([[[2.0, 3.0, 6.0, 4.0, 0.5]]])
         >>> [round(value, 4) for value in shift_rboxes(box, 10.0, -1.0)[0, 0].tolist()]
         [12.0, 2.0, 6.0, 4.0, 0.5]
@@ -792,7 +792,7 @@ def rbox_envelopes(rboxes: Tensor) -> Tensor:
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.targets import rbox_envelopes
+        >>> from fused_transforms.targets import rbox_envelopes
         >>> box = torch.tensor([[[5.0, 3.0, 4.0, 2.0, 0.0]]])
         >>> rbox_envelopes(box)[0, 0].tolist()
         [3.0, 2.0, 7.0, 4.0]
@@ -823,7 +823,7 @@ def orientation_reversed(mtx_forward: Tensor) -> Tensor:
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.targets import orientation_reversed
+        >>> from fused_transforms.targets import orientation_reversed
         >>> mirror = torch.tensor([[[-1.0, 0.0, 7.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]])
         >>> orientation_reversed(mirror).tolist()
         [True]
@@ -865,7 +865,7 @@ def permute_keypoint_pairs(keypoints: Tensor, flip_index: Tensor, reversed_mask:
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.targets import permute_keypoint_pairs
+        >>> from fused_transforms.targets import permute_keypoint_pairs
         >>> points = torch.tensor([[[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]])
         >>> pairs = torch.tensor([0, 2, 1])
         >>> permute_keypoint_pairs(points, pairs, torch.tensor([True]))[0].tolist()

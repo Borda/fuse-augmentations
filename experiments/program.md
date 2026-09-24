@@ -96,14 +96,14 @@ The Guard automatically includes every parity/precision test in `tests/` — inc
 max_iterations: 24
 agent_strategy: perf
 scope_files:
-  - src/fuse_augmentations/compose.py
-  - src/fuse_augmentations/affine/segment.py
-  - src/fuse_augmentations/affine/matrix.py
-  - src/fuse_augmentations/_interpolation.py
-  - src/fuse_augmentations/adapters/albumentations.py
-  - src/fuse_augmentations/adapters/kornia.py
-  - src/fuse_augmentations/adapters/torchvision.py
-  - src/fuse_augmentations/types.py
+  - src/fused_transforms/compose.py
+  - src/fused_transforms/affine/segment.py
+  - src/fused_transforms/affine/matrix.py
+  - src/fused_transforms/_interpolation.py
+  - src/fused_transforms/adapters/albumentations.py
+  - src/fused_transforms/adapters/kornia.py
+  - src/fused_transforms/adapters/torchvision.py
+  - src/fused_transforms/types.py
   - experiments/bench_augmentation_pipelines.py
 compute: local
 ```

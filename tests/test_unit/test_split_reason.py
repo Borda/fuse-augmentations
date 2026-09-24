@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fused_transforms import Compose
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as albu

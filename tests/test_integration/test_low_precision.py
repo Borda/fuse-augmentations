@@ -19,8 +19,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations import Compose
-from fuse_augmentations.types import PipelineDtypeStr
+from fused_transforms import Compose
+from fused_transforms.types import PipelineDtypeStr
 
 _MIN_MPS_PSNR_DB: dict[PipelineDtypeStr, float] = {
     "bfloat16": 38.0,

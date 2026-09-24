@@ -3,7 +3,7 @@
 
 # Measured fused-vs-native tolerances
 
-Maximum absolute per-pixel difference between each backend's own compose and `fuse_augmentations.Compose` running the same deterministic transform. Every parameter range is collapsed to a single value and every probability is 1.0, so no sampling remains and the number is resampling and composition behaviour rather than two different random draws.
+Maximum absolute per-pixel difference between each backend's own compose and `fused_transforms.Compose` running the same deterministic transform. Every parameter range is collapsed to a single value and every probability is 1.0, so no sampling remains and the number is resampling and composition behaviour rather than two different random draws.
 
 Most rows use a float32 image in `[0, 1]`, where a tolerance of `0.004` is roughly one step of an 8-bit level. The `albumentations_uint8` rows instead warp the integer array directly on both sides -- the path an Albumentations caller takes, and the one this package's NumPy multi-target calls take -- and are measured in intensity levels, so their numbers are not comparable to the float rows and are gated with their own one-level allowance. These are measurements, not promises: they record what the current implementations do, and `.github/workflows/ci_gate-parity.yml` fails when one drifts past its recorded bound.
 

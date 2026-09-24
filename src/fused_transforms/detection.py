@@ -15,8 +15,8 @@ from numbers import Real
 import torch
 from torch import Tensor
 
-from fuse_augmentations.pipeline import FusedCompose
-from fuse_augmentations.targets import clip_bbox_xyxy, instance_keep_mask
+from fused_transforms.pipeline import FusedCompose
+from fused_transforms.targets import clip_bbox_xyxy, instance_keep_mask
 
 _ALLOWED_TARGET_FIELDS = frozenset({"boxes", "labels", "area", "iscrowd", "image_id"})
 _ISCROWD_DTYPES = frozenset({torch.bool, torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64})

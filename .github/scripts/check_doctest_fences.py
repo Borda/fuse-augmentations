@@ -110,7 +110,7 @@ def main(*paths: str) -> None:
 
     Examples:
         ```pycon
-        >>> main("src/fuse_augmentations/__init__.py")  # doctest: +SKIP
+        >>> main("src/fused_transforms/__init__.py")  # doctest: +SKIP
 
         ```
 

@@ -13,9 +13,9 @@ import warnings
 
 import pytest
 
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
-from fuse_augmentations.adapters.kornia import KorniaAdapter
-from fuse_augmentations.types import TransformCategory
+from fused_transforms._compat import _KORNIA_AVAILABLE
+from fused_transforms.adapters.kornia import KorniaAdapter
+from fused_transforms.types import TransformCategory
 
 
 @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia not installed")

@@ -15,8 +15,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations._compat import _TORCHVISION_V2_AVAILABLE
-from fuse_augmentations.affine.segment import _samples_on_the_matrix_device
+from fused_transforms._compat import _TORCHVISION_V2_AVAILABLE
+from fused_transforms.affine.segment import _samples_on_the_matrix_device
 
 pytest_plugins: list[str] = []
 
@@ -53,7 +53,7 @@ class TestMatrixSampleDevice:
     @staticmethod
     def _segment(transforms: list[object]) -> object:
         """Return an object exposing just what the resolver reads, without building a real segment."""
-        from fuse_augmentations.affine.segment import _BaseAffineSegment
+        from fused_transforms.affine.segment import _BaseAffineSegment
 
         class _Stub:
             pass
@@ -111,7 +111,7 @@ class TestComposeIsUnchangedOnCpu:
         """
         import torchvision.transforms.v2 as tv
 
-        from fuse_augmentations import Compose
+        from fused_transforms import Compose
 
         def render() -> torch.Tensor:
             torch.manual_seed(0)

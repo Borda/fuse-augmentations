@@ -43,7 +43,7 @@ This matrix describes canonical operations accepted by `Compose.from_config`. It
 An optional backend that is not installed reports an empty capability set for that backend. Query the running environment instead of hard-coding assumptions:
 
 ```python
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 print(sorted(Compose.supported_ops("torchvision")))
 matrix = {k: len(v) for k, v in sorted(Compose.capability_matrix().items())}
@@ -172,7 +172,7 @@ Known kernel and pointwise passthrough operations leave auxiliary geometry uncha
 
 ## Experimental extension point
 
-`fuse_augmentations._backend.register_adapter` and the `fuse_augmentations.adapters` entry-point group are experimental internals. In the current implementation, third-party entries participate in backend detection, but a default third-party `Backend.UNKNOWN` entry is not an end-to-end `Compose` execution path. Do not build a production integration around this mechanism until the project publishes and tests a complete registration → construction → forward contract.
+`fused_transforms._backend.register_adapter` and the `fused_transforms.adapters` entry-point group are experimental internals. In the current implementation, third-party entries participate in backend detection, but a default third-party `Backend.UNKNOWN` entry is not an end-to-end `Compose` execution path. Do not build a production integration around this mechanism until the project publishes and tests a complete registration → construction → forward contract.
 
 ## Related pages
 

@@ -14,9 +14,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
-from fuse_augmentations.compose import FusedCompose as Compose
-from fuse_augmentations.types import TransformSpec
+from fused_transforms._compat import _KORNIA_AVAILABLE
+from fused_transforms.compose import FusedCompose as Compose
+from fused_transforms.types import TransformSpec
 
 
 class TestFromParamsIdentity:
@@ -80,7 +80,7 @@ class TestFromParamsScale:
 
     def test_uniform_scale_is_isotropic(self):
         """A plain scale=(low, high) range draws ONE factor per sample shared by both axes, as documented."""
-        from fuse_augmentations.compose import _DirectParamAdapter, _DirectParamTransform
+        from fused_transforms.compose import _DirectParamAdapter, _DirectParamTransform
 
         tfm = _DirectParamTransform({"scale": (0.5, 1.5)})
         params = _DirectParamAdapter.sample_params(tfm, (64, 3, 16, 16), torch.device("cpu"))
@@ -88,7 +88,7 @@ class TestFromParamsScale:
 
     def test_explicit_axis_scales_stay_independent(self):
         """Explicit scale_x/scale_y ranges keep independent per-axis draws (anisotropic by request)."""
-        from fuse_augmentations.compose import _DirectParamAdapter, _DirectParamTransform
+        from fused_transforms.compose import _DirectParamAdapter, _DirectParamTransform
 
         tfm = _DirectParamTransform({"scale_x": (0.5, 1.5), "scale_y": (0.5, 1.5)})
         params = _DirectParamAdapter.sample_params(tfm, (64, 3, 16, 16), torch.device("cpu"))

@@ -12,7 +12,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from fuse_augmentations.targets import (
+from fused_transforms.targets import (
     transform_bbox_xywh,
     transform_bbox_xyxy,
     transform_keypoints,

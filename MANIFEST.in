@@ -3,7 +3,7 @@ recursive-exclude __pycache__  *.py[cod] *.orig
 
 # Include the README
 include *.md
-recursive-include src/fuse_augmentations *.md
+recursive-include src/fused_transforms *.md
 recursive-include src/synth_datasets *.md
 
 # Include the license file

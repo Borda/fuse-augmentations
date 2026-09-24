@@ -10,7 +10,7 @@ description: Define TransformSpec objects, query backend capabilities, choose st
 <!--phmdoctest-share-names-->
 
 ```python
-from fuse_augmentations import Compose, ReorderPolicy, TransformSpec
+from fused_transforms import Compose, ReorderPolicy, TransformSpec
 
 specs = [
     TransformSpec(
@@ -34,7 +34,7 @@ augment = Compose.from_config(
 The global operation vocabulary is larger than any one backend's constructible set. Query the current environment instead of copying a static assumption into application code:
 
 ```python
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 print(sorted(Compose.supported_ops("native")))
 counts = {k: len(v) for k, v in sorted(Compose.capability_matrix().items())}
@@ -78,8 +78,8 @@ Only enable `POINTWISE` after measuring the output and performance trade-off. `A
 ```python
 import torch
 
-from fuse_augmentations import Compose, letterbox_matrix, transform_keypoints
-from fuse_augmentations.affine.matrix import inv3x3
+from fused_transforms import Compose, letterbox_matrix, transform_keypoints
+from fused_transforms.affine.matrix import inv3x3
 
 augment = Compose.from_params(
     rotation=(20.0, 20.0),
@@ -146,7 +146,7 @@ There is deliberately no `align_corners` parameter. It would change nothing for 
 ```python
 import torch
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 image = torch.full((1, 3, 32, 32), 0.8)
 augment = Compose.from_params(translate_x=(8.0, 8.0), fill=114.0 / 255.0)

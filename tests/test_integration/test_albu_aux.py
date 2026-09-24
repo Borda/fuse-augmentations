@@ -25,9 +25,9 @@ import numpy as np
 import pytest
 import torch
 
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
-from fuse_augmentations.targets import (
+from fused_transforms import Compose
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fused_transforms.targets import (
     transform_bbox_xyxy,
     transform_keypoints,
     transform_mask,
@@ -91,7 +91,7 @@ class TestAlbuAuxConventionParity:
         matrix = pipe.transform_matrix
         assert matrix is not None
         mtx_inv = torch.linalg.inv(matrix.to(torch.float64))
-        from fuse_augmentations.affine.matrix import normalize_matrix
+        from fused_transforms.affine.matrix import normalize_matrix
 
         mtx_norm = normalize_matrix(mtx_inv, HEIGHT, WIDTH).to(torch.float32)
         import torch.nn.functional as functional

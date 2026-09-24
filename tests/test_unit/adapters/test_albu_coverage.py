@@ -18,10 +18,10 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE
 
 if _ALBUMENTATIONS_AVAILABLE:
-    from fuse_augmentations.adapters.albumentations import TRANSFORM_REGISTRY, AlbumentationsAdapter
+    from fused_transforms.adapters.albumentations import TRANSFORM_REGISTRY, AlbumentationsAdapter
 else:
     TRANSFORM_REGISTRY = {}  # type: ignore[var-annotated]
     AlbumentationsAdapter = None  # type: ignore[assignment,misc]

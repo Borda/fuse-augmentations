@@ -4,7 +4,7 @@ A degradation changes pixel *values* and never pixel *positions*, which is what 
 labels exact for the pixels it emits: noise, blur, a JPEG round-trip, a contrast or colour shift and
 a vignette all leave a box where it was. Anything geometric — an elastic warp, a perspective change,
 a motion smear — is deliberately absent and belongs to
-:class:`~fuse_augmentations.FusedCompose`, which is what this package fuses third-party transforms
+:class:`~fused_transforms.FusedCompose`, which is what this package fuses third-party transforms
 for in the first place.
 
 The overlap with that pipeline is smaller than it looks. A `degrade` tuple describes pixels **baked

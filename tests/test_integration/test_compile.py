@@ -16,8 +16,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
-from fuse_augmentations.affine.segment import (
+from fused_transforms._compat import _KORNIA_AVAILABLE
+from fused_transforms.affine.segment import (
     _COMPILED_COLOR_CACHE,
     _COMPILED_LUT_CACHE,
     _COMPILED_WARP_CACHE,
@@ -166,8 +166,8 @@ class TestCompileFlagEndToEnd:
         """On CPU the compile flag is a no-op — output equals the default eager path."""
         import kornia.augmentation as kornia_aug
 
-        from fuse_augmentations.adapters.kornia import KorniaAdapter
-        from fuse_augmentations.compose import FusedCompose
+        from fused_transforms.adapters.kornia import KorniaAdapter
+        from fused_transforms.compose import FusedCompose
 
         image = torch.rand(2, 3, 32, 32, dtype=torch.float32)
 
@@ -188,8 +188,8 @@ class TestCompileFlagEndToEnd:
         """A CUDA geometry-plus-color pipeline matches eager output within atol 1e-5."""
         import kornia.augmentation as kornia_aug
 
-        from fuse_augmentations.adapters.kornia import KorniaAdapter
-        from fuse_augmentations.compose import FusedCompose
+        from fused_transforms.adapters.kornia import KorniaAdapter
+        from fused_transforms.compose import FusedCompose
 
         image = torch.rand(2, 3, 32, 32, dtype=torch.float32, device="cuda")
 
@@ -208,8 +208,8 @@ class TestCompileFlagEndToEnd:
         """The default pipeline reports ``compile_warp=False``."""
         import kornia.augmentation as kornia_aug
 
-        from fuse_augmentations.adapters.kornia import KorniaAdapter
-        from fuse_augmentations.compose import FusedCompose
+        from fused_transforms.adapters.kornia import KorniaAdapter
+        from fused_transforms.compose import FusedCompose
 
         pipe = FusedCompose([kornia_aug.RandomHorizontalFlip(p=1.0)], adapter=KorniaAdapter())
         assert pipe.compile_warp is False

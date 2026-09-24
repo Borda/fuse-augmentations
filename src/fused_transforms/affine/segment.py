@@ -8,8 +8,8 @@ Examples:
     ```pycon
     >>> import torch
     >>> import kornia.augmentation as K
-    >>> from fuse_augmentations.affine.segment import FusedAffineSegment
-    >>> from fuse_augmentations.adapters.kornia import KorniaAdapter
+    >>> from fused_transforms.affine.segment import FusedAffineSegment
+    >>> from fused_transforms.adapters.kornia import KorniaAdapter
     >>> t = K.RandomHorizontalFlip(p=1.0)
     >>> seg = FusedAffineSegment([t], KorniaAdapter())
     >>> out = seg(torch.zeros(1, 3, 8, 8))
@@ -35,10 +35,10 @@ import torch.nn.functional as F  # noqa: N812
 from numpy.typing import NDArray
 from torch import Tensor, nn
 
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
-from fuse_augmentations._random import GeneratorPicklingMixin, reject_backend_randomness
-from fuse_augmentations._random import rand as _rand
-from fuse_augmentations.affine.matrix import (
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fused_transforms._random import GeneratorPicklingMixin, reject_backend_randomness
+from fused_transforms._random import rand as _rand
+from fused_transforms.affine.matrix import (
     _singularity_threshold,
     apply_d4_image,
     classify_d4_batch,
@@ -49,7 +49,7 @@ from fuse_augmentations.affine.matrix import (
     normalize_matrix_io,
     perspective_grid,
 )
-from fuse_augmentations.types import (
+from fused_transforms.types import (
     ClipPolicyStr,
     ExecutionStr,
     InterpolationStr,
@@ -458,7 +458,7 @@ def _grid_sample_affine_batched(
             subtracted before sampling and added back after: an out-of-canvas sample
             reads the zero padding and comes back as exactly the fill, while a boundary
             sample blends the interior with the fill the way a constant border does.
-        compiling: Forwarded to :func:`~fuse_augmentations.affine.matrix.inv3x3`
+        compiling: Forwarded to :func:`~fused_transforms.affine.matrix.inv3x3`
             to select the compile-safe branch explicitly; ``None`` falls back to
             ambient ``torch.compile`` detection for ordinary eager calls.
 
@@ -502,7 +502,7 @@ def _grid_sample_perspective_batched(
         fill: Optional ``(1, channels, 1, 1)`` constant written outside the source
             canvas, applied by the same subtract/add construction as
             :func:`_grid_sample_affine_batched`.
-        compiling: Forwarded to :func:`~fuse_augmentations.affine.matrix.inv3x3`;
+        compiling: Forwarded to :func:`~fused_transforms.affine.matrix.inv3x3`;
             see :func:`_grid_sample_affine_batched`.
 
     Returns:
@@ -567,7 +567,7 @@ def _torch_supports_compile() -> bool:
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.affine.segment import _torch_supports_compile
+        >>> from fused_transforms.affine.segment import _torch_supports_compile
         >>> isinstance(_torch_supports_compile(), bool)
         True
 
@@ -688,7 +688,7 @@ def _mipmap_sigma(scale: float) -> float:
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.affine.segment import _mipmap_sigma
+        >>> from fused_transforms.affine.segment import _mipmap_sigma
         >>> round(_mipmap_sigma(0.25), 4)
         1.9365
 
@@ -703,7 +703,7 @@ def _mipmap_sigma(scale: float) -> float:
 def _antialias_axis_scales(mtx: Tensor) -> tuple[Tensor, Tensor]:
     """Return one ``(width-axis, height-axis)`` scale pair for every image.
 
-    Unlike :func:`~fuse_augmentations.affine.matrix.estimate_scale` (whose two
+    Unlike :func:`~fused_transforms.affine.matrix.estimate_scale` (whose two
     singular values are sorted by *magnitude*, not by image axis), this maps each
     scale to the axis the anisotropic Gaussian must blur:
 
@@ -729,7 +729,7 @@ def _antialias_axis_scales(mtx: Tensor) -> tuple[Tensor, Tensor]:
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.affine.segment import _antialias_axis_scales
+        >>> from fused_transforms.affine.segment import _antialias_axis_scales
         >>> mtx = torch.eye(3).unsqueeze(0)
         >>> mtx[:, 0, 0], mtx[:, 1, 1] = 0.9, 0.2  # shrink height much harder than width
         >>> sx, sy = _antialias_axis_scales(mtx)
@@ -860,8 +860,8 @@ class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
         ```pycon
         >>> import torch
         >>> import kornia.augmentation as K
-        >>> from fuse_augmentations.affine.segment import ExactAffineSegment
-        >>> from fuse_augmentations.adapters.kornia import KorniaAdapter
+        >>> from fused_transforms.affine.segment import ExactAffineSegment
+        >>> from fused_transforms.adapters.kornia import KorniaAdapter
         >>> t = K.RandomHorizontalFlip(p=1.0)
         >>> seg = ExactAffineSegment([t], KorniaAdapter())
         >>> out = seg(torch.zeros(1, 3, 8, 8))
@@ -1081,7 +1081,7 @@ class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
 
         """
         if flip_dims is None:
-            from fuse_augmentations.targets import (
+            from fused_transforms.targets import (
                 transform_bbox_xywh,
                 transform_bbox_xyxy,
                 transform_rboxes,
@@ -1119,7 +1119,7 @@ class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
                 # One mirror turns the plane over; two perpendicular mirrors are a half turn,
                 # which does not — so the pair swap fires on exactly one of the two flips.
                 if self.keypoint_flip_index is not None and (is_hflip != is_vflip):
-                    from fuse_augmentations.targets import permute_keypoint_pairs
+                    from fused_transforms.targets import permute_keypoint_pairs
 
                     flipped_points = permute_keypoint_pairs(
                         flipped_points, _flip_index_tensor(self.keypoint_flip_index, val.device), active
@@ -1392,7 +1392,7 @@ class _BaseAffineSegment(GeneratorPicklingMixin, nn.Module):
             mask_fill: Scalar border value for the ``"mask"`` target.
 
         """
-        from fuse_augmentations.targets import (
+        from fused_transforms.targets import (
             transform_bbox_xywh,
             transform_bbox_xyxy,
             transform_mask,
@@ -1471,8 +1471,8 @@ class FusedAffineSegment(_BaseAffineSegment):
         # isinstance checks on every forward call.
         self._fast_path: str | None = None
         try:
-            from fuse_augmentations.adapters.kornia import KorniaAdapter
-            from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
+            from fused_transforms.adapters.kornia import KorniaAdapter
+            from fused_transforms.adapters.torchvision import TorchVisionAdapter
 
             if isinstance(adapter, KorniaAdapter):
                 self._fast_path = "kornia"
@@ -1505,7 +1505,7 @@ class FusedAffineSegment(_BaseAffineSegment):
         self._np_fused_builder = None
         if self._cv2_warp and self._fast_path == "kornia":
             try:
-                from fuse_augmentations.adapters.kornia import (
+                from fused_transforms.adapters.kornia import (
                     build_matrix_numpy_b1_kornia,
                     sample_and_build_matrix_numpy_b1_kornia,
                 )
@@ -1516,7 +1516,7 @@ class FusedAffineSegment(_BaseAffineSegment):
                 pass
         elif self._cv2_warp and self._fast_path == "torchvision":
             try:
-                from fuse_augmentations.adapters.torchvision import (
+                from fused_transforms.adapters.torchvision import (
                     build_matrix_numpy_b1_tv,
                     sample_and_build_matrix_numpy_b1_tv,
                 )
@@ -1577,7 +1577,7 @@ class FusedAffineSegment(_BaseAffineSegment):
             _tfm = self.transforms[0]
 
             if self._fast_path == "kornia":
-                from fuse_augmentations.adapters.kornia import KorniaAdapter
+                from fused_transforms.adapters.kornia import KorniaAdapter
 
                 # After call_nonfused, Kornia stores sampled params in tfm._params.
                 # convert_native_params reads those to build a consistent matrix.
@@ -1625,7 +1625,7 @@ class FusedAffineSegment(_BaseAffineSegment):
                 return image
 
             if self._fast_path == "torchvision":
-                from fuse_augmentations.adapters.torchvision import (
+                from fused_transforms.adapters.torchvision import (
                     TorchVisionAdapter,
                     is_torchvision_v2_transform,
                 )
@@ -1834,7 +1834,7 @@ class FusedAffineSegment(_BaseAffineSegment):
                 where the composed matrix reverses orientation.
 
         """
-        from fuse_augmentations.targets import (
+        from fused_transforms.targets import (
             transform_bbox_xywh,
             transform_bbox_xyxy,
             transform_rboxes,
@@ -1895,8 +1895,8 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         ```pycon
         >>> import torch
         >>> import kornia.augmentation as K
-        >>> from fuse_augmentations.affine.segment import _FusedGeoCropSegment
-        >>> from fuse_augmentations.adapters.kornia import KorniaAdapter
+        >>> from fused_transforms.affine.segment import _FusedGeoCropSegment
+        >>> from fused_transforms.adapters.kornia import KorniaAdapter
         >>> geo = K.RandomHorizontalFlip(p=1.0)
         >>> crop = K.RandomResizedCrop((8, 8), scale=(0.5, 0.5), ratio=(1.0, 1.0))
         >>> seg = _FusedGeoCropSegment([geo], crop, KorniaAdapter())
@@ -2082,7 +2082,7 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         mask_fill: MaskFillValue = 0,
     ) -> None:
         """Warp auxiliary targets in place: mask via the output grid, coords via ``mtx``."""
-        from fuse_augmentations.targets import (
+        from fused_transforms.targets import (
             transform_bbox_xywh,
             transform_bbox_xyxy,
             transform_mask,
@@ -2523,8 +2523,8 @@ class AlbuFusedAffineSegment(nn.Module):
         ```pycon
         >>> import numpy as np
         >>> import torch
-        >>> from fuse_augmentations.affine.segment import AlbuFusedAffineSegment
-        >>> from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
+        >>> from fused_transforms.affine.segment import AlbuFusedAffineSegment
+        >>> from fused_transforms.adapters.albumentations import AlbumentationsAdapter
         >>> seg = AlbuFusedAffineSegment([], AlbumentationsAdapter())
         >>> out = seg(torch.zeros(1, 3, 8, 8))
         >>> out.shape
@@ -2592,7 +2592,7 @@ class AlbuFusedAffineSegment(nn.Module):
         """
         tags: list[int] = []
         try:
-            from fuse_augmentations.adapters.albumentations import (
+            from fused_transforms.adapters.albumentations import (
                 _HFLIP_TYPES,
                 _INTERP_TYPES,
                 _VFLIP_TYPES,
@@ -2654,7 +2654,7 @@ class AlbuFusedAffineSegment(nn.Module):
             One ``(3, 3)`` float64 forward matrix.
 
         """
-        from fuse_augmentations.adapters.albumentations import (
+        from fused_transforms.adapters.albumentations import (
             _sample_matrices,
             hflip_matrix_np,
             vflip_matrix_np,
@@ -2756,7 +2756,7 @@ class AlbuFusedAffineSegment(nn.Module):
 
         Masks are resampled with a grid built from the same composed matrix used
         for the image warp; boxes and keypoints go through the composed forward
-        pixel matrix. This reuses the shared :mod:`~fuse_augmentations.targets`
+        pixel matrix. This reuses the shared :mod:`~fused_transforms.targets`
         builders so the numpy/cv2 path matches the torch affine path convention
         (center/``align_corners=True``). Mutates ``aux_targets`` in place.
 
@@ -2813,7 +2813,7 @@ class AlbuFusedAffineSegment(nn.Module):
                 where the composed matrix reverses orientation.
 
         """
-        from fuse_augmentations.targets import (
+        from fused_transforms.targets import (
             transform_bbox_xywh,
             transform_bbox_xyxy,
             transform_mask,
@@ -3022,8 +3022,8 @@ class AlbuFusedAffineSegment(nn.Module):
         Examples:
             ```pycon
             >>> import numpy as np
-            >>> from fuse_augmentations.affine.segment import AlbuFusedAffineSegment
-            >>> from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
+            >>> from fused_transforms.affine.segment import AlbuFusedAffineSegment
+            >>> from fused_transforms.adapters.albumentations import AlbumentationsAdapter
             >>> seg = AlbuFusedAffineSegment([], AlbumentationsAdapter())
             >>> img = np.zeros((8, 8, 3), dtype=np.uint8)
             >>> out = seg.forward_numpy(img)
@@ -3188,7 +3188,7 @@ class ProjectiveSegment(_BaseAffineSegment):
     Identical to :class:`FusedAffineSegment` in accumulation and auxiliary-target
     handling -- both share the :class:`_BaseAffineSegment` composition engine --
     but overrides :meth:`_apply_grid` to use
-    :func:`~fuse_augmentations.affine.matrix.perspective_grid` instead of
+    :func:`~fused_transforms.affine.matrix.perspective_grid` instead of
     ``F.affine_grid`` so the full ``3x3`` homography (including perspective
     division) is applied correctly.
 
@@ -3403,7 +3403,7 @@ class AlbuProjectiveSegment(nn.Module):
         Masks are resampled with a perspective grid built from the same composed
         homography used for the image warp; boxes and keypoints go through the
         composed forward homography. Reuses the shared
-        :mod:`~fuse_augmentations.targets` builders so the numpy/cv2 path matches
+        :mod:`~fused_transforms.targets` builders so the numpy/cv2 path matches
         the torch projective path convention. Mutates ``aux_targets`` in place.
 
         Args:
@@ -4158,7 +4158,7 @@ class FusedLUTSegment(nn.Module):
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.affine.segment import FusedLUTSegment  # doctest: +SKIP
+        >>> from fused_transforms.affine.segment import FusedLUTSegment  # doctest: +SKIP
         >>> seg = FusedLUTSegment([gamma_tfm, solarize_tfm], adapter)  # doctest: +SKIP
         >>> out = seg(torch.rand(2, 3, 8, 8))  # doctest: +SKIP
 
@@ -4512,7 +4512,7 @@ class CropResizeSegment(nn.Module):
     """Segment for a single ``CROP_RESIZE_FIXED`` transform.
 
     Samples the random crop region, builds the forward affine matrix, normalizes it
-    via :func:`~fuse_augmentations.affine.matrix.normalize_matrix_io` (which accounts
+    via :func:`~fused_transforms.affine.matrix.normalize_matrix_io` (which accounts
     for different input and output spatial dimensions), and applies exactly one
     ``grid_sample`` call at the target ``(H_out, W_out)`` dimensions.
 
@@ -4656,7 +4656,7 @@ class CropResizeSegment(nn.Module):
             out = out + fill_value
 
         if aux_targets:
-            from fuse_augmentations.targets import (
+            from fused_transforms.targets import (
                 transform_bbox_xywh,
                 transform_bbox_xyxy,
                 transform_keypoints,
@@ -4726,8 +4726,8 @@ def reorder_pointwise(
         POINTWISE transforms in v0.2):
 
     ```pycon
-    >>> from fuse_augmentations.affine.segment import reorder_pointwise
-    >>> from fuse_augmentations.types import TransformCategory
+    >>> from fused_transforms.affine.segment import reorder_pointwise
+    >>> from fused_transforms.types import TransformCategory
     >>> class _StubAdapter:
     ...     def category(self, transform):
     ...         return transform._cat
@@ -4916,7 +4916,7 @@ def build_segments(
       and applies one ``grid_sample`` call.
 
     When ``ReorderPolicy.POINTWISE`` is active in
-    :class:`~fuse_augmentations.compose.FusedCompose`, ``reorder_pointwise``
+    :class:`~fused_transforms.compose.FusedCompose`, ``reorder_pointwise``
     is called first to bubble pointwise ops out of geometric chains, and
     ``build_segments`` then classifies the reordered list.
 
@@ -5452,7 +5452,7 @@ def _route_keypoints(keypoints: Tensor, mtx: Tensor, flip_index: tuple[int, ...]
     rotation that must *not* swap.
 
     """
-    from fuse_augmentations.targets import orientation_reversed, permute_keypoint_pairs, transform_keypoints
+    from fused_transforms.targets import orientation_reversed, permute_keypoint_pairs, transform_keypoints
 
     warped = transform_keypoints(keypoints, mtx)
     if flip_index is None:

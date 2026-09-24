@@ -16,8 +16,8 @@ from typing import Any
 import pytest
 import torch
 
-from fuse_augmentations import FusedCompose
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
+from fused_transforms import FusedCompose
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
 
 
 @pytest.fixture
@@ -242,7 +242,7 @@ class TestBackendRandomnessIsRejected:
         from the traceback alone.
 
         """
-        from fuse_augmentations._random import reject_backend_randomness
+        from fused_transforms._random import reject_backend_randomness
 
         with pytest.raises(ValueError, match="from_params"):
             reject_backend_randomness(torch.Generator(), "a backend draw")

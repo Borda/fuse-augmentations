@@ -14,7 +14,7 @@ Pass the matrix returned by the exact same forward call. `transform_matrix` is m
 ```python
 import torch
 
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 torch.manual_seed(13)
 
@@ -55,7 +55,7 @@ This runnable probe uses a nonzero eight-pixel translation, keeps the source and
 import torch
 from torch.nn import functional as F
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 source_canvas = (32, 32)
 augmentation_canvas = (32, 32)
@@ -155,7 +155,7 @@ Exact flips/quarter-turns and a direct deterministic `letterbox` also return the
 ```python
 import torch
 
-from fuse_augmentations import Compose, transform_bbox_xyxy
+from fused_transforms import Compose, transform_bbox_xyxy
 
 source_size = (5, 7)
 detector_size = (10, 12)

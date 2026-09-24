@@ -30,7 +30,7 @@ class TransformCategory(Enum):
         POINTWISE_LUT: Reorderable per-pixel *non-linear scalar* op whose per-channel intensity
             map is a pure lookup (gamma, solarize, posterize).  Consecutive runs are composed into
             a single per-channel lookup table via ``build_lut`` and applied once by
-            :class:`~fuse_augmentations.affine.segment.FusedLUTSegment`; adapters that do not
+            :class:`~fused_transforms.affine.segment.FusedLUTSegment`; adapters that do not
             support ``build_lut`` for a given transform fall back to passthrough.  Distinct from
             ``POINTWISE_LINEAR`` (which composes into a colour *matrix*) and from ``POINTWISE``
             (cross-channel ops such as saturation/hue that never fuse into a lookup table).
@@ -267,17 +267,17 @@ class TransformAdapter(Protocol):
     Implementations bridge framework-specific transforms (Kornia, Albumentations, TorchVision) to the canonical
     parameter representation used by FusedAffineSegment.
 
-    Optional descriptive members (read via ``fuse_augmentations._backend.adapter_capabilities`` and direct
+    Optional descriptive members (read via ``fused_transforms._backend.adapter_capabilities`` and direct
     ``getattr``, so absence is tolerated for backwards compatibility):
 
     - ``capabilities: frozenset[str]`` — canonical op names (see
-      :data:`~fuse_augmentations.resolver.SUPPORTED_OPS`) the adapter can build.
+      :data:`~fused_transforms.resolver.SUPPORTED_OPS`) the adapter can build.
     - ``sampling_semantics: SamplingSemantics`` — whether the adapter draws one parameter set per sample or one per
       batch.
 
     These are intentionally **not** declared as Protocol members: doing so would make ``@runtime_checkable``
     ``isinstance`` require them, breaking adapters that predate the attributes. Instead they are read defensively via
-    ``fuse_augmentations._backend.adapter_capabilities`` and ``getattr``, so absence is tolerated. ``isinstance``
+    ``fused_transforms._backend.adapter_capabilities`` and ``getattr``, so absence is tolerated. ``isinstance``
     therefore continues to check only the methods below.
 
     """
@@ -413,9 +413,9 @@ class TransformAdapter(Protocol):
 
         - No intermediate clamping: native backends clamp to ``[0, 1]`` after EACH op; a fused matrix
           cannot represent clamping between ops, so out-of-gamut intermediates diverge from native.
-          :class:`~fuse_augmentations.affine.segment.FusedColorSegment` clamps only the FINAL result
+          :class:`~fused_transforms.affine.segment.FusedColorSegment` clamps only the FINAL result
           (``clip_output=True`` default). See ``clip_policy`` on
-          :class:`~fuse_augmentations.compose.FusedCompose` for a per-op-parity split option.
+          :class:`~fused_transforms.compose.FusedCompose` for a per-op-parity split option.
         - Contrast midpoint: TorchVision/Kornia ``ColorJitter`` contrast is relative to the per-image
           mean luminance (``c' = cf*c + (1-cf)*luma_mean``). When ``mean`` is provided (the fused segment
           supplies the per-image luminance of the transform's input), that mean is used, matching native.
@@ -454,7 +454,7 @@ class TransformAdapter(Protocol):
         default implementation raises ``NotImplementedError`` so adapters without lookup-fusion
         support fall back to passthrough segmentation automatically.
 
-        :class:`~fuse_augmentations.affine.segment.FusedLUTSegment` composes a contiguous run of
+        :class:`~fused_transforms.affine.segment.FusedLUTSegment` composes a contiguous run of
         such ops by *threading a domain grid through each op in order*: ``values`` starts as a
         uniform grid over ``[0, 1]`` and each op maps it in place, so after the run ``values``
         holds the composed function sampled on that grid — one lookup table applied once. Because
@@ -498,8 +498,8 @@ class TransformSpec:
     """Declarative specification for a single augmentation transform.
 
     A backend-agnostic, JSON-serialisable description of one augmentation operation. Used by
-    :meth:`FusedCompose.from_config <fuse_augmentations.compose.FusedCompose.from_config>` and
-    :meth:`FusedCompose.from_params <fuse_augmentations.compose.FusedCompose.from_params>` to build pipelines
+    :meth:`FusedCompose.from_config <fused_transforms.compose.FusedCompose.from_config>` and
+    :meth:`FusedCompose.from_params <fused_transforms.compose.FusedCompose.from_params>` to build pipelines
     from configuration data rather than live transform objects.
 
     Args:
@@ -670,7 +670,7 @@ class SegmentDescriptor:
     """Structured description of one segment in a fused augmentation pipeline.
 
     Returned by :attr:`FusedCompose.fusion_plan_descriptors
-    <fuse_augmentations.compose.FusedCompose.fusion_plan_descriptors>`. Each instance describes exactly one segment —
+    <fused_transforms.compose.FusedCompose.fusion_plan_descriptors>`. Each instance describes exactly one segment —
     a fused geometric group, a lossless exact segment, a projective segment, or a passthrough barrier — and is frozen
     and JSON-serialisable via :meth:`to_dict`.
 
@@ -686,7 +686,7 @@ class SegmentDescriptor:
             (for example ``"KorniaAdapter"``, ``"AlbumentationsAdapter"``,
             ``"TorchVisionAdapter"``), or ``None`` for backend-free pipelines
             created via
-            :meth:`FusedCompose.from_params <fuse_augmentations.compose.FusedCompose.from_params>`.
+            :meth:`FusedCompose.from_params <fused_transforms.compose.FusedCompose.from_params>`.
         barrier: Machine-readable reason this segment ends a fusion run and forces
             a boundary, or ``None`` when the segment is fused/does not act as a
             barrier. ``"spatial_kernel"`` for blur/noise passthrough, ``"pointwise"``

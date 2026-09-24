@@ -1,7 +1,7 @@
 """Property-based tests for matrix primitives using Hypothesis.
 
 This module uses the Hypothesis library to verify algebraic invariants of the matrix primitives
-in ``fuse_augmentations._matrix``. Unlike example-based unit tests that check specific
+in ``fused_transforms._matrix``. Unlike example-based unit tests that check specific
 input/output pairs, property-based tests generate hundreds of random inputs per invariant and
 verify the property holds for all of them. This catches edge cases (extreme angles, tiny/huge
 scale factors, non-square dimensions) that hand-picked examples would miss.
@@ -54,7 +54,7 @@ import torch
 from hypothesis import given, settings
 from hypothesis.strategies import floats, integers, lists, tuples
 
-from fuse_augmentations.affine.matrix import (
+from fused_transforms.affine.matrix import (
     hflip_matrix,
     inv3x3,
     matmul3x3,

@@ -16,8 +16,8 @@ import numpy as np
 import torch
 from kornia.augmentation import RandomResizedCrop
 
-from fuse_augmentations import Compose
-from fuse_augmentations.affine.segment import _antialias_axis_scales, _maybe_antialias_prefilter
+from fused_transforms import Compose
+from fused_transforms.affine.segment import _antialias_axis_scales, _maybe_antialias_prefilter
 
 
 def measure(call):

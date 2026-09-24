@@ -7,7 +7,7 @@ import builtins
 import pytest
 import torch
 
-from fuse_augmentations import Compose, TransformSpec
+from fused_transforms import Compose, TransformSpec
 
 
 def _optional_import_guard(name: str, *args: object, **kwargs: object) -> object:

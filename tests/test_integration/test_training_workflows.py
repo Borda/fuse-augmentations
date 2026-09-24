@@ -12,7 +12,7 @@ import pytest
 import torch
 from torch import nn
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 pytestmark = pytest.mark.integration
 

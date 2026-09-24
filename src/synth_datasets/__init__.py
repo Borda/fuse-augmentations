@@ -12,16 +12,14 @@ The shape vocabulary is assembled from independent families —
 specifics; this namespace exports the pieces a dataset-building caller needs.
 
 This package is standalone and torch-free: ``import synth_datasets`` never touches
-:mod:`fuse_augmentations`, so it installs and imports without the ``torch`` extra.
+:mod:`fused_transforms`, so it installs and imports without the ``torch`` extra.
 :class:`SyntheticIterableDataset` is the only torch-dependent name in this namespace, deliberately
 left out of :data:`__all__` and resolved lazily on first attribute access instead — when
 ``synth_datasets`` is imported directly, even a torch-installed environment only pays that import
-cost when the name is actually used. ``fuse_augmentations.data`` re-exports this package for
-backward compatibility, but that path still runs the parent :mod:`fuse_augmentations` package's
-eager augmentation-stack import (and therefore requires ``torch`` regardless) and re-imports
-:class:`SyntheticIterableDataset` explicitly to restore the legacy name, so the laziness above does
-not hold through that shim — prefer importing ``synth_datasets`` directly when only dataset
-generation is needed.
+cost when the name is actually used. This is the only import path for the generator: the former
+``fused_transforms.data`` facade and ``fused_transforms.generate_dataset`` alias are both removed,
+since reaching either one ran the augmentation package's eager import and required ``torch``
+regardless.
 
 Examples:
     ```pycon

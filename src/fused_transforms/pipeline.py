@@ -18,7 +18,7 @@ deserialisation (object ids change; positional indices do not).
 Examples:
     ```pycon
     >>> import torch
-    >>> from fuse_augmentations.compose import Compose
+    >>> from fused_transforms.compose import Compose
     >>> pipe = Compose([])
     >>> image = torch.zeros(1, 3, 8, 8)
     >>> pipe(image).shape
@@ -40,10 +40,10 @@ import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import Tensor, nn
 
-from fuse_augmentations._backend import Backend, detect_backends_per_transform
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
-from fuse_augmentations._random import GeneratorPicklingMixin, reject_backend_randomness
-from fuse_augmentations.affine.matrix import (
+from fused_transforms._backend import Backend, detect_backends_per_transform
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fused_transforms._random import GeneratorPicklingMixin, reject_backend_randomness
+from fused_transforms.affine.matrix import (
     hflip_matrix,
     inv3x3,
     matmul3x3,
@@ -56,7 +56,7 @@ from fuse_augmentations.affine.matrix import (
     translate_matrix,
     vflip_matrix,
 )
-from fuse_augmentations.affine.segment import (
+from fused_transforms.affine.segment import (
     AlbuFusedAffineSegment,
     AlbuProjectiveSegment,
     CropResizeSegment,
@@ -75,7 +75,7 @@ from fuse_augmentations.affine.segment import (
     reorder_aggressive,
     reorder_pointwise,
 )
-from fuse_augmentations.config_validation import (
+from fused_transforms.config_validation import (
     _COORD_DATA_KEYS,
     _PIPELINE_TORCH_DTYPES,
     _apply_passthrough_substitution,
@@ -89,20 +89,20 @@ from fuse_augmentations.config_validation import (
     _validate_mask_interpolation,
     _validate_pipeline_dtype,
 )
-from fuse_augmentations.factories import (
+from fused_transforms.factories import (
     FactoriesMixin,
     _DirectFlipTransform,
     _DirectParamAdapter,
     _DirectParamTransform,
 )
-from fuse_augmentations.introspection import IntrospectionMixin
-from fuse_augmentations.planner import (
+from fused_transforms.introspection import IntrospectionMixin
+from fused_transforms.planner import (
     _adapter_for_backend,
     _build_mixed_segments,
     _PassthroughSegment,
     _wrap_passthrough_segments,
 )
-from fuse_augmentations.types import (
+from fused_transforms.types import (
     BackendConverter,
     ClipPolicyStr,
     ComposePaddingModeStr,
@@ -190,7 +190,7 @@ def _tensor_to_numpy_image(tensor: Tensor, input_ndim: int) -> NDArray[Any]:
     follows the standard converter, which squeezes a single-image batch to ``(height, width, channels)``.
 
     """
-    from fuse_augmentations.converters import TorchToNumpyConverter
+    from fused_transforms.converters import TorchToNumpyConverter
 
     array = TorchToNumpyConverter().convert(tensor)
     if input_ndim == 2 and array.ndim == 3 and array.shape[-1] == 1:
@@ -276,11 +276,11 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
     Segments the transform list into fused geometric segments and passthrough transforms, then executes them
     sequentially. Consecutive geometric ops are grouped and executed as either:
 
-    - A :class:`~fuse_augmentations.affine.segment.FusedAffineSegment` - when the run
+    - A :class:`~fused_transforms.affine.segment.FusedAffineSegment` - when the run
       contains at least one ``GEOMETRIC_INTERP`` op. Matrices are composed and
       a single ``grid_sample`` call is used, eliminating redundant interpolation
       passes.
-    - An :class:`~fuse_augmentations.affine.segment.ExactAffineSegment` - when the run
+    - An :class:`~fused_transforms.affine.segment.ExactAffineSegment` - when the run
       contains *only* ``GEOMETRIC_EXACT`` ops (HFlip, VFlip). Transforms are
       applied via ``tensor.flip`` with zero interpolation error.
 
@@ -719,7 +719,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             _bypass_ok = True
             if _seg0._fast_path == "torchvision":
                 try:
-                    from fuse_augmentations.adapters.torchvision import is_torchvision_v2_transform
+                    from fused_transforms.adapters.torchvision import is_torchvision_v2_transform
 
                     _bypass_ok = is_torchvision_v2_transform(_tfm0)
                 except ImportError:
@@ -739,7 +739,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             and len(self._segments[0].transforms) == 1
         ):
             try:
-                from fuse_augmentations.adapters.albumentations import (
+                from fused_transforms.adapters.albumentations import (
                     AlbumentationsAdapter as AlbuAdapterCls,
                 )
 
@@ -753,7 +753,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         _is_albu: bool = False
         if adapter is not None and not isinstance(adapter, _DirectParamAdapter):
             try:
-                from fuse_augmentations.adapters.albumentations import (
+                from fused_transforms.adapters.albumentations import (
                     AlbumentationsAdapter as _AlbuAdapterCls,
                 )
 
@@ -786,7 +786,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                     tags.append(3)
                 elif isinstance(seg, _PassthroughSegment):
                     try:
-                        from fuse_augmentations.adapters.albumentations import (
+                        from fused_transforms.adapters.albumentations import (
                             AlbumentationsAdapter as _AlbuAdapterCheck,
                         )
 
@@ -839,7 +839,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 ``torch.Tensor`` output.
 
         Returns:
-            A :class:`~fuse_augmentations.types.BackendConverter` for NumPy output, or
+            A :class:`~fused_transforms.types.BackendConverter` for NumPy output, or
             ``None`` when the output stays as a ``torch.Tensor``.
 
         Raises:
@@ -851,7 +851,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         if output_backend is None or output_backend == "torch":
             return None
         if output_backend in ("numpy", "numpy_hwc"):
-            from fuse_augmentations.converters import TorchToNumpyConverter
+            from fused_transforms.converters import TorchToNumpyConverter
 
             converter: BackendConverter = TorchToNumpyConverter()
         else:
@@ -888,7 +888,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         Examples:
             ```pycon
             >>> import pickle
-            >>> from fuse_augmentations import Compose  # doctest: +SKIP
+            >>> from fused_transforms import Compose  # doctest: +SKIP
             >>> pipe = Compose([...])  # doctest: +SKIP
             >>> reloaded = pickle.loads(pickle.dumps(pipe))  # doctest: +SKIP
 
@@ -968,7 +968,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         """Route to the Albumentations native dict path or the standard tensor path.
 
         When called with ``image=<numpy.ndarray>`` and the pipeline adapter is an
-        :class:`~fuse_augmentations.adapters.albumentations.AlbumentationsAdapter`,
+        :class:`~fused_transforms.adapters.albumentations.AlbumentationsAdapter`,
         the call is dispatched to :meth:`_forward_albu_native`, which keeps the native
         dtype and returns a ``{"image": ndarray}`` dict matching the
         :class:`albumentations.Compose` calling convention.
@@ -1006,7 +1006,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
             ```pycon
             >>> import numpy as np
             >>> import albumentations as A
-            >>> from fuse_augmentations import Compose
+            >>> from fused_transforms import Compose
             >>> pipe = Compose([A.HorizontalFlip(p=0.0)])
             >>> img = np.zeros((8, 8, 3), dtype=np.uint8)
             >>> out = pipe(image=img)
@@ -1093,11 +1093,11 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
 
         Resampling stays in NumPy space. Exact operations use a dtype-preserving
         tensor view so the applied pixels and recorded matrix share one parameter draw.
-        :class:`~fuse_augmentations.affine.segment.AlbuFusedAffineSegment`
+        :class:`~fused_transforms.affine.segment.AlbuFusedAffineSegment`
         segments are dispatched via their :meth:`forward_numpy` method;
-        :class:`~fuse_augmentations.compose._PassthroughSegment` segments
+        :class:`~fused_transforms.compose._PassthroughSegment` segments
         are dispatched via
-        :meth:`~fuse_augmentations.adapters.albumentations.AlbumentationsAdapter.call_nonfused_numpy`.
+        :meth:`~fused_transforms.adapters.albumentations.AlbumentationsAdapter.call_nonfused_numpy`.
 
         Args:
             img_hwc: ``(H, W, C)`` or ``(H, W)`` NumPy array (uint8 or float32).
@@ -1115,7 +1115,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         # to avoid per-call isinstance dispatch overhead.
         _tags = self._albu_seg_tags
         if _tags is not None:
-            from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
+            from fused_transforms.adapters.albumentations import AlbumentationsAdapter
 
             for idx_segment, seg in enumerate(self._segments):
                 tag = _tags[idx_segment]
@@ -1148,7 +1148,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                     raise RuntimeError(msg)
         else:
             # Fallback: isinstance dispatch (used when _albu_seg_tags was not built).
-            from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
+            from fused_transforms.adapters.albumentations import AlbumentationsAdapter
 
             for seg in self._segments:
                 if isinstance(seg, AlbuFusedAffineSegment):
@@ -1313,7 +1313,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 ``"keypoints"`` as ``(B, N, 2)`` float32; ``"rboxes"`` as
                 ``(B, N, 5)`` float32 ``(cx, cy, w, h, theta)``, theta in radians,
                 returned un-canonicalized (this package imposes no long-edge or
-                angle-range convention -- see :func:`~fuse_augmentations.targets.transform_rboxes`).
+                angle-range convention -- see :func:`~fused_transforms.targets.transform_rboxes`).
             return_matrix: When ``True``, return the output and its last supported
                 geometric pixel-centre matrix.
             **kwargs: Declared multi-target keyword inputs. Tensor keyword calls return a
@@ -1493,7 +1493,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
                 raise TypeError(msg)
             return args, None
 
-        from fuse_augmentations.converters import NumpyToTorchConverter
+        from fused_transforms.converters import NumpyToTorchConverter
 
         data_keys = cast("list[str]", self.data_keys)
         aux_ndims: dict[str, int] = {}
@@ -1841,7 +1841,7 @@ class FusedCompose(FactoriesMixin, IntrospectionMixin, GeneratorPicklingMixin, n
         Examples:
             ```pycon
             >>> import torch
-            >>> from fuse_augmentations import Compose
+            >>> from fused_transforms import Compose
             >>> pipe = Compose.from_params(translate_x=(2.0, 2.0))
             >>> image = torch.rand(1, 3, 8, 8)
             >>> augmented, matrix = pipe(image, return_matrix=True)

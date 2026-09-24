@@ -28,12 +28,12 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as A
 
-    from fuse_augmentations import Compose
+    from fused_transforms import Compose
 
 pytestmark = pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 

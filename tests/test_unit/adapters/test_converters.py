@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 import torch
 
-from fuse_augmentations import BackendConverter
-from fuse_augmentations.converters import NumpyToTorchConverter, TorchToNumpyConverter
+from fused_transforms import BackendConverter
+from fused_transforms.converters import NumpyToTorchConverter, TorchToNumpyConverter
 
 
 class TestNumpyToTorchConverter:

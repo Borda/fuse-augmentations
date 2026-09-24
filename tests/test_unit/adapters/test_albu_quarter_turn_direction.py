@@ -15,14 +15,14 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
-from fuse_augmentations.affine.matrix import inv3x3, normalize_matrix_io
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE
+from fused_transforms.affine.matrix import inv3x3, normalize_matrix_io
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as A
 
-    from fuse_augmentations import Compose, ReorderPolicy
-    from fuse_augmentations.adapters.albumentations import (
+    from fused_transforms import Compose, ReorderPolicy
+    from fused_transforms.adapters.albumentations import (
         AlbumentationsAdapter,
         _apply_d4_element,
         _d4_matrix,
@@ -86,7 +86,7 @@ class TestQuarterTurnMatrixDirection:
     def test_d4_matrix_warp_matches_exact_apply(self, elem):
         """_d4_matrix warp equals _apply_d4_element for every D4 group element."""
         image = _smooth_image()
-        from fuse_augmentations.adapters.albumentations import _D4_ELEM_TO_CODE
+        from fused_transforms.adapters.albumentations import _D4_ELEM_TO_CODE
 
         code = torch.tensor([_D4_ELEM_TO_CODE[elem]], dtype=torch.int64)
         matrix = _d4_matrix(code, height=32, width=32, device=image.device, dtype=torch.float32)

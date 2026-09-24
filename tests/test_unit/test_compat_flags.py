@@ -15,7 +15,7 @@ import sys
 
 import pytest
 
-from fuse_augmentations import _compat
+from fused_transforms import _compat
 
 
 @pytest.mark.parametrize(

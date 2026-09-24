@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from fuse_augmentations import Compose, FusedCompose, SegmentDescriptor
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
+from fused_transforms import Compose, FusedCompose, SegmentDescriptor
+from fused_transforms._compat import _KORNIA_AVAILABLE
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug

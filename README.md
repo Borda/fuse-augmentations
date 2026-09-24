@@ -182,7 +182,7 @@ pip install "vision-synth[all]"
 ```python
 import torch
 
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 torch.manual_seed(7)
 
@@ -218,7 +218,7 @@ fused(_DirectParamTransform, _DirectFlipTransform)
 
 </details>
 
-The common fused input contract is a floating BCHW torch tensor. Both `fuse_augmentations` and the shorter `fuse_aug` import expose the same public objects.
+The common fused input contract is a floating BCHW torch tensor. Every public object lives under the single `fused_transforms` import.
 
 ## 🔌 Bring an existing backend pipeline
 
@@ -226,7 +226,7 @@ The common fused input contract is a floating BCHW torch tensor. Both `fuse_augm
 import torch
 import torchvision.transforms.v2 as T
 
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 augment = Compose(
     [
@@ -311,7 +311,7 @@ For one fused affine or projective geometric segment, pass the matrix returned b
 ```python
 import torch
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 augment = Compose.from_params(translate_x=(2.0, 2.0))
 images = torch.rand(1, 3, 16, 16)
@@ -331,7 +331,7 @@ For ragged detector targets, import `augment_detection_batch` from the package r
 pip install vision-synth
 ```
 
-This is all you need — dataset generation lives in the standalone `synth_datasets` package (`import synth_datasets`), which never imports torch and needs no extra. `from fuse_augmentations import generate_dataset` still works as a compatibility alias, but that route imports the torch-dependent augmentation engine above and therefore needs `pip install "vision-synth[torch]"`.
+This is all you need — dataset generation lives in the standalone `synth_datasets` package (`import synth_datasets`), which never imports torch and needs no extra. There is no alias for it on the augmentation package; `synth_datasets` is the only import path.
 
 Generate labelled synthetic data for computer vision prototyping, model convergence checks, and controlled difficulty experiments. Draw from four vocabularies — geometric primitives, animal silhouettes, symbols, and letters — and export **COCO** or **YOLO** for **detection**, **segmentation**, **oriented bounding box (OBB)**, or **keypoints**. Your application supplies the model and training loop.
 

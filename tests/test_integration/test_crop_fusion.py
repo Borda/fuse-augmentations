@@ -28,15 +28,15 @@ import pytest
 import torch
 from torch.nn.functional import affine_grid, grid_sample
 
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
-from fuse_augmentations.affine.matrix import (
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fused_transforms.affine.matrix import (
     crop_resize_matrix,
     inv3x3,
     matmul3x3,
     normalize_matrix_io,
     rotation_matrix,
 )
-from fuse_augmentations.affine.segment import (
+from fused_transforms.affine.segment import (
     CropResizeSegment,
     FusedAffineSegment,
     _FusedGeoCropSegment,
@@ -244,8 +244,8 @@ class TestFusedGeoCropKorniaEndToEnd:
         """A real ``[RandomRotation, RandomResizedCrop]`` pipeline fuses to one warp at target size."""
         import kornia.augmentation as kornia_aug
 
-        from fuse_augmentations.adapters.kornia import KorniaAdapter
-        from fuse_augmentations.compose import FusedCompose
+        from fused_transforms.adapters.kornia import KorniaAdapter
+        from fused_transforms.compose import FusedCompose
 
         transforms = [
             kornia_aug.RandomRotation(degrees=(15.0, 15.0), p=1.0, align_corners=True),
@@ -289,7 +289,7 @@ class TestAlbumentationsImageOnlyCropRouting:
 
     def test_cv2_keeps_the_native_crop(self) -> None:
         """``execution="cv2"`` leaves an image-only crop on the passthrough, staying bit-exact."""
-        from fuse_augmentations import Compose
+        from fused_transforms import Compose
 
         names = self._segment_names(Compose(self._chain(), execution="cv2"))
 
@@ -297,7 +297,7 @@ class TestAlbumentationsImageOnlyCropRouting:
 
     def test_torch_routes_the_crop_through_the_segment(self) -> None:
         """``execution="torch"`` routes the crop, because that chain already resamples with grid_sample."""
-        from fuse_augmentations import Compose
+        from fused_transforms import Compose
 
         names = self._segment_names(Compose(self._chain(), execution="torch"))
 
@@ -311,7 +311,7 @@ class TestAlbumentationsImageOnlyCropRouting:
         conservative branch is the one it takes -- an accelerator ``"auto"`` call still pays the round trip.
 
         """
-        from fuse_augmentations import Compose
+        from fused_transforms import Compose
 
         names = self._segment_names(Compose(self._chain(), execution="auto"))
 
@@ -325,7 +325,7 @@ class TestAlbumentationsImageOnlyCropRouting:
         the image only and silently desyncs boxes, so the segment is mandatory here regardless of execution.
 
         """
-        from fuse_augmentations import Compose
+        from fused_transforms import Compose
 
         names = self._segment_names(Compose(self._chain(), data_keys=["input", "bbox_xyxy"], execution=execution))
 
@@ -335,7 +335,7 @@ class TestAlbumentationsImageOnlyCropRouting:
         """The rerouted crop is not merely planned differently -- it renders at the crop's output size."""
         import numpy as np
 
-        from fuse_augmentations import Compose
+        from fused_transforms import Compose
 
         image = torch.from_numpy(
             np.random.default_rng(0).integers(0, 256, size=(96, 96, 3), dtype=np.uint8),

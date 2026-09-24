@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations import Compose, FusedCompose, TransformSpec
+from fused_transforms import Compose, FusedCompose, TransformSpec
 
 
 class TestFromParamsSpecsBasic:

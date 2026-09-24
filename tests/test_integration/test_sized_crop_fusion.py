@@ -21,15 +21,15 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
-from fuse_augmentations.affine.segment import CropResizeSegment
-from fuse_augmentations.types import TransformCategory
+from fused_transforms import Compose
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE
+from fused_transforms.affine.segment import CropResizeSegment
+from fused_transforms.types import TransformCategory
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as albu
 
-    from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
+    from fused_transforms.adapters.albumentations import AlbumentationsAdapter
 
 pytestmark = [
     pytest.mark.integration,

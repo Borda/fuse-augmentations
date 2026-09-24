@@ -19,11 +19,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-import fuse_augmentations.affine.segment as segment
-import fuse_augmentations.pipeline as pipeline
-from fuse_augmentations._compat import _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
-from fuse_augmentations.affine.matrix import estimate_scale
-from fuse_augmentations.affine.segment import (
+import fused_transforms.affine.segment as segment
+import fused_transforms.pipeline as pipeline
+from fused_transforms._compat import _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
+from fused_transforms.affine.matrix import estimate_scale
+from fused_transforms.affine.segment import (
     _antialias_axis_scales,
     _maybe_antialias_prefilter,
     _mipmap_sigma,
@@ -197,8 +197,8 @@ class TestAntialiasDownscale:
     def _pipe_out(self, image: torch.Tensor, target: int, *, antialias: bool) -> torch.Tensor:
         import kornia.augmentation as kornia_aug
 
-        from fuse_augmentations.adapters.kornia import KorniaAdapter
-        from fuse_augmentations.compose import FusedCompose
+        from fused_transforms.adapters.kornia import KorniaAdapter
+        from fused_transforms.compose import FusedCompose
 
         torch.manual_seed(0)
         crop = kornia_aug.RandomResizedCrop(size=(target, target), scale=(1.0, 1.0), ratio=(1.0, 1.0), p=1.0)
@@ -248,8 +248,8 @@ class TestAntialiasDownscale:
         """Antialiasing filters the image only; mask routing remains the same nearest warp."""
         import kornia.augmentation as kornia_aug
 
-        from fuse_augmentations.adapters.kornia import KorniaAdapter
-        from fuse_augmentations.compose import FusedCompose
+        from fused_transforms.adapters.kornia import KorniaAdapter
+        from fused_transforms.compose import FusedCompose
 
         image = _high_frequency_image(96)
         mask = torch.arange(96 * 96, dtype=torch.uint8).reshape(1, 1, 96, 96)
@@ -296,7 +296,7 @@ class TestAntialiasDownscale:
 
 def test_antialias_true_rejects_missing_kornia_at_construction(monkeypatch: pytest.MonkeyPatch) -> None:
     """Explicit antialiasing never silently degrades when Kornia is unavailable."""
-    from fuse_augmentations.compose import FusedCompose
+    from fused_transforms.compose import FusedCompose
 
     monkeypatch.setattr(pipeline, "_KORNIA_AVAILABLE", False)
 

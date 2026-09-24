@@ -58,7 +58,7 @@ def rand(
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations._random import rand
+        >>> from fused_transforms._random import rand
         >>> gen = torch.Generator().manual_seed(0)
         >>> first = rand(3, device=torch.device("cpu"), generator=gen)
         >>> gen.manual_seed(0)  # doctest: +ELLIPSIS
@@ -101,7 +101,7 @@ def uniform(
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations._random import uniform
+        >>> from fused_transforms._random import uniform
         >>> gen = torch.Generator().manual_seed(0)
         >>> drawn = uniform(4, -1.0, 1.0, device=torch.device("cpu"), generator=gen)
         >>> bool((drawn >= -1.0).all() and (drawn < 1.0).all())
@@ -156,7 +156,7 @@ class GeneratorPicklingMixin:
 
     Object *identity* is not preserved: a pipeline and its segments share one generator
     before the round trip and each restore their own copy. Rebinding the shared instance
-    is the owner's job — :class:`~fuse_augmentations.pipeline.FusedCompose` does it in
+    is the owner's job — :class:`~fused_transforms.pipeline.FusedCompose` does it in
     its ``__setstate__`` — because independent copies would advance separate streams
     while looking correct.
 
@@ -164,7 +164,7 @@ class GeneratorPicklingMixin:
         ```pycon
         >>> import pickle
         >>> import torch
-        >>> from fuse_augmentations import FusedCompose
+        >>> from fused_transforms import FusedCompose
         >>> pipe = FusedCompose.from_params(rotation=(-10.0, 10.0), generator=torch.Generator().manual_seed(0))
         >>> restored = pickle.loads(pickle.dumps(pipe))  # noqa: S301
         >>> restored.generator is None

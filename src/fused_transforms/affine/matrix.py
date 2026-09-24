@@ -7,7 +7,7 @@ is ``cx = (W-1)/2``, ``cy = (H-1)/2``.
 Examples:
     ```pycon
     >>> import torch
-    >>> from fuse_augmentations.affine.matrix import rotation_matrix, matmul3x3, inv3x3
+    >>> from fused_transforms.affine.matrix import rotation_matrix, matmul3x3, inv3x3
     >>> matrix = rotation_matrix(torch.zeros(2), height=64, width=64)
     >>> matrix.shape
     torch.Size([2, 3, 3])
@@ -365,7 +365,7 @@ def classify_d4_batch(matrix: torch.Tensor, height: int, width: int) -> str | No
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.affine.matrix import hflip_matrix, classify_d4_batch
+        >>> from fused_transforms.affine.matrix import hflip_matrix, classify_d4_batch
         >>> m = hflip_matrix(width=8, batch_size=2, device=torch.device("cpu"), dtype=torch.float32)
         >>> classify_d4_batch(m, height=8, width=8)
         'hflip'
@@ -414,7 +414,7 @@ def apply_d4_image(image: torch.Tensor, name: str) -> torch.Tensor:
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.affine.matrix import apply_d4_image
+        >>> from fused_transforms.affine.matrix import apply_d4_image
         >>> apply_d4_image(torch.zeros(1, 1, 4, 4), "rot90").shape
         torch.Size([1, 1, 4, 4])
 
@@ -488,7 +488,7 @@ def inv3x3(matrix: torch.Tensor, *, compiling: bool | None = None) -> torch.Tens
             function is entered from a resumed dynamo frame (observed on torch
             2.2 as a spurious graph break). Callers that KNOW they are inside a
             compiled region (the module-level warp cores compiled by
-            :func:`fuse_augmentations.affine.segment._compiled_warp_fn`) pass
+            :func:`fused_transforms.affine.segment._compiled_warp_fn`) pass
             ``True`` explicitly so branch selection is a trace-time constant
             rather than a runtime probe.
 
@@ -788,7 +788,7 @@ def normalize_matrix_io(
       (uses ``height_out``, ``width_out``).
 
     Use this instead of :func:`normalize_matrix` when the segment output size differs from the input
-    size (e.g. for :class:`~fuse_augmentations.affine.segment.CropResizeSegment`).
+    size (e.g. for :class:`~fused_transforms.affine.segment.CropResizeSegment`).
 
     Args:
         matrix: ``(batch_size, 3, 3)`` pixel-space *inverse* matrix (output pixel → input pixel).
@@ -995,7 +995,7 @@ class LetterboxGeometry:
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.affine.matrix import letterbox_geometry
+        >>> from fused_transforms.affine.matrix import letterbox_geometry
         >>> letterbox_geometry(height_in=20, width_in=40, height_out=32, width_out=32)
         LetterboxGeometry(r=0.8, new_h=16, new_w=32, pad_left=0, pad_top=8, out_h=32, out_w=32)
 
@@ -1044,7 +1044,7 @@ def letterbox_geometry(
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.affine.matrix import letterbox_geometry
+        >>> from fused_transforms.affine.matrix import letterbox_geometry
         >>> letterbox_geometry(8, 8, 4, 4).r
         0.5
         >>> letterbox_geometry(8, 8, 16, 16, allow_upscale=False).r
@@ -1118,7 +1118,7 @@ def letterbox_matrix(
     Examples:
         ```pycon
         >>> import torch
-        >>> from fuse_augmentations.affine.matrix import letterbox_matrix
+        >>> from fused_transforms.affine.matrix import letterbox_matrix
         >>> matrix = letterbox_matrix(height_in=20, width_in=40, height_out=32, width_out=32)
         >>> [round(value, 4) for value in matrix[0].flatten().tolist()]
         [0.8, 0.0, 0.0, 0.0, 0.8, 8.0, 0.0, 0.0, 1.0]

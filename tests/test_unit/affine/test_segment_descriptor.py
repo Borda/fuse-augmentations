@@ -6,22 +6,22 @@ import json
 
 import pytest
 
-from fuse_augmentations import SegmentDescriptor
+from fused_transforms import SegmentDescriptor
 
 
 class TestSegmentDescriptorImport:
     def test_importable_from_top_level(self):
-        """SegmentDescriptor is importable from the top-level fuse_augmentations package and is a class."""
-        import fuse_augmentations
+        """SegmentDescriptor is importable from the top-level fused_transforms package and is a class."""
+        import fused_transforms
 
-        assert hasattr(fuse_augmentations, "SegmentDescriptor")
-        assert isinstance(fuse_augmentations.SegmentDescriptor, type)
+        assert hasattr(fused_transforms, "SegmentDescriptor")
+        assert isinstance(fused_transforms.SegmentDescriptor, type)
 
     def test_in_all(self):
-        """SegmentDescriptor is listed in fuse_augmentations.__all__ as part of the public API surface."""
-        import fuse_augmentations
+        """SegmentDescriptor is listed in fused_transforms.__all__ as part of the public API surface."""
+        import fused_transforms
 
-        assert "SegmentDescriptor" in fuse_augmentations.__all__
+        assert "SegmentDescriptor" in fused_transforms.__all__
 
 
 class TestSegmentDescriptorConstruction:
@@ -104,7 +104,7 @@ class TestSegmentDescriptorToDict:
         """to_dict() output round-trips through json.dumps and json.loads with all values preserved.
 
         JSON-compatible output is required because plan descriptors are persisted to disk and shared across tooling that
-        does not import fuse_augmentations directly.
+        does not import fused_transforms directly.
 
         """
         descriptor = SegmentDescriptor(kind="projective", transforms=("Perspective",), n_warps_saved=0)

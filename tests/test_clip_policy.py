@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations.affine.segment import FusedColorSegment
-from fuse_augmentations.types import TransformCategory
+from fused_transforms.affine.segment import FusedColorSegment
+from fused_transforms.types import TransformCategory
 
 
 class _AffineColor:

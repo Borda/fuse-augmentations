@@ -6,9 +6,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from fuse_augmentations import FusedCompose
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
-from fuse_augmentations.affine.matrix import normalize_matrix
+from fused_transforms import FusedCompose
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fused_transforms.affine.matrix import normalize_matrix
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug

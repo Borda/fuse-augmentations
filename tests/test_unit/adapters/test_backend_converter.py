@@ -6,8 +6,8 @@ from typing import Any
 
 import torch
 
-import fuse_augmentations
-from fuse_augmentations import BackendConverter, FusedCompose
+import fused_transforms
+from fused_transforms import BackendConverter, FusedCompose
 
 
 class _ValidConverter:
@@ -33,12 +33,12 @@ class TestBackendConverterProtocol:
     """Verify the BackendConverter protocol definition and runtime checks."""
 
     def test_importable_from_package(self) -> None:
-        """BackendConverter is exposed at the top-level fuse_augmentations package."""
-        assert hasattr(fuse_augmentations, "BackendConverter")
+        """BackendConverter is exposed at the top-level fused_transforms package."""
+        assert hasattr(fused_transforms, "BackendConverter")
 
     def test_in_all(self) -> None:
-        """BackendConverter is listed in fuse_augmentations.__all__"""
-        assert "BackendConverter" in fuse_augmentations.__all__
+        """BackendConverter is listed in fused_transforms.__all__"""
+        assert "BackendConverter" in fused_transforms.__all__
 
     def test_isinstance_valid(self) -> None:
         """A class implementing convert() and target_backend satisfies BackendConverter."""
@@ -49,12 +49,6 @@ class TestBackendConverterProtocol:
         """A class missing convert() does not satisfy the BackendConverter protocol."""
         obj = _MissingConvert()
         assert not isinstance(obj, BackendConverter)
-
-    def test_importable_from_fuse_aug(self) -> None:
-        """BackendConverter is reachable through the legacy fuse_aug alias."""
-        from fuse_aug import BackendConverter as BC
-
-        assert BC is BackendConverter
 
 
 class _IdentityConverter:

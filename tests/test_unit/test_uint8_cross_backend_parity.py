@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 import torch
 
-from fuse_augmentations import Compose, NumpyToTorchConverter
-from fuse_augmentations._compat import _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
+from fused_transforms import Compose, NumpyToTorchConverter
+from fused_transforms._compat import _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug

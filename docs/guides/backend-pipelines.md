@@ -12,7 +12,7 @@ description: Use the native builder or registered Kornia, TorchVision, and Album
 Use `from_params` when you need rotation, scale, shear, translation, horizontal or vertical flips, brightness, or contrast without an optional augmentation backend:
 
 ```python
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 augment = Compose.from_params(
     rotation=(-20.0, 20.0),
@@ -30,7 +30,7 @@ PyTorch is still mandatory; “native” means independent of an augmentation ba
 import kornia.augmentation as K
 import torch
 
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 augment = Compose(
     [
@@ -52,7 +52,7 @@ Kornia has the broadest declarative capability matrix in the current package. Re
 import torch
 import torchvision.transforms.v2 as T
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 augment = Compose(
     [
@@ -77,7 +77,7 @@ The cross-backend tensor path accepts BCHW float tensors:
 import albumentations as A
 import torch
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 augment = Compose(
     [A.Rotate(limit=15, p=0.8), A.HorizontalFlip(p=0.5)],
@@ -120,7 +120,7 @@ A NumPy image comes back in the dtype it was passed in, as Albumentations return
 import kornia.augmentation as K
 import torchvision.transforms.v2 as T
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 augment = Compose(
     [

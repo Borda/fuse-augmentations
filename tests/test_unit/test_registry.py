@@ -11,8 +11,8 @@ import warnings
 
 import pytest
 
-from fuse_augmentations import _backend
-from fuse_augmentations._backend import (
+from fused_transforms import _backend
+from fused_transforms._backend import (
     ADAPTERS_ENTRY_POINT_GROUP,
     Backend,
     _Entry,
@@ -21,8 +21,8 @@ from fuse_augmentations._backend import (
     detect_backends_per_transform,
     register_adapter,
 )
-from fuse_augmentations.adapters import AlbumentationsAdapter, KorniaAdapter, TorchVisionAdapter
-from fuse_augmentations.types import TransformAdapter
+from fused_transforms.adapters import AlbumentationsAdapter, KorniaAdapter, TorchVisionAdapter
+from fused_transforms.types import TransformAdapter
 
 
 @pytest.fixture

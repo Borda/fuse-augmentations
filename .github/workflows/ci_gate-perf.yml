@@ -6,25 +6,18 @@ name: CI perf regression gate
 #   - Manual dispatch (re-run on demand)
 #   - Weekly schedule (Monday 03:17 UTC) for trend tracking even without pushes
 #
-# `src/fuse_augmentations/data/**` is excluded from the path filters: it's the
-# annotation/dataset module and never touches the fusion core that
-# `experiments/optimize_score.py` exercises. `src/fuse_aug/**` IS included: it's the
-# public import path the benchmark actually uses (`fuse_aug.Compose` / `ReorderPolicy`,
-# a thin re-export shim over `fuse_augmentations`) -- a PR touching only that package must
-# not bypass the gate.
+# The dataset generator lives in `src/synth_datasets/` and never touches the fusion core that
+# `experiments/optimize_score.py` exercises, so it is simply absent from these filters -- no
+# exclusion needed since the split moved it out of this package.
 on:
   pull_request:
     paths:
-      - "src/fuse_augmentations/**"
-      - "!src/fuse_augmentations/data/**"
-      - "src/fuse_aug/**"
+      - "src/fused_transforms/**"
       - "experiments/**"
   push:
     branches: [main]
     paths:
-      - "src/fuse_augmentations/**"
-      - "!src/fuse_augmentations/data/**"
-      - "src/fuse_aug/**"
+      - "src/fused_transforms/**"
       - "experiments/**"
   workflow_dispatch: {}
   schedule:
@@ -132,6 +125,32 @@ jobs:
           echo "Benchmarking src/ as of $HIST_SHA against the current experiments/optimize_score.py"
           echo "BENCH_SOURCE_SHA=$HIST_SHA" >> "$GITHUB_ENV"
           git checkout "$HIST_SHA" -- src
+
+      # The overlay's implicit contract is that a historical src/ is a drop-in at the import-name
+      # level: both the ref-under-test's pyproject.toml (dynamic.version.attr) and its
+      # experiments/optimize_score.py address the package by name. Commit 6aa0826 renamed that
+      # package fuse_augmentations -> fused_transforms, so every older tree breaks the contract
+      # twice over -- setuptools raises ModuleNotFoundError resolving the version attr during
+      # `uv pip install -e`, and the harness cannot import Compose even if the install succeeds.
+      # Re-applying the same name map to the overlaid tree restores the contract without weakening
+      # the gate: the baseline still measures the historical code, only its import name is mapped
+      # forward. DELETE this step once 6aa0826 has six commits on top of it (the push window is
+      # main~1..main~5, so the rename is out of range once it reaches main~6).
+      - name: 🔁 Map the pre-6aa0826 package name onto the overlaid tree
+        run: |
+          set -euo pipefail
+          if [ -d src/fuse_augmentations ] && [ ! -d src/fused_transforms ]; then
+            echo "Overlaid tree predates the rename -- mapping fuse_augmentations -> fused_transforms"
+            mv src/fuse_augmentations src/fused_transforms
+            rm -rf src/fuse_aug
+            find src/fused_transforms -name '*.py' -exec sed -i 's/fuse_augmentations/fused_transforms/g' {} +
+          else
+            echo "::notice::No name map needed for $BENCH_SOURCE_SHA. Once every leg of a run prints this, the rename has left the history window and this step is dead code -- delete it."
+          fi
+          test -d src/fused_transforms || {
+            echo "::error::overlaid src/ from $BENCH_SOURCE_SHA provides no fused_transforms package -- the package layout changed again and this step needs a new name map"
+            exit 1
+          }
 
       - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5

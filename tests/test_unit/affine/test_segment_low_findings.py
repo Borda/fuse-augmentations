@@ -16,11 +16,11 @@ import math
 import pytest
 import torch
 
-from fuse_augmentations._compat import _CV2_AVAILABLE
-from fuse_augmentations.affine.matrix import rotation_matrix, scale_matrix
-from fuse_augmentations.affine.segment import ExactAffineSegment, FusedAffineSegment
-from fuse_augmentations.targets import transform_bbox_xyxy, transform_keypoints
-from fuse_augmentations.types import TransformCategory
+from fused_transforms._compat import _CV2_AVAILABLE
+from fused_transforms.affine.matrix import rotation_matrix, scale_matrix
+from fused_transforms.affine.segment import ExactAffineSegment, FusedAffineSegment
+from fused_transforms.targets import transform_bbox_xyxy, transform_keypoints
+from fused_transforms.types import TransformCategory
 
 
 class _StubAdapter:

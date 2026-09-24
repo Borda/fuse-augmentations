@@ -6,8 +6,8 @@ functions resolve the modes by taking the finest/highest-quality option.
 
 Examples:
     ```pycon
-    >>> from fuse_augmentations._interpolation import resolve_interpolation, resolve_padding
-    >>> from fuse_augmentations.types import InterpolationMode, PaddingMode
+    >>> from fused_transforms._interpolation import resolve_interpolation, resolve_padding
+    >>> from fused_transforms.types import InterpolationMode, PaddingMode
     >>> resolve_interpolation([InterpolationMode.BILINEAR, InterpolationMode.NEAREST])
     <InterpolationMode.BILINEAR: 1>
     >>> resolve_padding([PaddingMode.ZEROS, PaddingMode.REFLECTION])
@@ -19,7 +19,7 @@ Examples:
 
 from __future__ import annotations
 
-from fuse_augmentations.types import InterpolationMode, PaddingMode
+from fused_transforms.types import InterpolationMode, PaddingMode
 
 
 def resolve_interpolation(
@@ -40,8 +40,8 @@ def resolve_interpolation(
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations._interpolation import resolve_interpolation
-        >>> from fuse_augmentations.types import InterpolationMode
+        >>> from fused_transforms._interpolation import resolve_interpolation
+        >>> from fused_transforms.types import InterpolationMode
         >>> resolve_interpolation([InterpolationMode.BILINEAR, InterpolationMode.BICUBIC])
         <InterpolationMode.BICUBIC: 2>
 
@@ -73,8 +73,8 @@ def resolve_padding(
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations._interpolation import resolve_padding
-        >>> from fuse_augmentations.types import PaddingMode
+        >>> from fused_transforms._interpolation import resolve_padding
+        >>> from fused_transforms.types import PaddingMode
         >>> resolve_padding([PaddingMode.ZEROS, PaddingMode.REFLECTION])
         <PaddingMode.REFLECTION: 2>
 

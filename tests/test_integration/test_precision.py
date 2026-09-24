@@ -67,13 +67,13 @@ import pytest
 import torch
 from torch.nn.functional import affine_grid, grid_sample
 
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import (
+from fused_transforms import Compose
+from fused_transforms._compat import (
     _ALBUMENTATIONS_AVAILABLE,
     _KORNIA_AVAILABLE,
     _TORCHVISION_V2_AVAILABLE,
 )
-from fuse_augmentations.affine.matrix import (
+from fused_transforms.affine.matrix import (
     inv3x3,
     matmul3x3,
     normalize_matrix,

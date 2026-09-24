@@ -18,10 +18,10 @@ import numpy as np
 import pytest
 import torch
 
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
-from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
-from fuse_augmentations.affine.segment import _CV2_BORDER, _CV2_INTERP, _warp
+from fused_transforms import Compose
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE
+from fused_transforms.adapters.albumentations import AlbumentationsAdapter
+from fused_transforms.affine.segment import _CV2_BORDER, _CV2_INTERP, _warp
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as albu

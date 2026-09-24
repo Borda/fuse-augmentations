@@ -14,7 +14,7 @@ from typing import cast
 
 import torch
 
-from fuse_augmentations.types import (
+from fused_transforms.types import (
     ClipPolicyStr,
     FillValue,
     MaskFillValue,
@@ -99,7 +99,7 @@ def _apply_passthrough_substitution(transforms: list[object]) -> list[object]:
     """Replace registered non-fusible passthrough ops with torch-native equivalents.
 
     Each transform whose class name is registered in
-    :mod:`fuse_augmentations.substitution` is swapped for an already-installed
+    :mod:`fused_transforms.substitution` is swapped for an already-installed
     backend's torch-native equivalent (e.g. Albumentations ``GaussianBlur`` ->
     Kornia ``RandomGaussianBlur``), keeping the pipeline on-device. Substitution is
     behaviour-changing, so each swap emits a :class:`UserWarning`. Transforms without
@@ -114,7 +114,7 @@ def _apply_passthrough_substitution(transforms: list[object]) -> list[object]:
         returned so the caller's input is not mutated.
 
     """
-    from fuse_augmentations.substitution import try_substitute_passthrough
+    from fused_transforms.substitution import try_substitute_passthrough
 
     result: list[object] = []
     for transform in transforms:

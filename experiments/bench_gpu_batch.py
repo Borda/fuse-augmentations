@@ -57,8 +57,8 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
-from fuse_aug import Compose as FuseCompose
-from fuse_aug import ReorderPolicy
+from fused_transforms import Compose as FuseCompose
+from fused_transforms import ReorderPolicy
 
 IMAGE_HEIGHT: int = 256
 IMAGE_WIDTH: int = 256
@@ -483,7 +483,7 @@ def _build_metadata(cfg: BenchConfig, source: str) -> dict[str, Any]:
         "quick": cfg.quick,
         "sequence_source": source,
         "package_versions": {
-            "fuse_augmentations": _pkg_version("vision-synth"),
+            "fused_transforms": _pkg_version("vision-synth"),
             "albumentations": _pkg_version("albumentations"),
             "kornia": _pkg_version("kornia"),
             "torchvision": _pkg_version("torchvision"),

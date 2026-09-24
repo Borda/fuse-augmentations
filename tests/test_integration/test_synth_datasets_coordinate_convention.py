@@ -17,8 +17,8 @@ import pytest
 import torch
 from PIL import Image, ImageDraw
 
-from fuse_augmentations import FusedCompose
-from fuse_augmentations._compat import _TORCHVISION_AVAILABLE
+from fused_transforms import FusedCompose
+from fused_transforms._compat import _TORCHVISION_AVAILABLE
 from synth_datasets.config import ClassMode, Color, OutputFormat, SyntheticConfig, Task, class_vocabulary
 from synth_datasets.generator import SyntheticGenerator
 from synth_datasets.geometry import PIXEL_CENTRE_OFFSET, to_pixel_edge

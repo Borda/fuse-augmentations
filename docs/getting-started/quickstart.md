@@ -12,7 +12,7 @@ Start with the native builder. It needs no Kornia, TorchVision, or Albumentation
 ```python
 import torch
 
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 torch.manual_seed(7)
 

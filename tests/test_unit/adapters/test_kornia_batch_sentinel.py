@@ -12,8 +12,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
-from fuse_augmentations.adapters.kornia import KorniaAdapter, _batch_size_sentinel
+from fused_transforms._compat import _KORNIA_AVAILABLE
+from fused_transforms.adapters.kornia import KorniaAdapter, _batch_size_sentinel
 
 
 class TestBatchSizeSentinel:

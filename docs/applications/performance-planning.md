@@ -13,7 +13,7 @@ Every pipeline reports what it will do before it runs. Reading that plan costs o
 import torch
 import torchvision.transforms.v2 as T
 
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 chain = Compose(
     [

@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import torch
 
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
 
 
 @pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="albumentations not installed")
@@ -88,7 +88,7 @@ class TestTorchVisionInternals:
         """V2 transforms are detected via the torchvision.transforms.v2 module prefix (primary check)."""
         from torchvision.transforms.v2 import RandomRotation
 
-        from fuse_augmentations.adapters.torchvision import is_torchvision_v2_transform
+        from fused_transforms.adapters.torchvision import is_torchvision_v2_transform
 
         assert is_torchvision_v2_transform(RandomRotation(degrees=30))
 
@@ -96,6 +96,6 @@ class TestTorchVisionInternals:
         """V1 transforms are not classified as v2."""
         from torchvision.transforms import RandomRotation
 
-        from fuse_augmentations.adapters.torchvision import is_torchvision_v2_transform
+        from fused_transforms.adapters.torchvision import is_torchvision_v2_transform
 
         assert not is_torchvision_v2_transform(RandomRotation(degrees=30))

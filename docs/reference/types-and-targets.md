@@ -39,7 +39,7 @@ With `output_backend="numpy"`, image and mask targets become channel-last NumPy 
 
 `fusion_plan_descriptors` is available before the first forward call. Each immutable descriptor exposes the segment kind, transform names, saved-application count, backend name where available, and structured boundary/refusal reasons.
 
-::: fuse_augmentations.SegmentDescriptor
+::: fused_transforms.SegmentDescriptor
     options:
         show_root_heading: true
         show_source: false
@@ -48,19 +48,19 @@ With `output_backend="numpy"`, image and mask targets become channel-last NumPy 
 
 ## Transform categories
 
-::: fuse_augmentations.TransformCategory
+::: fused_transforms.TransformCategory
     options:
         show_root_heading: true
         show_source: false
 
 ## Sampling enums
 
-::: fuse_augmentations.InterpolationMode
+::: fused_transforms.InterpolationMode
     options:
         show_root_heading: true
         show_source: false
 
-::: fuse_augmentations.PaddingMode
+::: fused_transforms.PaddingMode
     options:
         show_root_heading: true
         show_source: false
@@ -69,22 +69,22 @@ With `output_backend="numpy"`, image and mask targets become channel-last NumPy 
 
 These functions expect matrices and grids that already follow the package's pixel-coordinate and sampling conventions. Most users should prefer `data_keys`.
 
-::: fuse_augmentations.transform_keypoints
+::: fused_transforms.transform_keypoints
     options:
         show_root_heading: true
         show_source: false
 
-::: fuse_augmentations.transform_bbox_xyxy
+::: fused_transforms.transform_bbox_xyxy
     options:
         show_root_heading: true
         show_source: false
 
-::: fuse_augmentations.transform_bbox_xywh
+::: fused_transforms.transform_bbox_xywh
     options:
         show_root_heading: true
         show_source: false
 
-::: fuse_augmentations.transform_mask
+::: fused_transforms.transform_mask
     options:
         show_root_heading: true
         show_source: false

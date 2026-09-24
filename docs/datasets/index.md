@@ -7,7 +7,7 @@ description: Generate synthetic COCO and YOLO datasets for computer vision proto
 
 `synth_datasets` draws labelled shapes for computer vision experiments. Export COCO or YOLO files for your trainer, or stream samples into a PyTorch DataLoader. Use it to prototype a pipeline, check whether a model can overfit a tiny dataset, and measure sensitivity to smaller objects, clutter, occlusion, or degraded images. The package generates data; your application owns training and evaluation.
 
-`synth_datasets` is a standalone top-level package: it never imports the `fuse_augmentations` augmentation engine and needs no `torch` install for direct generation. The `fuse_augmentations.data` facade re-exports the package-level API for migration, but it imports the torch-dependent augmentation stack and does not preserve former submodule paths such as `fuse_augmentations.data.geometry`; use `synth_datasets.geometry` and other `synth_datasets.*` modules instead. `SyntheticIterableDataset` and PyTorch `DataLoader` integration require the `torch` extra.
+`synth_datasets` is a standalone top-level package: it never imports the `fused_transforms` augmentation engine and needs no `torch` install for direct generation. It is also the only import path — the old `fused_transforms.data` facade and the `fused_transforms.generate_dataset` alias are both removed, so use `synth_datasets.geometry` and the other `synth_datasets.*` modules directly. `SyntheticIterableDataset` and PyTorch `DataLoader` integration require the `torch` extra.
 
 **Start with [Prototyping and convergence checks](prototyping.md)** for runnable recipes and an experiment sequence: check the loader, fit fixed easy samples, evaluate held-out images, then increase difficulty.
 

@@ -22,7 +22,7 @@ Requires ``albumentations >= 2.0``.
 
 Examples:
     ```pycon
-    >>> from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
+    >>> from fused_transforms.adapters.albumentations import AlbumentationsAdapter
     >>> adapter = AlbumentationsAdapter()
     >>> adapter  # doctest: +ELLIPSIS
     <...AlbumentationsAdapter...>
@@ -40,9 +40,9 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
-from fuse_augmentations.affine.matrix import crop_resize_matrix
-from fuse_augmentations.affine.segment import _CV2_BORDER
-from fuse_augmentations.types import PaddingModeStr, SamplingSemantics, TransformCategory
+from fused_transforms.affine.matrix import crop_resize_matrix
+from fused_transforms.affine.segment import _CV2_BORDER
+from fused_transforms.types import PaddingModeStr, SamplingSemantics, TransformCategory
 
 # Doctests that import the optional Albumentations backend are skipped when it
 # is not installed (pytest-doctestplus reads this module-level mapping of
@@ -847,7 +847,7 @@ class AlbumentationsAdapter:
 
         Calls the transform via its native Albumentations dict API
         (``transform(image=image_hwc)["image"]``) without any tensor conversion.
-        Used by :meth:`~fuse_augmentations.compose.FusedCompose._forward_albu_native`
+        Used by :meth:`~fused_transforms.compose.FusedCompose._forward_albu_native`
         to apply passthrough transforms in the Albumentations native I/O path.
 
         Args:
@@ -861,7 +861,7 @@ class AlbumentationsAdapter:
             ```pycon
             >>> import numpy as np
             >>> import albumentations as A
-            >>> from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
+            >>> from fused_transforms.adapters.albumentations import AlbumentationsAdapter
             >>> image = np.zeros((8, 8, 3), dtype=np.uint8)
             >>> out = AlbumentationsAdapter.call_nonfused_numpy(A.GaussianBlur(p=1.0), image)
             >>> out.shape

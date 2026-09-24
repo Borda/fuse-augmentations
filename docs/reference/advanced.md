@@ -23,7 +23,7 @@ Segment objects are `torch.nn.Module` implementations, but the top-level pipelin
 
 Composes one compatible affine/exact run. Its adapter must classify transforms, sample canonical parameters, and build forward pixel matrices.
 
-::: fuse_augmentations.FusedAffineSegment
+::: fused_transforms.FusedAffineSegment
     options:
         show_root_heading: true
         show_source: false
@@ -32,7 +32,7 @@ Composes one compatible affine/exact run. Its adapter must classify transforms, 
 
 Executes an exact-only run without interpolation. Supported discrete operations and auxiliary-target behavior depend on the adapter.
 
-::: fuse_augmentations.ExactAffineSegment
+::: fused_transforms.ExactAffineSegment
     options:
         show_root_heading: true
         show_source: false
@@ -41,7 +41,7 @@ Executes an exact-only run without interpolation. Supported discrete operations 
 
 Composes consecutive projective homographies. It is a separate segment from adjacent affine geometry.
 
-::: fuse_augmentations.ProjectiveSegment
+::: fused_transforms.ProjectiveSegment
     options:
         show_root_heading: true
         show_source: false
@@ -50,7 +50,7 @@ Composes consecutive projective homographies. It is a separate segment from adja
 
 Runs a standalone fixed-output crop-resize. On torch paths, an immediately preceding affine run may instead be represented by a private combined geo-crop segment; that private implementation is intentionally not an API object.
 
-::: fuse_augmentations.CropResizeSegment
+::: fused_transforms.CropResizeSegment
     options:
         show_root_heading: true
         show_source: false
@@ -59,7 +59,7 @@ Runs a standalone fixed-output crop-resize. On torch paths, an immediately prece
 
 `FusedColorSegment` accepts transforms that the adapter can express as homogeneous (4 \\times 4) color matrices. It cannot represent nonlinear saturation/hue or arbitrary intermediate clamps.
 
-::: fuse_augmentations.FusedColorSegment
+::: fused_transforms.FusedColorSegment
     options:
         show_root_heading: true
         show_source: false
@@ -68,7 +68,7 @@ Runs a standalone fixed-output crop-resize. On torch paths, an immediately prece
 
 `build_segments` is exported for advanced use but is an implementation-oriented planner. It expects an adapter instance and returns a heterogeneous list of segment modules and passthrough transforms. Prefer `Compose` unless a custom planner is being tested directly.
 
-::: fuse_augmentations.build_segments
+::: fused_transforms.build_segments
     options:
         show_root_heading: true
         show_source: false
@@ -79,7 +79,7 @@ Runs a standalone fixed-output crop-resize. On torch paths, an immediately prece
 
 The protocol describes classification, parameter sampling, matrix building, exact execution, color-matrix building, and native passthrough. Conformance alone does not register an adapter with `Compose`.
 
-::: fuse_augmentations.TransformAdapter
+::: fused_transforms.TransformAdapter
     options:
         show_root_heading: true
         show_source: false
@@ -88,14 +88,14 @@ The protocol describes classification, parameter sampling, matrix building, exac
 
 Converters translate the pipeline's primary output representation. Coordinate-target conversion is deliberately separate from image layout conversion.
 
-::: fuse_augmentations.BackendConverter
+::: fused_transforms.BackendConverter
     options:
         show_root_heading: true
         show_source: false
 
 ## Experimental adapter registration
 
-The private `fuse_augmentations._backend` module contains `register_adapter` and lazy loading for the `fuse_augmentations.adapters` entry-point group. This surface is explicitly experimental.
+The private `fused_transforms._backend` module contains `register_adapter` and lazy loading for the `fused_transforms.adapters` entry-point group. This surface is explicitly experimental.
 
 The current registry provides detection metadata. A default third-party adapter registered as `Backend.UNKNOWN` is not yet an end-to-end `Compose` execution path: composition dispatch only constructs one of the three built-in adapters. A production plugin should wait for a public contract with an integration test covering registration, construction, forward execution, and serialization.
 

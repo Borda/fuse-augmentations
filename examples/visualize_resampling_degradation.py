@@ -27,7 +27,7 @@ import numpy as np
 import torch
 from torch.nn.functional import interpolate
 
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 Backend = Literal["kornia", "torchvision", "albumentations"]
 _BACKENDS: tuple[Backend, ...] = ("kornia", "torchvision", "albumentations")

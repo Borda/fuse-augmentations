@@ -11,14 +11,14 @@ import warnings
 
 import pytest
 
-from fuse_augmentations._backend import Backend, detect_backend
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
-from fuse_augmentations.types import TransformCategory
+from fused_transforms._backend import Backend, detect_backend
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE
+from fused_transforms.types import TransformCategory
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as albu
 
-    from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
+    from fused_transforms.adapters.albumentations import AlbumentationsAdapter
 
 
 def _make_mock(module_path: str) -> object:

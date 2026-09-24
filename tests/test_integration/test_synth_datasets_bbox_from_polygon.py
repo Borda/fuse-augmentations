@@ -19,8 +19,8 @@ import numpy as np
 import pytest
 import torch
 
-from fuse_augmentations import FusedCompose
-from fuse_augmentations._compat import _TORCHVISION_AVAILABLE
+from fused_transforms import FusedCompose
+from fused_transforms._compat import _TORCHVISION_AVAILABLE
 from synth_datasets.animals import AnimalShape
 from synth_datasets.config import Color, SyntheticConfig, Task
 from synth_datasets.generator import SyntheticGenerator

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import torch
 
-from fuse_augmentations import FusedCompose
+from fused_transforms import FusedCompose
 
 
 class TestOutputBackend:

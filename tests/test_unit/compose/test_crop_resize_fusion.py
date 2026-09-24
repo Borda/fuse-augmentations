@@ -21,26 +21,26 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
-from fuse_augmentations.affine.matrix import crop_resize_matrix, inv3x3, normalize_matrix, normalize_matrix_io
-from fuse_augmentations.affine.segment import CropResizeSegment, _FusedGeoCropSegment, build_segments
-from fuse_augmentations.compose import FusedCompose
-from fuse_augmentations.types import TransformCategory
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
+from fused_transforms.affine.matrix import crop_resize_matrix, inv3x3, normalize_matrix, normalize_matrix_io
+from fused_transforms.affine.segment import CropResizeSegment, _FusedGeoCropSegment, build_segments
+from fused_transforms.compose import FusedCompose
+from fused_transforms.types import TransformCategory
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
 
-    from fuse_augmentations.adapters.kornia import KorniaAdapter
+    from fused_transforms.adapters.kornia import KorniaAdapter
 
 if _TORCHVISION_AVAILABLE:
     import torchvision.transforms as tv_trans
 
-    from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
+    from fused_transforms.adapters.torchvision import TorchVisionAdapter
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as albu
 
-    from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
+    from fused_transforms.adapters.albumentations import AlbumentationsAdapter
 
 
 def test_crop_resize_fixed_category_exists():

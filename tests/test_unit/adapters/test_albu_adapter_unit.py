@@ -13,14 +13,14 @@ import numpy as np
 import pytest
 import torch
 
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
-from fuse_augmentations.affine.matrix import hflip_matrix, vflip_matrix
-from fuse_augmentations.types import TransformAdapter, TransformCategory
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE
+from fused_transforms.affine.matrix import hflip_matrix, vflip_matrix
+from fused_transforms.types import TransformAdapter, TransformCategory
 
 if _ALBUMENTATIONS_AVAILABLE:
-    from fuse_augmentations.adapters import AlbumentationsAdapter
-    from fuse_augmentations.adapters import albumentations as _mod
-    from fuse_augmentations.adapters.albumentations import (
+    from fused_transforms.adapters import AlbumentationsAdapter
+    from fused_transforms.adapters import albumentations as _mod
+    from fused_transforms.adapters.albumentations import (
         _D4_ELEM_TO_CODE,
         _d4_matrix,
         hflip_matrix_np,

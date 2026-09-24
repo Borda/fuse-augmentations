@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations import clip_bbox_xyxy, instance_keep_mask
+from fused_transforms import clip_bbox_xyxy, instance_keep_mask
 
 CANVAS = 8.0
 

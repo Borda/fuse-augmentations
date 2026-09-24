@@ -1,11 +1,11 @@
 """Fuse augmentation transforms into a single interpolation pass.
 
-Both ``import fuse_augmentations`` and ``import fuse_aug`` expose the same
-public API. All implementation lives here; ``fuse_aug`` re-exports via star.
+``import fused_transforms`` is the single public entry point; the whole public
+API lives in this package.
 
 Examples:
     ```pycon
-    >>> from fuse_augmentations import Compose
+    >>> from fused_transforms import Compose
     >>> pipe = Compose([])
     >>> pipe.__class__.__name__
     'FusedCompose'
@@ -18,9 +18,8 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from typing import Any
 
-from fuse_augmentations.__about__ import *  # noqa: F403
+from fused_transforms.__about__ import *  # noqa: F403
 
 # The augmentation stack is torch-dependent end to end (nn.Module subclasses, Tensor-typed public
 # API); importing any of it eagerly imports torch. Dataset generation alone does not need this --
@@ -29,12 +28,12 @@ from fuse_augmentations.__about__ import *  # noqa: F403
 # actionable one; it does not make this package importable without torch (see plan/CLAUDE notes:
 # that would require lazy __getattr__ loading here, deliberately out of scope for now).
 try:
-    from fuse_augmentations.affine.matrix import (
+    from fused_transforms.affine.matrix import (
         LetterboxGeometry,
         letterbox_geometry,
         letterbox_matrix,
     )
-    from fuse_augmentations.affine.segment import (
+    from fused_transforms.affine.segment import (
         CropResizeSegment,
         ExactAffineSegment,
         FusedAffineSegment,
@@ -43,19 +42,19 @@ try:
         ProjectiveSegment,
         build_segments,
     )
-    from fuse_augmentations.converters import NumpyToTorchConverter, TorchToNumpyConverter
-    from fuse_augmentations.detection import augment_detection_batch
+    from fused_transforms.converters import NumpyToTorchConverter, TorchToNumpyConverter
+    from fused_transforms.detection import augment_detection_batch
 
     # Import from the implementation module (not the ``compose`` compatibility
     # shim, whose runtime ``__getattr__`` forwarding is invisible to static doc
     # tooling such as griffe/mkdocstrings). ``compose`` stays a valid import and
     # pickle path for historical payloads.
-    from fuse_augmentations.pipeline import (
+    from fused_transforms.pipeline import (
         AugmentationSequential,
         Compose,
         FusedCompose,
     )
-    from fuse_augmentations.targets import (
+    from fused_transforms.targets import (
         clip_bbox_xyxy,
         corners_to_rboxes,
         instance_keep_mask,
@@ -71,7 +70,7 @@ try:
         transform_mask,
         transform_rboxes,
     )
-    from fuse_augmentations.types import (
+    from fused_transforms.types import (
         BackendConverter,
         ClipPolicyStr,
         InterpolationMode,
@@ -90,7 +89,7 @@ except ModuleNotFoundError as exc:
     if exc.name != "torch" or importlib.util.find_spec("torch") is not None:
         raise
     raise ModuleNotFoundError(
-        "fuse_augmentations requires the 'torch' extra for its augmentation API: "
+        "fused_transforms requires the 'torch' extra for its augmentation API: "
         'install with `pip install "vision-synth[torch]"`. Dataset generation alone does '
         "not need torch -- use `import synth_datasets` instead.",
         name="torch",
@@ -123,7 +122,6 @@ __all__ = [
     "build_segments",
     "clip_bbox_xyxy",
     "corners_to_rboxes",
-    "generate_dataset",  # noqa: F405 - provided lazily via module __getattr__
     "instance_keep_mask",
     "letterbox_geometry",
     "letterbox_matrix",
@@ -141,22 +139,8 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str) -> Any:  # noqa: ANN401 - module-level lazy attribute access
-    """Lazily expose the dataset-generation facade, deferring :mod:`synth_datasets` and Pillow until first use.
-
-    Imported from :mod:`synth_datasets` rather than the ``fuse_augmentations.data`` re-export shim: both reach the
-    identical object, but the shim costs an extra module plus its star import.
-
-    """
-    if name == "generate_dataset":
-        from synth_datasets import generate_dataset
-
-        return generate_dataset
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 def __dir__() -> list[str]:
-    """List the module's attributes, including the lazily-resolved ones absent from ``globals()``."""
+    """List the module's attributes."""
     return sorted(set(globals()) | set(__all__))
 
 

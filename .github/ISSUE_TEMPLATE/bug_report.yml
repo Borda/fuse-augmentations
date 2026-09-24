@@ -41,7 +41,7 @@ body:
     id: version
     attributes:
       label: vision-synth version
-      description: Output of `python -c "import fuse_augmentations, sys; print(fuse_augmentations.__version__)"` or the installed spec.
+      description: Output of `python -c "import fused_transforms, sys; print(fused_transforms.__version__)"` or the installed spec.
       placeholder: "0.9.0"
     validations:
       required: true

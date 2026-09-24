@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations.compose import FusedCompose
+from fused_transforms.compose import FusedCompose
 
 IMAGE_SHAPE = (4, 3, 16, 16)
 
@@ -193,7 +193,7 @@ class TestProbabilityValidation:
         value with no rule for which wins.
 
         """
-        from fuse_augmentations.types import TransformSpec
+        from fused_transforms.types import TransformSpec
 
         with pytest.raises(ValueError, match="mutually exclusive"):
             FusedCompose.from_params(

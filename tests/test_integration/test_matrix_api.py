@@ -8,9 +8,9 @@ import pickle
 import pytest
 import torch
 
-from fuse_augmentations import Compose
-from fuse_augmentations.affine.matrix import _singularity_threshold, inv3x3
-from fuse_augmentations.affine.segment import _inv3x3_affine_np
+from fused_transforms import Compose
+from fused_transforms.affine.matrix import _singularity_threshold, inv3x3
+from fused_transforms.affine.segment import _inv3x3_affine_np
 
 
 def test_return_matrix_is_thread_local_for_different_image_shapes() -> None:

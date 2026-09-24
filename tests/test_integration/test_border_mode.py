@@ -7,12 +7,12 @@ import copy
 import pytest
 import torch
 
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
-from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
-from fuse_augmentations.adapters.kornia import KorniaAdapter
-from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
-from fuse_augmentations.types import TransformSpec
+from fused_transforms import Compose
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fused_transforms.adapters.albumentations import AlbumentationsAdapter
+from fused_transforms.adapters.kornia import KorniaAdapter
+from fused_transforms.adapters.torchvision import TorchVisionAdapter
+from fused_transforms.types import TransformSpec
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug

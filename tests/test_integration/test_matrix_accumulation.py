@@ -49,8 +49,8 @@ from collections.abc import Iterator
 import pytest
 import torch
 
-from fuse_augmentations.affine import segment as _segment
-from fuse_augmentations.affine.matrix import (
+from fused_transforms.affine import segment as _segment
+from fused_transforms.affine.matrix import (
     matmul3x3,
     rotation_matrix,
     scale_matrix,

@@ -42,11 +42,11 @@ uv run --group docs mkdocs build --strict
 uv run --group docs mkdocs serve
 # INFO    -  Building documentation...
 # INFO    -  Documentation built in 0.69 seconds
-# INFO    -  [22:44:18] Watching paths for changes: 'docs', 'mkdocs.yml', 'src/fuse_augmentations'
+# INFO    -  [22:44:18] Watching paths for changes: 'docs', 'mkdocs.yml', 'src/fused_transforms'
 # INFO    -  [22:44:18] Serving on http://127.0.0.1:8000/vision-synth/
 ```
 
-`mkdocs serve` watches `docs/`, `mkdocs.yml`, and `src/fuse_augmentations` (docstrings feed the API reference pages) and rebuilds at <http://127.0.0.1:8000> on save.
+`mkdocs serve` watches `docs/`, `mkdocs.yml`, and `src/fused_transforms` (docstrings feed the API reference pages) and rebuilds at <http://127.0.0.1:8000> on save.
 
 ## Tests and quality checks
 
@@ -58,7 +58,7 @@ pre-commit run --all-files
 
 The CI matrix tests Python 3.10, 3.11, 3.12, 3.13, and 3.14, the supported optional backends, and the all-extras configuration. Keep tests deterministic and include specific assertions that would fail for plausible but incorrect behavior.
 
-Each backend leg installs exactly one optional backend, so a test that imports `albumentations`, `kornia` or `torchvision` without guarding it on the matching `fuse_augmentations._compat` flag passes in a development environment with every backend installed and fails only once CI runs. `make test-matrix` reproduces those legs locally — one cached environment per extra under `.venv-ci-<extra>`, running the same suite CI does — and `make test-kornia` runs a single leg. Guard the import and the module-level objects built from it: a module-level `skipif` marks the tests skipped but does not stop the module body from executing.
+Each backend leg installs exactly one optional backend, so a test that imports `albumentations`, `kornia` or `torchvision` without guarding it on the matching `fused_transforms._compat` flag passes in a development environment with every backend installed and fails only once CI runs. `make test-matrix` reproduces those legs locally — one cached environment per extra under `.venv-ci-<extra>`, running the same suite CI does — and `make test-kornia` runs a single leg. Guard the import and the module-level objects built from it: a module-level `skipif` marks the tests skipped but does not stop the module body from executing.
 
 The ordinary test jobs use CPU Torch builds, so they do not establish CUDA numeric correctness. A separate manual/scheduled GPU workflow is defined in [`ci_gpu.yml`](workflows/ci_gpu.yml), but this guide does not verify whether its self-hosted runner is currently attached or when it last completed. If you change GPU-specific code, run the `gpu`-marked tests locally on a CUDA-capable machine or record a successful GPU workflow run before opening a pull request.
 
@@ -116,7 +116,7 @@ The [pull request template](PULL_REQUEST_TEMPLATE.md) carries the full checklist
 Releases are cut from a tag, never from a branch push, so publishing is always a deliberate act:
 
 1. Move the `## [Unreleased]` entries in `CHANGELOG.md` under a `## [X.Y.Z] - YYYY-MM-DD` heading.
-2. Set `__version__` in `src/fuse_augmentations/__about__.py` to `X.Y.Z` and commit both.
+2. Set `__version__` in `src/fused_transforms/__about__.py` to `X.Y.Z` and commit both.
 3. Tag that commit `vX.Y.Z` (annotated) and push the tag.
 
 `.github/workflows/release.yml` then builds the distributions, checks the manifest, verifies that the tag and `__version__` agree — a mismatch fails the run before anything is uploaded — runs `twine check`, and publishes through PyPI Trusted Publishing. No API token is stored: PyPI verifies the workflow's OIDC identity, which requires a one-time trusted publisher configured for this repository and this workflow file, and the `pypi` GitHub environment gates the upload behind whatever protection rules the repository sets.

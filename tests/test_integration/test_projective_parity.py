@@ -16,13 +16,13 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import (
+from fused_transforms import Compose
+from fused_transforms._compat import (
     _ALBUMENTATIONS_AVAILABLE,
     _KORNIA_AVAILABLE,
     _TORCHVISION_AVAILABLE,
 )
-from fuse_augmentations.affine.matrix import (
+from fused_transforms.affine.matrix import (
     inv3x3,
     normalize_matrix,
     perspective_from_points,

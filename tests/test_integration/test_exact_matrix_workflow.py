@@ -6,19 +6,19 @@ import numpy as np
 import pytest
 import torch
 
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
-from fuse_augmentations.targets import transform_keypoints
+from fused_transforms import Compose
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fused_transforms.targets import transform_keypoints
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as A
 
-    from fuse_augmentations.adapters.albumentations import _D4_ELEM_TO_CODE, AlbumentationsAdapter
+    from fused_transforms.adapters.albumentations import _D4_ELEM_TO_CODE, AlbumentationsAdapter
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as K
 
-    from fuse_augmentations.adapters.kornia import KorniaAdapter
+    from fused_transforms.adapters.kornia import KorniaAdapter
 
 
 pytestmark = pytest.mark.integration

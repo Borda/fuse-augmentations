@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from fuse_augmentations._backend import Backend, detect_backend, detect_backends_per_transform
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
+from fused_transforms._backend import Backend, detect_backend, detect_backends_per_transform
+from fused_transforms._compat import _KORNIA_AVAILABLE
 
 
 @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="kornia not installed")

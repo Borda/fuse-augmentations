@@ -12,9 +12,9 @@ import numpy as np
 import pytest
 import torch
 
-from fuse_augmentations import FusedCompose
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE
-from fuse_augmentations.affine.segment import _cv2_border_value
+from fused_transforms import FusedCompose
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE
+from fused_transforms.affine.segment import _cv2_border_value
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as albu

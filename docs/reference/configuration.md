@@ -14,7 +14,7 @@ PyTorch remains a required runtime dependency in both cases.
 <!--phmdoctest-share-names-->
 
 ```python
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 pipe = Compose.from_params(
     rotation=(-20.0, 20.0),
@@ -36,7 +36,7 @@ The direct path supports rotation, uniform/per-axis scale, x/y shear, x/y pixel 
 <!--phmdoctest-share-names-->
 
 ```python
-from fuse_augmentations import Compose, TransformSpec
+from fused_transforms import Compose, TransformSpec
 
 specs = [
     TransformSpec(
@@ -58,7 +58,7 @@ Do not put `prob` inside `params`; use the dedicated field.
 ## Capabilities are backend-specific
 
 ```python
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 if "rotation90" in Compose.supported_ops("albumentations"):
     ...
@@ -91,7 +91,7 @@ Treat backend swapping as validated reconstruction, not an assurance of identica
 Use explicit `ReorderPolicy.NONE` when declaration order must be preserved:
 
 ```python
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 pipe = Compose.from_config(
     specs,
@@ -102,7 +102,7 @@ pipe = Compose.from_config(
 
 ## `TransformSpec`
 
-::: fuse_augmentations.TransformSpec
+::: fused_transforms.TransformSpec
     options:
         show_root_heading: true
         show_source: false
@@ -112,12 +112,12 @@ pipe = Compose.from_config(
 
 ## Configuration policies
 
-::: fuse_augmentations.ReorderPolicy
+::: fused_transforms.ReorderPolicy
     options:
         show_root_heading: true
         show_source: false
 
-::: fuse_augmentations.RandomnessPolicy
+::: fused_transforms.RandomnessPolicy
     options:
         show_root_heading: true
         show_source: false

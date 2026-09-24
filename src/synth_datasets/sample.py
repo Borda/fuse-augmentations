@@ -46,10 +46,10 @@ class Annotation:
         class_id: Zero-based class index (see :func:`~synth_datasets.config.class_names`).
         class_name: Human-readable class label.
         polygon: Filled-shape outline as a flat pixel-coordinate list, in **pixel-centre** space --
-            the space :func:`~fuse_augmentations.targets.transform_keypoints` moves a point field
+            the space :func:`~fused_transforms.targets.transform_keypoints` moves a point field
             through. :attr:`obb_corners`, derived from it, is in the same space.
         bbox_xyxy: Axis-aligned box ``(x_min, y_min, x_max, y_max)`` in pixels, in **pixel-edge**
-            space -- the space :func:`~fuse_augmentations.targets.transform_bbox_xyxy` assumes, so a
+            space -- the space :func:`~fused_transforms.targets.transform_bbox_xyxy` assumes, so a
             full ``(H, W)`` canvas spans ``[0, W] x [0, H]``. The two conventions differ by half a
             pixel each way and are not interchangeable; see
             :data:`~synth_datasets.geometry.PIXEL_CENTRE_OFFSET`. Both dataset writers

@@ -16,7 +16,7 @@ import math
 import pytest
 import torch
 
-from fuse_augmentations import (
+from fused_transforms import (
     FusedCompose,
     corners_to_rboxes,
     mirror_rboxes,

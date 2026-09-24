@@ -10,9 +10,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
-from fuse_augmentations.compose import FusedCompose as Compose
-from fuse_augmentations.targets import transform_mask
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fused_transforms.compose import FusedCompose as Compose
+from fused_transforms.targets import transform_mask
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
@@ -410,7 +410,7 @@ class TestAuxGeometryDtype:
 
     def test_geometry_dtype_maps_low_precision_to_float32(self):
         """The geometry dtype keeps float64 and sends every narrower dtype to float32."""
-        from fuse_augmentations.affine.segment import _matrix_geometry_dtype
+        from fused_transforms.affine.segment import _matrix_geometry_dtype
 
         assert _matrix_geometry_dtype(torch.float64) is torch.float64
         assert _matrix_geometry_dtype(torch.float32) is torch.float32

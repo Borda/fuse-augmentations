@@ -127,7 +127,7 @@ def place_points(
 #: Distance between a pixel's edge-space and centre-space coordinate. Pillow fills pixel
 #: ``floor(x)`` for a vertex at ``x``, so an outline authored for the rasterizer is in *edge* space
 #: (pixel ``i`` spans ``[i, i + 1)``), while the matrices in
-#: :mod:`~fuse_augmentations.targets` resample images -- and therefore move keypoints -- in *centre*
+#: :mod:`~fused_transforms.targets` resample images -- and therefore move keypoints -- in *centre*
 #: space (pixel ``i`` is the point ``i``). The two differ by half a pixel each way, which becomes a
 #: full pixel under any reflection, so a point field has to declare which space it is in.
 PIXEL_CENTRE_OFFSET = 0.5

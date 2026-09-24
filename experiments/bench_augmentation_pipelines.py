@@ -97,8 +97,8 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from fuse_aug import Compose as FuseCompose
-from fuse_aug import ReorderPolicy
+from fused_transforms import Compose as FuseCompose
+from fused_transforms import ReorderPolicy
 
 log = logging.getLogger(__name__)
 
@@ -231,7 +231,7 @@ print(
 #
 # - **Native**: backend's own sequential compose class (`K.AugmentationSequential` /
 #   `tv.Compose` / `A.Compose`) — each transform runs its own `grid_sample` / per-pixel operation.
-# - **Fused**: `fuse_aug.Compose` wrapping the same transforms — consecutive fusible ops
+# - **Fused**: `fused_transforms.Compose` wrapping the same transforms — consecutive fusible ops
 #   are grouped and their affine matrices composed before a single `grid_sample` call.
 
 # %% ── 2  Pipeline definitions ────────────────────────────────────────────────
@@ -948,7 +948,7 @@ output = {
         "num_repeats": NUM_REPEATS,
         "seed_policy": "visual rows reset global and Albumentations-owned RNGs; no paired geometry claim",
         "package_versions": {
-            "fuse_augmentations": _pkg_version("vision-synth"),
+            "fused_transforms": _pkg_version("vision-synth"),
             "albumentations": _pkg_version("albumentations"),
             "kornia": _pkg_version("kornia"),
             "torchvision": _pkg_version("torchvision"),

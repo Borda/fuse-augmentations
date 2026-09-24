@@ -14,7 +14,7 @@ Introspection is how you verify that a pipeline formed the segments you intended
 ```python
 import torch
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 torch.manual_seed(7)
 augment = Compose.from_params(rotation=(-15.0, 15.0), hflip_p=0.5)

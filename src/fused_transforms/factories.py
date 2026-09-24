@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import torch
 from torch import nn
 
-from fuse_augmentations._random import uniform as _uniform
-from fuse_augmentations.affine.matrix import (
+from fused_transforms._random import uniform as _uniform
+from fused_transforms.affine.matrix import (
     hflip_matrix,
     letterbox_matrix,
     matmul3x3,
@@ -28,15 +28,15 @@ from fuse_augmentations.affine.matrix import (
     translate_matrix,
     vflip_matrix,
 )
-from fuse_augmentations.affine.segment import build_segments
-from fuse_augmentations.config_validation import (
+from fused_transforms.affine.segment import build_segments
+from fused_transforms.config_validation import (
     _coerce_randomness_policy,
     _has_coord_aux,
     _validate_fill,
     _validate_keypoint_flip_index,
     _validate_mask_fill,
 )
-from fuse_augmentations.types import (
+from fused_transforms.types import (
     ClipPolicyStr,
     ComposePaddingModeStr,
     FillValue,
@@ -51,7 +51,7 @@ from fuse_augmentations.types import (
 )
 
 if TYPE_CHECKING:
-    from fuse_augmentations.resolver import BackendStr, OpStr
+    from fused_transforms.resolver import BackendStr, OpStr
 
 # The from_config doctest builds a Kornia-backed pipeline, so it is skipped when
 # Kornia is not installed (pytest-doctestplus reads this module-level mapping of
@@ -130,15 +130,15 @@ class FactoriesMixin:
             A configured ``FusedCompose`` instance.
 
         Raises:
-            ValueError: If ``backend`` is not in :data:`~fuse_augmentations.resolver.SUPPORTED_BACKENDS`; or, when
+            ValueError: If ``backend`` is not in :data:`~fused_transforms.resolver.SUPPORTED_BACKENDS`; or, when
                 ``on_unsupported="raise"``, if any spec's operation is unknown or unsupported by the chosen backend
                 (all offenders reported together). This validation applies even when ``specs`` is empty.
 
         Examples:
             ```pycon
             >>> import torch
-            >>> from fuse_augmentations.compose import FusedCompose
-            >>> from fuse_augmentations.types import TransformSpec
+            >>> from fused_transforms.compose import FusedCompose
+            >>> from fused_transforms.types import TransformSpec
             >>> spec = TransformSpec(operation="hflip", params={}, prob=0.5)
             >>> pipe = FusedCompose.from_config([spec], backend="kornia")
             >>> pipe(torch.zeros(1, 3, 8, 8)).shape
@@ -147,7 +147,7 @@ class FactoriesMixin:
             ```
 
         """
-        from fuse_augmentations.resolver import SUPPORTED_BACKENDS
+        from fused_transforms.resolver import SUPPORTED_BACKENDS
 
         if backend not in SUPPORTED_BACKENDS:
             msg = f"unknown backend {backend!r}; supported: {sorted(SUPPORTED_BACKENDS)}"
@@ -219,7 +219,7 @@ class FactoriesMixin:
             ValueError: On a ``prob``-in-``params`` spec, or (under ``"raise"``) when any op is unsupported.
 
         """
-        from fuse_augmentations.resolver import SUPPORTED_OPS, resolve_op
+        from fused_transforms.resolver import SUPPORTED_OPS, resolve_op
 
         offenders: list[str] = []
         kept: list[TransformSpec] = []
@@ -266,7 +266,7 @@ class FactoriesMixin:
             The constructed backend transform object.
 
         """
-        from fuse_augmentations.resolver import resolve_op, translate_params
+        from fused_transforms.resolver import resolve_op, translate_params
 
         op_name = cast("OpStr", spec.operation)
         tfm_cls = cast(type, resolve_op(op_name, backend))
@@ -307,25 +307,25 @@ class FactoriesMixin:
         """Return the canonical op names *backend* can build.
 
         Args:
-            backend: Backend name (must be in :data:`~fuse_augmentations.resolver.SUPPORTED_BACKENDS`).
+            backend: Backend name (must be in :data:`~fused_transforms.resolver.SUPPORTED_BACKENDS`).
 
         Returns:
             Frozenset of canonical op names the backend supports (empty if the backend's optional dependency is not
             installed).
 
         Raises:
-            KeyError: If *backend* is not in :data:`~fuse_augmentations.resolver.SUPPORTED_BACKENDS`.
+            KeyError: If *backend* is not in :data:`~fused_transforms.resolver.SUPPORTED_BACKENDS`.
 
         Examples:
             ```pycon
-            >>> from fuse_augmentations.compose import FusedCompose
+            >>> from fused_transforms.compose import FusedCompose
             >>> "hflip" in FusedCompose.supported_ops("kornia")  # doctest: +SKIP
             True
 
             ```
 
         """
-        from fuse_augmentations.resolver import capability_matrix
+        from fused_transforms.resolver import capability_matrix
 
         return capability_matrix()[backend]
 
@@ -338,14 +338,14 @@ class FactoriesMixin:
 
         Examples:
             ```pycon
-            >>> from fuse_augmentations.compose import FusedCompose
+            >>> from fused_transforms.compose import FusedCompose
             >>> sorted(FusedCompose.capability_matrix())
             ['albumentations', 'kornia', 'native', 'torchvision']
 
             ```
 
         """
-        from fuse_augmentations.resolver import capability_matrix
+        from fused_transforms.resolver import capability_matrix
 
         return capability_matrix()
 
@@ -528,7 +528,7 @@ class FactoriesMixin:
         Examples:
             ```pycon
             >>> import torch
-            >>> from fuse_augmentations.compose import FusedCompose
+            >>> from fused_transforms.compose import FusedCompose
             >>> pipe = FusedCompose.from_params(rotation=(-30, 30), hflip_p=0.5)
             >>> x = torch.zeros(2, 3, 64, 64)
             >>> out = pipe(x)
@@ -542,7 +542,7 @@ class FactoriesMixin:
 
             ```pycon
             >>> import torch
-            >>> from fuse_augmentations.compose import FusedCompose
+            >>> from fused_transforms.compose import FusedCompose
             >>> image = torch.rand(2, 3, 32, 32)
             >>> def run(seed):
             ...     gen = torch.Generator().manual_seed(seed)
@@ -1041,8 +1041,8 @@ _SCALE_PARAM_KEYS = ("scale", "scale_x", "scale_y")
 def _validate_geometric_probability(name: str, value: float) -> None:
     """Reject an out-of-range per-op probability at construction rather than at the first draw.
 
-    Mirrors the bound :class:`~fuse_augmentations.types.TransformSpec` enforces, so the backend-free engine and the
-    spec-building path refuse the same values.
+    Mirrors the bound :class:`~fused_transforms.types.TransformSpec` enforces, so the backend-free engine and the spec-
+    building path refuse the same values.
 
     """
     if not (0.0 <= value <= 1.0):

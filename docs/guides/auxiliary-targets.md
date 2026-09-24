@@ -38,7 +38,7 @@ This example uses the augmentation-backend-free builder and only registered oper
 ```python
 import torch
 
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 batch_size, height, width = 2, 128, 128
 images = torch.rand(batch_size, 3, height, width)
@@ -122,7 +122,7 @@ Mask sampling uses a scalar `mask_fill`, independently of image `fill` and `padd
 ```python
 import torch
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 image = torch.zeros(1, 1, 8, 8)
 mask = torch.zeros(1, 1, 8, 8, dtype=torch.uint8)
@@ -206,7 +206,7 @@ A mirrored image has its left and right anatomy swapped. The warp already puts t
 ```python
 import torch
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 points = torch.tensor([[[4.0, 4.0], [8.0, 6.0], [12.0, 10.0]]])
 augment = Compose.from_params(
@@ -236,7 +236,7 @@ print(swapped[0].tolist())
 ```python
 import torch
 
-from fuse_augmentations import Compose, rbox_envelopes
+from fused_transforms import Compose, rbox_envelopes
 
 image = torch.rand(1, 3, 16, 32)
 rboxes = torch.tensor([[[16.0, 8.0, 8.0, 4.0, 0.0]]])
@@ -269,7 +269,7 @@ A warp pushes some instances off the canvas and clips others to slivers. This pa
 ```python
 import torch
 
-from fuse_augmentations import Compose, clip_bbox_xyxy, instance_keep_mask
+from fused_transforms import Compose, clip_bbox_xyxy, instance_keep_mask
 
 image = torch.rand(1, 3, 32, 32)
 boxes = torch.tensor([[[2.0, 2.0, 10.0, 10.0], [26.0, 26.0, 31.0, 31.0]]])

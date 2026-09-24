@@ -10,9 +10,9 @@ byte-identical output.
 
 Coordinate conventions follow the transforms each field travels through, so a generated label can be
 handed straight to a pipeline. Outlines and landmarks are emitted in **pixel-centre** space, which is
-what :func:`~fuse_augmentations.targets.transform_keypoints` and the image resampler assume;
+what :func:`~fused_transforms.targets.transform_keypoints` and the image resampler assume;
 ``bbox_xyxy`` is emitted in **pixel-edge** space, which is what
-:func:`~fuse_augmentations.targets.transform_bbox_xyxy` assumes. The rasterizer itself draws the
+:func:`~fused_transforms.targets.transform_bbox_xyxy` assumes. The rasterizer itself draws the
 edge-space outline, since Pillow fills pixel ``floor(x)`` for a vertex at ``x``. Mixing the two up
 costs a full pixel under any reflection or quarter turn, which is why each field declares its space
 rather than sharing one; see :data:`~synth_datasets.geometry.PIXEL_CENTRE_OFFSET`.

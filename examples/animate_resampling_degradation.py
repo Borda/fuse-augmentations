@@ -4,7 +4,7 @@ The static companion (``examples/visualize_resampling_degradation.py``) renders 
 figure per recipe. This script turns the same fixed geometry recipes into a
 side-by-side animation: the left panel replays the native backend one transform
 at a time, resampling on every step, while the right panel holds the input until
-``fuse_augmentations.Compose`` fires the whole recipe as one warp. A running
+``fused_transforms.Compose`` fires the whole recipe as one warp. A running
 resample counter on each panel makes the "3 resamples versus 1" story literal,
 and a closing channel overlay shows where the sequential path drifted.
 
@@ -46,7 +46,7 @@ from examples.visualize_resampling_degradation import (
     _load_image,
     _to_image,
 )
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 _SEQ_COLOR = "#ff00ff"  # native sequential accent = pure magenta (255, 0, 255), the overlay tint
 _FUSED_COLOR = "#00ff00"  # fused accent = pure green (0, 255, 0), the overlay channel

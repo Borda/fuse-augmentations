@@ -17,7 +17,7 @@ description: Construct, run, inspect, and convert vision-synth pipelines.
 import torch
 import torchvision.transforms.v2 as transforms
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 pipe = Compose(
     [
@@ -55,7 +55,7 @@ The standard call accepts a BCHW tensor. Set `data_keys` when positional auxilia
 import torch
 import torchvision.transforms.v2 as transforms
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 safe_transforms = [
     transforms.RandomRotation(15),
@@ -125,7 +125,7 @@ Extra `backend_kwargs` are currently reserved and unused; do not rely on them as
 
 ## `Compose` / `FusedCompose`
 
-::: fuse_augmentations.FusedCompose
+::: fused_transforms.FusedCompose
     options:
         show_root_heading: true
         show_source: false
@@ -146,14 +146,14 @@ Extra `backend_kwargs` are currently reserved and unused; do not rely on them as
 
 The converters are useful when conversion should be explicit rather than attached to a pipeline.
 
-::: fuse_augmentations.NumpyToTorchConverter
+::: fused_transforms.NumpyToTorchConverter
     options:
         show_root_heading: true
         show_source: false
         members:
             - convert
 
-::: fuse_augmentations.TorchToNumpyConverter
+::: fused_transforms.TorchToNumpyConverter
     options:
         show_root_heading: true
         show_source: false
@@ -162,7 +162,7 @@ The converters are useful when conversion should be explicit rather than attache
 
 ## Ragged detection adapter
 
-::: fuse_augmentations.augment_detection_batch
+::: fused_transforms.augment_detection_batch
     options:
         show_root_heading: true
         show_source: false

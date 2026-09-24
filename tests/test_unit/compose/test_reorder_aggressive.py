@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations import Compose, FusedCompose
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
-from fuse_augmentations.affine.segment import reorder_aggressive, reorder_pointwise
-from fuse_augmentations.types import ReorderPolicy, TransformCategory
+from fused_transforms import Compose, FusedCompose
+from fused_transforms._compat import _KORNIA_AVAILABLE
+from fused_transforms.affine.segment import reorder_aggressive, reorder_pointwise
+from fused_transforms.types import ReorderPolicy, TransformCategory
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug

@@ -31,10 +31,10 @@ import numpy as np
 import pytest
 import torch
 
-import fuse_augmentations.adapters.albumentations as albu_adapter_mod
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
-from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
+import fused_transforms.adapters.albumentations as albu_adapter_mod
+from fused_transforms import Compose
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fused_transforms.adapters.albumentations import AlbumentationsAdapter
 
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as albu

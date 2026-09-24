@@ -35,7 +35,7 @@ Use an explicit order-preserving policy and reset the seed before building or ca
 ```python
 import torch
 
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 
 def run_once(seed: int, images: torch.Tensor) -> torch.Tensor:
@@ -65,7 +65,7 @@ Global seeding is process-wide: any other component drawing from the torch strea
 ```python
 import torch
 
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 images = torch.rand(4, 3, 64, 64, generator=torch.Generator().manual_seed(7))
 
@@ -105,7 +105,7 @@ import numpy as np
 import torch
 import albumentations as A
 
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 
 def build_albumentations_pipe(seed: int) -> Compose:
@@ -194,7 +194,7 @@ This recipe keeps the transfer decision visible without requiring an accelerator
 import albumentations as A
 import torch
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 pipe = Compose(
@@ -229,7 +229,7 @@ Save enough information to explain a future mismatch:
 import json
 import torch
 
-from fuse_augmentations import Compose
+from fused_transforms import Compose
 
 torch.manual_seed(7)
 images = torch.rand(2, 3, 32, 32)

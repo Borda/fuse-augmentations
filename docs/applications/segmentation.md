@@ -16,7 +16,7 @@ A segmentation pipeline transforms two tensors that must agree pixel for pixel a
 ```python
 import torch
 
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 torch.manual_seed(3)
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations.affine.segment import FusedColorSegment
+from fused_transforms.affine.segment import FusedColorSegment
 
 
 def _homogeneous_matmul_image(image: torch.Tensor, acc: torch.Tensor) -> torch.Tensor:

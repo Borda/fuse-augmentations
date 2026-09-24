@@ -11,9 +11,8 @@ import json
 
 import pytest
 
-import fuse_aug
-import fuse_augmentations
-from fuse_augmentations import TransformSpec
+import fused_transforms
+from fused_transforms import TransformSpec
 
 
 class TestTransformSpecConstruction:
@@ -213,23 +212,15 @@ class TestTransformSpecEquality:
 
 
 class TestTransformSpecExport:
-    """TransformSpec is accessible from top-level package and fuse_aug alias."""
+    """TransformSpec is accessible from the top-level package."""
 
     def test_in_all(self):
-        """'TransformSpec' appears in fuse_augmentations.__all__."""
-        assert "TransformSpec" in fuse_augmentations.__all__
+        """'TransformSpec' appears in fused_transforms.__all__."""
+        assert "TransformSpec" in fused_transforms.__all__
 
-    def test_importable_from_fuse_augmentations(self):
-        """TransformSpec is an attribute of the fuse_augmentations module."""
-        assert hasattr(fuse_augmentations, "TransformSpec")
-
-    def test_importable_from_fuse_aug(self):
-        """TransformSpec is an attribute of the fuse_aug alias module."""
-        assert hasattr(fuse_aug, "TransformSpec")
-
-    def test_same_class_both_packages(self):
-        """fuse_augmentations.TransformSpec and fuse_aug.TransformSpec are the same class."""
-        assert fuse_augmentations.TransformSpec is fuse_aug.TransformSpec
+    def test_importable_from_fused_transforms(self):
+        """TransformSpec is an attribute of the fused_transforms module."""
+        assert hasattr(fused_transforms, "TransformSpec")
 
 
 class TestTransformSpecFromDictValidation:

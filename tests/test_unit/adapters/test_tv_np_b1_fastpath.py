@@ -25,14 +25,14 @@ import math
 import pytest
 import torch
 
-from fuse_augmentations._compat import _TORCHVISION_AVAILABLE
+from fused_transforms._compat import _TORCHVISION_AVAILABLE
 
 if _TORCHVISION_AVAILABLE:
     from torchvision.transforms import RandomAffine, RandomRotation
 
-    from fuse_augmentations import Compose, ReorderPolicy
-    from fuse_augmentations.adapters import torchvision as _mod
-    from fuse_augmentations.affine import segment as _segment_mod
+    from fused_transforms import Compose, ReorderPolicy
+    from fused_transforms.adapters import torchvision as _mod
+    from fused_transforms.affine import segment as _segment_mod
 
 pytestmark = pytest.mark.skipif(not _TORCHVISION_AVAILABLE, reason="missing torchvision")
 

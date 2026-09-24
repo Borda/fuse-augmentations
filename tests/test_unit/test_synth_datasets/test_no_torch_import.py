@@ -1,4 +1,4 @@
-"""Structural guarantee: `import synth_datasets` and dataset generation never pull in torch or fuse_augmentations."""
+"""Structural guarantee: `import synth_datasets` and dataset generation never pull in torch or fused_transforms."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from synth_datasets.degradations import JPEG, GaussianBlur
 
 
 def _forbidden_loaded():
-    return [name for name in ("torch", "fuse_augmentations") if name in sys.modules]
+    return [name for name in ("torch", "fused_transforms") if name in sys.modules]
 
 
 assert not _forbidden_loaded(), f"importing synth_datasets pulled in {_forbidden_loaded()}"
@@ -78,8 +78,8 @@ print("OK")
 """
 
 
-def test_importing_synth_datasets_does_not_import_torch_or_fuse_augmentations() -> None:
-    """`import synth_datasets` and dataset generation never touch `sys.modules['torch']` or `['fuse_augmentations']`.
+def test_importing_synth_datasets_does_not_import_torch_or_fused_transforms() -> None:
+    """`import synth_datasets` and dataset generation never touch `sys.modules['torch']` or `['fused_transforms']`.
 
     Runs in a fresh subprocess so an already-torch-loaded test session cannot mask a regression, and drives every
     format/task combination plus the two code paths with their own deferred, call-time imports (`ImageBackground` and

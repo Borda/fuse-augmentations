@@ -22,7 +22,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from fuse_augmentations.affine.matrix import (
+from fused_transforms.affine.matrix import (
     apply_d4_image,
     classify_d4_batch,
     hflip_matrix,

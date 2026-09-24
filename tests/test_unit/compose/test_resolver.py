@@ -10,8 +10,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
-from fuse_augmentations.resolver import (
+from fused_transforms._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
+from fused_transforms.resolver import (
     SUPPORTED_BACKENDS,
     SUPPORTED_OPS,
     _registry_for,
@@ -311,7 +311,7 @@ class TestComposeCapabilityApi:
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_supported_ops_nonempty(self) -> None:
         """Compose.supported_ops('kornia') returns a non-empty frozenset."""
-        from fuse_augmentations import Compose
+        from fused_transforms import Compose
 
         ops = Compose.supported_ops("kornia")
         assert isinstance(ops, frozenset)
@@ -319,7 +319,7 @@ class TestComposeCapabilityApi:
 
     def test_capability_matrix_classmethod_matches_resolver(self) -> None:
         """Compose.capability_matrix() delegates to the resolver capability_matrix()."""
-        from fuse_augmentations import Compose
+        from fused_transforms import Compose
 
         assert Compose.capability_matrix() == capability_matrix()
 
@@ -330,7 +330,7 @@ class TestFromConfigAggregatedValidation:
     @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
     def test_aggregated_error_lists_all_offenders(self) -> None:
         """A pipeline with several bad ops raises one ValueError naming every offender, not just the first."""
-        from fuse_augmentations import Compose, TransformSpec
+        from fused_transforms import Compose, TransformSpec
 
         specs = [
             TransformSpec(operation="rotation", params={}, prob=1.0),
@@ -346,7 +346,7 @@ class TestFromConfigAggregatedValidation:
         """on_unsupported='warn_skip' drops the unsupported op with a warning and builds a runnable pipeline."""
         import warnings as _warnings
 
-        from fuse_augmentations import Compose, TransformSpec
+        from fused_transforms import Compose, TransformSpec
 
         specs = [
             TransformSpec(operation="hflip", params={}, prob=1.0),

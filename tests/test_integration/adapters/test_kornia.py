@@ -5,19 +5,19 @@ import warnings
 import pytest
 import torch
 
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
+from fused_transforms import Compose
+from fused_transforms._compat import _KORNIA_AVAILABLE
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
 
-    from fuse_augmentations.adapters.kornia import (
+    from fused_transforms.adapters.kornia import (
         KorniaAdapter,
         build_matrix_numpy_b1_kornia,
         sample_and_build_matrix_numpy_b1_kornia,
     )
-    from fuse_augmentations.affine.matrix import inv3x3, normalize_matrix, normalize_matrix_io, perspective_grid
-    from fuse_augmentations.types import TransformCategory
+    from fused_transforms.affine.matrix import inv3x3, normalize_matrix, normalize_matrix_io, perspective_grid
+    from fused_transforms.types import TransformCategory
 
     _CATEGORY_PARAMS = [
         (kornia_aug.RandomRotation(degrees=30, p=1.0), TransformCategory.GEOMETRIC_INTERP),

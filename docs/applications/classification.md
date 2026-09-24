@@ -12,7 +12,7 @@ Classification is the lowest-risk application. The label is a class index, so no
 ```python
 import torch
 
-from fuse_augmentations import Compose, ReorderPolicy
+from fused_transforms import Compose, ReorderPolicy
 
 torch.manual_seed(7)
 

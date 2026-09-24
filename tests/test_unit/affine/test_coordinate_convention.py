@@ -20,8 +20,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from fuse_augmentations import FusedCompose
-from fuse_augmentations.affine.matrix import inv3x3, normalize_matrix_io
+from fused_transforms import FusedCompose
+from fused_transforms.affine.matrix import inv3x3, normalize_matrix_io
 
 #: Float32 sampling of two independently composed grids differs in the last bits only.
 ROUNDING = 1e-5

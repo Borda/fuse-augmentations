@@ -6,9 +6,9 @@ import pytest
 import torch
 from torch import nn
 
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import _TORCHVISION_AVAILABLE
-from fuse_augmentations.detection import augment_detection_batch
+from fused_transforms import Compose
+from fused_transforms._compat import _TORCHVISION_AVAILABLE
+from fused_transforms.detection import augment_detection_batch
 
 if _TORCHVISION_AVAILABLE:
     from torchvision.models.detection import FasterRCNN

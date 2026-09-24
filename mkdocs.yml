@@ -11,7 +11,7 @@ strict: true
 exclude_docs: |
   adr/
 watch:
-  - src/fuse_augmentations
+  - src/fused_transforms
 
 theme:
   name: material

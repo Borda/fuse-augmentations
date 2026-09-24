@@ -1,9 +1,9 @@
-"""Static, import-free proof that only `datasets.py` pulls torch or fuse_augmentations into `synth_datasets`.
+"""Static, import-free proof that only `datasets.py` pulls torch or fused_transforms into `synth_datasets`.
 
 Both existing guards for this boundary are runtime and deletable: `test_no_torch_import.py` imports the package in a
 subprocess and checks `sys.modules`, and the CI `synth-datasets-no-torch` leg silences `datasets.py`'s own torch import
 with a `--ignore=src/synth_datasets/datasets.py` flag rather than a rule. Neither would notice a *new* module quietly
-gaining a torch or fuse_augmentations import until someone happens to run a torch-full test session, or the `--ignore`
+gaining a torch or fused_transforms import until someone happens to run a torch-full test session, or the `--ignore`
 flag is remembered to be updated. This walks the AST of every module instead, so the boundary holds by construction and
 works with torch absent.
 
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import synth_datasets
 
-_FORBIDDEN_PREFIXES = ("torch", "fuse_augmentations")
+_FORBIDDEN_PREFIXES = ("torch", "fused_transforms")
 _EXEMPT_MODULE = "datasets.py"
 
 
@@ -46,11 +46,11 @@ def _collect_violations() -> dict[str, list[str]]:
     return violations
 
 
-def test_no_module_outside_datasets_imports_torch_or_fuse_augmentations() -> None:
-    """Every `synth_datasets` module except `datasets.py` is free of torch and fuse_augmentations import nodes.
+def test_no_module_outside_datasets_imports_torch_or_fused_transforms() -> None:
+    """Every `synth_datasets` module except `datasets.py` is free of torch and fused_transforms import nodes.
 
     Parses source with `ast` and never executes it, so this holds whether or not torch is installed, and it would catch
-    a new torch/fuse_augmentations import the moment it lands in a module other than `datasets.py` — the one place that
+    a new torch/fused_transforms import the moment it lands in a module other than `datasets.py` — the one place that
     import is allowed today.
 
     """

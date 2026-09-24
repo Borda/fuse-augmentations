@@ -1,7 +1,7 @@
 """Compatibility import surface for fused augmentation pipelines.
 
-The implementation lives in :mod:`fuse_augmentations.pipeline`. This module forwards both public and historical private
-attributes so existing imports and pickle payloads that reference ``fuse_augmentations.compose`` remain valid.
+The implementation lives in :mod:`fused_transforms.pipeline`. This module forwards both public and historical private
+attributes so existing imports and pickle payloads that reference ``fused_transforms.compose`` remain valid.
 
 """
 
@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fuse_augmentations import pipeline as _pipeline
-from fuse_augmentations.affine.segment import _OpaqueBorderModeTransform  # noqa: F401
+from fused_transforms import pipeline as _pipeline
+from fused_transforms.affine.segment import _OpaqueBorderModeTransform  # noqa: F401
 
 __all__ = [name for name in dir(_pipeline) if not name.startswith("_")] + ["dataclass"]
 

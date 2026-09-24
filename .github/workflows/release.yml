@@ -1,7 +1,7 @@
 name: Release to PyPI
 
 # A release is cut by pushing an annotated tag ``vX.Y.Z`` whose version matches
-# ``fuse_augmentations.__version__``; nothing publishes on a branch push. The tag is the
+# ``fused_transforms.__version__``; nothing publishes on a branch push. The tag is the
 # only trigger, so a release is always a deliberate act rather than a side effect of a merge.
 on:
   push:
@@ -38,7 +38,7 @@ jobs:
       - name: 🔖 Verify the tag matches the package version
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PKG_VERSION=$(python -c "import re, pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/fuse_augmentations/__about__.py').read_text()).group(1))")
+          PKG_VERSION=$(python -c "import re, pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/fused_transforms/__about__.py').read_text()).group(1))")
           echo "tag=${TAG_VERSION} package=${PKG_VERSION}"
           test "${TAG_VERSION}" = "${PKG_VERSION}"
       - name: ✅ Verify distributions

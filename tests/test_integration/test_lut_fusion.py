@@ -1,7 +1,7 @@
 """Correctness + contract tests for lookup-table fusion of pointwise non-linear ops.
 
 Gamma, solarize, and posterize are per-channel non-linear scalar maps. A contiguous run of
-them collapses into a single :class:`~fuse_augmentations.affine.segment.FusedLUTSegment` that
+them collapses into a single :class:`~fused_transforms.affine.segment.FusedLUTSegment` that
 composes the maps into one lookup and applies it once. This module verifies:
 
 - **uint8 exact-by-enumeration** — on the Albumentations native (uint8 NumPy) path the fused
@@ -33,25 +33,25 @@ import numpy as np
 import pytest
 import torch
 
-from fuse_augmentations import Compose
-from fuse_augmentations._compat import (
+from fused_transforms import Compose
+from fused_transforms._compat import (
     _ALBUMENTATIONS_AVAILABLE,
     _KORNIA_AVAILABLE,
     _TORCHVISION_V2_AVAILABLE,
 )
-from fuse_augmentations.affine.segment import FusedLUTSegment
-from fuse_augmentations.types import TransformCategory
+from fused_transforms.affine.segment import FusedLUTSegment
+from fused_transforms.types import TransformCategory
 
 if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
 
-    from fuse_augmentations.adapters.kornia import KorniaAdapter
+    from fused_transforms.adapters.kornia import KorniaAdapter
 if _ALBUMENTATIONS_AVAILABLE:
     import albumentations as albu
 if _TORCHVISION_V2_AVAILABLE:
     import torchvision.transforms.v2 as tv2
 
-    from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
+    from fused_transforms.adapters.torchvision import TorchVisionAdapter
 
 # Documented float interpolation tolerances (uint8 levels, i.e. fraction of 255) for the
 # K=1024-entry interp-LUT path, measured against an exact composition of the same ops:

@@ -10,17 +10,17 @@ from __future__ import annotations
 
 import pytest
 
-from fuse_augmentations import Compose
-from fuse_augmentations._backend import Backend, detect_backend, detect_backends_per_transform
-from fuse_augmentations._compat import _TORCHVISION_AVAILABLE, _TORCHVISION_V2_AVAILABLE
-from fuse_augmentations.compose import _build_mixed_segments
-from fuse_augmentations.types import ReorderPolicy, TransformCategory
+from fused_transforms import Compose
+from fused_transforms._backend import Backend, detect_backend, detect_backends_per_transform
+from fused_transforms._compat import _TORCHVISION_AVAILABLE, _TORCHVISION_V2_AVAILABLE
+from fused_transforms.compose import _build_mixed_segments
+from fused_transforms.types import ReorderPolicy, TransformCategory
 
 if _TORCHVISION_AVAILABLE:
     import torch
     import torchvision.transforms as tv_trans
 
-    from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
+    from fused_transforms.adapters.torchvision import TorchVisionAdapter
 
 if _TORCHVISION_V2_AVAILABLE:
     import torchvision.transforms.v2 as Tv2

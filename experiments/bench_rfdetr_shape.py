@@ -12,7 +12,7 @@ This script times four reproducible implementations of the same model-ready step
     The native path rf-detr uses today: ``A.Compose(..., bbox_params=A.BboxParams(label_fields=))``
     on an HWC ``uint8`` array, with Albumentations doing its own clipping and instance dropping.
 ``fuse_cv2`` / ``fuse_torch``
-    ``fuse_augmentations.Compose`` with ``data_keys=["input", "bbox_xyxy"]`` on the same NumPy
+    ``fused_transforms.Compose`` with ``data_keys=["input", "bbox_xyxy"]`` on the same NumPy
     inputs, followed by ``clip_bbox_xyxy`` and ``instance_keep_mask`` to make the survival decision
     and the label filtering the caller owns in this package. The two differ only in ``execution=``.
 ``fuse_cv2_tensor_in``
@@ -51,8 +51,8 @@ import cv2
 import numpy as np
 import torch
 
-from fuse_augmentations import Compose
-from fuse_augmentations.targets import clip_bbox_xyxy, instance_keep_mask
+from fused_transforms import Compose
+from fused_transforms.targets import clip_bbox_xyxy, instance_keep_mask
 
 RESOLUTIONS = (640, 1024)
 NUM_INSTANCES = 12

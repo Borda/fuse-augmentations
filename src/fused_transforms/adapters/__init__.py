@@ -5,7 +5,7 @@ framework-specific transforms to the fused affine engine.
 
 Examples:
     ```pycon
-    >>> from fuse_augmentations.adapters import KorniaAdapter
+    >>> from fused_transforms.adapters import KorniaAdapter
     >>> adapter = KorniaAdapter()
     >>> adapter  # doctest: +ELLIPSIS
     <...KorniaAdapter...>
@@ -14,9 +14,9 @@ Examples:
 
 """
 
-from fuse_augmentations._backend import register_adapter
-from fuse_augmentations.adapters.albumentations import AlbumentationsAdapter
-from fuse_augmentations.adapters.kornia import KorniaAdapter
-from fuse_augmentations.adapters.torchvision import TorchVisionAdapter
+from fused_transforms._backend import register_adapter
+from fused_transforms.adapters.albumentations import AlbumentationsAdapter
+from fused_transforms.adapters.kornia import KorniaAdapter
+from fused_transforms.adapters.torchvision import TorchVisionAdapter
 
 __all__ = ["AlbumentationsAdapter", "KorniaAdapter", "TorchVisionAdapter", "register_adapter"]

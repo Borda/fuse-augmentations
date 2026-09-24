@@ -71,8 +71,8 @@ import numpy as np
 import torch
 import torchvision.transforms.v2 as tv
 
-from fuse_aug import Compose as FuseCompose
-from fuse_aug import ReorderPolicy
+from fused_transforms import Compose as FuseCompose
+from fused_transforms import ReorderPolicy
 
 cv2.setNumThreads(1)
 torch.set_num_threads(1)

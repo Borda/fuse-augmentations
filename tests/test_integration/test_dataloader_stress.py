@@ -45,8 +45,8 @@ import pytest
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from fuse_augmentations import Compose, FusedCompose
-from fuse_augmentations._compat import (
+from fused_transforms import Compose, FusedCompose
+from fused_transforms._compat import (
     _ALBUMENTATIONS_AVAILABLE,
     _KORNIA_AVAILABLE,
     _TORCHVISION_AVAILABLE,
