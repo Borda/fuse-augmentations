@@ -14,10 +14,6 @@ Usage::
 
     python .github/scripts/check_doctest_fences.py [FILES...]
 
-The CLI uses ``fire``, which ships in the ``cli`` extra::
-
-    pip install "fuse-augmentations[cli]"
-
 With no arguments, scans every ``src/**/*.py`` file. Exits non-zero and prints
 one violation per offending line if any file fails.
 
@@ -129,6 +125,4 @@ def main(*paths: str) -> None:
 
 
 if __name__ == "__main__":
-    import fire
-
-    fire.Fire(main)
+    main(*sys.argv[1:])
