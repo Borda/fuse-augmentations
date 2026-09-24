@@ -1,6 +1,6 @@
 """Integration coverage for ProjectiveSegment.
 
-Requires kornia >= 0.7.4 for the Kornia subtests.
+Requires ``kornia`` for the Kornia subtests.
 
 These tests verify projective fusion-plan reporting, shape preservation, and saved-warp accounting across supported
 backends.
