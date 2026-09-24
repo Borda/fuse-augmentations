@@ -612,6 +612,10 @@ def main(
     torch.manual_seed(0)
     np.random.seed(0)
 
+    if isinstance(devices, str):
+        devices = [devices]
+    if isinstance(batch_sizes, int):
+        batch_sizes = [batch_sizes]
     batch_sizes = [1, 8, 32] if batch_sizes is None else batch_sizes
     if quick:
         warmup, measure = min(warmup, 5), min(measure, 10)
