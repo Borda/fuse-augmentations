@@ -219,7 +219,7 @@ class TestGateCompareThresholdBoundary:
         )
 
         assert result.returncode == 1
-        text = summary.read_text()
+        text = summary.read_text(encoding="utf-8")
         causes = {cause for cause in ("rolling ratio", "absolute efficiency floor") if f"**Failure**: {cause}" in text}
         assert causes == expected_causes
 

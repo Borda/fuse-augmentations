@@ -183,7 +183,7 @@ def main(
     # Always write summary before any exit — ensures it appears even on gate failure.
     if summary_file:
         summary = _format_summary(current_score, baseline_score, threshold, passed, efficiency, min_efficiency)
-        with Path(summary_file).open("a") as fh:
+        with Path(summary_file).open("a", encoding="utf-8") as fh:
             fh.write(summary)
 
     print(f"real_score={real_score:.4f}")
