@@ -8,20 +8,23 @@ name: CI perf regression gate
 #
 # `src/fuse_augmentations/data/**` is excluded from the path filters: it's the
 # annotation/dataset module and never touches the fusion core that
-# `experiments/optimize_score.py` exercises (imports only `fuse_aug.Compose` /
-# `ReorderPolicy`). Without this exclusion, PRs to that module were flapping the gate
-# on pure runner-timing noise for code the benchmark structurally can't measure.
+# `experiments/optimize_score.py` exercises. `src/fuse_aug/**` IS included: it's the
+# public import path the benchmark actually uses (`fuse_aug.Compose` / `ReorderPolicy`,
+# a thin re-export shim over `fuse_augmentations`) -- a PR touching only that package must
+# not bypass the gate.
 on:
   pull_request:
     paths:
       - "src/fuse_augmentations/**"
       - "!src/fuse_augmentations/data/**"
+      - "src/fuse_aug/**"
       - "experiments/**"
   push:
     branches: [main]
     paths:
       - "src/fuse_augmentations/**"
       - "!src/fuse_augmentations/data/**"
+      - "src/fuse_aug/**"
       - "experiments/**"
   workflow_dispatch: {}
   schedule:
@@ -40,35 +43,74 @@ defaults:
 env:
   UV_TORCH_BACKEND: cpu
   PYTHON_VERSION: "3.12"
+  # History-leg tolerance: benchmark-history's matrix below has 5 legs. --min-samples is
+  # derived from this single number where it's used (aggregate-baseline), not a second
+  # independently-drifting literal -- tolerate up to 2 leg failures. Keep this number and the
+  # matrix length below in sync if the matrix ever grows or shrinks.
+  HIST_EXPECTED_SAMPLES: 5
+  # PR-side trial count: benchmark-pr's matrix below has 3 trials, ALL required -- no
+  # tolerance, so --min-samples equals this number directly wherever it's used (aggregate-pr),
+  # not a second literal. This is the side that decides pass/fail; a median of fewer than 3
+  # degrades toward the "ratio of two noisy single-run means" docs/research/methodology.md:135
+  # warns against. A lost trial fails aggregate-pr loudly, and perf-gate's "Require a baseline"
+  # guard turns that into a loud gate failure rather than a silent skip.
+  PR_EXPECTED_SAMPLES: 3
+  # Rolling-vs-baseline threshold: 0.90 = 10% regression tolerance against the dynamic
+  # baseline (see docs/research/methodology.md and the compare script's own docstring).
+  PERF_THRESHOLD: "0.90"
+  # Absolute efficiency floor (real_score / theoretical_target) -- item F01 in the PR #18
+  # review. NOT calibrated. The review's candidate ~0.62 was computed from the OLD
+  # per-call-median timing statistic, before commit 4b1639b switched optimize_score.py to
+  # median-of-batch-averages; that change measured ~3x more conservative than the old
+  # statistic on a synthetic bimodal workload, so the true post-change ratio in CI is
+  # unknown -- this can't be measured locally either (scipy binary incompatibility on the
+  # dev machine that wired this flag). Deliberately loose, not the stale ~0.62 candidate,
+  # until a real CI run reports an `efficiency=` line in perf-gate's "Compare against
+  # dynamic baseline" step output -- read that number and tighten this single value once
+  # it's known.
+  PERF_MIN_EFFICIENCY: "0.40"
 
 jobs:
-  # Benchmark the last 5 commits on main (HEAD~0 .. HEAD~4), one per matrix leg, in
-  # parallel. No committed baseline file anywhere -- the reference is recomputed from
-  # actual git history on every run, so it can never go stale, and a squash-push of
-  # several commits at once still has each individual commit sampled (a per-push
-  # rolling file would only ever see the push's final state).
+  # Benchmark the last 5 commits on main, one per matrix leg, in parallel. No committed
+  # baseline file anywhere -- the reference is recomputed from actual git history on every
+  # run, so it can never go stale, and a squash-push of several commits at once still has
+  # each individual commit sampled (a per-push rolling file would only ever see the push's
+  # final state).
+  #
+  # On a pull_request, main~0 is the merge base and the closest reference commit, so the
+  # window stays [0,1,2,3,4]. On push/schedule/dispatch, main~0 IS the commit perf-gate
+  # benchmarks -- leg 0 would feed its own baseline and be benchmarked twice per run -- so
+  # the window shifts to [1,2,3,4,5]. `--depth=10` below already covers either window.
   #
   # Only `src/` is swapped to the historical commit -- `experiments/optimize_score.py`,
   # pyproject.toml, and every dependency stay pinned to the ref under test (the same
-  # checkout `perf-gate` benchmarks). If the harness itself was checked out per-commit
-  # instead, each leg would measure with whatever benchmark methodology existed at that
-  # historical commit, which is not comparable to the ref-under-test's methodology --
-  # the baseline and the gated score would be two different statistics.
+  # checkout perf-gate/benchmark-pr benchmark). If the harness itself was checked out
+  # per-commit instead, each leg would measure with whatever benchmark methodology existed
+  # at that historical commit, which is not comparable to the ref-under-test's methodology
+  # -- the baseline and the gated score would be two different statistics.
+  #
+  # `git checkout <tree> -- <path>` is overlay mode and never deletes files absent from
+  # <tree>, so a source file added since HIST_SHA would otherwise survive into the
+  # historical leg and benchmark a hybrid tree. `rm -rf` right before the checkout removes
+  # that possibility; it also means a pathspec absent at HIST_SHA now empties src/ and the
+  # checkout fails loudly (pathspec did not match) instead of silently benchmarking the ref
+  # under test -- `set -euo pipefail` below makes that abort explicit rather than relying on
+  # the runner's default shell flags.
   #
   # `continue-on-error: true` tolerates a leg-level infra failure (OOM, evicted runner,
   # transient install failure) without failing the whole workflow: a failed leg simply
-  # uploads no sample, and `ci_perf_baseline_aggregate.py --min-samples 3` (see
-  # aggregate-baseline below) decides whether enough of the remaining 4 legs succeeded.
+  # uploads no sample, and `ci_perf_baseline_aggregate.py --min-samples` (see
+  # aggregate-baseline below) decides whether enough of the remaining legs succeeded.
   benchmark-history:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30 # steps below budget 10 (install) + 15 (bench) = 25; must exceed the sum
     continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        n: [0, 1, 2, 3, 4]
+        n: ${{ fromJSON(github.event_name == 'pull_request' && '[0,1,2,3,4]' || '[1,2,3,4,5]') }}
 
     steps:
       - name: 📥 Checkout ref under test
@@ -77,8 +119,12 @@ jobs:
       - name: 📥 Fetch main history
         run: git fetch origin main --depth=10
 
+      - name: 🧹 Remove src/ before overlay (overlay checkout never deletes files absent at HIST_SHA)
+        run: rm -rf src/fuse_augmentations src/fuse_aug
+
       - name: ⏪ Overlay src/ from main~${{ matrix.n }} (harness stays at the ref under test)
         run: |
+          set -euo pipefail
           HIST_SHA=$(git rev-parse "FETCH_HEAD~${{ matrix.n }}")
           echo "Benchmarking src/ as of $HIST_SHA against the current experiments/optimize_score.py"
           git checkout "$HIST_SHA" -- src/fuse_augmentations src/fuse_aug
@@ -112,7 +158,7 @@ jobs:
           path: ${{ matrix.n }}.txt
           retention-days: 14
 
-  # Downloads all 5 samples, medians them into the number the live gate compares
+  # Downloads all history samples, medians them into the number the live gate compares
   # against, and prints the full breakdown to the job summary for visibility.
   aggregate-baseline:
     needs: benchmark-history
@@ -142,13 +188,14 @@ jobs:
       - name: 📦 Install CLI dependency
         run: python3 -m pip install "fire>=0.6"
 
-      - name: 📊 Aggregate (median of last 5 main commits)
+      - name: 📊 Aggregate (median of last ${{ env.HIST_EXPECTED_SAMPLES }} main commits)
         id: agg
         run: |
           python3 .github/scripts/ci_perf_baseline_aggregate.py \
             --score-dir history \
             --out avg.txt \
-            --min-samples 3 \
+            --min-samples "$(( ${{ env.HIST_EXPECTED_SAMPLES }} - 2 ))" \
+            --expected-samples "${{ env.HIST_EXPECTED_SAMPLES }}" \
             --summary-file "$GITHUB_STEP_SUMMARY"
           echo "score=$(cat avg.txt)" >> "$GITHUB_OUTPUT"
 
@@ -159,19 +206,28 @@ jobs:
           path: avg.txt
           retention-days: 14
 
-  # Benchmarks the ref under test (PR head, or main's tip for push/schedule/dispatch)
-  # and gates it against the dynamic baseline computed above.
-  perf-gate:
-    needs: aggregate-baseline
+  # Benchmarks the ref under test (PR head, or main's tip for push/schedule/dispatch) as a
+  # 3-trial matrix, one independent process per trial. The baseline above is denoised across
+  # 5 independent processes; the gated side must be too -- docs/research/methodology.md:120
+  # requires "at least five process-level trials" and :135 warns against "a ratio of two
+  # noisy single-run means". The per-call median already in optimize_score.py's own timing
+  # loop only removes WITHIN-process jitter; this removes the larger BETWEEN-process term
+  # (thread placement, runner neighbour load) on the side that actually decides pass/fail.
+  # aggregate-pr below medians the 3 trial scores with the same script used for the
+  # historical baseline, rather than duplicating aggregation logic here.
+  benchmark-pr:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      BASELINE_SCORE: ${{ needs.aggregate-baseline.outputs.baseline_score }}
+    timeout-minutes: 30 # steps below budget 10 (install) + 15 (bench) = 25; must exceed the sum
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        trial: [1, 2, 3]
 
     steps:
-      - name: 📥 Checkout
+      - name: 📥 Checkout ref under test
         uses: actions/checkout@v4
 
       - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
@@ -187,28 +243,143 @@ jobs:
 
       - name: 📦 Install package with all extras
         timeout-minutes: 10
-        run: |
-          uv pip install -e ".[all,cli]"
-          uv pip list
+        run: uv pip install -e ".[all]"
 
-      - name: 🏃 Run benchmark
+      - name: 🏃 Run benchmark and record trial score + theoretical target
         timeout-minutes: 15
         run: |
+          set -euo pipefail
+          mkdir -p pr-scores pr-meta
           uv run python experiments/optimize_score.py | tee /tmp/bench_raw.txt
-          REAL_SCORE=$(grep '^real_score=' /tmp/bench_raw.txt | cut -d= -f2)
-          THEORETICAL=$(grep '^theoretical_target=' /tmp/bench_raw.txt | cut -d= -f2)
-          python3 -c "import json,os; score={'real_score':float('$REAL_SCORE'),'theoretical_target':float('$THEORETICAL'),'runner':os.environ.get('RUNNER_OS','ubuntu-latest'),'python_version':os.environ.get('PYTHON_VERSION','3.12'),'git_sha':os.environ.get('GITHUB_SHA','unknown')[:12]}; json.dump(score,open('ci_score.json','w'),indent=2); print('ci_score.json written:',score)"
+          grep '^real_score=' /tmp/bench_raw.txt | cut -d= -f2 > "pr-scores/${{ matrix.trial }}.txt"
+          grep '^theoretical_target=' /tmp/bench_raw.txt | cut -d= -f2 > "pr-meta/theoretical-${{ matrix.trial }}.txt"
+          cat "pr-scores/${{ matrix.trial }}.txt"
 
-      # Threshold is 0.90, not 0.95: prior observed run-to-run variance on shared
-      # GitHub-hosted runners was ~5-7% peak-to-peak for identical code even before
-      # the thread-pinning/median hardening in optimize_score.py. 0.90 still catches
-      # a genuine >10% regression against the dynamic baseline above.
+      - name: 📤 Upload trial sample
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-pr-${{ matrix.trial }}
+          path: |
+            pr-scores/${{ matrix.trial }}.txt
+            pr-meta/theoretical-${{ matrix.trial }}.txt
+          retention-days: 14
+
+  # Downloads all PR trial samples, medians the real_score across them with the same
+  # aggregation script used for the historical baseline, and separately extracts
+  # theoretical_target -- deterministic (operation counts, not wall time) so it must be
+  # identical across all 3 trials; asserted rather than assumed.
+  aggregate-pr:
+    needs: benchmark-pr
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      pr_score: ${{ steps.agg.outputs.score }}
+      pr_theoretical: ${{ steps.theoretical.outputs.value }}
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 📥 Download all PR trial samples
+        uses: actions/download-artifact@v4
+        with:
+          pattern: perf-pr-*
+          path: pr
+          merge-multiple: true
+
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+
+      - name: 📦 Install CLI dependency
+        run: python3 -m pip install "fire>=0.6"
+
+      - name: 📊 Aggregate (median of ${{ env.PR_EXPECTED_SAMPLES }} PR trials)
+        id: agg
+        run: |
+          python3 .github/scripts/ci_perf_baseline_aggregate.py \
+            --score-dir pr/pr-scores \
+            --out pr_avg.txt \
+            --min-samples "${{ env.PR_EXPECTED_SAMPLES }}" \
+            --expected-samples "${{ env.PR_EXPECTED_SAMPLES }}" \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+          echo "score=$(cat pr_avg.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: 🎯 Extract theoretical target (must be constant across trials)
+        id: theoretical
+        run: |
+          set -euo pipefail
+          UNIQ=$(sort -u pr/pr-meta/*.txt)
+          LINES=$(echo "$UNIQ" | wc -l)
+          if [ "$LINES" -ne 1 ]; then
+            echo "::error::theoretical_target is not constant across PR trials (expected exactly 1 distinct value, got $LINES): $UNIQ"
+            exit 1
+          fi
+          echo "value=$UNIQ" >> "$GITHUB_OUTPUT"
+
+      - name: 📤 Upload PR aggregate
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-pr-avg
+          path: pr_avg.txt
+          retention-days: 14
+
+  # Gates the median PR score (aggregate-pr) against the dynamic baseline (aggregate-baseline).
+  # No benchmarking happens in this job -- ci_perf_gate_compare.py needs only the `fire` CLI
+  # dependency, not the full `[all]` torch/kornia/albumentations/torchvision install the
+  # benchmark jobs above need.
+  #
+  # `if: ${{ !cancelled() }}` (not `always()`) plus the guard step below turns a skipped
+  # baseline/PR-score into a loud gate failure instead of a silent `needs:` skip -- `always()`
+  # would additionally run this job on a cancelled run, which matters here because
+  # cancel-in-progress is enabled for PR refs.
+  perf-gate:
+    needs: [aggregate-baseline, aggregate-pr]
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BASELINE_SCORE: ${{ needs.aggregate-baseline.outputs.baseline_score }}
+      PR_SCORE: ${{ needs.aggregate-pr.outputs.pr_score }}
+      PR_THEORETICAL: ${{ needs.aggregate-pr.outputs.pr_theoretical }}
+
+    steps:
+      - name: 🛡️ Require a baseline and a PR score
+        if: needs.aggregate-baseline.result != 'success' || needs.aggregate-pr.result != 'success'
+        run: |
+          echo "::error::aggregate-baseline=${{ needs.aggregate-baseline.result }} aggregate-pr=${{ needs.aggregate-pr.result }} -- perf-gate refuses to run without both a computed baseline and a computed PR score."
+          exit 1
+
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+
+      - name: 📦 Install CLI dependency
+        run: python3 -m pip install "fire>=0.6"
+
+      - name: 🧮 Assemble current score JSON from the PR trial median
+        run: |
+          python3 -c "import json,os; score={'real_score':float(os.environ['PR_SCORE']),'theoretical_target':float(os.environ['PR_THEORETICAL']),'runner':os.environ.get('RUNNER_OS','ubuntu-latest'),'python_version':os.environ.get('PYTHON_VERSION','3.12'),'git_sha':os.environ.get('GITHUB_SHA','unknown')[:12]}; json.dump(score,open('ci_score.json','w'),indent=2); print('ci_score.json written:',score)"
+
+      # Two independent checks, both must pass: the rolling PERF_THRESHOLD (relative, catches
+      # a sudden step regression) and PERF_MIN_EFFICIENCY (absolute, catches slow drift the
+      # rolling baseline can't see because it follows the code -- see the env block above).
       - name: 🔍 Compare against dynamic baseline and write summary
         run: |
-          uv run python .github/scripts/ci_perf_gate_compare.py \
+          python3 .github/scripts/ci_perf_gate_compare.py \
             --current ci_score.json \
             --baseline-score "$BASELINE_SCORE" \
-            --threshold 0.90 \
+            --threshold "${{ env.PERF_THRESHOLD }}" \
+            --min-efficiency "${{ env.PERF_MIN_EFFICIENCY }}" \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
       - name: 📤 Upload score artifact
