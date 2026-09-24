@@ -282,7 +282,7 @@ class CocoWriter(DatasetWriter):
         """Wrap image and annotation records into a COCO document with categories."""
         categories = self._categories()
         return {
-            "info": {"description": "fuse-augmentations synthetic dataset"},
+            "info": {"description": "vision-synth synthetic dataset"},
             "licenses": [],
             "categories": categories,
             "images": images,

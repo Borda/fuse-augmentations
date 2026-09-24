@@ -385,7 +385,7 @@ def resolve_op(operation: OpStr, backend: BackendStr) -> type | _NativeOpSpec:
     except (ImportError, ModuleNotFoundError) as exc:
         msg = (
             f"backend {backend!r} is not available because its optional dependency is "
-            f"not installed. Install it with e.g. `pip install fuse-augmentations[{backend}]`."
+            f"not installed. Install it with e.g. `pip install vision-synth[{backend}]`."
         )
         raise ValueError(msg) from exc
     if operation not in registry:

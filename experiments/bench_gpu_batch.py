@@ -1,4 +1,4 @@
-"""GPU/batch throughput benchmark for the fuse-augmentations pipeline.
+"""GPU/batch throughput benchmark for the vision-synth pipeline.
 
 Unlike :mod:`experiments.optimize_score` and
 :mod:`experiments.bench_augmentation_pipelines` (both CPU-only, batch=1,
@@ -483,7 +483,7 @@ def _build_metadata(cfg: BenchConfig, source: str) -> dict[str, Any]:
         "quick": cfg.quick,
         "sequence_source": source,
         "package_versions": {
-            "fuse_augmentations": _pkg_version("fuse-augmentations"),
+            "fuse_augmentations": _pkg_version("vision-synth"),
             "albumentations": _pkg_version("albumentations"),
             "kornia": _pkg_version("kornia"),
             "torchvision": _pkg_version("torchvision"),

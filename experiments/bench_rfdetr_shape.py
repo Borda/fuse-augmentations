@@ -202,7 +202,7 @@ def _albu_step(resolution: int, chain: str) -> Callable[[], object]:
 
 
 def _fuse_step(resolution: int, execution: str, chain: str) -> Callable[[], object]:
-    """Build the fuse-augmentations detection step for one execution engine.
+    """Build the vision-synth detection step for one execution engine.
 
     The clip and survival-mask calls are part of the step rather than an afterthought: this package
     hands back every instance and leaves the decision to the caller, so a fair comparison against

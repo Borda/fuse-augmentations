@@ -1,6 +1,6 @@
 ---
 title: Reproducible augmentation pipelines
-description: Control PyTorch, NumPy, Albumentations, DataLoader, reorder, and execution settings for reproducible fuse-augmentations experiments.
+description: Control PyTorch, NumPy, Albumentations, DataLoader, reorder, and execution settings for reproducible vision-synth experiments.
 ---
 
 # Reproducible augmentation pipelines
@@ -279,7 +279,7 @@ The returned matrix is the actual pixel-centre matrix from only the last support
 
 For research artifacts, also record:
 
-- `fuse-augmentations`, Python, NumPy, and backend versions;
+- `vision-synth`, Python, NumPy, and backend versions;
 - device type and model, torch build, and accelerator runtime;
 - transform configuration and construction route;
 - input batch size, shape, dtype, and value range;

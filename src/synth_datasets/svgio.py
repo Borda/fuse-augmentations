@@ -48,7 +48,7 @@ _SUPPORTED_PATH_COMMANDS = "MmLlHhVvZz"
 _CURVE_PATH_COMMANDS = "CcSsQqTtAa"
 
 _SVG_NS = "http://www.w3.org/2000/svg"
-_ZOO_NS = "https://github.com/Borda/fuse-augmentations/ns/zoo"
+_ZOO_NS = "https://github.com/Borda/vision-synth/ns/zoo"
 
 
 def svg_tag(tag: str) -> str:

@@ -1,10 +1,10 @@
 # yaml-language-server: $schema=https://squidfunk.github.io/mkdocs-material/schema.json
-site_name: fuse-augmentations
+site_name: vision-synth
 site_description: Evidence-backed documentation for fusing compatible image augmentation transforms and generating synthetic COCO/YOLO datasets.
 site_author: Jiri Borovec
-site_url: https://borda.github.io/fuse-augmentations/
-repo_name: Borda/fuse-augmentations
-repo_url: https://github.com/Borda/fuse-augmentations
+site_url: https://borda.github.io/vision-synth/
+repo_name: Borda/vision-synth
+repo_url: https://github.com/Borda/vision-synth
 edit_uri: edit/main/docs/
 copyright: Copyright &copy; 2025–2026 Jiri Borovec
 strict: true
@@ -107,8 +107,8 @@ extra_javascript:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/Borda/fuse-augmentations
-      name: fuse-augmentations on GitHub
+      link: https://github.com/Borda/vision-synth
+      name: vision-synth on GitHub
 
 nav:
   # `navigation.indexes` makes a section's `index.md` its landing page and the

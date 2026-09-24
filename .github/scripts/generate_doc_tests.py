@@ -2,7 +2,7 @@
 
 The CLI uses ``fire``, which ships in the ``cli`` extra::
 
-    pip install "fuse-augmentations[cli]"
+    pip install "vision-synth[cli]"
 
 Usage::
 

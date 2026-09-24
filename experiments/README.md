@@ -1,6 +1,6 @@
 # Experiments
 
-Benchmark and optimization scripts used during development to measure `fuse-augmentations`' speedup over native Albumentations / Kornia / TorchVision pipelines, and to drive the automated performance-optimization campaigns recorded in `.plans/`. These are developer tools, not part of the installed package — nothing here ships to users.
+Benchmark and optimization scripts used during development to measure `vision-synth`' speedup over native Albumentations / Kornia / TorchVision pipelines, and to drive the automated performance-optimization campaigns recorded in `.plans/`. These are developer tools, not part of the installed package — nothing here ships to users.
 
 All scripts are plain Python but written in the [jupytext "percent" format](https://jupytext.readthedocs.io/) (`# %%` cell markers), so each can be run as a script or converted to a notebook:
 

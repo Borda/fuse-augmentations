@@ -60,7 +60,7 @@ jobs:
     # repository sets (a required reviewer, for instance), so the operator stays in the loop.
     environment:
       name: pypi
-      url: https://pypi.org/p/fuse-augmentations
+      url: https://pypi.org/p/vision-synth
     permissions:
       # Trusted Publishing: PyPI verifies this workflow's OIDC identity, so no long-lived
       # API token is stored anywhere. Requires a one-time publisher configured on PyPI for

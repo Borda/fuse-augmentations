@@ -5,7 +5,7 @@ description: Understand resampling quality, native-backend parity, transform sem
 
 # Quality and fidelity
 
-`fuse-augmentations` can compose compatible geometric transforms and apply the result in one resampling pass. That can avoid repeatedly interpolating the same image. It does **not** imply that a fused result is pixel-identical to Kornia, TorchVision, or Albumentations.
+`vision-synth` can compose compatible geometric transforms and apply the result in one resampling pass. That can avoid repeatedly interpolating the same image. It does **not** imply that a fused result is pixel-identical to Kornia, TorchVision, or Albumentations.
 
 This distinction matters for training reproducibility, scientific comparisons, dense prediction, and any application with strict reference-output requirements.
 

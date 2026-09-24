@@ -6,7 +6,7 @@ COCO and YOLO formats. Generation goes through the torch-free ``synth_datasets``
 needs only Pillow and numpy (both base dependencies), so the base install is enough; the CLI
 below uses ``fire``, which ships in the ``cli`` extra:
 
-    pip install "fuse-augmentations[cli]"
+    pip install "vision-synth[cli]"
 
 Run (writes every format x task combo under ./synthetic_out):
     python examples/generate_synthetic_dataset.py

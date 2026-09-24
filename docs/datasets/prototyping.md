@@ -5,7 +5,7 @@ description: Prototype computer vision pipelines with synthetic COCO or YOLO dat
 
 # Prototype a model with synthetic data
 
-Use `fuse-augmentations` to generate labelled images before collecting a real dataset: check your loader and targets, try to overfit a tiny training set, then measure performance as scenes become harder. It supplies the data; your training framework supplies the model, optimizer, loss, and metrics. No training framework beyond the package's base dependencies is needed to generate images.
+Use `vision-synth` to generate labelled images before collecting a real dataset: check your loader and targets, try to overfit a tiny training set, then measure performance as scenes become harder. It supplies the data; your training framework supplies the model, optimizer, loss, and metrics. No training framework beyond the package's base dependencies is needed to generate images.
 
 ## Choose a starting point
 
@@ -22,7 +22,7 @@ These counts are starting budgets, not measured convergence requirements. Choose
 
 ## 1. Export a small dataset
 
-Install with `pip install fuse-augmentations`. This complete example writes and checks a 20-image COCO detection dataset. Replace the temporary directory with a new output path to retain it for your trainer.
+Install with `pip install vision-synth`. This complete example writes and checks a 20-image COCO detection dataset. Replace the temporary directory with a new output path to retain it for your trainer.
 
 ```python
 import json

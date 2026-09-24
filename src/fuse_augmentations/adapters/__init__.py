@@ -1,4 +1,4 @@
-"""Backend adapters for fuse-augmentations.
+"""Backend adapters for vision-synth.
 
 Each adapter implements the ``TransformAdapter`` protocol to bridge
 framework-specific transforms to the fused affine engine.

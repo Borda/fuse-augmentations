@@ -1,1 +1,1 @@
-"""Unit tests for fuse-augmentations."""
+"""Unit tests for vision-synth."""

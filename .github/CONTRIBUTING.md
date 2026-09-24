@@ -1,6 +1,6 @@
 # Contributing Guide
 
-Thank you for contributing to `fuse-augmentations`. Bug reports, documentation improvements, focused fixes, and reviewed pull requests are welcome. Please read the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
+Thank you for contributing to `vision-synth`. Bug reports, documentation improvements, focused fixes, and reviewed pull requests are welcome. Please read the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
 > [!NOTE]
 >
@@ -43,7 +43,7 @@ uv run --group docs mkdocs serve
 # INFO    -  Building documentation...
 # INFO    -  Documentation built in 0.69 seconds
 # INFO    -  [22:44:18] Watching paths for changes: 'docs', 'mkdocs.yml', 'src/fuse_augmentations'
-# INFO    -  [22:44:18] Serving on http://127.0.0.1:8000/fuse-augmentations/
+# INFO    -  [22:44:18] Serving on http://127.0.0.1:8000/vision-synth/
 ```
 
 `mkdocs serve` watches `docs/`, `mkdocs.yml`, and `src/fuse_augmentations` (docstrings feed the API reference pages) and rebuilds at <http://127.0.0.1:8000> on save.

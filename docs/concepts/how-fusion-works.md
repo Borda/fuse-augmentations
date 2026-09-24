@@ -1,11 +1,11 @@
 ---
 title: How fusion works
-description: How fuse-augmentations groups transforms, composes matrices, executes segments, and reports the result.
+description: How vision-synth groups transforms, composes matrices, executes segments, and reports the result.
 ---
 
 # How fusion works
 
-`fuse-augmentations` saves resampling passes by replacing a compatible run of transforms with one composed operation. It does not merge an entire pipeline indiscriminately: backend changes, transform categories, and unsupported operations define explicit segment boundaries.
+`vision-synth` saves resampling passes by replacing a compatible run of transforms with one composed operation. It does not merge an entire pipeline indiscriminately: backend changes, transform categories, and unsupported operations define explicit segment boundaries.
 
 ## The short version
 

@@ -1,4 +1,4 @@
-# Campaign: fuse-augmentations — push fused geomean toward the theoretical ceiling, then open new fusion frontiers
+# Campaign: vision-synth — push fused geomean toward the theoretical ceiling, then open new fusion frontiers
 
 ## Goal
 

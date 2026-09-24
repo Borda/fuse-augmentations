@@ -1,6 +1,6 @@
 ---
 title: Core API
-description: Construct, run, inspect, and convert fuse-augmentations pipelines.
+description: Construct, run, inspect, and convert vision-synth pipelines.
 ---
 
 # Core API

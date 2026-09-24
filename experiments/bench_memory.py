@@ -1,4 +1,4 @@
-"""Peak-memory and allocation-count benchmark for the fuse-augmentations pipeline.
+"""Peak-memory and allocation-count benchmark for the vision-synth pipeline.
 
 Where :mod:`experiments.bench_gpu_batch` measures *speed* (latency + throughput),
 this script measures *memory*: the peak resident allocation and the number of
@@ -771,7 +771,7 @@ def _build_metadata(cfg: BenchConfig, source: str) -> dict[str, Any]:
         "quick": cfg.quick,
         "sequence_source": source,
         "package_versions": {
-            "fuse_augmentations": _pkg_version("fuse-augmentations"),
+            "fuse_augmentations": _pkg_version("vision-synth"),
             "albumentations": _pkg_version("albumentations"),
             "kornia": _pkg_version("kornia"),
             "torchvision": _pkg_version("torchvision"),

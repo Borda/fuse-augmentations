@@ -9,7 +9,7 @@ not preserve former submodule paths such as ``fuse_augmentations.data.geometry``
 Prefer ``import synth_datasets`` for new code, especially when only dataset generation is needed:
 importing ``fuse_augmentations.data`` still runs the parent :mod:`fuse_augmentations` package's
 ``__init__``, which eagerly imports the torch-dependent augmentation stack and therefore requires
-the ``torch`` extra (``pip install "fuse-augmentations[torch]"``). ``import synth_datasets`` never
+the ``torch`` extra (``pip install "vision-synth[torch]"``). ``import synth_datasets`` never
 touches that package and needs no such extra.
 
 Examples:

@@ -1,11 +1,11 @@
 ---
 title: Known limitations and safety boundaries
-description: Verified compatibility, target-safety, numerical-parity, randomness, GPU, and performance limits of fuse-augmentations.
+description: Verified compatibility, target-safety, numerical-parity, randomness, GPU, and performance limits of vision-synth.
 ---
 
 # Known limitations and safety boundaries
 
-`fuse-augmentations` is a tensor-first matrix-fusion engine. It has a real, tested advantage: compatible geometric transforms in one segment can share a single interpolation pass. It is not a behaviorally identical replacement for every Kornia, TorchVision, or Albumentations pipeline.
+`vision-synth` is a tensor-first matrix-fusion engine. It has a real, tested advantage: compatible geometric transforms in one segment can share a single interpolation pass. It is not a behaviorally identical replacement for every Kornia, TorchVision, or Albumentations pipeline.
 
 !!! danger "Auxiliary targets require a supported contract"
 
@@ -136,7 +136,7 @@ The inverse is geometric-only. It cannot recover values discarded by interpolati
 
 ## How to decide whether the package fits
 
-Use `fuse-augmentations` when all of the following are true:
+Use `vision-synth` when all of the following are true:
 
 1. Your main path uses BCHW PyTorch tensors.
 2. Your geometric transforms appear in the documented capability surface.

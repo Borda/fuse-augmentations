@@ -57,7 +57,7 @@ jobs:
             echo "::error::importing fuse_augmentations succeeded without torch installed"
             exit 1
           fi
-          grep -qF 'fuse-augmentations[torch]' "${RUNNER_TEMP}/import_err.txt"
+          grep -qF 'vision-synth[torch]' "${RUNNER_TEMP}/import_err.txt"
       - name: 🧪 Run torch-free tests and doctests
         run: pytest src/synth_datasets tests/test_unit/test_synth_datasets --ignore=src/synth_datasets/datasets.py -v
 

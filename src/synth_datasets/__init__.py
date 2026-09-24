@@ -103,10 +103,10 @@ if TYPE_CHECKING:
     from synth_datasets.datasets import SyntheticIterableDataset as SyntheticIterableDataset
 
 try:
-    # `synth_datasets` ships inside the `fuse-augmentations` distribution (see pyproject.toml's
+    # `synth_datasets` ships inside the `vision-synth` distribution (see pyproject.toml's
     # packages.find.include), not its own -- this lookup breaks if synth_datasets is ever split into
     # its own distribution and must be repointed at that distribution's name then.
-    __version__ = version("fuse-augmentations")
+    __version__ = version("vision-synth")
 except PackageNotFoundError:  # pragma: no cover - only hit for an unbuilt/uninstalled checkout
     __version__ = "0.0.0+unknown"
 

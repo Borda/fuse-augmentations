@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for fuse-augmentations test suite.
+"""Shared pytest fixtures for vision-synth test suite.
 
 ``torch`` is an optional dependency (the ``torch`` extra) since ``synth_datasets`` needs none of it. This module
 therefore imports it defensively so collection still works in a torch-free environment; fixtures that hand out tensors

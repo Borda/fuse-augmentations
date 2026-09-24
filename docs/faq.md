@@ -15,13 +15,13 @@ The generator supports detection (axis-aligned boxes), segmentation (polygons), 
 
 ## Do I need real images, torch, or an optional augmentation backend?
 
-No extras are needed for direct dataset generation: the base package (`pip install fuse-augmentations`) includes Pillow and NumPy, and `import synth_datasets` never imports torch. Torch is required for the image-augmentation engine and for `SyntheticIterableDataset` when using a PyTorch `DataLoader`; install `fuse-augmentations[torch]` for either. The generator is not a photorealistic renderer, so use real held-out images when deciding whether a model transfers to production. See [Shape families](datasets/shapes.md) and [Installation](getting-started/installation.md).
+No extras are needed for direct dataset generation: the base package (`pip install vision-synth`) includes Pillow and NumPy, and `import synth_datasets` never imports torch. Torch is required for the image-augmentation engine and for `SyntheticIterableDataset` when using a PyTorch `DataLoader`; install `vision-synth[torch]` for either. The generator is not a photorealistic renderer, so use real held-out images when deciding whether a model transfers to production. See [Shape families](datasets/shapes.md) and [Installation](getting-started/installation.md).
 
 ## Does the package train models or provide a difficulty setting?
 
 No. Your external training framework owns the model, optimizer, loss, metrics, and convergence decisions. There is no `difficulty=` argument or automatic curriculum: vary `SyntheticConfig` fields such as `background`, `degrade`, `distractors`, `occluders`, object size, and object count. Use [Prototyping and convergence checks](datasets/prototyping.md) for the experiment sequence and [Difficulty bands](datasets/difficulty.md) for suggested knob combinations. Passing a synthetic check does not establish accuracy on real images.
 
-## Is `fuse-augmentations` a drop-in replacement for native Compose classes?
+## Is `vision-synth` a drop-in replacement for native Compose classes?
 
 No. It accepts supported Kornia, TorchVision, and Albumentations transform objects through its own tensor-first API. The normal fused path expects floating BCHW PyTorch tensors. It does not reproduce every native input type, target processor, hook, metadata, or output contract.
 
@@ -133,10 +133,10 @@ Yes, with `pipe.inverse(prediction, matrix=matrix)`, where `matrix` is the matri
 
 This supports one fused affine or projective image segment only. Exact D4/flip/quarter-turn and direct deterministic `letterbox` calls publish coordinate matrices, but their images remain outside this inverse API. It raises for crop-resize, color/LUT/blur or passthrough segments, exact-only segments, and multi-segment pipelines, since `return_matrix` records only the last segment's matrix. Boxes are axis-aligned, so a forward-then-inverse box is exact only for axis-aligned transforms and inflates under rotation, shear, or a projective warp.
 
-See [Introspection](guides/introspection.md) and the README's [Test-time de-augmentation](https://github.com/Borda/fuse-augmentations#test-time-de-augmentation) example.
+See [Introspection](guides/introspection.md) and the README's [Test-time de-augmentation](https://github.com/Borda/vision-synth#test-time-de-augmentation) example.
 
 ## When should I keep the native backend instead?
 
 Keep the native pipeline when you require PIL/TVTensor/native dictionary input, native target processors, exact native pixels or RNG streams, unsupported spatial transforms, or an upstream option the adapter does not preserve.
 
-Use `fuse-augmentations` when BCHW tensor input, registered transforms, fused numerics, and measured task-level results meet your requirements. Review [Known limitations](known-limitations.md) before production use.
+Use `vision-synth` when BCHW tensor input, registered transforms, fused numerics, and measured task-level results meet your requirements. Review [Known limitations](known-limitations.md) before production use.

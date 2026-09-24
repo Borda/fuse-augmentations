@@ -71,7 +71,7 @@ jobs:
         run: |
           ls -lh
           pip install $(python -c "import glob ; print(' '.join(glob.glob('*.whl')))")
-          pip show fuse-augmentations
+          pip show vision-synth
           python -c "import importlib.util, sys; assert importlib.util.find_spec('torch') is None; import synth_datasets; assert 'torch' not in sys.modules"
           # Generate from the three SVG-backed families so a dropped package-data glob
           # (letters/symbols/zoo) fails here instead of shipping a broken wheel. The

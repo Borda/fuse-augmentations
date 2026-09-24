@@ -25,7 +25,7 @@ cannot move an object, and a reader flipping between two of these files sees exa
 Rendering uses Pillow and numpy (both base dependencies); the CLI below uses ``fire``, which ships
 in the ``cli`` extra:
 
-    pip install "fuse-augmentations[cli]"
+    pip install "vision-synth[cli]"
 
 Write every picture (under ``docs/assets/datasets/scene/<group>/``, named for its setting):
     python examples/render_scene_gallery.py

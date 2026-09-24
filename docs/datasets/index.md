@@ -22,7 +22,7 @@ How hard the samples are to read is set by ordinary config fields rather than by
 Rendering uses [Pillow](https://python-pillow.github.io/) and NumPy, both base dependencies — nothing extra to install, and no `torch` required:
 
 ```bash
-pip install fuse-augmentations
+pip install vision-synth
 ```
 
 ## Quickstart

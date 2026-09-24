@@ -1,1 +1,1 @@
-"""Integration tests for fuse-augmentations."""
+"""Integration tests for vision-synth."""

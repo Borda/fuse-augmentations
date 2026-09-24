@@ -1,4 +1,4 @@
-"""Short-name re-export package for fuse-augmentations.
+"""Short-name re-export package for vision-synth.
 
 Provides the canonical ``import fuse_aug`` entry point as specified in §19
 of the project spec. All public symbols live in ``fuse_augmentations``; this

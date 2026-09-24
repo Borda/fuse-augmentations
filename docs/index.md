@@ -5,14 +5,14 @@ description: Fuse compatible image augmentations and generate synthetic COCO or 
 
 # Synthetic vision datasets and fused image augmentation
 
-`fuse-augmentations` generates labelled synthetic computer vision datasets and fuses compatible PyTorch image augmentations. Use generated shapes to prototype a model, check its training pipeline, and explore controlled changes in scene difficulty.
+`vision-synth` generates labelled synthetic computer vision datasets and fuses compatible PyTorch image augmentations. Use generated shapes to prototype a model, check its training pipeline, and explore controlled changes in scene difficulty.
 
 ## Generate a synthetic dataset
 
 Start here when you need **COCO or YOLO training data** for **object detection**, **instance segmentation**, **oriented bounding boxes (OBB)**, or **keypoint / pose estimation**. Generate primitives, animal silhouettes, symbols, or letters with reproducible seeds and configurable backgrounds, object sizes, clutter, occlusion, and camera effects. No source images or optional augmentation backend is required.
 
 ```bash
-pip install fuse-augmentations
+pip install vision-synth
 ```
 
 - [Generate your first dataset](datasets/index.md#quickstart) — one Python call, images and labels, train/validation/test splits.
@@ -24,7 +24,7 @@ The generator draws synthetic shapes; your application supplies the model and tr
 
 ## Fuse compatible augmentations
 
-`fuse-augmentations` is a PyTorch-based matrix-fusion engine for image augmentation pipelines. It recognizes a finite set of Kornia, TorchVision, and Albumentations transforms—or builds a pipeline directly from numeric ranges—then composes compatible transforms so a geometric chain can use fewer interpolation passes. This part of the package needs the `torch` extra: `pip install "fuse-augmentations[torch]"` — see [Install](getting-started/installation.md).
+`vision-synth` is a PyTorch-based matrix-fusion engine for image augmentation pipelines. It recognizes a finite set of Kornia, TorchVision, and Albumentations transforms—or builds a pipeline directly from numeric ranges—then composes compatible transforms so a geometric chain can use fewer interpolation passes. This part of the package needs the `torch` extra: `pip install "vision-synth[torch]"` — see [Install](getting-started/installation.md).
 
 The strongest use case is a BCHW tensor pipeline with several consecutive, registered geometric transforms. Reducing repeated resampling can preserve more image detail, lower peak tensor memory, and accelerate long CPU chains.
 
@@ -71,4 +71,4 @@ The strongest use case is a BCHW tensor pipeline with several consecutive, regis
 
 This documentation separates structural guarantees from measurements. Warp reduction follows from the fusion plan; speed and memory are measured properties of a particular backend, device, batch, shape, dtype, and transform mix. Benchmark pages publish losses and measurement blind spots alongside wins.
 
-The package is currently classified **Alpha**. Treat advanced segment classes and the third-party adapter extension point as provisional.
+The package is currently classified **Beta**. Treat advanced segment classes and the third-party adapter extension point as provisional.

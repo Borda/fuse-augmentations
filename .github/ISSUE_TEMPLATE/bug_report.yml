@@ -1,11 +1,11 @@
 name: 🐛 Bug report
-description: Report a reproducible defect in fuse-augmentations.
+description: Report a reproducible defect in vision-synth.
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting. Please search [existing issues](https://github.com/Borda/fuse-augmentations/issues?q=is%3Aissue) first, then give a minimal reproduction so the problem can be confirmed quickly.
+        Thanks for reporting. Please search [existing issues](https://github.com/Borda/vision-synth/issues?q=is%3Aissue) first, then give a minimal reproduction so the problem can be confirmed quickly.
   - type: checkboxes
     id: checks
     attributes:
@@ -40,7 +40,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: fuse-augmentations version
+      label: vision-synth version
       description: Output of `python -c "import fuse_augmentations, sys; print(fuse_augmentations.__version__)"` or the installed spec.
       placeholder: "0.9.0"
     validations:

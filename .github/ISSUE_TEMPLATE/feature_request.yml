@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Open a feature request before implementing a new public API, architecture change, or substantial feature, so scope and compatibility can be agreed first. Search [existing issues](https://github.com/Borda/fuse-augmentations/issues?q=is%3Aissue) before filing.
+        Open a feature request before implementing a new public API, architecture change, or substantial feature, so scope and compatibility can be agreed first. Search [existing issues](https://github.com/Borda/vision-synth/issues?q=is%3Aissue) before filing.
   - type: textarea
     id: problem
     attributes:

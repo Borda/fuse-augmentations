@@ -91,7 +91,7 @@ except ModuleNotFoundError as exc:
         raise
     raise ModuleNotFoundError(
         "fuse_augmentations requires the 'torch' extra for its augmentation API: "
-        'install with `pip install "fuse-augmentations[torch]"`. Dataset generation alone does '
+        'install with `pip install "vision-synth[torch]"`. Dataset generation alone does '
         "not need torch -- use `import synth_datasets` instead.",
         name="torch",
     ) from exc

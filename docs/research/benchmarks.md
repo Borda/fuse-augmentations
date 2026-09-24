@@ -1,6 +1,6 @@
 ---
 title: Benchmarks
-description: "Historical benchmark results for fuse-augmentations, with CPU latency, batch scaling, primitive routing cost, and measurement limitations."
+description: "Historical benchmark results for vision-synth, with CPU latency, batch scaling, primitive routing cost, and measurement limitations."
 ---
 
 # Benchmarks
@@ -82,7 +82,7 @@ Run `NO_ALBUMENTATIONS_UPDATE=1 python experiments/bench_memory.py --devices '["
     | --------------------- | ---------------------------------------------------------------- |
     | Operating system      | macOS 26.5.2, arm64                                              |
     | Python                | 3.12.13                                                          |
-    | `fuse-augmentations`  | 0.9.0.dev0                                                       |
+    | `vision-synth`        | 0.9.0.dev0                                                       |
     | PyTorch               | 2.10.0                                                           |
     | TorchVision           | 0.25.0                                                           |
     | Kornia                | 0.8.2                                                            |
@@ -205,15 +205,15 @@ The July run had no GPU, so every figure above is CPU. This section is a separat
 
 ??? abstract "CUDA test environment"
 
-    | Component            | Value                                              |
-    | -------------------- | -------------------------------------------------- |
-    | Accelerator          | NVIDIA L4                                          |
-    | Operating system     | Linux x86_64 (Google Colab)                        |
-    | Python               | 3.13.15                                            |
-    | `fuse-augmentations` | 0.12.0.dev0                                        |
-    | PyTorch              | 2.11.0+cu128                                       |
-    | Input                | 256 x 256 images; tensor inputs are BCHW `float32` |
-    | Device residency     | Device tensors are allocated on the device         |
+    | Component        | Value                                              |
+    | ---------------- | -------------------------------------------------- |
+    | Accelerator      | NVIDIA L4                                          |
+    | Operating system | Linux x86_64 (Google Colab)                        |
+    | Python           | 3.13.15                                            |
+    | `vision-synth`   | 0.12.0.dev0                                        |
+    | PyTorch          | 2.11.0+cu128                                       |
+    | Input            | 256 x 256 images; tensor inputs are BCHW `float32` |
+    | Device residency | Device tensors are allocated on the device         |
 
     Native Albumentations has no GPU path and is recorded as a skip on CUDA rather than a slow row. The 28 skips are those cases.
 

@@ -1,4 +1,4 @@
-r"""CI performance gate comparison script for fuse-augmentations.
+r"""CI performance gate comparison script for vision-synth.
 
 Compares a current benchmark score against a dynamically computed baseline
 (the median of the last N `main` commits -- see ci_perf_baseline_aggregate.py).
@@ -11,7 +11,7 @@ or stale the way a committed baseline JSON could be.
 
 The CLI uses ``fire``, which ships in the ``cli`` extra::
 
-    pip install "fuse-augmentations[cli]"
+    pip install "vision-synth[cli]"
 
 Usage::
 

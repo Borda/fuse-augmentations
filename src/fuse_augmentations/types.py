@@ -1,4 +1,4 @@
-"""Type definitions for the fuse-augmentations library."""
+"""Type definitions for the vision-synth library."""
 
 import copy
 from collections.abc import Mapping, Sequence

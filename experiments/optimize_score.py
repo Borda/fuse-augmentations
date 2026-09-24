@@ -1,4 +1,4 @@
-"""Fast composite benchmark score for the fuse-augmentations optimization campaign.
+"""Fast composite benchmark score for the vision-synth optimization campaign.
 
 Measures the geometric mean of native/fused boost ratios across 45 cases:
 

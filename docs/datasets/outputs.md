@@ -23,7 +23,7 @@ shapes_coco/
 
 ```json
 {
-  "info": { "description": "fuse-augmentations synthetic dataset" },
+  "info": { "description": "vision-synth synthetic dataset" },
   "licenses": [],
   "categories": [
     { "id": 1, "name": "square", "supercategory": "none" },

@@ -1,11 +1,11 @@
-"""Package metadata for the fuse_augmentations distribution."""
+"""Package metadata for the vision-synth distribution."""
 
 __version__ = "0.14.0.dev0"
-__docs__ = "Fuse augmentation transforms into a single interpolation pass."
+__docs__ = "Synthesize labelled COCO/YOLO datasets and fuse augmentation transforms into a single interpolation pass."
 __author__ = "Jiri Borovec"
 __author_email__ = "6035284+Borda@users.noreply.github.com"
 __copyright__ = f"Copyright (c) 2025-2026, {__author__}."
-__homepage__ = "https://github.com/Borda/fuse-augmentations"
+__homepage__ = "https://github.com/Borda/vision-synth"
 __license__ = "Apache-2.0"
 
 __all__ = [

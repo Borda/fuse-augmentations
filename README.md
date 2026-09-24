@@ -1,10 +1,10 @@
-# ⚛️ Fuse augmentations
+# ⚛️ vision-synth
 
 **Generate synthetic computer vision datasets. Fuse compatible image augmentations. Build and test your training pipeline with reproducible data.**
 
-[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/fuse-augmentations)](https://pypi.org/project/fuse-augmentations/) [![PyPI version](https://img.shields.io/pypi/v/fuse-augmentations)](https://pypi.org/project/fuse-augmentations/) [![Documentation](https://img.shields.io/badge/docs-MkDocs%20Material-4051b5)](https://borda.github.io/fuse-augmentations/) [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/Borda/fuse-augmentations/blob/main/LICENSE) [![CI](https://github.com/Borda/fuse-augmentations/actions/workflows/ci_testing.yml/badge.svg)](https://github.com/Borda/fuse-augmentations/actions/workflows/ci_testing.yml)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/vision-synth)](https://pypi.org/project/vision-synth/) [![PyPI version](https://img.shields.io/pypi/v/vision-synth)](https://pypi.org/project/vision-synth/) [![Documentation](https://img.shields.io/badge/docs-MkDocs%20Material-4051b5)](https://borda.github.io/vision-synth/) [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/Borda/vision-synth/blob/main/LICENSE) [![CI](https://github.com/Borda/vision-synth/actions/workflows/ci_testing.yml/badge.svg)](https://github.com/Borda/vision-synth/actions/workflows/ci_testing.yml)
 
-`fuse-augmentations` is a Python package for **synthetic dataset generation** and **PyTorch image augmentation**. Generate labelled shapes in COCO or YOLO format for object detection, instance segmentation, oriented bounding boxes, and keypoint / pose estimation. Use fixed seeds and configurable scenes to prototype models, check convergence, and test increasing difficulty.
+`vision-synth` is a Python package for **synthetic dataset generation** and **PyTorch image augmentation**. Generate labelled shapes in COCO or YOLO format for object detection, instance segmentation, oriented bounding boxes, and keypoint / pose estimation. Use fixed seeds and configurable scenes to prototype models, check convergence, and test increasing difficulty.
 
 | I need to…                                          | Start here                                                                             |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------- |
@@ -18,7 +18,7 @@ Synthetic generation uses drawn primitives, animal silhouettes, symbols, and let
 
 For augmentation, the tensor-first engine recognizes supported Kornia, TorchVision, and Albumentations transforms—or builds a pipeline directly from numeric ranges—then composes compatible transform matrices before pixels are sampled.
 
-![Animated: three native resamples versus one fused warp](https://raw.githubusercontent.com/Borda/fuse-augmentations/main/docs/assets/images/animated-sequential-vs-fused-albumentations-camera-jitter.webp)
+![Animated: three native resamples versus one fused warp](https://raw.githubusercontent.com/Borda/vision-synth/main/docs/assets/images/animated-sequential-vs-fused-albumentations-camera-jitter.webp)
 
 > Animated WebP renders on GitHub and in any browser; macOS Preview and Finder Quick Look show only the first frame.
 
@@ -26,7 +26,7 @@ You keep the readable pipeline: rotate, scale, shear, translate, flip. The engin
 
 > [!IMPORTANT]
 >
-> This package is Alpha and is **not** a general drop-in replacement for native Compose containers. It does not guarantee native pixels, input types, target processors, random streams, hooks, or universal speedups.
+> This package is Beta and is **not** a general drop-in replacement for native Compose containers. It does not guarantee native pixels, input types, target processors, random streams, hooks, or universal speedups.
 
 > [!WARNING]
 >
@@ -91,9 +91,9 @@ This does **not** mean the fused output is pixel-identical to the native chain. 
 
 The same fixed Kornia rotation → scale → shear recipe is evaluated below. The native route resamples three times; Fuse Compose composes the geometry and samples once. The magenta/green/white overlay makes local disagreement visible without claiming native-pixel parity.
 
-![Fixed Kornia parameters: native sequential versus Fuse Compose resampling](https://raw.githubusercontent.com/Borda/fuse-augmentations/main/docs/assets/images/sequential-vs-fused-kornia-framing.webp)
+![Fixed Kornia parameters: native sequential versus Fuse Compose resampling](https://raw.githubusercontent.com/Borda/vision-synth/main/docs/assets/images/sequential-vs-fused-kornia-framing.webp)
 
-See [three fixed recipes for each of Kornia, TorchVision, and Albumentations](https://borda.github.io/fuse-augmentations/research/quality-and-fidelity/), including their exact limits.
+See [three fixed recipes for each of Kornia, TorchVision, and Albumentations](https://borda.github.io/vision-synth/research/quality-and-fidelity/), including their exact limits.
 
 ## ✨ What the package can do
 
@@ -159,22 +159,22 @@ Gaussian blur is a narrow exception: consecutive Gaussian blurs fold into one op
 ## 📦 Install
 
 ```bash
-pip install fuse-augmentations
+pip install vision-synth
 ```
 
 The base package requires Python 3.10+ and needs no PyTorch install: it is enough for [synthetic dataset generation](#-synthetic-datasets) (`import synth_datasets`), which is entirely torch-free. The image-augmentation engine below needs the `torch` extra:
 
 ```bash
-pip install "fuse-augmentations[torch]"
+pip install "vision-synth[torch]"
 ```
 
 Install optional adapter ecosystems only when needed — each already pulls in `torch`:
 
 ```bash
-pip install "fuse-augmentations[kornia]"
-pip install "fuse-augmentations[torchvision]"
-pip install "fuse-augmentations[albumentations]"
-pip install "fuse-augmentations[all]"
+pip install "vision-synth[kornia]"
+pip install "vision-synth[torchvision]"
+pip install "vision-synth[albumentations]"
+pip install "vision-synth[all]"
 ```
 
 ## 🚀 Quick start: augmentation core, no optional backend
@@ -246,7 +246,7 @@ Mixed-backend pipelines are supported, with every backend change acting as a har
 
 ## 📊 What the measurements say
 
-These numbers are historical smoke measurements from the 2026-07-12 local audit on macOS arm64, `fuse-augmentations 0.9.0.dev0`, Python 3.12, PyTorch 2.10, and 256×256 inputs. They demonstrate the shape of the opportunity, not current-head or release-wide performance. The [benchmark methodology](docs/research/methodology.md) records the controls still required before reusing them.
+These numbers are historical smoke measurements from the 2026-07-12 local audit on macOS arm64, `fuse-augmentations 0.9.0.dev0` (the distribution's name before the `vision-synth` rename), Python 3.12, PyTorch 2.10, and 256×256 inputs. They demonstrate the shape of the opportunity, not current-head or release-wide performance. The [benchmark methodology](docs/research/methodology.md) records the controls still required before reusing them.
 
 | Measurement                          |                                             Observed result | Interpretation                                                                                                                                                                    |
 | ------------------------------------ | ----------------------------------------------------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -328,10 +328,10 @@ For ragged detector targets, import `augment_detection_batch` from the package r
 ## 🎨 Synthetic datasets
 
 ```bash
-pip install fuse-augmentations
+pip install vision-synth
 ```
 
-This is all you need — dataset generation lives in the standalone `synth_datasets` package (`import synth_datasets`), which never imports torch and needs no extra. `from fuse_augmentations import generate_dataset` still works as a compatibility alias, but that route imports the torch-dependent augmentation engine above and therefore needs `pip install "fuse-augmentations[torch]"`.
+This is all you need — dataset generation lives in the standalone `synth_datasets` package (`import synth_datasets`), which never imports torch and needs no extra. `from fuse_augmentations import generate_dataset` still works as a compatibility alias, but that route imports the torch-dependent augmentation engine above and therefore needs `pip install "vision-synth[torch]"`.
 
 Generate labelled synthetic data for computer vision prototyping, model convergence checks, and controlled difficulty experiments. Draw from four vocabularies — geometric primitives, animal silhouettes, symbols, and letters — and export **COCO** or **YOLO** for **detection**, **segmentation**, **oriented bounding box (OBB)**, or **keypoints**. Your application supplies the model and training loop.
 
@@ -370,13 +370,13 @@ Swap `fmt="yolo"`, `task="obb"`, or `class_mode="color"` for other layouts, task
 
 How hard the samples are to read is a set of ordinary config fields: `background` picks the canvas (flat, gradient, Gaussian or impulse noise, value-noise texture, or crops of your own pictures), `degrade` bakes camera effects into the pixels, and `distractors`/`occluders` add unlabelled shapes under and over the labelled ones.
 
-![A value-noise canvas, bare and then carrying its objects and their boxes](https://raw.githubusercontent.com/Borda/fuse-augmentations/main/docs/assets/datasets/scene/backgrounds/texture.webp)
+![A value-noise canvas, bare and then carrying its objects and their boxes](https://raw.githubusercontent.com/Borda/vision-synth/main/docs/assets/datasets/scene/backgrounds/texture.webp)
 
 Above is one such knob, `TextureBackground()`: the canvas it paints, and the same canvas carrying its objects and their exported boxes. The docs picture every mode this way. Each knob draws from a side stream of its own rather than from the placement stream, so at a fixed seed switching one on cannot move an object — the shapes land in the same three places on every canvas. See the [synthetic datasets docs](docs/datasets/index.md), the [difficulty bands](docs/datasets/difficulty.md), and `examples/generate_synthetic_dataset.py`.
 
 ## 🧭 Where it fits
 
-Use `fuse-augmentations` when:
+Use `vision-synth` when:
 
 - data is already a BCHW torch tensor;
 - the pipeline contains several registered geometric transforms;
@@ -395,25 +395,25 @@ Prefer the native backend container when you require:
 
 The repository includes a complete MkDocs Material site:
 
-- [Overview](https://borda.github.io/fuse-augmentations/)
-- [Installation and backend-free quickstart](https://borda.github.io/fuse-augmentations/getting-started/quickstart/)
-- [How fusion works](https://borda.github.io/fuse-augmentations/concepts/how-fusion-works/)
-- [Exact capabilities](https://borda.github.io/fuse-augmentations/concepts/capabilities/)
-- [Backend and configuration guides](https://borda.github.io/fuse-augmentations/guides/backend-pipelines/)
-- [Auxiliary-target safety](https://borda.github.io/fuse-augmentations/guides/auxiliary-targets/)
-- [Reproducibility](https://borda.github.io/fuse-augmentations/guides/reproducibility/)
-- [Quality and benchmark evidence](https://borda.github.io/fuse-augmentations/research/benchmarks/)
-- [Research methodology](https://borda.github.io/fuse-augmentations/research/methodology/)
-- [Known limitations](https://borda.github.io/fuse-augmentations/known-limitations/)
-- [FAQ](https://borda.github.io/fuse-augmentations/faq/)
-- [Application walkthroughs](https://borda.github.io/fuse-augmentations/applications/)
+- [Overview](https://borda.github.io/vision-synth/)
+- [Installation and backend-free quickstart](https://borda.github.io/vision-synth/getting-started/quickstart/)
+- [How fusion works](https://borda.github.io/vision-synth/concepts/how-fusion-works/)
+- [Exact capabilities](https://borda.github.io/vision-synth/concepts/capabilities/)
+- [Backend and configuration guides](https://borda.github.io/vision-synth/guides/backend-pipelines/)
+- [Auxiliary-target safety](https://borda.github.io/vision-synth/guides/auxiliary-targets/)
+- [Reproducibility](https://borda.github.io/vision-synth/guides/reproducibility/)
+- [Quality and benchmark evidence](https://borda.github.io/vision-synth/research/benchmarks/)
+- [Research methodology](https://borda.github.io/vision-synth/research/methodology/)
+- [Known limitations](https://borda.github.io/vision-synth/known-limitations/)
+- [FAQ](https://borda.github.io/vision-synth/faq/)
+- [Application walkthroughs](https://borda.github.io/vision-synth/applications/)
 - generated references for the notable public API
 
 The site configuration provides local search, per-page descriptions, canonical/Open Graph metadata, sitemap and crawler files, an `llms.txt` agent index, and GitHub Pages publication automation.
 
 ## 🧪 Reproduce the evidence
 
-Benchmark and memory scripts live in [`experiments/`](https://github.com/Borda/fuse-augmentations/tree/main/experiments). They expose cases where fusion loses as well as wins.
+Benchmark and memory scripts live in [`experiments/`](https://github.com/Borda/vision-synth/tree/main/experiments). They expose cases where fusion loses as well as wins.
 
 ```bash
 uv run --all-extras --group benchmark python experiments/optimize_score.py
@@ -421,7 +421,7 @@ uv run --all-extras --group benchmark python experiments/bench_gpu_batch.py --qu
 uv run --all-extras --group benchmark python experiments/bench_memory.py --quick
 ```
 
-These three headline commands are not the full set: `experiments/` holds five benchmark scripts in total, including `bench_augmentation_pipelines.py`, `bench_primitive_vs_affine.py`, and `bench_rfdetr_shape.py`, and the [quality and benchmark evidence](https://borda.github.io/fuse-augmentations/research/benchmarks/) documentation page walks through all of them.
+These three headline commands are not the full set: `experiments/` holds five benchmark scripts in total, including `bench_augmentation_pipelines.py`, `bench_primitive_vs_affine.py`, and `bench_rfdetr_shape.py`, and the [quality and benchmark evidence](https://borda.github.io/vision-synth/research/benchmarks/) documentation page walks through all of them.
 
 Treat quick runs as smoke evidence. Release-grade comparisons need independent processes, uncertainty intervals, paired RNG state, output-parity assertions, and full environment provenance.
 
@@ -440,4 +440,4 @@ uv run --group docs mkdocs build --strict
 
 ## 📄 License
 
-[Apache-2.0](https://github.com/Borda/fuse-augmentations/blob/main/LICENSE) © 2025–2026 Jiri Borovec.
+[Apache-2.0](https://github.com/Borda/vision-synth/blob/main/LICENSE) © 2025–2026 Jiri Borovec.

@@ -1,6 +1,6 @@
 ---
 title: Auxiliary targets — masks, boxes, and keypoints
-description: Safely transform segmentation masks, bounding boxes, and keypoints with fuse-augmentations without silent target misalignment.
+description: Safely transform segmentation masks, bounding boxes, and keypoints with vision-synth without silent target misalignment.
 ---
 
 # Auxiliary targets: masks, boxes, and keypoints

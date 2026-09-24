@@ -1,4 +1,4 @@
-"""Compare native backends against fuse-augmentations on fixed geometry recipes.
+"""Compare native backends against vision-synth on fixed geometry recipes.
 
 The demo defaults to scikit-image's bundled ``coins`` sample. It renders three
 fixed, three-step geometry recipes for each supported live backend: Kornia,

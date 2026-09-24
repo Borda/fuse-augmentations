@@ -1,4 +1,4 @@
-"""Benchmark augmentation pipelines: native backend compose vs. fuse-augmentations.
+"""Benchmark augmentation pipelines: native backend compose vs. vision-synth.
 
 Compares wall-clock time per call for ten augmentation sequences across Albumentations,
 Kornia, and TorchVision, running each pipeline in both *native* and *fused* mode
@@ -53,7 +53,7 @@ Notes:
 # %% [markdown]
 # # Augmentation Pipeline Benchmark
 #
-# Compares **native backend compose** vs. **fuse-augmentations** across
+# Compares **native backend compose** vs. **vision-synth** across
 # Albumentations, Kornia, and TorchVision -- 10 sequences x 3 backends x 2 modes
 # = **60 pipeline variants**.
 #
@@ -948,7 +948,7 @@ output = {
         "num_repeats": NUM_REPEATS,
         "seed_policy": "visual rows reset global and Albumentations-owned RNGs; no paired geometry claim",
         "package_versions": {
-            "fuse_augmentations": _pkg_version("fuse-augmentations"),
+            "fuse_augmentations": _pkg_version("vision-synth"),
             "albumentations": _pkg_version("albumentations"),
             "kornia": _pkg_version("kornia"),
             "torchvision": _pkg_version("torchvision"),

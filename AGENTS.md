@@ -1,6 +1,6 @@
 # Project-specific agent guidance
 
-This file adds only `fuse-augmentations`-specific guidance to [Borda's shared agent defaults](https://github.com/Borda/.github/blob/main/AGENTS.md). Follow the shared defaults unless this file or the repository configuration says otherwise.
+This file adds only `vision-synth`-specific guidance to [Borda's shared agent defaults](https://github.com/Borda/.github/blob/main/AGENTS.md). Follow the shared defaults unless this file or the repository configuration says otherwise.
 
 For the contributor workflow, use [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md), especially:
 
