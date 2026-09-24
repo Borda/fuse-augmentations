@@ -47,11 +47,11 @@ dependencies = [
   "pillow>=12.3",
 ]
 optional-dependencies.albumentations = [
-  "albumentations>=2.0.0",
+  "albumentations>=2.0.1",
   "fuse-augmentations[torch]",
 ]
 optional-dependencies.all = [
-  "albumentations>=2.0.0",
+  "albumentations>=2.0.1",
   "fuse-augmentations[torch]",
   "kornia>=0.7.4",
   "torchvision>=0.17",
