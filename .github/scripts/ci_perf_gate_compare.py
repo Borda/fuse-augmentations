@@ -9,6 +9,10 @@ computed from actual git history by the workflow's benchmark-history +
 aggregate-baseline jobs before this script runs, so it can never be missing
 or stale the way a committed baseline JSON could be.
 
+The CLI uses ``fire``, which ships in the ``cli`` extra::
+
+    pip install "fuse-augmentations[cli]"
+
 Usage::
 
     python .github/scripts/ci_perf_gate_compare.py \\
@@ -28,7 +32,6 @@ Usage::
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from pathlib import Path
@@ -75,61 +78,45 @@ def _format_summary(current: dict, baseline_score: float, threshold: float, pass
     return "\n".join(lines) + "\n"
 
 
-def main() -> None:
-    """Parse arguments, evaluate gate, optionally write summary, exit with result."""
-    parser = argparse.ArgumentParser(
-        description="Performance regression gate for fuse-augmentations CI.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
-    parser.add_argument(
-        "--current",
-        required=True,
-        metavar="PATH",
-        help="Current score JSON (ci_score.json produced by the benchmark step).",
-    )
-    parser.add_argument(
-        "--baseline-score",
-        required=True,
-        type=float,
-        metavar="SCORE",
-        help="Dynamically computed baseline real_score (output of ci_perf_baseline_aggregate.py).",
-    )
-    parser.add_argument(
-        "--threshold",
-        type=float,
-        default=0.95,
-        metavar="RATIO",
-        help="Minimum allowed ratio current/baseline (default: 0.95 = 5%% regression allowed).",
-    )
-    parser.add_argument(
-        "--summary-file",
-        metavar="PATH",
-        help="Append a markdown summary table to this file (pass $GITHUB_STEP_SUMMARY in CI).",
-    )
-    args = parser.parse_args()
+def main(current: str, baseline_score: float, threshold: float = 0.95, summary_file: str | None = None) -> None:
+    """Evaluate the perf gate, optionally write a job summary, exit 1 on regression.
 
-    current = _load_json(args.current)
-    real_score: float = current["real_score"]
+    Args:
+        current: Current score JSON (``ci_score.json`` produced by the benchmark step).
+        baseline_score: Dynamically computed baseline real_score (output of ci_perf_baseline_aggregate.py).
+        threshold: Minimum allowed ratio current/baseline (0.95 = 5% regression allowed).
+        summary_file: Append a markdown summary table here (pass ``$GITHUB_STEP_SUMMARY`` in CI).
 
-    min_score_val = args.baseline_score * args.threshold
+    Examples:
+        ```pycon
+        >>> main(current="ci_score.json", baseline_score=1.61, threshold=0.90)  # doctest: +SKIP
+
+        ```
+
+    """
+    current_score = _load_json(current)
+    real_score: float = current_score["real_score"]
+
+    min_score_val = baseline_score * threshold
     passed = real_score >= min_score_val
     gate_result = "PASSED" if passed else "FAILED"
 
     # Always write summary before any exit — ensures it appears even on gate failure.
-    if args.summary_file:
-        summary = _format_summary(current, args.baseline_score, args.threshold, passed)
-        with Path(args.summary_file).open("a") as fh:
+    if summary_file:
+        summary = _format_summary(current_score, baseline_score, threshold, passed)
+        with Path(summary_file).open("a") as fh:
             fh.write(summary)
 
     print(f"real_score={real_score:.4f}")
-    print(f"baseline_score={args.baseline_score:.4f}")
-    print(f"min_allowed_score={min_score_val:.4f}  (baseline x {args.threshold})")
-    print(f"delta={real_score - args.baseline_score:+.4f}  ({(real_score / args.baseline_score - 1.0) * 100.0:+.1f}%)")
+    print(f"baseline_score={baseline_score:.4f}")
+    print(f"min_allowed_score={min_score_val:.4f}  (baseline x {threshold})")
+    print(f"delta={real_score - baseline_score:+.4f}  ({(real_score / baseline_score - 1.0) * 100.0:+.1f}%)")
     print(f"GATE: {gate_result}")
 
     sys.exit(0 if passed else 1)
 
 
 if __name__ == "__main__":
-    main()
+    import fire
+
+    fire.Fire(main)

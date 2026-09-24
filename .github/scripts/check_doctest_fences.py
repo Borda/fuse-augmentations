@@ -14,6 +14,10 @@ Usage::
 
     python .github/scripts/check_doctest_fences.py [FILES...]
 
+The CLI uses ``fire``, which ships in the ``cli`` extra::
+
+    pip install "fuse-augmentations[cli]"
+
 With no arguments, scans every ``src/**/*.py`` file. Exits non-zero and prints
 one violation per offending line if any file fails.
 
@@ -102,17 +106,29 @@ def check_file(path: Path) -> list[str]:
     return messages
 
 
-def main(argv: list[str]) -> int:
-    """Check the given files, or every ``src/**/*.py`` file if none are given."""
-    paths = [Path(p) for p in argv] if argv else sorted(Path("src").rglob("*.py"))
-    violations = [msg for path in paths for msg in check_file(path)]
+def main(*paths: str) -> None:
+    """Check the given files, or every ``src/**/*.py`` file if none are given.
+
+    Args:
+        paths: Python files to check; defaults to every ``src/**/*.py`` file.
+
+    Examples:
+        ```pycon
+        >>> main("src/fuse_augmentations/__init__.py")  # doctest: +SKIP
+
+        ```
+
+    """
+    targets = [Path(p) for p in paths] if paths else sorted(Path("src").rglob("*.py"))
+    violations = [msg for path in targets for msg in check_file(path)]
     for msg in violations:
         print(msg)
     if violations:
         print(f"\n{len(violations)} doctest fence violation(s).")
-        return 1
-    return 0
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    import fire
+
+    fire.Fire(main)

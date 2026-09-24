@@ -3,7 +3,13 @@
 Replaces all '>=' specifiers with '==' in [project.dependencies] and [dependency-groups]
 sections of pyproject.toml, preserving formatting and comments via tomlkit.
 
+The CLI uses ``fire``, which ships in the ``cli`` extra::
+
+    pip install "fuse-augmentations[cli]"
+
 Usage::
+
+    python .github/scripts/min_deps.py --proj-file pyproject.toml
 
     >>> changed = _replace_min_versions("pyproject.toml")
     >>> print(changed)
@@ -54,6 +60,21 @@ def _replace_min_versions(proj_file: str = "pyproject.toml") -> list[str]:
     return changed
 
 
+def main(proj_file: str = "pyproject.toml") -> None:
+    """Pin every '>=' dependency specifier in ``proj_file`` to '=='.
+
+    Args:
+        proj_file: Path to the pyproject.toml file.
+
+    Examples:
+        >>> main("pyproject.toml")  # doctest: +SKIP
+
+    """
+    changed = _replace_min_versions(proj_file)
+    print(f"Pinned {len(changed)} requirements: {changed}")
+
+
 if __name__ == "__main__":
-    _changed = _replace_min_versions()
-    print(f"Pinned {len(_changed)} requirements: {_changed}")
+    import fire
+
+    fire.Fire(main)

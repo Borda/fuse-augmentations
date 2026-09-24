@@ -134,11 +134,19 @@ jobs:
           path: history
           merge-multiple: true
 
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+
+      - name: 📦 Install CLI dependency
+        run: python3 -m pip install "fire>=0.6"
+
       - name: 📊 Aggregate (median of last 5 main commits)
         id: agg
         run: |
           python3 .github/scripts/ci_perf_baseline_aggregate.py \
-            --dir history \
+            --score-dir history \
             --out avg.txt \
             --min-samples 3 \
             --summary-file "$GITHUB_STEP_SUMMARY"
@@ -180,7 +188,7 @@ jobs:
       - name: 📦 Install package with all extras
         timeout-minutes: 10
         run: |
-          uv pip install -e ".[all]"
+          uv pip install -e ".[all,cli]"
           uv pip list
 
       - name: 🏃 Run benchmark
@@ -197,7 +205,7 @@ jobs:
       # a genuine >10% regression against the dynamic baseline above.
       - name: 🔍 Compare against dynamic baseline and write summary
         run: |
-          python3 .github/scripts/ci_perf_gate_compare.py \
+          uv run python .github/scripts/ci_perf_gate_compare.py \
             --current ci_score.json \
             --baseline-score "$BASELINE_SCORE" \
             --threshold 0.90 \
