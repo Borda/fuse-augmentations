@@ -1,13 +1,15 @@
 ---
 title: Install fuse-augmentations
-description: Install the PyTorch fusion engine alone or with Kornia, TorchVision, and Albumentations adapters, then verify the environment.
+description: Install fuse-augmentations for synthetic COCO/YOLO dataset generation and PyTorch image augmentation, with optional backend adapters.
 ---
 
 # Install fuse-augmentations
 
 The base package requires Python 3.10 or newer and PyTorch 2.2 or newer. Kornia, TorchVision, and Albumentations are optional because the native builder can create a useful pipeline without them.
 
-!!! note "Project maturity" The package is currently classified Alpha. Pin versions in production or research environments and validate the exact pipeline after upgrades.
+!!! note "Project maturity"
+
+    The package is currently classified Alpha. Pin versions in production or research environments and validate the exact pipeline after upgrades.
 
 ## Base installation
 
@@ -15,7 +17,7 @@ The base package requires Python 3.10 or newer and PyTorch 2.2 or newer. Kornia,
 python -m pip install fuse-augmentations
 ```
 
-This installs NumPy, PyTorch, and the package itself. It is enough for [`Compose.from_params`](quickstart.md).
+This installs NumPy, Pillow, PyTorch, and the package itself. It is enough for [synthetic dataset generation](../datasets/index.md) and [`Compose.from_params`](quickstart.md). Generating COCO or YOLO data requires no optional extra, source images, or model download.
 
 ## Optional backends
 
@@ -23,27 +25,27 @@ Install only the adapter ecosystems you use:
 
 === "Kornia"
 
-```bash
-python -m pip install "fuse-augmentations[kornia]"
-```
+    ```bash
+    python -m pip install "fuse-augmentations[kornia]"
+    ```
 
 === "TorchVision"
 
-```bash
-python -m pip install "fuse-augmentations[torchvision]"
-```
+    ```bash
+    python -m pip install "fuse-augmentations[torchvision]"
+    ```
 
 === "Albumentations"
 
-```bash
-python -m pip install "fuse-augmentations[albumentations]"
-```
+    ```bash
+    python -m pip install "fuse-augmentations[albumentations]"
+    ```
 
 === "All adapters"
 
-```bash
-python -m pip install "fuse-augmentations[all]"
-```
+    ```bash
+    python -m pip install "fuse-augmentations[all]"
+    ```
 
 The extras enable adapter support; they do not make every upstream transform or parameter combination fusible. Check the [capability tables](../concepts/capabilities.md).
 

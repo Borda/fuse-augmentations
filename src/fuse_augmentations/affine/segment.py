@@ -36,6 +36,8 @@ from numpy.typing import NDArray
 from torch import Tensor, nn
 
 from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
+from fuse_augmentations._random import GeneratorPicklingMixin, reject_backend_randomness
+from fuse_augmentations._random import rand as _rand
 from fuse_augmentations.affine.matrix import (
     _singularity_threshold,
     apply_d4_image,
@@ -51,6 +53,7 @@ from fuse_augmentations.types import (
     ClipPolicyStr,
     ExecutionStr,
     InterpolationStr,
+    MaskFillValue,
     MaskInterpolationStr,
     PaddingModeStr,
     RandomnessPolicy,
@@ -102,9 +105,23 @@ _MAX_SAMPLED_GAUSSIAN_RADIUS = 31
 
 def _matrix_public_dtype(image_dtype: torch.dtype) -> torch.dtype:
     """Return the full-precision dtype exposed for a composed image matrix."""
-    if image_dtype in (torch.float16, torch.bfloat16):
-        return torch.float32
-    return image_dtype
+    if image_dtype == torch.float64:
+        return torch.float64
+    return torch.float32
+
+
+def _matrix_geometry_dtype(dtype: torch.dtype) -> torch.dtype:
+    """Return the dtype auxiliary-target geometry is computed in.
+
+    Coordinate routing is geometry, not image storage. A composed matrix that inherited a low-precision or integer image
+    dtype would truncate the affine coefficients that place the image's own boxes and keypoints -- an integer matrix
+    rounds every translation and scale to a whole pixel, and silently, because the shapes still line up. Only
+    ``float64`` keeps the wider dtype; everything else routes through ``float32``.
+
+    """
+    if dtype == torch.float64:
+        return torch.float64
+    return torch.float32
 
 
 _CURRENT_CALL_MATRIX: ContextVar[Tensor | None] = ContextVar("fuse_current_call_matrix", default=None)
@@ -219,18 +236,64 @@ def _shares_randomness_across_batch(
     return bool(getattr(transform, "same_on_batch", False))
 
 
+def _samples_on_the_matrix_device(transform: object) -> bool:
+    """Return whether this transform's matrix build may draw RNG on the sampling device.
+
+    Only Kornia's ``RandomRotation90`` does. Its ``build_matrix`` falls back to
+    ``torch.randint(..., device=params["_batch_size"].device)`` when the sampled parameters carry
+    no ``k90``, so moving its sampling to the host would move that draw to a different RNG stream
+    and change the quarter-turns a seeded pipeline produces. Every other adapter path derives its
+    parameters from host RNG, where the construction device of the resulting tensor is immaterial.
+
+    Detected by name so an absent or older Kornia does not make this an import-time dependency; the
+    check is a per-call guard on a small transform list, and a false positive only forgoes an
+    optimisation.
+
+    Args:
+        transform: A transform instance from a fused segment's chain.
+
+    Returns:
+        ``True`` when parameter sampling must stay on the image's device.
+
+    """
+    return type(transform).__name__ == "RandomRotation90"
+
+
 def _sample_transform_params(
     adapter: TransformAdapter,
     transform: object,
     input_shape: tuple[int, int, int, int],
     device: torch.device,
     randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+    generator: torch.Generator | None = None,
 ) -> dict[str, Tensor]:
-    """Sample params, preferring adapter-provided per-sample sampling when requested."""
+    """Sample params, preferring adapter-provided per-sample sampling when requested.
+
+    Args:
+        adapter: The adapter owning parameter sampling for ``transform``.
+        transform: The transform to sample parameters for.
+        input_shape: ``(batch_size, channels, height, width)`` shape tuple.
+        device: Target device for the returned tensors.
+        randomness: Batch randomness policy.
+        generator: Caller-owned generator, or ``None`` for the global stream.
+
+    Returns:
+        Dict of canonical parameter tensors.
+
+    """
+    if generator is not None and not getattr(adapter, "supports_generator", False):
+        # Backstop: construction already rejects a generator on backend pipelines.
+        # Degrading to the global stream here would look reproducible and not be.
+        reject_backend_randomness(generator, f"{type(adapter).__name__} sampling for {type(transform).__name__}")
     if randomness is RandomnessPolicy.PER_SAMPLE:
         sample_params_per_sample = getattr(adapter, "sample_params_per_sample", None)
         if callable(sample_params_per_sample):
             return cast(dict[str, Tensor], sample_params_per_sample(transform, input_shape, device))
+    if generator is not None:
+        # Only an adapter advertising supports_generator reaches this line (the guard above),
+        # and its sample_params takes the extra keyword the protocol does not declare.
+        seeded_sampler = cast(Callable[..., dict[str, Tensor]], adapter.sample_params)
+        return seeded_sampler(transform, input_shape, device, generator=generator)
     return adapter.sample_params(transform, input_shape, device)
 
 
@@ -246,28 +309,125 @@ def _validate_execution(execution: str) -> ExecutionStr:
     """Validate and return an Albumentations execution-strategy value.
 
     Args:
-        execution: The requested strategy; must be ``"cv2"`` or ``"torch"``.
+        execution: The requested strategy; must be ``"cv2"``, ``"torch"`` or ``"auto"``.
 
     Returns:
         The validated strategy string.
 
     Raises:
-        ValueError: If ``execution`` is neither ``"cv2"`` nor ``"torch"``.
+        ValueError: If ``execution`` is not one of the three accepted values.
 
     Examples:
         ```pycon
         >>> _validate_execution("cv2")
         'cv2'
-        >>> _validate_execution("torch")
+        >>> _validate_execution("auto")
+        'auto'
+
+        ```
+
+    """
+    if execution not in ("cv2", "torch", "auto"):
+        msg = f"execution must be 'cv2', 'torch' or 'auto', got {execution!r}."
+        raise ValueError(msg)
+    return cast(ExecutionStr, execution)
+
+
+def _resolve_execution(execution: ExecutionStr, device: torch.device) -> ExecutionStr:
+    """Resolve ``"auto"`` to a concrete engine for one call; pass the other values through.
+
+    The rule is fixed and documented rather than adaptive or measured at runtime: host data goes to
+    OpenCV, accelerator data goes to ``grid_sample``. That matches where each engine can actually run --
+    ``cv2.warpAffine`` requires a host array, and moving a CUDA batch to the host to warp it would cost
+    more than the warp -- and it is simple enough to state in one sentence, which is the property a
+    routing rule needs if a caller is to predict it.
+
+    Args:
+        execution: The configured strategy.
+        device: Device the image being warped lives on.
+
+    Returns:
+        ``"cv2"`` or ``"torch"``; never ``"auto"``.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> _resolve_execution("auto", torch.device("cpu"))
+        'cv2'
+        >>> _resolve_execution("torch", torch.device("cpu"))
         'torch'
 
         ```
 
     """
-    if execution not in ("cv2", "torch"):
-        msg = f"execution must be 'cv2' or 'torch', got {execution!r}."
+    if execution != "auto":
+        return execution
+    return "cv2" if device.type == "cpu" else "torch"
+
+
+#: cv2 reads ``borderValue`` as a ``Scalar``, which carries exactly four components.
+_CV2_SCALAR_SLOTS = 4
+
+
+def _fill_tensor(
+    fill: tuple[float, ...] | None, num_channels: int, device: torch.device, dtype: torch.dtype
+) -> Tensor | None:
+    """Shape a validated fill into a ``(1, channels, 1, 1)`` tensor for the warp helpers.
+
+    Args:
+        fill: Validated fill tuple (length 1 for a scalar), or ``None``.
+        num_channels: Channel count of the image being warped.
+        device: Device of the image being warped.
+        dtype: Dtype of the image being warped.
+
+    Returns:
+        A broadcastable ``(1, channels, 1, 1)`` tensor, or ``None`` when there is no fill.
+
+    Raises:
+        ValueError: If a per-channel fill's length matches neither 1 nor ``num_channels``.
+
+    """
+    if fill is None:
+        return None
+    if len(fill) not in (1, num_channels):
+        msg = f"fill has {len(fill)} value(s) but the image has {num_channels} channel(s)."
         raise ValueError(msg)
-    return cast(ExecutionStr, execution)
+    values = fill * num_channels if len(fill) == 1 else fill
+    return torch.tensor(values, device=device, dtype=dtype).reshape(1, num_channels, 1, 1)
+
+
+def _cv2_border_value(fill: tuple[float, ...] | None, num_channels: int) -> tuple[float, ...]:
+    """Return the cv2 ``borderValue`` scalar tuple for a validated fill.
+
+    cv2 reads ``borderValue`` as a 4-component ``Scalar``, so a bare number fills only
+    channel 0 and leaves the rest black — the tuple is always built out to the image's
+    channel count rather than passed through as a scalar.
+
+    Args:
+        fill: Validated fill tuple (length 1 for a scalar), or ``None``.
+        num_channels: Channel count of the image being warped.
+
+    Returns:
+        A ``borderValue`` tuple of length ``num_channels``; all zeros when there is no fill.
+
+    Raises:
+        ValueError: If a per-channel fill's length matches neither 1 nor ``num_channels``,
+            or if the image has more than the four channels a cv2 ``Scalar`` can carry.
+
+    """
+    if fill is None:
+        return (0.0,) * min(num_channels, _CV2_SCALAR_SLOTS)
+    if len(fill) not in (1, num_channels):
+        msg = f"fill has {len(fill)} value(s) but the image has {num_channels} channel(s)."
+        raise ValueError(msg)
+    if num_channels > _CV2_SCALAR_SLOTS:
+        msg = (
+            f"fill is not expressible on the cv2 warp path for a {num_channels}-channel image: "
+            f"cv2 borderValue carries at most {_CV2_SCALAR_SLOTS} components. "
+            "Use execution='torch' for this image."
+        )
+        raise ValueError(msg)
+    return fill * num_channels if len(fill) == 1 else fill
 
 
 def _grid_sample_affine_batched(
@@ -275,6 +435,7 @@ def _grid_sample_affine_batched(
     acc: Tensor,
     interpolation: InterpolationStr,
     padding_mode: PaddingModeStr,
+    fill: Tensor | None = None,
     *,
     compiling: bool | None = None,
 ) -> tuple[Tensor, Tensor]:
@@ -292,6 +453,11 @@ def _grid_sample_affine_batched(
             and float32 on MPS (which has no float64).
         interpolation: ``grid_sample`` interpolation mode.
         padding_mode: ``grid_sample`` padding mode.
+        fill: Optional ``(1, channels, 1, 1)`` constant written outside the source
+            canvas. ``grid_sample`` has no constant padding mode, so the fill is
+            subtracted before sampling and added back after: an out-of-canvas sample
+            reads the zero padding and comes back as exactly the fill, while a boundary
+            sample blends the interior with the fill the way a constant border does.
         compiling: Forwarded to :func:`~fuse_augmentations.affine.matrix.inv3x3`
             to select the compile-safe branch explicitly; ``None`` falls back to
             ambient ``torch.compile`` detection for ordinary eager calls.
@@ -306,8 +472,9 @@ def _grid_sample_affine_batched(
     mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
 
     grid = F.affine_grid(mtx_norm[:, :2, :], [batch_size, num_channels, height, width], align_corners=True)
-    warped = F.grid_sample(image, grid, mode=interpolation, padding_mode=padding_mode, align_corners=True)
-    return warped, grid
+    sampled = image if fill is None else image - fill
+    warped = F.grid_sample(sampled, grid, mode=interpolation, padding_mode=padding_mode, align_corners=True)
+    return (warped if fill is None else warped + fill), grid
 
 
 def _grid_sample_perspective_batched(
@@ -315,6 +482,7 @@ def _grid_sample_perspective_batched(
     acc: Tensor,
     interpolation: InterpolationStr,
     padding_mode: PaddingModeStr,
+    fill: Tensor | None = None,
     *,
     compiling: bool | None = None,
 ) -> tuple[Tensor, Tensor]:
@@ -331,6 +499,9 @@ def _grid_sample_perspective_batched(
             CPU/CUDA, float32 on MPS).
         interpolation: ``grid_sample`` interpolation mode.
         padding_mode: ``grid_sample`` padding mode.
+        fill: Optional ``(1, channels, 1, 1)`` constant written outside the source
+            canvas, applied by the same subtract/add construction as
+            :func:`_grid_sample_affine_batched`.
         compiling: Forwarded to :func:`~fuse_augmentations.affine.matrix.inv3x3`;
             see :func:`_grid_sample_affine_batched`.
 
@@ -344,8 +515,9 @@ def _grid_sample_perspective_batched(
     mtx_norm = normalize_matrix(mtx_inv, height, width).to(dtype=dtype)
 
     grid = perspective_grid(mtx_norm, height, width)
-    warped = F.grid_sample(image, grid, mode=interpolation, padding_mode=padding_mode, align_corners=True)
-    return warped, grid
+    sampled = image if fill is None else image - fill
+    warped = F.grid_sample(sampled, grid, mode=interpolation, padding_mode=padding_mode, align_corners=True)
+    return (warped if fill is None else warped + fill), grid
 
 
 def _compiling_grid_sample_affine_batched(
@@ -353,6 +525,7 @@ def _compiling_grid_sample_affine_batched(
     acc: Tensor,
     interpolation: InterpolationStr,
     padding_mode: PaddingModeStr,
+    fill: Tensor | None = None,
 ) -> tuple[Tensor, Tensor]:
     """``_grid_sample_affine_batched`` with the compile-safe inversion branch pinned on.
 
@@ -362,7 +535,7 @@ def _compiling_grid_sample_affine_batched(
     torch 2.2).
 
     """
-    return _grid_sample_affine_batched(image, acc, interpolation, padding_mode, compiling=True)
+    return _grid_sample_affine_batched(image, acc, interpolation, padding_mode, fill, compiling=True)
 
 
 def _compiling_grid_sample_perspective_batched(
@@ -370,13 +543,14 @@ def _compiling_grid_sample_perspective_batched(
     acc: Tensor,
     interpolation: InterpolationStr,
     padding_mode: PaddingModeStr,
+    fill: Tensor | None = None,
 ) -> tuple[Tensor, Tensor]:
     """``_grid_sample_perspective_batched`` with the compile-safe inversion branch pinned on.
 
     See :func:`_compiling_grid_sample_affine_batched`.
 
     """
-    return _grid_sample_perspective_batched(image, acc, interpolation, padding_mode, compiling=True)
+    return _grid_sample_perspective_batched(image, acc, interpolation, padding_mode, fill, compiling=True)
 
 
 def _torch_supports_compile() -> bool:
@@ -411,7 +585,7 @@ def _torch_supports_compile() -> bool:
 
 # Signature shared by both warp cores: (image, matrix, interpolation, padding) ->
 # (warped_image, sampling_grid). Used to type the compiled-warp cache/selectors.
-WarpFn = Callable[[Tensor, Tensor, InterpolationStr, PaddingModeStr], tuple[Tensor, Tensor]]
+WarpFn = Callable[[Tensor, Tensor, InterpolationStr, PaddingModeStr, Tensor | None], tuple[Tensor, Tensor]]
 
 # Module-level compiled warp cores, built lazily on first use so importing the
 # module never triggers a compile. ``dynamic=True`` keeps a single guarded graph
@@ -526,8 +700,8 @@ def _mipmap_sigma(scale: float) -> float:
     return 0.5 * math.sqrt((1.0 / scale) ** 2 - 1.0)
 
 
-def _antialias_axis_scales(mtx: Tensor) -> tuple[float, float]:
-    """Return the ``(width-axis, height-axis)`` output/input scales for the prefilter.
+def _antialias_axis_scales(mtx: Tensor) -> tuple[Tensor, Tensor]:
+    """Return one ``(width-axis, height-axis)`` scale pair for every image.
 
     Unlike :func:`~fuse_augmentations.affine.matrix.estimate_scale` (whose two
     singular values are sorted by *magnitude*, not by image axis), this maps each
@@ -542,16 +716,15 @@ def _antialias_axis_scales(mtx: Tensor) -> tuple[float, float]:
       matrix axes, so the smallest singular value (worst-axis scale) is applied
       isotropically — a conservative band-limit that never under-blurs.
 
-    Batched matrices reduce to the smallest scale per axis (``.min()`` over the
-    batch), matching :func:`estimate_scale`, so any downscaling sample is
-    antialiased. All device→host traffic is collapsed into a single ``.tolist()``
-    transfer to avoid repeated per-warp stream syncs.
+    The returned tensors retain one scale pair per batch row. The prefilter then
+    processes only the rows that need filtering, so a neighbouring image cannot
+    widen this image's Gaussian support or blur an otherwise safe sample.
 
     Args:
         mtx: ``(batch_size, 3, 3)`` forward pixel matrix of the downscaling warp.
 
     Returns:
-        A ``(scale_x, scale_y)`` tuple: the width-axis and height-axis scales.
+        A ``(scale_x, scale_y)`` tuple of ``(batch_size,)`` tensors.
 
     Examples:
         ```pycon
@@ -560,48 +733,34 @@ def _antialias_axis_scales(mtx: Tensor) -> tuple[float, float]:
         >>> mtx = torch.eye(3).unsqueeze(0)
         >>> mtx[:, 0, 0], mtx[:, 1, 1] = 0.9, 0.2  # shrink height much harder than width
         >>> sx, sy = _antialias_axis_scales(mtx)
-        >>> round(sx, 3), round(sy, 3)
+        >>> round(float(sx[0]), 3), round(float(sy[0]), 3)
         (0.9, 0.2)
 
         ```
 
     """
     linear = mtx[:, :2, :2].to(dtype=torch.float32)
-    off_diagonal = torch.maximum(linear[:, 0, 1].abs(), linear[:, 1, 0].abs()).max()
-    diag_x = linear[:, 0, 0].abs().min()
-    diag_y = linear[:, 1, 1].abs().min()
-    min_sv = torch.linalg.svdvals(linear)[:, 1].min()  # worst-axis scale (smallest singular value)
-    off_val, scale_x, scale_y, sv = torch.stack([off_diagonal, diag_x, diag_y, min_sv]).tolist()
-    if off_val <= _AXIS_ALIGNED_EPS:
-        return float(scale_x), float(scale_y)
-    return float(sv), float(sv)
-
-
-def _needs_antialias_prefilter(mtx: Tensor) -> bool:
-    """Return whether ``mtx`` downscales far enough to require prefiltering.
-
-    Args:
-        mtx: ``(batch_size, 3, 3)`` forward pixel matrix of the pending warp.
-
-    Returns:
-        ``True`` when at least one axis scales below the aggressive-downscale threshold.
-
-    """
-    return min(_antialias_axis_scales(mtx)) < _ANTIALIAS_SCALE_THRESHOLD
+    off_diagonal = torch.maximum(linear[:, 0, 1].abs(), linear[:, 1, 0].abs())
+    axis_aligned = off_diagonal <= _AXIS_ALIGNED_EPS
+    singular_min = torch.linalg.svdvals(linear)[:, 1]
+    scale_x = torch.where(axis_aligned, linear[:, 0, 0].abs(), singular_min)
+    scale_y = torch.where(axis_aligned, linear[:, 1, 1].abs(), singular_min)
+    return scale_x, scale_y
 
 
 def _maybe_antialias_prefilter(image: Tensor, mtx: Tensor, enabled: bool) -> Tensor:
     """Gaussian-prefilter ``image`` before a downscaling warp when antialiasing is on.
 
-    Estimates the per-axis scale of the forward matrix ``mtx`` (via
-    :func:`_antialias_axis_scales`, which maps each scale to its image axis); when
-    antialiasing is enabled and the worst axis downscales below
+    Computes each sample's per-axis scale once from the forward matrix ``mtx``.
+    Every aggressive sample is then filtered independently, so a smaller or more
+    anisotropic neighbour cannot determine its Gaussian support. When antialiasing
+    is enabled and the worst axis downscales below
     :data:`_ANTIALIAS_SCALE_THRESHOLD`, band-limits the input with a per-axis
     Gaussian (mipmap sigma rule) so the single ``grid_sample`` no longer aliases.
-    The blur runs in the image dtype via the installed kornia backend; if kornia
-    is unavailable the input is returned unchanged (documented fallback, no custom
-    kernel). Returns ``image`` untouched when disabled or the scale is safe, so the
-    default path stays bit-identical.
+    The blur runs in the image dtype via the installed kornia backend. Construction
+    rejects ``antialias=True`` without that optional dependency. Returns ``image``
+    untouched when disabled or every scale is safe, so the default path stays
+    bit-identical.
 
     Args:
         image: ``(batch_size, channels, height, width)`` float input tensor.
@@ -614,13 +773,19 @@ def _maybe_antialias_prefilter(image: Tensor, mtx: Tensor, enabled: bool) -> Ten
     """
     if not enabled:
         return image
-    scale_x, scale_y = _antialias_axis_scales(mtx)  # (width-axis, height-axis) scales
-    if min(scale_x, scale_y) >= _ANTIALIAS_SCALE_THRESHOLD:
+    scale_x, scale_y = _antialias_axis_scales(mtx)
+    active = torch.minimum(scale_x, scale_y) < _ANTIALIAS_SCALE_THRESHOLD
+    if not bool(active.any().item()):
         return image
-    sigma_x = _mipmap_sigma(scale_x)
-    sigma_y = _mipmap_sigma(scale_y)
-    blurred = _kornia_gaussian_blur(image, sigma_x, sigma_y)
-    return image if blurred is None else blurred
+    sigma_x = 0.5 * torch.sqrt((scale_x.reciprocal().square() - 1.0).clamp_min(0.0))
+    sigma_y = 0.5 * torch.sqrt((scale_y.reciprocal().square() - 1.0).clamp_min(0.0))
+    result = image.clone()
+    for index in active.nonzero(as_tuple=True)[0].tolist():
+        blurred = _kornia_gaussian_blur(image[index : index + 1], sigma_x[index], sigma_y[index])
+        if blurred is None:
+            raise RuntimeError("antialias=True requires the optional kornia dependency")
+        result[index : index + 1] = blurred
+    return result
 
 
 def _kornia_gaussian_blur(image: Tensor, sigma_x: float | Tensor, sigma_y: float | Tensor) -> Tensor | None:
@@ -652,10 +817,10 @@ def _kornia_gaussian_blur(image: Tensor, sigma_x: float | Tensor, sigma_y: float
         raise ValueError(msg)
     if bool(((sig_x <= 0.0) & (sig_y <= 0.0)).all()):
         return image
-    try:
-        from kornia.filters import gaussian_blur2d
-    except ImportError:
+    if not _KORNIA_AVAILABLE:
         return None
+    from kornia.filters import gaussian_blur2d
+
     ksize_x = 2 * math.ceil(3.0 * float(sig_x.max().item())) + 1
     ksize_y = 2 * math.ceil(3.0 * float(sig_y.max().item())) + 1
     # kornia expects positive sigmas on both axes; clamp the near-zero axis to a
@@ -664,7 +829,7 @@ def _kornia_gaussian_blur(image: Tensor, sigma_x: float | Tensor, sigma_y: float
     return gaussian_blur2d(image, kernel_size=(ksize_y, ksize_x), sigma=sigma, border_type="reflect")
 
 
-class ExactAffineSegment(nn.Module):
+class ExactAffineSegment(GeneratorPicklingMixin, nn.Module):
     """Lossless segment for GEOMETRIC_EXACT-only chains.
 
     Used when a run of consecutive geometric transforms consists entirely of ``GEOMETRIC_EXACT`` operations, such as
@@ -676,11 +841,11 @@ class ExactAffineSegment(nn.Module):
     application probability and applying the exact transform only to active samples. The fused engine prefers a ``prob``
     attribute when present and falls back to backend ``p`` for native transform objects.
 
-    Auxiliary-target routing: masks route for every exact op (a non-flip op's mask is transformed by the same
-    lossless rotation applied to the image, sharing its per-sample sampling); boxes/keypoints route for flips via
-    :meth:`TransformAdapter.exact_flip_dims`. A geometric run that combines a non-flip exact op with box/keypoint
-    targets is built as a :class:`FusedAffineSegment` (grid path) instead, so those targets are always routed --
-    ``build_segments`` receives that hint via its ``route_coords_via_grid`` flag.
+    Auxiliary-target routing: masks route for every exact op, and coordinates
+    route through the matrix built from the same sampled parameters as pixels.
+    Flips retain their pixel-edge AABB and keypoint-pair rules. A geometric run
+    that combines a non-flip exact op with box/keypoint targets may also be
+    built as a :class:`FusedAffineSegment` through ``route_coords_via_grid``.
 
     Args:
         transforms: List of ``GEOMETRIC_EXACT`` transform objects.
@@ -688,6 +853,8 @@ class ExactAffineSegment(nn.Module):
             updates and, when auxiliary targets are used, ``exact_flip_dims`` for flip-compatible target routing.
         randomness: Batch randomness policy. ``BACKEND`` preserves native
             backend semantics; ``PER_SAMPLE`` draws probability masks per item.
+        generator: Caller-owned generator driving the per-transform probability
+            gates, or ``None`` for the global torch stream.
 
     Examples:
         ```pycon
@@ -710,17 +877,22 @@ class ExactAffineSegment(nn.Module):
         transforms: list[object],
         adapter: TransformAdapter,
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
+        generator: torch.Generator | None = None,
+        keypoint_flip_index: tuple[int, ...] | None = None,
     ) -> None:
         """Initialize ``ExactAffineSegment``."""
         super().__init__()
         self.transforms = transforms
         self.adapter = adapter
         self.randomness = randomness
+        self.generator = generator
+        self.keypoint_flip_index = keypoint_flip_index
+        self._last_matrix: Tensor | None = None
 
     @property
     def last_matrix(self) -> Tensor | None:
-        """Return ``None`` always (ExactAffineSegment does not compute a matrix)."""
-        return None
+        """Return the actual forward matrix from the most recent exact call."""
+        return self._last_matrix
 
     def forward(
         self,
@@ -732,8 +904,8 @@ class ExactAffineSegment(nn.Module):
         For each transform, draws a per-sample boolean mask from the transform's
         ``prob`` probability, applies :meth:`TransformAdapter.exact_apply` only to
         active samples, and scatters the transformed subset back into the batch.
-        Auxiliary-target routing is currently supported only for flip-compatible
-        exact ops exposed through :meth:`TransformAdapter.exact_flip_dims`.
+        Auxiliary targets use the same matrix and sampled parameters as exact
+        pixels; flips additionally retain their dedicated edge-coordinate rules.
 
         Args:
             image: Input image batch. Shape: ``(batch_size, channels, height, width)``, dtype: float32.
@@ -752,38 +924,66 @@ class ExactAffineSegment(nn.Module):
         if aux_targets is None:
             aux_targets = {}
 
+        self._last_matrix = None
         batch_size = image.shape[0]
-        _height, width = image.shape[2], image.shape[3]
         device = image.device
+        matrix_dtype = _matrix_geometry_dtype(image.dtype)
+        acc = torch.eye(3, device=device, dtype=matrix_dtype).expand(batch_size, -1, -1).clone()
 
         for tfm in self.transforms:
             prob = _transform_prob(tfm)
             same_on_batch = _shares_randomness_across_batch(self.adapter, tfm, self.randomness)
             if not same_on_batch:
                 # Independent Bernoulli draw per sample.
-                active = torch.rand(batch_size, device=device) < prob
+                active = _rand(batch_size, device=device, generator=self.generator) < prob
             else:
                 # Single Bernoulli draw shared across the entire batch.
-                active_scalar = torch.rand((), device=device) < prob
+                active_scalar = _rand((), device=device, generator=self.generator) < prob
                 active = active_scalar.repeat(batch_size)
 
             # Skip this transform entirely if no samples are active.
             if not bool(active.any().item()):
                 continue
 
-            # A flip exposes its axes via exact_flip_dims; a non-flip D4 op (rot90,
-            # transpose) raises there. For non-flip ops the mask is routed by applying
-            # the identical op to it (sharing the image's per-sample sampling — see
-            # _apply_exact_with_mask), while boxes/keypoints still raise (no per-sample
-            # matrix is recoverable without re-sampling).
+            height, width = image.shape[-2:]
+            active_idx = active.nonzero(as_tuple=True)[0]
+            active_shape = (len(active_idx), *image.shape[1:])
+            params = _sample_transform_params(
+                self.adapter,
+                tfm,
+                active_shape,
+                device,
+                self.randomness,
+                generator=self.generator,
+            )
+            # ExactAffineSegment owns the shape-changing discrete path. The adapter
+            # remains conservative for generic mixed affine fusion, while this
+            # segment verifies active/inactive compatibility before scattering.
+            params["_exact_allow_shape_change"] = torch.tensor(True, device=device)
+            active_matrix = self.adapter.build_matrix(tfm, params, height, width).to(device=device, dtype=matrix_dtype)
+            matrix = _scatter_active_matrices(
+                active_matrix,
+                active,
+                batch_size,
+                device,
+                matrix_dtype,
+            )
+            acc = matmul3x3(matrix, acc)
+
+            # A flip exposes its axes via exact_flip_dims. Non-flip D4 operations
+            # instead route coordinates through the matrix built from these same
+            # sampled parameters, while mask stacking keeps their pixels aligned.
             try:
                 flip_dims: list[int] | None = self.adapter.exact_flip_dims(tfm)
             except (TypeError, NotImplementedError):
                 flip_dims = None
 
-            image = self._apply_exact_with_mask(tfm, image, active, aux_targets, flip_dims)
+            image = self._apply_exact_with_mask(tfm, image, active, aux_targets, flip_dims, params)
             if aux_targets:
-                self._route_exact_coord_aux(tfm, flip_dims, active, aux_targets, _height, width)
+                self._route_exact_coord_aux(tfm, flip_dims, active, aux_targets, height, width, matrix)
+
+        self._last_matrix = acc.to(dtype=matrix_dtype).detach().clone()
+        _set_current_call_matrix(self._last_matrix)
 
         if not _has_aux:
             return image
@@ -796,6 +996,7 @@ class ExactAffineSegment(nn.Module):
         active: Tensor,
         aux_targets: dict[str, Tensor],
         flip_dims: list[int] | None,
+        params: dict[str, Tensor],
     ) -> Tensor:
         """Apply an exact op to the image, stacking the mask for non-flip ops.
 
@@ -814,6 +1015,7 @@ class ExactAffineSegment(nn.Module):
             aux_targets: Aux dict; its ``"mask"`` entry is updated in place for
                 non-flip ops.
             flip_dims: Result of ``exact_flip_dims`` (``None`` for non-flip ops).
+            params: Canonical parameters already sampled for the active subset.
 
         Returns:
             The transformed ``(B, C, H, W)`` image.
@@ -828,9 +1030,22 @@ class ExactAffineSegment(nn.Module):
 
         active_idx = active.nonzero(as_tuple=True)[0]
         if image.shape[0] == 1 or bool(active.all().item()):
-            stack_out = self.adapter.exact_apply(tfm, stack)
+            stack_out = (
+                self.adapter.exact_apply(tfm, stack)
+                if flip_dims is not None
+                else self.adapter.exact_apply(tfm, stack, params=params)
+            )
         else:
-            transformed = self.adapter.exact_apply(tfm, stack[active_idx])
+            transformed = (
+                self.adapter.exact_apply(tfm, stack[active_idx])
+                if flip_dims is not None
+                else self.adapter.exact_apply(tfm, stack[active_idx], params=params)
+            )
+            if transformed.shape[-2:] != stack.shape[-2:]:
+                raise ValueError(
+                    "ExactAffineSegment cannot mix active and inactive samples for an exact transform "
+                    "that changes canvas dimensions. Use same_on_batch=True or a square input."
+                )
             stack_out = stack.clone()
             stack_out[active_idx] = transformed
 
@@ -847,16 +1062,12 @@ class ExactAffineSegment(nn.Module):
         aux_targets: dict[str, Tensor],
         height: int,
         width: int,
+        matrix: Tensor,
     ) -> None:
-        """Route flip-based mask/box/keypoint aux with per-sample masking.
+        """Route exact mask and coordinate targets with the matrix used for pixels.
 
-        Flips route mask (via ``exact_flip_dims``), boxes and keypoints with per-sample
-        ``active`` masking. Non-flip exact ops (rot90/transpose) have their mask handled
-        by :meth:`_apply_exact_with_mask` and return here without touching coord targets:
-        a Compose pipeline carrying box/keypoint aux routes such runs through the
-        interpolating grid segment instead (see ``build_segments`` ``route_coords_via_grid``).
-        A directly instantiated segment can still reach this method with coord targets;
-        it then raises ``RuntimeError`` rather than passing them through untransformed.
+        Flips retain direct pixel-edge AABB and keypoint-pair routing. Non-flip D4
+        operations use the same sampled forward matrix as the exact image call.
 
         Args:
             tfm: The exact transform.
@@ -865,29 +1076,27 @@ class ExactAffineSegment(nn.Module):
             aux_targets: Aux dict, updated in place.
             height: Image height in pixels.
             width: Image width in pixels.
-
-        Raises:
-            RuntimeError: If a non-flip exact op (rot90/transpose) is applied while
-                box/keypoint auxiliary targets are present — no per-sample matrix is
-                recoverable to route them, so they would otherwise pass through untransformed.
+            matrix: ``(B, 3, 3)`` forward centre-coordinate matrix built from the
+                canonical parameters passed to ``exact_apply``.
 
         """
         if flip_dims is None:
-            # Non-flip exact op (rot90/transpose): the mask is already routed in
-            # _apply_exact_with_mask, but boxes/keypoints have no per-sample matrix to
-            # route here. A Compose pipeline diverts coord-carrying exact runs to
-            # FusedAffineSegment (route_coords_via_grid), so this branch is reached only
-            # by DIRECT instantiation. Raise rather than silently pass coords through.
-            present_coords = {"bbox_xyxy", "bbox_xywh", "keypoints"} & aux_targets.keys()
-            if present_coords:
-                raise RuntimeError(
-                    "ExactAffineSegment cannot transform coordinate targets "
-                    f"({sorted(present_coords)}) through a non-flip exact op "
-                    "(rot90/transpose): no per-sample matrix is recoverable. Route "
-                    "coordinate-carrying exact runs through FusedAffineSegment "
-                    "(FusedCompose does this automatically), or pass only masks / use "
-                    "flip ops with this segment."
-                )
+            from fuse_augmentations.targets import (
+                transform_bbox_xywh,
+                transform_bbox_xyxy,
+                transform_rboxes,
+            )
+
+            for key in list(aux_targets.keys()):
+                value = aux_targets[key]
+                if key == "bbox_xyxy":
+                    aux_targets[key] = transform_bbox_xyxy(value, matrix)
+                elif key == "bbox_xywh":
+                    aux_targets[key] = transform_bbox_xywh(value, matrix)
+                elif key == "keypoints":
+                    aux_targets[key] = _route_keypoints(value, matrix, self.keypoint_flip_index)
+                elif key == "rboxes":
+                    aux_targets[key] = transform_rboxes(value, matrix)
             return
         is_hflip = 3 in flip_dims
         is_vflip = 2 in flip_dims
@@ -906,10 +1115,22 @@ class ExactAffineSegment(nn.Module):
                 aux_targets[key] = _xyxy_to_xywh(xyxy)
                 continue
             if key == "keypoints":
-                aux_targets[key] = _flip_keypoints(val, active, is_hflip, is_vflip, height, width)
+                flipped_points = _flip_keypoints(val, active, is_hflip, is_vflip, height, width)
+                # One mirror turns the plane over; two perpendicular mirrors are a half turn,
+                # which does not — so the pair swap fires on exactly one of the two flips.
+                if self.keypoint_flip_index is not None and (is_hflip != is_vflip):
+                    from fuse_augmentations.targets import permute_keypoint_pairs
+
+                    flipped_points = permute_keypoint_pairs(
+                        flipped_points, _flip_index_tensor(self.keypoint_flip_index, val.device), active
+                    )
+                aux_targets[key] = flipped_points
+                continue
+            if key == "rboxes":
+                aux_targets[key] = _flip_rboxes(val, active, is_hflip, is_vflip, height, width)
 
 
-class _BaseAffineSegment(nn.Module):
+class _BaseAffineSegment(GeneratorPicklingMixin, nn.Module):
     """Shared matrix-composition engine for the torch-backed fused segments.
 
     Holds the single copy of the per-sample matrix accumulation loop and the
@@ -931,6 +1152,12 @@ class _BaseAffineSegment(nn.Module):
         randomness: Batch randomness policy for the fused run.
         mask_interpolation: Sampling mode for auxiliary masks. ``"nearest"``
             preserves hard labels; ``"bilinear"`` supports float soft masks.
+        mask_fill: Scalar value written outside a routed mask's source canvas.
+        generator: Caller-owned generator driving parameter sampling and the
+            per-transform probability gates, or ``None`` for the global torch stream.
+        fill: Validated constant written outside the source canvas, in the image's own
+            value range, or ``None`` for plain zero padding. Applies to the image only;
+            auxiliary masks keep their zero padding.
 
     """
 
@@ -946,6 +1173,10 @@ class _BaseAffineSegment(nn.Module):
         *,
         compile_warp: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        mask_fill: MaskFillValue = 0,
+        generator: torch.Generator | None = None,
+        fill: tuple[float, ...] | None = None,
+        keypoint_flip_index: tuple[int, ...] | None = None,
     ) -> None:
         """Initialize the shared matrix-composition state."""
         super().__init__()
@@ -955,6 +1186,10 @@ class _BaseAffineSegment(nn.Module):
         self.padding_mode = padding_mode
         self.randomness = randomness
         self.mask_interpolation = mask_interpolation
+        self.mask_fill = mask_fill
+        self.generator = generator
+        self.fill = fill
+        self.keypoint_flip_index = keypoint_flip_index
         self._last_matrix: Tensor | None = None
         # Opt-in torch.compile of the warp core. Enabled only when the flag is set
         # AND the installed torch is new enough; otherwise the eager path runs
@@ -1009,30 +1244,86 @@ class _BaseAffineSegment(nn.Module):
         eye = self._eye3.to(device=device, dtype=compose_dtype)
         eye_batch = eye[None].expand(batch_size, -1, -1)
         acc = eye_batch.clone()
+        sample_device = self._matrix_sample_device(device)
+
+        # Sample parameters and build each matrix on ``sample_device``, then move the whole
+        # stack across in one transfer. Adapters construct their parameter tensors with an
+        # explicit ``device=``, so sampling on an accelerator issues a separate host-to-device
+        # copy per parameter -- roughly ten per call for a five-transform chain. Profiled on
+        # MPS that dominated the call: 40% in ``Tensor.to`` and 26% in ``torch.tensor``,
+        # against about 1% in ``affine_grid`` and a ``grid_sample`` that did not reach the top
+        # of the profile. The 3x3 matmuls are free either way; only their placement mattered.
+        #
+        # Every RNG draw stays exactly where it was. The activation draws below still run on
+        # the image's device against the same generator, and parameter sampling reads host
+        # RNG on every adapter path -- see ``_matrix_sample_device`` for the one exception,
+        # which opts back out rather than moving a draw.
+        activations: list[Tensor] = []
+        sampled: list[Tensor] = []
 
         for tfm in self.transforms:
             prob = _transform_prob(tfm)
             same_on_batch = _shares_randomness_across_batch(self.adapter, tfm, self.randomness)
             if same_on_batch:
-                active_scalar = torch.rand((), device=device) < prob
+                active_scalar = _rand((), device=device, generator=self.generator) < prob
                 active = active_scalar.repeat(batch_size)
             else:
-                active = torch.rand(batch_size, device=device) < prob
+                active = _rand(batch_size, device=device, generator=self.generator) < prob
 
-            params = _sample_transform_params(self.adapter, tfm, input_shape, device, self.randomness)
+            params = _sample_transform_params(
+                self.adapter, tfm, input_shape, sample_device, self.randomness, generator=self.generator
+            )
             mtx_i = self.adapter.build_matrix(tfm, params, height, width)
 
             # Expand to batch if adapter returned (1, 3, 3)
             if mtx_i.shape[0] == 1 and batch_size > 1:
                 mtx_i = mtx_i.expand(batch_size, -1, -1)
 
-            # Accumulate in the compose dtype; the adapter builds in float32.
-            mtx_i = mtx_i.to(device=device, dtype=compose_dtype)
+            activations.append(active)
+            sampled.append(mtx_i)
 
-            mtx_i = torch.where(active[:, None, None], mtx_i, eye_batch)
+        # One transfer for the whole chain, in the compose dtype; the adapter builds float32.
+        # An empty chain has nothing to stack -- a segment can legitimately hold no matrix-building
+        # transforms (a blur-only run, or a passthrough probed with aux targets) and must compose to
+        # the identity rather than raise out of ``torch.stack``.
+        if not sampled:
+            return acc, acc.to(dtype=_matrix_public_dtype(dtype))
+        stacked = torch.stack(sampled).to(device=device, dtype=compose_dtype)
+
+        for index, active in enumerate(activations):
+            mtx_i = torch.where(active[:, None, None], stacked[index], eye_batch)
             acc = matmul3x3(mtx_i, acc)
 
         return acc, acc.to(dtype=_matrix_public_dtype(dtype))
+
+    def _matrix_sample_device(self, device: torch.device) -> torch.device:
+        """Return the device to sample parameters and build per-transform matrices on.
+
+        The host, whenever that cannot move an RNG draw. Building on the host lets ``_compose``
+        collapse one host-to-device copy per parameter into a single copy for the whole chain,
+        which is the bulk of a fused call on an accelerator.
+
+        Kornia's ``RandomRotation90`` is the one opt-out. Its ``build_matrix`` falls back to
+        ``torch.randint(..., device=params["_batch_size"].device)`` when ``k90`` is absent from
+        the sampled parameters, so the sampling device decides which RNG stream that draw
+        consumes. Every other adapter path derives its parameters from host RNG and is
+        unaffected by where the resulting tensor is constructed. Rather than reason about when
+        the fallback fires, a chain containing that transform keeps sampling on the image's
+        device and forgoes the optimisation.
+
+        Args:
+            device: The device the image being composed lives on.
+
+        Returns:
+            ``device`` itself when it is already the host, or when the chain contains a
+            transform whose sampling device would change an RNG draw; the host otherwise.
+
+        """
+        if device.type == "cpu":
+            return device
+        if any(_samples_on_the_matrix_device(tfm) for tfm in self.transforms):
+            return device
+        return torch.device("cpu")
 
     def _apply_grid(self, image: Tensor, acc: Tensor) -> tuple[Tensor, Tensor]:
         """Warp ``image`` by the composed matrix and return the warped image and grid.
@@ -1081,6 +1372,8 @@ class _BaseAffineSegment(nn.Module):
         grid: Tensor,
         acc_img: Tensor,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        keypoint_flip_index: tuple[int, ...] | None = None,
+        mask_fill: MaskFillValue = 0,
     ) -> None:
         """Route auxiliary targets through the warp grid and composed pixel matrix.
 
@@ -1092,21 +1385,26 @@ class _BaseAffineSegment(nn.Module):
             aux_targets: Auxiliary targets to transform (``"mask"``, ``"bbox_xyxy"``,
                 ``"bbox_xywh"``, ``"keypoints"``).
             grid: The sampling grid produced by :meth:`_apply_grid`.
-            acc_img: ``(batch_size, 3, 3)`` composed forward pixel matrix in the image dtype.
+            acc_img: ``(batch_size, 3, 3)`` composed forward pixel matrix; recast to the geometry dtype here.
             mask_interpolation: Mask sampling mode for the ``"mask"`` target.
+            keypoint_flip_index: Optional caller-supplied keypoint pair permutation, applied
+                where the composed matrix reverses orientation.
+            mask_fill: Scalar border value for the ``"mask"`` target.
 
         """
         from fuse_augmentations.targets import (
             transform_bbox_xywh,
             transform_bbox_xyxy,
-            transform_keypoints,
             transform_mask,
+            transform_rboxes,
         )
+
+        acc_img = acc_img.to(dtype=_matrix_geometry_dtype(acc_img.dtype))
 
         for key in list(aux_targets.keys()):
             val = aux_targets[key]
             if key == "mask":
-                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation)
+                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation, fill=mask_fill)
                 continue
             if key == "bbox_xyxy":
                 aux_targets[key] = transform_bbox_xyxy(val, acc_img)
@@ -1115,7 +1413,10 @@ class _BaseAffineSegment(nn.Module):
                 aux_targets[key] = transform_bbox_xywh(val, acc_img)
                 continue
             if key == "keypoints":
-                aux_targets[key] = transform_keypoints(val, acc_img)
+                aux_targets[key] = _route_keypoints(val, acc_img, keypoint_flip_index)
+                continue
+            if key == "rboxes":
+                aux_targets[key] = transform_rboxes(val, acc_img)
 
 
 class FusedAffineSegment(_BaseAffineSegment):
@@ -1147,6 +1448,10 @@ class FusedAffineSegment(_BaseAffineSegment):
         *,
         compile_warp: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        mask_fill: MaskFillValue = 0,
+        generator: torch.Generator | None = None,
+        fill: tuple[float, ...] | None = None,
+        keypoint_flip_index: tuple[int, ...] | None = None,
     ) -> None:
         """Initialize ``FusedAffineSegment``."""
         super().__init__(
@@ -1156,7 +1461,11 @@ class FusedAffineSegment(_BaseAffineSegment):
             padding_mode,
             randomness,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
             compile_warp=compile_warp,
+            generator=generator,
+            fill=fill,
+            keypoint_flip_index=keypoint_flip_index,
         )
         # Pre-compute fast-path selector once at construction to avoid repeated
         # isinstance checks on every forward call.
@@ -1365,7 +1674,14 @@ class FusedAffineSegment(_BaseAffineSegment):
         # ------------------------------------------------------------------ #
         # Gate on CPU tensors only: the cv2 warp round-trips through NumPy
         # (image[0]...numpy()), which raises on any non-CPU device (CUDA and MPS).
-        if self._cv2_warp and batch_size == 1 and not _has_aux and image.device.type == "cpu":
+        # Gradient-bearing inputs stay on the differentiable torch path; NumPy cannot preserve autograd.
+        if (
+            self._cv2_warp
+            and batch_size == 1
+            and not _has_aux
+            and image.device.type == "cpu"
+            and not image.requires_grad
+        ):
             acc_np = np.eye(3, dtype=np.float64)
             # Select the numpy-native matrix builder when available (avoids
             # creating intermediate torch tensors that are immediately converted
@@ -1385,7 +1701,7 @@ class FusedAffineSegment(_BaseAffineSegment):
                 # params for inactive transforms (vectorized, masked via
                 # torch.where) while this path skips them, so RNG stream positions
                 # diverge after the first inactive transform.
-                active = bool((torch.rand(()) < prob).item())
+                active = bool((_rand((), device=torch.device("cpu"), generator=self.generator) < prob).item())
                 if not active:
                     continue
                 if _np_fused is not None:
@@ -1393,7 +1709,9 @@ class FusedAffineSegment(_BaseAffineSegment):
                     if mtx_np is not None:
                         acc_np = mtx_np @ acc_np
                         continue
-                params = _sample_transform_params(self.adapter, tfm, input_shape, device, self.randomness)
+                params = _sample_transform_params(
+                    self.adapter, tfm, input_shape, device, self.randomness, generator=self.generator
+                )
                 if _np_builder is not None:
                     mtx_np = _np_builder(tfm, params, height, width)
                     acc_np = mtx_np @ acc_np
@@ -1418,10 +1736,12 @@ class FusedAffineSegment(_BaseAffineSegment):
             m_inv_np = _inv3x3_affine_np(acc_np)
             img_np = image[0].detach().permute(1, 2, 0).contiguous().numpy()  # detach: no grad through cv2 segments
             if num_channels == 1:
-                warped = _warp(img_np[:, :, 0], m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag)
+                warped = _warp(
+                    img_np[:, :, 0], m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag, self.fill
+                )
                 warped = warped[:, :, np.newaxis]
             else:
-                warped = _warp(img_np, m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag)
+                warped = _warp(img_np, m_inv_np, width, height, self._cv2_interp_flag, self._cv2_border_flag, self.fill)
             image = torch.from_numpy(warped).permute(2, 0, 1).unsqueeze(0)
             return image.to(device=device, dtype=dtype)
 
@@ -1445,7 +1765,7 @@ class FusedAffineSegment(_BaseAffineSegment):
         if d4_op is not None:
             image = apply_d4_image(image, d4_op)
             if aux_targets:
-                self._route_d4_aux(aux_targets, d4_op, acc_img)
+                self._route_d4_aux(aux_targets, d4_op, acc_img, self.keypoint_flip_index)
             if not _has_aux:
                 return image
             return image, aux_targets
@@ -1454,7 +1774,14 @@ class FusedAffineSegment(_BaseAffineSegment):
 
         # Transform auxiliary targets using the composed forward matrix
         if aux_targets:
-            self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation)
+            self._route_grid_aux(
+                aux_targets,
+                grid,
+                acc_img,
+                self.mask_interpolation,
+                self.keypoint_flip_index,
+                self.mask_fill,
+            )
 
         if not _has_aux:
             return image
@@ -1481,10 +1808,16 @@ class FusedAffineSegment(_BaseAffineSegment):
             acc,
             self.interpolation or "bilinear",
             self.padding_mode or "zeros",
+            _fill_tensor(self.fill, image.shape[1], image.device, image.dtype),
         )
 
     @staticmethod
-    def _route_d4_aux(aux_targets: dict[str, Tensor], d4_op: str, acc_img: Tensor) -> None:
+    def _route_d4_aux(
+        aux_targets: dict[str, Tensor],
+        d4_op: str,
+        acc_img: Tensor,
+        keypoint_flip_index: tuple[int, ...] | None = None,
+    ) -> None:
         """Route aux targets through an exact D4 op with zero interpolation.
 
         The mask is transformed by the same lossless ``flip``/``rot90`` op applied to
@@ -1496,14 +1829,18 @@ class FusedAffineSegment(_BaseAffineSegment):
             aux_targets: Auxiliary targets to transform (``"mask"``, ``"bbox_xyxy"``,
                 ``"bbox_xywh"``, ``"keypoints"``).
             d4_op: The D4 op name from :func:`classify_d4_batch`.
-            acc_img: ``(B, 3, 3)`` composed forward pixel matrix in the image dtype.
+            acc_img: ``(B, 3, 3)`` composed forward pixel matrix; recast to the geometry dtype here.
+            keypoint_flip_index: Optional caller-supplied keypoint pair permutation, applied
+                where the composed matrix reverses orientation.
 
         """
         from fuse_augmentations.targets import (
             transform_bbox_xywh,
             transform_bbox_xyxy,
-            transform_keypoints,
+            transform_rboxes,
         )
+
+        acc_img = acc_img.to(dtype=_matrix_geometry_dtype(acc_img.dtype))
 
         for key in list(aux_targets.keys()):
             val = aux_targets[key]
@@ -1517,7 +1854,10 @@ class FusedAffineSegment(_BaseAffineSegment):
                 aux_targets[key] = transform_bbox_xywh(val, acc_img)
                 continue
             if key == "keypoints":
-                aux_targets[key] = transform_keypoints(val, acc_img)
+                aux_targets[key] = _route_keypoints(val, acc_img, keypoint_flip_index)
+                continue
+            if key == "rboxes":
+                aux_targets[key] = transform_rboxes(val, acc_img)
 
 
 class _FusedGeoCropSegment(FusedAffineSegment):
@@ -1579,6 +1919,10 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         compile_warp: bool = False,
         antialias: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        mask_fill: MaskFillValue = 0,
+        generator: torch.Generator | None = None,
+        fill: tuple[float, ...] | None = None,
+        keypoint_flip_index: tuple[int, ...] | None = None,
     ) -> None:
         """Initialize ``_FusedGeoCropSegment``."""
         # nn.Module state only; skip FusedAffineSegment.__init__'s cv2/numpy
@@ -1591,11 +1935,15 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         # transforms holds the full fused run so inherited fusion-plan machinery
         # (n_warps_saved = n-1, fusion_plan naming) counts the crop as fused.
         self.transforms: list[object] = [*geo_transforms, crop_transform]
+        self.generator = generator
+        self.fill = fill
+        self.keypoint_flip_index = keypoint_flip_index
         self.adapter = adapter
         self.interpolation = interpolation
         self.padding_mode = padding_mode
         self.randomness = randomness
         self.mask_interpolation = mask_interpolation
+        self.mask_fill = mask_fill
         self._last_matrix: Tensor | None = None
         # `compile_warp` is accepted for build_segments API symmetry but deliberately not
         # stored: forward() builds its own affine_grid/grid_sample and never routes through
@@ -1639,10 +1987,12 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         for tfm in self.geo_transforms:
             prob = _transform_prob(tfm)
             if _shares_randomness_across_batch(self.adapter, tfm, self.randomness):
-                active = (torch.rand((), device=device) < prob).repeat(batch_size)
+                active = (_rand((), device=device, generator=self.generator) < prob).repeat(batch_size)
             else:
-                active = torch.rand(batch_size, device=device) < prob
-            params = _sample_transform_params(self.adapter, tfm, input_shape, device, self.randomness)
+                active = _rand(batch_size, device=device, generator=self.generator) < prob
+            params = _sample_transform_params(
+                self.adapter, tfm, input_shape, device, self.randomness, generator=self.generator
+            )
             mtx_i = self.adapter.build_matrix(tfm, params, height, width)
             if mtx_i.shape[0] == 1 and batch_size > 1:
                 mtx_i = mtx_i.expand(batch_size, -1, -1)
@@ -1656,10 +2006,10 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         self._last_matrix = acc_full.to(dtype=_matrix_public_dtype(dtype)).detach().clone()
         _set_current_call_matrix(self._last_matrix)
 
-        # Keep the prefilter out of default and mild-downscale calls entirely; the
-        # composed matrix still handles rotations and shears in the opt-in case.
+        # The prefilter computes per-sample scales once and only touches aggressive
+        # rows; the default path remains the original one-warp execution.
         antialias_mtx = acc_full.to(dtype=dtype)
-        if self._antialias and _needs_antialias_prefilter(antialias_mtx):
+        if self._antialias:
             image = _maybe_antialias_prefilter(image, antialias_mtx, enabled=True)
 
         mtx_inv = inv3x3(acc_full)
@@ -1669,16 +2019,26 @@ class _FusedGeoCropSegment(FusedAffineSegment):
             [batch_size, num_channels, target_h, target_w],
             align_corners=True,
         )
+        fill_value = _fill_tensor(self.fill, num_channels, device, dtype)
         out = F.grid_sample(
-            image,
+            image if fill_value is None else image - fill_value,
             grid,
             mode=self.interpolation or "bilinear",
             padding_mode=self.padding_mode or "zeros",
             align_corners=True,
         )
+        if fill_value is not None:
+            out = out + fill_value
 
         if aux_targets:
-            self._warp_aux(aux_targets, grid, acc_full.to(dtype=_matrix_public_dtype(dtype)), self.mask_interpolation)
+            self._warp_aux(
+                aux_targets,
+                grid,
+                acc_full.to(dtype=_matrix_public_dtype(dtype)),
+                self.mask_interpolation,
+                self.keypoint_flip_index,
+                self.mask_fill,
+            )
 
         if not _has_aux:
             return out
@@ -1694,7 +2054,9 @@ class _FusedGeoCropSegment(FusedAffineSegment):
     ) -> tuple[int, int, Tensor]:
         """Sample the crop and return ``(target_h, target_w, (B, 3, 3) crop matrix)``."""
         batch_size, _, height, width = input_shape
-        params = _sample_transform_params(self.adapter, self.crop_transform, input_shape, device, self.randomness)
+        params = _sample_transform_params(
+            self.adapter, self.crop_transform, input_shape, device, self.randomness, generator=self.generator
+        )
         if not (
             torch.all(params["target_h"] == params["target_h"][0])
             and torch.all(params["target_w"] == params["target_w"][0])
@@ -1716,25 +2078,29 @@ class _FusedGeoCropSegment(FusedAffineSegment):
         grid: Tensor,
         mtx: Tensor,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        keypoint_flip_index: tuple[int, ...] | None = None,
+        mask_fill: MaskFillValue = 0,
     ) -> None:
         """Warp auxiliary targets in place: mask via the output grid, coords via ``mtx``."""
         from fuse_augmentations.targets import (
             transform_bbox_xywh,
             transform_bbox_xyxy,
-            transform_keypoints,
             transform_mask,
+            transform_rboxes,
         )
 
         for key in list(aux_targets.keys()):
             val = aux_targets[key]
             if key == "mask":
-                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation)
+                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation, fill=mask_fill)
             elif key == "bbox_xyxy":
                 aux_targets[key] = transform_bbox_xyxy(val, mtx)
             elif key == "bbox_xywh":
                 aux_targets[key] = transform_bbox_xywh(val, mtx)
             elif key == "keypoints":
-                aux_targets[key] = transform_keypoints(val, mtx)
+                aux_targets[key] = _route_keypoints(val, mtx, keypoint_flip_index)
+            elif key == "rboxes":
+                aux_targets[key] = transform_rboxes(val, mtx)
 
 
 class FusedGaussianBlurSegment(nn.Module):
@@ -1771,6 +2137,7 @@ class FusedGaussianBlurSegment(nn.Module):
         randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
         *,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        mask_fill: MaskFillValue = 0,
     ) -> None:
         """Initialize a folded Gaussian blur and affine segment."""
         super().__init__()
@@ -1788,6 +2155,7 @@ class FusedGaussianBlurSegment(nn.Module):
             padding_mode,
             randomness,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
         )
         self._prefix = FusedAffineSegment(
             prefix_geometric_transforms,
@@ -1796,6 +2164,7 @@ class FusedGaussianBlurSegment(nn.Module):
             padding_mode,
             randomness,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
         )
         self._suffix = FusedAffineSegment(
             suffix_geometric_transforms,
@@ -1804,6 +2173,7 @@ class FusedGaussianBlurSegment(nn.Module):
             padding_mode,
             randomness,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
         )
         self._last_matrix: Tensor | None = None
 
@@ -1845,7 +2215,14 @@ class FusedGaussianBlurSegment(nn.Module):
         if commutable:
             warped, grid = self._geometric._apply_grid(image, acc)
             if aux_targets:
-                self._geometric._route_grid_aux(aux_targets, grid, acc_img, self._geometric.mask_interpolation)
+                self._geometric._route_grid_aux(
+                    aux_targets,
+                    grid,
+                    acc_img,
+                    self._geometric.mask_interpolation,
+                    self._geometric.keypoint_flip_index,
+                    self._geometric.mask_fill,
+                )
             if _is_axis_aligned_gaussian_matrix(suffix):
                 sigma = _transform_gaussian_sigma(sigma, suffix)
                 result = _apply_folded_gaussian(warped, sigma)
@@ -1867,7 +2244,14 @@ class FusedGaussianBlurSegment(nn.Module):
             result = working
             if aux_targets:
                 _, aux_grid = self._geometric._apply_grid(image, acc)
-                self._geometric._route_grid_aux(aux_targets, aux_grid, acc_img, self._geometric.mask_interpolation)
+                self._geometric._route_grid_aux(
+                    aux_targets,
+                    aux_grid,
+                    acc_img,
+                    self._geometric.mask_interpolation,
+                    self._geometric.keypoint_flip_index,
+                    self._geometric.mask_fill,
+                )
         if aux_targets is None:
             return result
         return result, aux_targets
@@ -2026,6 +2410,7 @@ def _warp(
     height: int,
     interp_flag: int,
     border_flag: int,
+    fill: tuple[float, ...] | None = None,
 ) -> ImageArray:
     """Apply cv2.warpAffine with the dst->src 3x3 pixel-space matrix.
 
@@ -2041,6 +2426,8 @@ def _warp(
         height: Output height in pixels.
         interp_flag: cv2 interpolation constant (e.g. ``1`` for ``INTER_LINEAR``).
         border_flag: cv2 border mode constant (e.g. ``0`` for ``BORDER_CONSTANT``).
+        fill: Optional validated constant border value in the image's own value range;
+            ``None`` keeps the historical all-zero border.
 
     Returns:
         Warped image array with the same dtype and channel count as ``img``.
@@ -2049,6 +2436,7 @@ def _warp(
     import cv2
 
     m_2x3 = matrix_dst2src_3x3[:2, :].astype(np.float64)
+    num_channels = 1 if img.ndim == 2 else img.shape[2]
     warp_affine = cast(Any, cv2.warpAffine)
     return cast(
         MatrixArray,
@@ -2058,7 +2446,7 @@ def _warp(
             (width, height),
             flags=interp_flag | _CV2_WARP_INVERSE_MAP,
             borderMode=border_flag,
-            borderValue=0,
+            borderValue=_cv2_border_value(fill, num_channels),
         ),
     )
 
@@ -2161,6 +2549,9 @@ class AlbuFusedAffineSegment(nn.Module):
         padding_mode: PaddingModeStr | None = None,
         execution: ExecutionStr = "cv2",
         mask_interpolation: MaskInterpolationStr = "nearest",
+        mask_fill: MaskFillValue = 0,
+        fill: tuple[float, ...] | None = None,
+        keypoint_flip_index: tuple[int, ...] | None = None,
     ) -> None:
         """Initialize ``AlbuFusedAffineSegment``."""
         super().__init__()
@@ -2169,7 +2560,14 @@ class AlbuFusedAffineSegment(nn.Module):
         self.interpolation = interpolation or "bilinear"
         self.padding_mode = padding_mode or "zeros"
         self.execution: ExecutionStr = _validate_execution(execution)
+        #: Engine the most recent call actually used. Equal to ``execution`` unless that is
+        #: ``"auto"``, in which case it records what the routing rule chose. ``None`` before the
+        #: first call, and before any call that warps nothing.
+        self._last_execution: ExecutionStr | None = None
         self.mask_interpolation = mask_interpolation
+        self.mask_fill = mask_fill
+        self.fill = fill
+        self.keypoint_flip_index = keypoint_flip_index
         self._last_matrix: Tensor | None = None
         # Pre-compute cv2 flags once instead of dict-lookups per call.
         self._interp_flag: int = _CV2_INTERP.get(self.interpolation, _CV2_INTERP.get("bilinear", 1))
@@ -2222,6 +2620,73 @@ class AlbuFusedAffineSegment(nn.Module):
             else:
                 tags.append(AlbuFusedAffineSegment._TAG_ADAPTER)
         return tags
+
+    @staticmethod
+    def _sample_matrix_numpy(
+        adapter: TransformAdapter,
+        transform: object,
+        tag: int,
+        channels: int,
+        height: int,
+        width: int,
+        *,
+        tensor_roundtrip: bool,
+    ) -> MatrixArray:
+        """Sample one Albumentations matrix through the native preparation path.
+
+        ``forward_numpy`` keeps raw float64 matrices. Tensor callers retain the
+        historical adapter conversion through float32 before float64 composition,
+        so this optimization removes wrapper work without changing their sampled
+        geometry or established warp numerics.
+
+        Args:
+            adapter: Backend bridge used only for transforms without a native
+                Albumentations preparation path.
+            transform: Active Albumentations transform.
+            tag: Pre-classified native preparation tag.
+            channels: Input channel count for the fallback adapter route.
+            height: Input canvas height.
+            width: Input canvas width.
+            tensor_roundtrip: Whether to reproduce the tensor adapter's float32
+                matrix conversion before returning the float64 accumulator value.
+
+        Returns:
+            One ``(3, 3)`` float64 forward matrix.
+
+        """
+        from fuse_augmentations.adapters.albumentations import (
+            _sample_matrices,
+            hflip_matrix_np,
+            vflip_matrix_np,
+        )
+
+        if tag == AlbuFusedAffineSegment._TAG_FAST_ROTATE:
+            angle = transform.py_random.uniform(*transform.limit)  # type: ignore[attr-defined]
+            radians = math.radians(angle)
+            cos_angle, sin_angle = math.cos(radians), math.sin(radians)
+            center_x = width / 2.0 - 0.5
+            center_y = height / 2.0 - 0.5
+            matrix = np.array(
+                [
+                    [cos_angle, sin_angle, center_x * (1.0 - cos_angle) - center_y * sin_angle],
+                    [-sin_angle, cos_angle, center_y * (1.0 - cos_angle) + center_x * sin_angle],
+                    [0.0, 0.0, 1.0],
+                ],
+                dtype=np.float64,
+            )
+        elif tag == AlbuFusedAffineSegment._TAG_INTERP:
+            matrix = _sample_matrices(transform, 1, height, width)[0]
+        elif tag == AlbuFusedAffineSegment._TAG_HFLIP:
+            matrix = hflip_matrix_np(width=width)
+        elif tag == AlbuFusedAffineSegment._TAG_VFLIP:
+            matrix = vflip_matrix_np(height=height)
+        else:
+            params = adapter.sample_params(transform, (1, channels, height, width), torch.device("cpu"))
+            matrix = adapter.build_matrix(transform, params, height, width)[0].double().cpu().numpy()
+
+        if tensor_roundtrip:
+            return np.asarray(matrix, dtype=np.float32).astype(np.float64)
+        return np.asarray(matrix, dtype=np.float64)
 
     @property
     def last_matrix(self) -> Tensor | None:
@@ -2276,7 +2741,8 @@ class AlbuFusedAffineSegment(nn.Module):
         if batch_size == 0 or len(self.transforms) == 0:
             return (image, aux_targets) if _has_aux else image
 
-        if self.execution == "torch":
+        self._last_execution = _resolve_execution(self.execution, image.device)
+        if self._last_execution == "torch":
             image = self._warp_torch(image, composed_batch)
         else:
             image = self._warp_cv2(image, accs, any_active)
@@ -2301,7 +2767,7 @@ class AlbuFusedAffineSegment(nn.Module):
             image: The warped image tensor, used to resolve the mask device/dtype.
 
         """
-        acc_img = composed_batch.to(device=image.device, dtype=image.dtype)
+        acc_img = composed_batch.to(device=image.device, dtype=_matrix_geometry_dtype(image.dtype))
         grid: Tensor | None = None
         if "mask" in aux_targets:
             mask = aux_targets["mask"]
@@ -2313,7 +2779,14 @@ class AlbuFusedAffineSegment(nn.Module):
                 [mask.shape[0], mask.shape[1], mask.shape[-2], mask.shape[-1]],
                 align_corners=True,
             )
-        self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation)
+        self._route_grid_aux(
+            aux_targets,
+            grid,
+            acc_img,
+            self.mask_interpolation,
+            self.keypoint_flip_index,
+            self.mask_fill,
+        )
 
     @staticmethod
     def _route_grid_aux(
@@ -2321,6 +2794,8 @@ class AlbuFusedAffineSegment(nn.Module):
         grid: Tensor | None,
         acc_img: Tensor,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        keypoint_flip_index: tuple[int, ...] | None = None,
+        mask_fill: MaskFillValue = 0,
     ) -> None:
         """Route auxiliary targets through the warp grid and composed pixel matrix.
 
@@ -2331,27 +2806,34 @@ class AlbuFusedAffineSegment(nn.Module):
         Args:
             aux_targets: Auxiliary targets to transform.
             grid: Sampling grid for the mask, or ``None`` when no mask is present.
-            acc_img: ``(B, 3, 3)`` composed forward pixel matrix in the image dtype.
+            acc_img: ``(B, 3, 3)`` composed forward pixel matrix; recast to the geometry dtype here.
             mask_interpolation: Mask sampling mode for the ``"mask"`` target.
+            mask_fill: Scalar border value for the ``"mask"`` target.
+            keypoint_flip_index: Optional caller-supplied keypoint pair permutation, applied
+                where the composed matrix reverses orientation.
 
         """
         from fuse_augmentations.targets import (
             transform_bbox_xywh,
             transform_bbox_xyxy,
-            transform_keypoints,
             transform_mask,
+            transform_rboxes,
         )
+
+        acc_img = acc_img.to(dtype=_matrix_geometry_dtype(acc_img.dtype))
 
         for key in list(aux_targets.keys()):
             val = aux_targets[key]
             if key == "mask" and grid is not None:
-                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation)
+                aux_targets[key] = transform_mask(val, grid, mode=mask_interpolation, fill=mask_fill)
             elif key == "bbox_xyxy":
                 aux_targets[key] = transform_bbox_xyxy(val, acc_img)
             elif key == "bbox_xywh":
                 aux_targets[key] = transform_bbox_xywh(val, acc_img)
             elif key == "keypoints":
-                aux_targets[key] = transform_keypoints(val, acc_img)
+                aux_targets[key] = _route_keypoints(val, acc_img, keypoint_flip_index)
+            elif key == "rboxes":
+                aux_targets[key] = transform_rboxes(val, acc_img)
 
     def _compose_matrices(self, image: Tensor) -> tuple[list[MatrixArray], list[bool]]:
         """Compose the per-sample forward affine matrices via Albumentations sampling.
@@ -2390,9 +2872,15 @@ class AlbuFusedAffineSegment(nn.Module):
         shared_mtx: dict[int, MatrixArray] = {}
         for t_idx, tfm in enumerate(self.transforms):
             if bool(getattr(tfm, "same_on_batch", False)) and bool(np.any(active_masks[t_idx])):
-                params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
-                mtx_shared = self.adapter.build_matrix(tfm, params, height, width)
-                shared_mtx[t_idx] = mtx_shared[0].double().cpu().numpy()
+                shared_mtx[t_idx] = self._sample_matrix_numpy(
+                    self.adapter,
+                    tfm,
+                    self._tfm_tags[t_idx],
+                    num_channels,
+                    height,
+                    width,
+                    tensor_roundtrip=True,
+                )
 
         accs: list[MatrixArray] = []
         any_active: list[bool] = []
@@ -2409,10 +2897,17 @@ class AlbuFusedAffineSegment(nn.Module):
                     active = True
                     acc = shared_mtx[t_idx] @ acc
                     continue
-                params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
-                mtx_i = self.adapter.build_matrix(tfm, params, height, width)
+                mtx_i = self._sample_matrix_numpy(
+                    self.adapter,
+                    tfm,
+                    self._tfm_tags[t_idx],
+                    num_channels,
+                    height,
+                    width,
+                    tensor_roundtrip=True,
+                )
                 active = True
-                acc = mtx_i[0].double().cpu().numpy() @ acc
+                acc = mtx_i @ acc
             accs.append(acc)
             any_active.append(active)
         return accs, any_active
@@ -2465,10 +2960,10 @@ class AlbuFusedAffineSegment(nn.Module):
             m_dst2src = np.linalg.inv(accs[b_idx])
             if num_channels == 1:
                 img_np = img_np[:, :, 0]
-                warped = _warp(img_np, m_dst2src, width, height, interp_flag, border_flag)
+                warped = _warp(img_np, m_dst2src, width, height, interp_flag, border_flag, self.fill)
                 warped = warped[:, :, np.newaxis]
             else:
-                warped = _warp(img_np, m_dst2src, width, height, interp_flag, border_flag)
+                warped = _warp(img_np, m_dst2src, width, height, interp_flag, border_flag, self.fill)
             output_np.append(warped)
 
         return torch.stack([torch.as_tensor(np.ascontiguousarray(img)).permute(2, 0, 1) for img in output_np]).to(
@@ -2494,7 +2989,13 @@ class AlbuFusedAffineSegment(nn.Module):
         # MPS has no float64; invert/normalize in float32 there (mirrors the torch twins).
         acc_dtype = _matrix_compose_dtype(image.dtype, image.device, len(self.transforms))
         acc = composed_batch.to(device=image.device, dtype=acc_dtype)
-        warped, _ = _grid_sample_affine_batched(image, acc, self.interpolation, self.padding_mode)
+        warped, _ = _grid_sample_affine_batched(
+            image,
+            acc,
+            self.interpolation,
+            self.padding_mode,
+            _fill_tensor(self.fill, image.shape[1], image.device, image.dtype),
+        )
         return warped
 
     def forward_numpy(self, img_hwc: NDArray[Any]) -> NDArray[Any]:
@@ -2546,84 +3047,38 @@ class AlbuFusedAffineSegment(nn.Module):
             _set_current_call_matrix(self._identity_1x3x3.detach().clone())
             return img_hwc
 
-        # Draw per-transform active masks for bsz=1 (mirrors forward() logic).
-        # For prob=1.0 transforms, skip the RNG draw and use a constant True.
+        # Draw per-transform active masks for bsz=1, one draw per transform whatever its probability.
+        # Skipping the draw for prob 0.0 or 1.0 would give the same activation for ~1 us less work, and
+        # would leave the global NumPy stream in a different place than the same chain reached through
+        # forward(): a caller who seeded once and switched between array and tensor input would then get
+        # different sampled geometry from an identical pipeline, with nothing in the configuration
+        # explaining it. Entry-point agreement is worth more than the draw.
         active_masks: list[bool] = []
         for tfm in self.transforms:
             prob = _transform_prob(tfm)
-            if prob >= 1.0:
-                active_masks.append(True)
-            elif prob <= 0.0:
-                active_masks.append(False)
-            else:
-                active_masks.append(bool(np.random.rand() < prob))
+            active_masks.append(bool(np.random.rand() < prob))
 
         acc: MatrixArray = np.eye(3, dtype=np.float64)
         any_active = False
 
-        # Resolve imports once (cached by Python import system, but avoids
-        # per-iteration dict lookups inside the hot loop).
-        from fuse_augmentations.adapters.albumentations import (
-            _sample_matrices as _sample_matrices_fn,
-        )
-        from fuse_augmentations.adapters.albumentations import (
-            hflip_matrix_np as _hflip_matrix_np_fn,
-        )
-        from fuse_augmentations.adapters.albumentations import (
-            vflip_matrix_np as _vflip_matrix_np_fn,
-        )
-
-        # Fast numpy-only matrix loop: bypass the adapter's torch round-trip
-        # by dispatching on pre-classified tags from __init__.
+        # The shared native preparer also serves tensor callers, whose explicit
+        # float32 roundtrip preserves their existing matrix numerics.
         _tags = self._tfm_tags
         for idx_tfm, tfm in enumerate(self.transforms):
             if not active_masks[idx_tfm]:
                 # Skip expensive sample_params + build_matrix for inactive transforms.
                 continue
-            tag = _tags[idx_tfm]
-            if tag == self._TAG_FAST_ROTATE:
-                # Ultra-fast path for A.Rotate (crop_border=False):
-                # Call tfm.py_random.uniform directly (same Python Random instance as
-                # albumentations) then build the rotation matrix in pure Python/numpy.
-                # Identical output to albumentations; saves ~19µs vs get_params_dependent_on_data.
-                angle = tfm.py_random.uniform(*tfm.limit)  # type: ignore[attr-defined]
-                _rad = math.radians(angle)
-                # NOTE: rows below are the TRANSPOSE of matrix.rotation_matrix —
-                # deliberate, mirroring Albumentations' clockwise-positive angle
-                # convention. Pinned by the A.Rotate parity tests in
-                # tests/test_integration/adapters/test_albument.py; keep in sync
-                # with the adapter convention if either changes.
-                _cos, _sin = math.cos(_rad), math.sin(_rad)
-                _center_x = width / 2.0 - 0.5
-                _center_y = height / 2.0 - 0.5
-                mtx_np = np.array(
-                    [
-                        [_cos, _sin, _center_x * (1.0 - _cos) - _center_y * _sin],
-                        [-_sin, _cos, _center_y * (1.0 - _cos) + _center_x * _sin],
-                        [0.0, 0.0, 1.0],
-                    ],
-                    dtype=np.float64,
-                )
-                any_active = True
-                acc = mtx_np @ acc
-            elif tag == self._TAG_INTERP:
-                # Direct numpy: call _sample_matrices (returns (1,3,3) float64 ndarray)
-                # without the numpy -> torch.tensor -> .numpy() adapter round-trip.
-                mtx_np = _sample_matrices_fn(tfm, 1, height, width)
-                any_active = True
-                acc = mtx_np[0] @ acc
-            elif tag == self._TAG_HFLIP:
-                any_active = True
-                acc = _hflip_matrix_np_fn(width=width) @ acc
-            elif tag == self._TAG_VFLIP:
-                any_active = True
-                acc = _vflip_matrix_np_fn(height=height) @ acc
-            else:
-                # Fallback: full adapter round-trip for unrecognised types.
-                params = self.adapter.sample_params(tfm, (1, n_ch, height, width), torch.device("cpu"))
-                mtx_i = self.adapter.build_matrix(tfm, params, height, width)
-                any_active = True
-                acc = mtx_i[0].double().cpu().numpy() @ acc
+            matrix = self._sample_matrix_numpy(
+                self.adapter,
+                tfm,
+                _tags[idx_tfm],
+                n_ch,
+                height,
+                width,
+                tensor_roundtrip=False,
+            )
+            any_active = True
+            acc = matrix @ acc
 
         np.copyto(self._last_matrix_np_buffer, acc, casting="unsafe")
         self._last_matrix_buffer[0].copy_(self._last_matrix_np_tensor)
@@ -2631,6 +3086,9 @@ class AlbuFusedAffineSegment(nn.Module):
         # so a bare reference would let call N+1 mutate call N's returned matrix.
         self._last_matrix = self._last_matrix_buffer.clone()
         _set_current_call_matrix(torch.from_numpy(np.asarray(acc, dtype=np.float32)).unsqueeze(0).clone())
+        # This path is cv2 by construction -- it never builds a tensor to hand grid_sample -- so an
+        # "auto" pipeline reached through NumPy reports the engine that actually drew the pixels.
+        self._last_execution = "cv2"
 
         if not any_active:
             return img_hwc
@@ -2671,11 +3129,52 @@ class AlbuFusedAffineSegment(nn.Module):
         m_dst2src: MatrixArray = _inv3x3_affine_np(acc)
 
         if original_2d:
-            return _warp(img_hwc, m_dst2src, width, height, self._interp_flag, self._border_flag)
+            return _warp(img_hwc, m_dst2src, width, height, self._interp_flag, self._border_flag, self.fill)
         if n_ch == 1:
-            warped = _warp(img_hwc[:, :, 0], m_dst2src, width, height, self._interp_flag, self._border_flag)
+            warped = _warp(img_hwc[:, :, 0], m_dst2src, width, height, self._interp_flag, self._border_flag, self.fill)
             return warped[:, :, np.newaxis]
-        return _warp(img_hwc, m_dst2src, width, height, self._interp_flag, self._border_flag)
+        return _warp(img_hwc, m_dst2src, width, height, self._interp_flag, self._border_flag, self.fill)
+
+    def route_numpy_aux(self, aux_targets: dict[str, Tensor]) -> None:
+        """Route auxiliary targets through the matrix left behind by :meth:`forward_numpy`.
+
+        The NumPy-native path warps the image in cv2 space and never builds the BCHW tensor that
+        :meth:`forward` routes auxiliary targets from. Coordinate targets are small enough that
+        routing them as tensors costs nothing measurable, so this reuses the same
+        :meth:`_route_grid_aux` the tensor path uses rather than restating the AABB and keypoint
+        conventions in NumPy, where they would drift.
+
+        Call it immediately after :meth:`forward_numpy` on the same segment -- it reads that call's
+        composed matrix. Mutates ``aux_targets`` in place; a segment that composed nothing leaves
+        every target untouched.
+
+        Args:
+            aux_targets: Auxiliary targets as tensors, keyed as in :meth:`_route_grid_aux`.
+
+        """
+        composed = self._last_matrix
+        if composed is None or not aux_targets:
+            return
+
+        grid: Tensor | None = None
+        if "mask" in aux_targets:
+            mask = aux_targets["mask"]
+            acc_mask = composed.to(device=mask.device, dtype=torch.float32)
+            mtx_inv = inv3x3(acc_mask)
+            mtx_norm = normalize_matrix(mtx_inv, mask.shape[-2], mask.shape[-1]).to(dtype=torch.float32)
+            grid = F.affine_grid(
+                mtx_norm[:, :2, :],
+                [mask.shape[0], mask.shape[1], mask.shape[-2], mask.shape[-1]],
+                align_corners=True,
+            )
+        self._route_grid_aux(
+            aux_targets,
+            grid,
+            composed,
+            self.mask_interpolation,
+            self.keypoint_flip_index,
+            self.mask_fill,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2737,7 +3236,14 @@ class ProjectiveSegment(_BaseAffineSegment):
 
         # Transform auxiliary targets using the composed forward matrix
         if aux_targets:
-            self._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation)
+            self._route_grid_aux(
+                aux_targets,
+                grid,
+                acc_img,
+                self.mask_interpolation,
+                self.keypoint_flip_index,
+                self.mask_fill,
+            )
 
         if not _has_aux:
             return image
@@ -2765,6 +3271,7 @@ class ProjectiveSegment(_BaseAffineSegment):
             acc,
             self.interpolation or "bilinear",
             self.padding_mode or "zeros",
+            _fill_tensor(self.fill, image.shape[1], image.device, image.dtype),
         )
 
 
@@ -2801,13 +3308,19 @@ class AlbuProjectiveSegment(nn.Module):
         padding_mode: PaddingModeStr | None = None,
         execution: ExecutionStr = "cv2",
         mask_interpolation: MaskInterpolationStr = "nearest",
+        mask_fill: MaskFillValue = 0,
+        fill: tuple[float, ...] | None = None,
     ) -> None:
         """Initialize ``AlbuProjectiveSegment``."""
         super().__init__()
         self.execution: ExecutionStr = _validate_execution(execution)
+        #: Engine the most recent call actually used. Equal to ``execution`` unless that is
+        #: ``"auto"``, in which case it records what the routing rule chose. ``None`` before the
+        #: first call, and before any call that warps nothing.
+        self._last_execution: ExecutionStr | None = None
         # cv2 is only required for the default cv2 warp strategy; the torch
         # strategy warps with grid_sample and needs no OpenCV.
-        if _cv2 is None and self.execution == "cv2":
+        if _cv2 is None and self.execution in ("cv2", "auto"):
             raise ImportError(
                 "AlbuProjectiveSegment requires opencv-python because it uses cv2.warpPerspective under the hood."
             )
@@ -2816,9 +3329,12 @@ class AlbuProjectiveSegment(nn.Module):
         self.interpolation = interpolation or "bilinear"
         self.padding_mode = padding_mode or "zeros"
         self.mask_interpolation = mask_interpolation
+        self.mask_fill = mask_fill
         self._last_matrix: Tensor | None = None
         self._interp_flag: int = _CV2_INTERP.get(self.interpolation, 1)
         self._border_flag: int = _CV2_BORDER.get(self.padding_mode, 0)
+        self.fill = fill
+        self._tfm_tags = AlbuFusedAffineSegment._classify_transforms(transforms, adapter)
 
     @property
     def last_matrix(self) -> Tensor | None:
@@ -2871,7 +3387,8 @@ class AlbuProjectiveSegment(nn.Module):
         if batch_size == 0 or len(self.transforms) == 0:
             return (image, aux_targets) if _has_aux else image
 
-        if self.execution == "torch":
+        self._last_execution = _resolve_execution(self.execution, image.device)
+        if self._last_execution == "torch":
             image = self._warp_torch(image, composed_batch)
         else:
             image = self._warp_cv2(image, accs, any_active)
@@ -2895,7 +3412,7 @@ class AlbuProjectiveSegment(nn.Module):
             image: The warped image tensor, used to resolve the box/keypoint dtype.
 
         """
-        acc_img = composed_batch.to(device=image.device, dtype=image.dtype)
+        acc_img = composed_batch.to(device=image.device, dtype=_matrix_geometry_dtype(image.dtype))
         grid: Tensor | None = None
         if "mask" in aux_targets:
             mask = aux_targets["mask"]
@@ -2903,7 +3420,13 @@ class AlbuProjectiveSegment(nn.Module):
             mtx_inv = inv3x3(acc_mask)
             mtx_norm = normalize_matrix(mtx_inv, mask.shape[-2], mask.shape[-1]).to(dtype=torch.float32)
             grid = perspective_grid(mtx_norm, mask.shape[-2], mask.shape[-1])
-        AlbuFusedAffineSegment._route_grid_aux(aux_targets, grid, acc_img, self.mask_interpolation)
+        AlbuFusedAffineSegment._route_grid_aux(
+            aux_targets,
+            grid,
+            acc_img,
+            self.mask_interpolation,
+            mask_fill=self.mask_fill,
+        )
 
     def _compose_matrices(self, image: Tensor) -> tuple[list[MatrixArray], list[bool]]:
         """Compose per-sample forward homographies via Albumentations sampling.
@@ -2937,9 +3460,15 @@ class AlbuProjectiveSegment(nn.Module):
         shared_mtx: dict[int, MatrixArray] = {}
         for t_idx, tfm in enumerate(self.transforms):
             if bool(getattr(tfm, "same_on_batch", False)) and bool(np.any(active_masks[t_idx])):
-                params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
-                mtx_shared = self.adapter.build_matrix(tfm, params, height, width)
-                shared_mtx[t_idx] = mtx_shared[0].double().cpu().numpy()
+                shared_mtx[t_idx] = AlbuFusedAffineSegment._sample_matrix_numpy(
+                    self.adapter,
+                    tfm,
+                    self._tfm_tags[t_idx],
+                    num_channels,
+                    height,
+                    width,
+                    tensor_roundtrip=True,
+                )
 
         accs: list[MatrixArray] = []
         any_active: list[bool] = []
@@ -2956,10 +3485,17 @@ class AlbuProjectiveSegment(nn.Module):
                     active = True
                     acc = shared_mtx[t_idx] @ acc
                     continue
-                params = self.adapter.sample_params(tfm, (1, num_channels, height, width), torch.device("cpu"))
-                mtx_i = self.adapter.build_matrix(tfm, params, height, width)
+                mtx_i = AlbuFusedAffineSegment._sample_matrix_numpy(
+                    self.adapter,
+                    tfm,
+                    self._tfm_tags[t_idx],
+                    num_channels,
+                    height,
+                    width,
+                    tensor_roundtrip=True,
+                )
                 active = True
-                acc = mtx_i[0].double().cpu().numpy() @ acc
+                acc = mtx_i @ acc
             accs.append(acc)
             any_active.append(active)
         return accs, any_active
@@ -2995,7 +3531,7 @@ class AlbuProjectiveSegment(nn.Module):
             The warped ``(B, C, H, W)`` tensor on the input device and dtype.
 
         """
-        batch_size, _, height, width = image.shape
+        batch_size, num_channels, height, width = image.shape
         device = image.device
         dtype = image.dtype
         cv2_interp = self._interp_flag
@@ -3015,7 +3551,7 @@ class AlbuProjectiveSegment(nn.Module):
                 (width, height),  # dsize = (W, H)
                 flags=cv2_interp | _CV2_WARP_INVERSE_MAP,
                 borderMode=cv2_border,
-                borderValue=(0,),
+                borderValue=_cv2_border_value(self.fill, num_channels),
             )
             if warped.ndim == 2:
                 warped = warped[..., None]
@@ -3042,11 +3578,17 @@ class AlbuProjectiveSegment(nn.Module):
         """
         acc_dtype = _matrix_compose_dtype(image.dtype, image.device, len(self.transforms))
         acc = composed_batch.to(device=image.device, dtype=acc_dtype)
-        warped, _ = _grid_sample_perspective_batched(image, acc, self.interpolation, self.padding_mode)
+        warped, _ = _grid_sample_perspective_batched(
+            image,
+            acc,
+            self.interpolation,
+            self.padding_mode,
+            _fill_tensor(self.fill, image.shape[1], image.device, image.dtype),
+        )
         return warped
 
 
-class FusedColorSegment(nn.Module):
+class FusedColorSegment(GeneratorPicklingMixin, nn.Module):
     """Fused colour-space segment that composes POINTWISE_LINEAR transforms into one matrix multiply.
 
     Accumulates per-sample ``(B, 4, 4)`` homogeneous colour-space affine matrices for every transform in the
@@ -3078,6 +3620,7 @@ class FusedColorSegment(nn.Module):
         clip_policy: ClipPolicyStr = "final",
         *,
         compile_color: bool = False,
+        generator: torch.Generator | None = None,
     ) -> None:
         """Initialize ``FusedColorSegment``.
 
@@ -3090,6 +3633,8 @@ class FusedColorSegment(nn.Module):
                 ``"per_op_parity"`` clamps at each op whose intermediate could leave ``[0, 1]``,
                 matching a native per-op clamped chain.
             compile_color: Compile only the pure color matrix application on non-CPU devices.
+            generator: Caller-owned generator driving factor sampling and the per-transform
+                probability gates, or ``None`` for the global torch stream.
 
         """
         super().__init__()
@@ -3097,6 +3642,7 @@ class FusedColorSegment(nn.Module):
         self._adapter = adapter
         self.clip_output = clip_output
         self.randomness = randomness
+        self.generator = generator
         if clip_policy not in ("final", "per_op_parity"):
             msg = "unknown clip policy {!r}; expected 'final' or 'per_op_parity'"
             raise ValueError(msg.format(clip_policy))
@@ -3108,7 +3654,7 @@ class FusedColorSegment(nn.Module):
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Restore state; back-compat: add missing fields from older pickles."""
-        super().__setstate__(state)  # type: ignore[no-untyped-call]
+        super().__setstate__(state)
         if "_eye4" not in self._buffers:
             self.register_buffer("_eye4", torch.eye(4, dtype=torch.float32))
         # clip_output added in v0.7; default True preserves pre-existing behaviour.
@@ -3189,12 +3735,14 @@ class FusedColorSegment(nn.Module):
             prob = _transform_prob(tfm)
             same_on_batch = _shares_randomness_across_batch(self._adapter, tfm, self.randomness)
             if same_on_batch:
-                active_scalar = torch.rand((), device=device) < prob
+                active_scalar = _rand((), device=device, generator=self.generator) < prob
                 active = active_scalar.expand(batch_size)
             else:
-                active = torch.rand(batch_size, device=device) < prob
+                active = _rand(batch_size, device=device, generator=self.generator) < prob
 
-            params = _sample_transform_params(self._adapter, tfm, input_shape, device, self.randomness)
+            params = _sample_transform_params(
+                self._adapter, tfm, input_shape, device, self.randomness, generator=self.generator
+            )
             # Contrast-like ops take their midpoint from the per-image luminance of their input;
             # pass it so the fused matrix reproduces the native mean-relative contrast exactly.
             # Only thread `mean` when a mean-relative op actually needs it, so adapters whose
@@ -3424,6 +3972,7 @@ def _flush_color(
     randomness: RandomnessPolicy = RandomnessPolicy.BACKEND,
     clip_policy: ClipPolicyStr = "final",
     compile_color: bool = False,
+    generator: torch.Generator | None = None,
 ) -> None:
     """Flush a run of ``POINTWISE_LINEAR`` transforms into segments.
 
@@ -3438,6 +3987,7 @@ def _flush_color(
         randomness: Batch randomness policy passed to the color segment.
         clip_policy: Clamp policy forwarded to :class:`FusedColorSegment`.
         compile_color: Whether non-CPU color matrix applications may use ``torch.compile``.
+        generator: Caller-owned generator forwarded to :class:`FusedColorSegment`.
 
     """
     if not transforms:
@@ -3459,6 +4009,7 @@ def _flush_color(
             randomness=randomness,
             clip_policy=clip_policy,
             compile_color=compile_color,
+            generator=generator,
         )
     )
     # Intentionally clears the caller-owned run buffer.
@@ -3988,6 +4539,9 @@ class CropResizeSegment(nn.Module):
             Defaults to ``"zeros"`` when ``None``.
         mask_interpolation: Sampling mode for auxiliary masks. ``"nearest"``
             preserves hard labels; ``"bilinear"`` supports float soft masks.
+        fill: Validated constant written outside the source canvas, in the image's own
+            value range, or ``None`` for plain zero padding. Image only; the routed mask
+            keeps its zero padding.
 
     """
 
@@ -4001,6 +4555,8 @@ class CropResizeSegment(nn.Module):
         *,
         antialias: bool = False,
         mask_interpolation: MaskInterpolationStr = "nearest",
+        mask_fill: MaskFillValue = 0,
+        fill: tuple[float, ...] | None = None,
     ) -> None:
         """Initialize ``CropResizeSegment``."""
         super().__init__()
@@ -4015,6 +4571,14 @@ class CropResizeSegment(nn.Module):
         # default → output bit-identical to the plain single grid_sample warp.
         self._antialias: bool = antialias
         self.mask_interpolation = mask_interpolation
+        self.mask_fill = mask_fill
+        self.fill = fill
+        self._last_matrix: Tensor | None = None
+
+    @property
+    def last_matrix(self) -> Tensor | None:
+        """Return the deterministic letterbox matrix from the most recent call, if available."""
+        return self._last_matrix
 
     def forward(
         self,
@@ -4036,6 +4600,7 @@ class CropResizeSegment(nn.Module):
 
         """
         _has_aux = aux_targets is not None
+        self._last_matrix = None
         batch_size, num_channels, height, width = image.shape
         device = image.device
         dtype = image.dtype
@@ -4061,11 +4626,14 @@ class CropResizeSegment(nn.Module):
         mtx = self.adapter.build_matrix(self.transform, params, height, width)
         if mtx.shape[0] == 1 and batch_size > 1:
             mtx = mtx.expand(batch_size, -1, -1)
-        mtx = mtx.to(device=device, dtype=dtype)
+        mtx = mtx.to(device=device, dtype=_matrix_geometry_dtype(dtype))
 
-        # Default and mild-downscale calls skip the prefilter function entirely,
-        # preserving the original single-warp path bit-for-bit.
-        if self._antialias and _needs_antialias_prefilter(mtx):
+        if getattr(self.transform, "_coordinate_matrix_recoverable", False):
+            self._last_matrix = mtx.to(dtype=_matrix_public_dtype(dtype)).detach().clone()
+            _set_current_call_matrix(self._last_matrix)
+
+        # The helper leaves safe rows untouched and computes their scales only once.
+        if self._antialias:
             image = _maybe_antialias_prefilter(image, mtx, enabled=True)
 
         mtx_inv = inv3x3(mtx)
@@ -4076,13 +4644,16 @@ class CropResizeSegment(nn.Module):
             [batch_size, num_channels, target_h, target_w],
             align_corners=True,
         )
+        fill_value = _fill_tensor(self.fill, num_channels, device, dtype)
         out = F.grid_sample(
-            image,
+            image if fill_value is None else image - fill_value,
             grid,
             mode=self.interpolation or "bilinear",
             padding_mode=self.padding_mode or "zeros",
             align_corners=True,
         )
+        if fill_value is not None:
+            out = out + fill_value
 
         if aux_targets:
             from fuse_augmentations.targets import (
@@ -4090,12 +4661,13 @@ class CropResizeSegment(nn.Module):
                 transform_bbox_xyxy,
                 transform_keypoints,
                 transform_mask,
+                transform_rboxes,
             )
 
             for key in list(aux_targets.keys()):
                 val = aux_targets[key]
                 if key == "mask":
-                    aux_targets[key] = transform_mask(val, grid, mode=self.mask_interpolation)
+                    aux_targets[key] = transform_mask(val, grid, mode=self.mask_interpolation, fill=self.mask_fill)
                     continue
                 if key == "bbox_xyxy":
                     aux_targets[key] = transform_bbox_xyxy(val, mtx)
@@ -4105,6 +4677,9 @@ class CropResizeSegment(nn.Module):
                     continue
                 if key == "keypoints":
                     aux_targets[key] = transform_keypoints(val, mtx)
+                    continue
+                if key == "rboxes":
+                    aux_targets[key] = transform_rboxes(val, mtx)
 
         if not _has_aux:
             return out
@@ -4319,6 +4894,10 @@ def build_segments(
     antialias: bool = False,
     clip_policy: ClipPolicyStr = "final",
     mask_interpolation: MaskInterpolationStr = "nearest",
+    mask_fill: MaskFillValue = 0,
+    generator: torch.Generator | None = None,
+    fill: tuple[float, ...] | None = None,
+    keypoint_flip_index: tuple[int, ...] | None = None,
 ) -> list[object]:
     """Split a transform list into fused segments and passthrough transforms.
 
@@ -4381,11 +4960,23 @@ def build_segments(
         antialias: When ``True``, crop-resize segments prefilter the input before an
             aggressive downscale so the single warp does not alias. Off by default and
             a no-op unless the scale drops past the threshold — the output is unchanged.
+            Requires the optional kornia dependency at construction.
         clip_policy: Clamp policy forwarded to each :class:`FusedColorSegment`.
             ``"final"`` (default) fuses the color chain into one matmul and clamps once;
             ``"per_op_parity"`` clamps at each op that could leave ``[0, 1]``.
         mask_interpolation: Sampling mode for routed masks. ``"nearest"`` preserves
             the historical hard-label behavior; ``"bilinear"`` supports float soft masks.
+        mask_fill: Scalar border value for routed masks, independent of image ``fill``.
+        fill: Validated constant border value written outside the source canvas of every
+            resampling segment (image only; routed masks keep zero padding), or ``None``
+            for the historical zero border.
+        keypoint_flip_index: Validated keypoint pair permutation applied wherever a segment's
+            composed transform reverses orientation, or ``None`` to leave the keypoint axis
+            in input order.
+        generator: Caller-owned ``torch.Generator`` forwarded to every torch-side segment
+            that owns a draw (probability gates and direct parameter sampling), or ``None``
+            for the global torch stream. Only the direct-parameter adapter can honour it;
+            backend adapters are rejected at pipeline construction.
 
     Returns:
         Flat list where each element is a :class:`FusedAffineSegment`
@@ -4399,6 +4990,9 @@ def build_segments(
         unsupported ``POINTWISE_LINEAR`` transforms).
 
     """
+    if antialias and not _KORNIA_AVAILABLE:
+        raise ImportError("antialias=True requires the optional kornia dependency")
+
     fusible = {TransformCategory.GEOMETRIC_INTERP, TransformCategory.GEOMETRIC_EXACT}
     projective_cat = TransformCategory.PROJECTIVE
     pointwise_linear_cat = TransformCategory.POINTWISE_LINEAR
@@ -4437,11 +5031,23 @@ def build_segments(
                         padding_mode=geo_padding_mode,
                         execution=execution,
                         mask_interpolation=mask_interpolation,
+                        mask_fill=mask_fill,
+                        fill=fill,
+                        keypoint_flip_index=keypoint_flip_index,
                     ),
                     split_reason,
                 )
             else:
-                _append_segment(ExactAffineSegment(geo_transforms, adapter, randomness=randomness), split_reason)
+                _append_segment(
+                    ExactAffineSegment(
+                        geo_transforms,
+                        adapter,
+                        randomness=randomness,
+                        generator=generator,
+                        keypoint_flip_index=keypoint_flip_index,
+                    ),
+                    split_reason,
+                )
             return
 
         if has_interp or route_coords_via_grid:
@@ -4454,12 +5060,25 @@ def build_segments(
                     randomness=randomness,
                     compile_warp=compile_warp,
                     mask_interpolation=mask_interpolation,
+                    mask_fill=mask_fill,
+                    generator=generator,
+                    fill=fill,
+                    keypoint_flip_index=keypoint_flip_index,
                 ),
                 split_reason,
             )
             return
 
-        _append_segment(ExactAffineSegment(geo_transforms, adapter, randomness=randomness), split_reason)
+        _append_segment(
+            ExactAffineSegment(
+                geo_transforms,
+                adapter,
+                randomness=randomness,
+                generator=generator,
+                keypoint_flip_index=keypoint_flip_index,
+            ),
+            split_reason,
+        )
 
     def _flush_geo() -> None:
         if not current_geo:
@@ -4496,6 +5115,8 @@ def build_segments(
                     padding_mode=projective_padding_mode,
                     execution=execution,
                     mask_interpolation=mask_interpolation,
+                    mask_fill=mask_fill,
+                    fill=fill,
                 ),
                 split_reason,
             )
@@ -4509,6 +5130,8 @@ def build_segments(
                 randomness=randomness,
                 compile_warp=compile_warp,
                 mask_interpolation=mask_interpolation,
+                mask_fill=mask_fill,
+                fill=fill,
             ),
             split_reason,
         )
@@ -4539,13 +5162,13 @@ def build_segments(
         category = adapter.category(transform)
         if category in fusible:
             _flush_proj()  # flush any pending projective
-            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
             _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
             current_geo.append(transform)
             continue
         if category == projective_cat:
             _flush_geo()  # flush any pending affine
-            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
             _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
             current_proj.append(transform)
             continue
@@ -4560,7 +5183,7 @@ def build_segments(
             # run. Colour (matrix) and lookup (table) runs are mutually exclusive, so flush colour.
             _flush_geo()
             _flush_proj()
-            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
             current_lut.append(transform)
             continue
         if category == crop_resize_cat:
@@ -4574,9 +5197,29 @@ def build_segments(
             # resizes the image only and silently desyncs masks/boxes/keypoints, so a
             # CropResizeSegment (which the Albumentations adapter fully supports for
             # CROP_RESIZE_FIXED) is emitted instead to route aux to the output size.
+            #
+            # The image-only passthrough exists to keep the crop bit-exact: it runs
+            # Albumentations' own crop rather than our resampler. That trade only pays while
+            # the rest of the chain is bit-exact too. Under execution="torch" the image is
+            # already warped by grid_sample, so a native crop buys parity the chain has
+            # given up -- and still costs a device-to-host round trip for the whole batch
+            # per call, measured at 2.95x against the cv2 engine on an L4 at batch 64. So
+            # "torch" routes the crop through the segment as well.
+            #
+            # "auto" is deliberately left on the passthrough: it resolves per call, the
+            # device is unknown when segments are built, and its documented common case is
+            # host data on cv2, where the native crop is the right choice.
+            #
+            # This is a win at training batch sizes and a loss at small ones. Measured on
+            # MPS against the passthrough it runs 0.83x at batch 8, 1.17x at 32 and 1.39x
+            # at 64, so the crossover sits somewhere below 32. The remaining batch-8
+            # regression is the segment paying its own per-call matrix assembly: batching
+            # that chain's transfers (see _matrix_sample_device) moved batch 8 from 0.48x to
+            # 0.83x, which narrowed the regression without closing it.
             _flush_proj()
-            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+            _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
             _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
+            keep_crop_native = use_numpy and not route_crop_aux and execution != "torch"
             if per_transform_padding:
                 _flush_geo()
                 crop_padding_mode = _transform_border_mode(adapter, transform)
@@ -4587,7 +5230,7 @@ def build_segments(
                         stacklevel=3,
                     )
                     segments.append(_OpaqueBorderModeTransform(transform))
-                elif use_numpy and not route_crop_aux:
+                elif keep_crop_native:
                     segments.append(transform)
                 else:
                     segments.append(
@@ -4599,12 +5242,16 @@ def build_segments(
                             randomness=randomness,
                             antialias=antialias,
                             mask_interpolation=mask_interpolation,
+                            mask_fill=mask_fill,
+                            fill=fill,
                         )
                     )
                 continue
             if use_numpy:
                 _flush_geo()
-                if route_crop_aux:
+                if keep_crop_native:
+                    segments.append(transform)
+                else:
                     segments.append(
                         CropResizeSegment(
                             transform=transform,
@@ -4614,10 +5261,10 @@ def build_segments(
                             randomness=randomness,
                             antialias=antialias,
                             mask_interpolation=mask_interpolation,
+                            mask_fill=mask_fill,
+                            fill=fill,
                         )
                     )
-                else:
-                    segments.append(transform)
                 continue
             if current_geo:
                 segments.append(
@@ -4631,6 +5278,10 @@ def build_segments(
                         compile_warp=compile_warp,
                         antialias=antialias,
                         mask_interpolation=mask_interpolation,
+                        mask_fill=mask_fill,
+                        generator=generator,
+                        fill=fill,
+                        keypoint_flip_index=keypoint_flip_index,
                     )
                 )
                 current_geo.clear()
@@ -4644,6 +5295,8 @@ def build_segments(
                         randomness=randomness,
                         antialias=antialias,
                         mask_interpolation=mask_interpolation,
+                        mask_fill=mask_fill,
+                        fill=fill,
                     )
                 )
             continue
@@ -4662,7 +5315,9 @@ def build_segments(
                 and _can_commute_gaussian_blur(following_geo, adapter)
             ):
                 _flush_proj()
-                _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+                _flush_color(
+                    current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator
+                )
                 _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
                 blur_transforms = transforms[index:blur_end]
                 segments.append(
@@ -4676,6 +5331,7 @@ def build_segments(
                         padding_mode,
                         randomness,
                         mask_interpolation=mask_interpolation,
+                        mask_fill=mask_fill,
                     )
                 )
                 current_geo.clear()
@@ -4684,7 +5340,9 @@ def build_segments(
             if blur_end > index + 1:
                 _flush_geo()
                 _flush_proj()
-                _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+                _flush_color(
+                    current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator
+                )
                 _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
                 blur_transforms = transforms[index:blur_end]
                 segments.append(
@@ -4698,6 +5356,7 @@ def build_segments(
                         padding_mode,
                         randomness,
                         mask_interpolation=mask_interpolation,
+                        mask_fill=mask_fill,
                     )
                 )
                 consumed_linear_indices.update(range(index + 1, blur_end))
@@ -4705,13 +5364,13 @@ def build_segments(
         # SPATIAL_KERNEL / POINTWISE barrier (blur/noise, saturation/hue, equalize): flush all
         _flush_geo()
         _flush_proj()
-        _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+        _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
         _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
         segments.append(transform)
 
     _flush_geo()
     _flush_proj()
-    _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp)
+    _flush_color(current_color, adapter, segments, randomness, clip_policy, compile_warp, generator=generator)
     _flush_lut(current_lut, adapter, segments, randomness, compile_lut=compile_warp)
     return segments
 
@@ -4731,20 +5390,20 @@ def _flip_bbox_xyxy(
 ) -> Tensor:
     """Flip bounding boxes (batch_size, num_boxes, 4) xyxy format using direct coordinate arithmetic.
 
-    HFlip: ``coord_x' = width - 1 - coord_x``, swap x1/x2.
-    VFlip: ``coord_y' = height - 1 - coord_y``, swap y1/y2.
+    AABBs use pixel-edge extents, so HFlip is ``coord_x' = width - coord_x``
+    and VFlip is ``coord_y' = height - coord_y``; each swaps its extent ends.
 
     """
     box_x1, box_y1, box_x2, box_y2 = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
 
     if is_hflip:
-        new_x1 = (width - 1) - box_x2
-        new_x2 = (width - 1) - box_x1
+        new_x1 = width - box_x2
+        new_x2 = width - box_x1
         box_x1, box_x2 = new_x1, new_x2
 
     if is_vflip:
-        new_y1 = (height - 1) - box_y2
-        new_y2 = (height - 1) - box_y1
+        new_y1 = height - box_y2
+        new_y2 = height - box_y1
         box_y1, box_y2 = new_y1, new_y2
 
     flipped = torch.stack([box_x1, box_y1, box_x2, box_y2], dim=-1)
@@ -4752,6 +5411,61 @@ def _flip_bbox_xyxy(
     # active shape: (batch_size,) -> (batch_size, 1, 1) for broadcasting with (batch_size, num_boxes, 4)
     mask = active[:, None, None]
     return torch.where(mask, flipped, boxes)
+
+
+def _flip_rboxes(
+    rboxes: Tensor,
+    active: Tensor,
+    is_hflip: bool,
+    is_vflip: bool,
+    height: int,
+    width: int,
+) -> Tensor:
+    """Mirror ``(batch_size, num_boxes, 5)`` rotated boxes on the exact-flip path.
+
+    Centres reflect about the same axes the image flip uses (``(width - 1) / 2``,
+    ``(height - 1) / 2``) and the extents are unchanged, a mirror being an isometry. The
+    angle follows the direction vector: a horizontal mirror sends ``(cos t, sin t)`` to
+    ``(-cos t, sin t)``, the direction of ``pi - t``; a vertical one sends it to
+    ``(cos t, -sin t)``, the direction of ``-t``. Both flips together give ``t - pi``, a
+    half turn, under which a rectangle is invariant. These are the same values fitting the
+    mirrored corners yields, so this path and the fused-matrix path agree parameter for
+    parameter rather than only geometrically.
+
+    """
+    flipped = rboxes.clone()
+    if is_hflip:
+        flipped[..., 0] = (width - 1) - rboxes[..., 0]
+        flipped[..., 4] = math.pi - flipped[..., 4]
+    if is_vflip:
+        flipped[..., 1] = (height - 1) - rboxes[..., 1]
+        flipped[..., 4] = -flipped[..., 4]
+    return torch.where(active[:, None, None], flipped, rboxes)
+
+
+def _route_keypoints(keypoints: Tensor, mtx: Tensor, flip_index: tuple[int, ...] | None) -> Tensor:
+    """Transport keypoints by ``mtx`` and swap the caller's pairs where the map mirrors.
+
+    The swap is decided by the sign of the composed matrix's determinant, never by whether a
+    flip transform appears in the pipeline: after fusion the mirror is part of a larger
+    matrix and is no longer visible as a discrete op, and two mirrors compose back to a
+    rotation that must *not* swap.
+
+    """
+    from fuse_augmentations.targets import orientation_reversed, permute_keypoint_pairs, transform_keypoints
+
+    warped = transform_keypoints(keypoints, mtx)
+    if flip_index is None:
+        return warped
+    reversed_mask = orientation_reversed(mtx)
+    if reversed_mask.shape[0] != warped.shape[0]:
+        reversed_mask = reversed_mask.expand(warped.shape[0])
+    return permute_keypoint_pairs(warped, _flip_index_tensor(flip_index, keypoints.device), reversed_mask)
+
+
+def _flip_index_tensor(flip_index: tuple[int, ...], device: torch.device) -> Tensor:
+    """Return the caller's keypoint pair permutation as an index tensor on ``device``."""
+    return torch.tensor(flip_index, device=device, dtype=torch.int64)
 
 
 def _flip_keypoints(

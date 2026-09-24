@@ -167,12 +167,14 @@ def test_normalize_round_trip(height: int, width: int, angle_deg: float) -> None
     num_matrices=integers(min_value=2, max_value=10),
     seed=integers(min_value=0, max_value=10000),
 )
-@settings(max_examples=50)
+@settings(max_examples=50, deadline=None)
 def test_determinant_product(num_matrices: int, seed: int) -> None:
     """Determinant of a matrix chain equals the product of individual determinants for random well-conditioned inputs.
 
     This is a fundamental property of matrix determinants and validates that matmul3x3 preserves determinants
-    numerically across chains of arbitrary length.
+    numerically across chains of arbitrary length. The deadline is disabled: the first example on a cold interpreter
+    pays torch's one-time backend thread-pool init cost (seen as 301ms vs. 0.89ms on replay in CI), which Hypothesis's
+    per-example wall-clock deadline mistakes for a flaky test -- the property under test is numerical, not timing.
 
     """
     torch.manual_seed(seed)

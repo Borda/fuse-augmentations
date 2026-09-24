@@ -11,9 +11,7 @@ This distinction matters for training reproducibility, scientific comparisons, d
 
 !!! warning "Fusion fidelity is not native-backend equivalence"
 
-```
-A pipeline may use fewer resampling passes and still differ from its native backend because of coordinate conventions, interpolation, padding, clipping, transform order, or random-parameter sampling. Validate the complete pipeline you intend to use.
-```
+    A pipeline may use fewer resampling passes and still differ from its native backend because of coordinate conventions, interpolation, padding, clipping, transform order, or random-parameter sampling. Validate the complete pipeline you intend to use.
 
 ## What does fidelity mean?
 
@@ -160,6 +158,8 @@ Animated WebP does not play in macOS Preview or Finder Quick Look. Open the file
 
 Render the whole grid at once with `--all_cases`.
 
+The numeric companion to this page is [Measured tolerances](parity-tolerances.md): a generated table of the maximum absolute per-pixel difference between each backend's own compose and this package's, per operation, produced by `.github/scripts/measure_parity_tolerances.py` and gated in CI. This page says what is verified and where the boundaries are; that one says by how much the two renders currently differ.
+
 ## Native-backend parity
 
 The package recognizes transform objects from several backends, but recognition does not guarantee identical native execution semantics.
@@ -196,10 +196,10 @@ These values demonstrate the remaining convention difference, not behavioral equ
 
 Albumentations has two materially different execution contexts:
 
-- The CPU/OpenCV path accepts the supported image-only HWC NumPy convention and applies composed matrices through OpenCV.
+- The CPU/OpenCV path accepts the HWC NumPy convention and applies composed matrices through OpenCV. With `data_keys` declared it carries masks, boxes, keypoints and rotated boxes alongside the image, and returns the image in the dtype it was passed.
 - The torch path accepts batched tensors and applies a fused `grid_sample`, enabling device execution.
 
-The same sampled geometry does not make these rasterizers bit-identical. Border modes and bilinear sub-pixel weights can differ. Multi-target NumPy dictionaries are not a drop-in replacement for native `albumentations.Compose`.
+The same sampled geometry does not make these rasterizers bit-identical. Border modes and bilinear sub-pixel weights can differ. On a `uint8` array warped by a single operation the OpenCV path currently measures zero difference from native Albumentations — both call the same OpenCV kernel on the same integer array — while the float32 tensor path differs by a few millionths on the same operation; the [measured tolerances](parity-tolerances.md) record both. A multi-target NumPy call is still not a drop-in replacement for native `albumentations.Compose`: the label processors and the instance-survival policy are the caller's here.
 
 ## Reordering changes semantics
 
@@ -237,17 +237,15 @@ Images and targets are aligned only when every coordinate-changing operation is 
 
 !!! danger "Unknown spatial passthroughs can desynchronize targets"
 
-```
-With `data_keys`, an unknown TorchVision crop or resize can transform the image while leaving the mask, boxes, or keypoints unchanged. `RandomCrop`, `CenterCrop`, and `Resize` reproduced this failure. Treat an `Unknown ... SPATIAL_KERNEL` warning as unsafe in a multi-target pipeline until the transform is explicitly supported or refused.
-```
+    With `data_keys`, an unknown or unclassified spatial transform is refused before any segment executes, preventing the image/target divergence that an unsupported crop or resize could cause. Image-only passthroughs remain a separate native contract; inspect an `Unknown ... SPATIAL_KERNEL` warning before relying on that path.
 
 Additional target boundaries:
 
-- Masks use the same geometric grid, but mask padding is fixed to zero even when image padding uses another mode.
+- Masks use the same geometric grid, but their independent `mask_fill` (default `0`) applies even when image padding uses another mode.
 - Nearest-neighbor masks preserve hard labels and are intentionally detached from autograd.
 - Bilinear masks require floating-point inputs and retain a gradient path; they mix values at boundaries.
 - Boxes and keypoints are dense fixed-size tensors. The package does not clip boxes, filter invalid or low-visibility instances, propagate labels, or manage visibility flags.
-- Unknown coordinate-changing transforms are guarded by a finite class-name list, not by a complete structural capability check.
+- Unknown or unclassified coordinate-changing transforms are refused during target-aware preflight; the image-only passthrough path still has no structural guarantee about an unknown operation.
 
 For segmentation and detection, test the image and every target together. Do not validate the image path in isolation.
 

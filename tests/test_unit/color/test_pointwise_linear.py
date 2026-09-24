@@ -474,11 +474,18 @@ class TestColorMatrixFusionAlgebra:
     @given(
         seed=integers(min_value=0, max_value=9999),
     )
-    @settings(max_examples=100)
+    @settings(max_examples=100, deadline=None)
     def test_color_matrix_composition_law(self, seed: int) -> None:
         """A_fused = A2 * A1 satisfies M_fused = M2*M1 and b_fused = M2*b1 + b2.
 
         Direct verification of the composition formula from D.5 section 1.2.
+
+        The deadline is disabled for the reason `test_matrix.test_determinant_product` disables it: Hypothesis's
+        deadline measures wall-clock per example, so a stall on a shared CI runner is reported as
+        `Flaky: Falsified on the first call but did not on a subsequent one` -- which reads like real
+        non-determinism and is not one. The example that tripped it took 319.52ms against 0.72ms on replay, while the
+        work itself is four 4x4 matrix products: the whole 100-example run takes ~60ms locally, so no example is
+        anywhere near the 200ms default. The property under test is algebraic, not timing.
 
         """
         torch.manual_seed(seed)

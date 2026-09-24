@@ -20,9 +20,10 @@ COCO has no native oriented-box field, so for :attr:`Task.OBB` the four corners 
 stored as a 4-point ``segmentation`` polygon alongside the axis-aligned ``bbox``.
 
 For :attr:`Task.KEYPOINTS` both writers emit the landmark block in addition to the box: COCO gains
-per-category ``keypoints``/``skeleton`` plus per-annotation ``keypoints``/``num_keypoints``, and
-YOLO appends ``x y v`` triples to the detection row and declares ``kpt_shape`` plus a
-horizontal-flip mapping ``flip_idx`` in ``data.yaml``. An annotation that carries no landmarks — one
+a ``segmentation`` polygon (as for :attr:`Task.SEGMENTATION`) plus per-category ``keypoints``/``skeleton``
+and per-annotation ``keypoints``/``num_keypoints``, and YOLO appends ``x y v`` triples to the detection
+row and declares ``kpt_shape`` plus a horizontal-flip mapping ``flip_idx`` in ``data.yaml``. An
+annotation that carries no landmarks — one
 generated for a different task and then handed to a keypoint writer — is written as an all-zero,
 visibility-``0`` ("not labeled") table rather than a short record, so every row and record still
 matches the schema the task declares.
@@ -38,43 +39,36 @@ from typing import TYPE_CHECKING, Any
 
 from PIL import Image
 
-from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, ANIMAL_KEYPOINT_SKELETON
-from fuse_augmentations.data.config import OutputFormat, Task
-from fuse_augmentations.data.geometry import GeomShape
+from fuse_augmentations.data.config import ClassVocabulary, OutputFormat, Task
+from fuse_augmentations.data.geometry import PIXEL_CENTRE_OFFSET
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from numpy.typing import NDArray
 
+    from fuse_augmentations.data.config import ClassEntry
+    from fuse_augmentations.data.keypoints import KeypointSchema
     from fuse_augmentations.data.sample import Annotation, Sample
 
 _IMAGE_STEM = "img_{index:06d}"
 
-#: Values of :class:`~fuse_augmentations.data.geometry.GeomShape`, the shape family that has no
-#: keypoint table. ``class_names`` (see :func:`~fuse_augmentations.data.config.class_names`) spans the
-#: full shape vocabulary under ``ClassMode.SHAPE``/``ClassMode.SHAPE_COLOR`` naming, geometric shapes
-#: included, independently of the task -- so this set is what :meth:`CocoWriter._categories` uses to
-#: tell the categories that :meth:`SyntheticConfig._validate_vocabulary` rejects under
-#: :attr:`Task.KEYPOINTS` from the ones that task can actually draw.
-_GEOMETRIC_SHAPE_VALUES = frozenset(shape.value for shape in GeomShape)
 
+def _covers(entry: ClassEntry, schema: KeypointSchema) -> bool:
+    """Return whether ``schema`` can describe the landmarks of the class ``entry`` names.
 
-def _is_geometric_category(name: str) -> bool:
-    """Return whether a class name names a geometric shape, under any :class:`ClassMode` naming.
+    This used to be two functions that rebuilt structure out of a class *name*: one recreated the
+    full color-by-shape cross product to test membership, the other recovered the shape half with
+    ``name.partition("_")``. Both were correct only while no shape value and no color value
+    contained an underscore. :class:`~fuse_augmentations.data.config.ClassEntry` carries the shape
+    itself, so the test is now what it always meant: does this class name a shape of the run's own
+    keypoint family?
 
-    ``SHAPE`` names are a bare shape value (``"square"``); ``SHAPE_COLOR`` prefixes it with a color (``"red_square"``);
-    ``COLOR`` names are a bare color (``"red"``). Neither color nor shape values contain ``"_"``, so splitting on the
-    last one and checking the tail against :data:`_GEOMETRIC_SHAPE_VALUES` classifies all three namings.
-
-    Asking whether a category is *geometric* -- rather than whether it is an animal -- is what makes the ``COLOR``
-    naming come out right. A bare color is not an animal value either, so an animal-side test answers "no" for every
-    ``COLOR`` category and strips the keypoint schema off a pose dataset that is entirely made of animals. A color is
-    genuinely not a geometric shape, so it falls through here as keypoint-eligible, which it is: under ``COLOR`` the
-    category is drawn as whichever animal the run was restricted to.
+    A ``ClassMode.COLOR`` entry names no shape at all (``entry.shape is None``) yet is still drawn
+    as whichever family the run was restricted to, so it is always covered.
 
     """
-    return name.rsplit("_", 1)[-1] in _GEOMETRIC_SHAPE_VALUES
+    return entry.shape is None or str(entry.shape.value) in schema.shape_values
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -87,26 +81,54 @@ def _clamp_flat(flat: list[float], img_w: float, img_h: float) -> list[float]:
     return [_clamp(v, 0.0, img_w) if i % 2 == 0 else _clamp(v, 0.0, img_h) for i, v in enumerate(flat)]
 
 
-def _keypoint_triples(ann: Annotation, img_w: float, img_h: float) -> list[tuple[float, float, int]]:
+def _edge_flat(flat: list[float]) -> list[float]:
+    """Convert a flat pixel-centre coordinate list to the edge space an exported file uses.
+
+    An :class:`~fuse_augmentations.data.sample.Annotation` carries outlines, oriented-box corners
+    and landmarks in pixel-centre space, because that is the space the point transforms in
+    :mod:`~fuse_augmentations.targets` move them through. ``bbox_xyxy`` stays in edge space for the
+    same reason -- that is the space its own transform assumes. A COCO or YOLO file has no room for
+    two conventions: its ``segmentation`` ring, its landmarks and its ``bbox`` are read as one
+    coordinate system, and that system is edge space, so the point fields are converted back here,
+    at the file boundary, and nowhere else.
+
+    Args:
+        flat: ``[x1, y1, x2, y2, ...]`` coordinates in pixel-centre space.
+
+    Returns:
+        The same list shifted into edge space.
+
+    """
+    return [v + PIXEL_CENTRE_OFFSET for v in flat]
+
+
+def _keypoint_triples(
+    ann: Annotation, img_w: float, img_h: float, schema: KeypointSchema
+) -> list[tuple[float, float, int]]:
     """Return one ``(x, y, visibility)`` landmark triple per keypoint, clamped to the image.
 
     Args:
         ann: The annotation to read landmarks from.
         img_w: Image width in pixels.
         img_h: Image height in pixels.
+        schema: The active run's keypoint schema — its ``names`` order and count are what an
+            annotation without landmarks falls back to.
 
     Returns:
-        One triple per name in :data:`~fuse_augmentations.data.animals.ANIMAL_KEYPOINT_NAMES`, in that
-        order. A visible point is clamped to the image extent like every other coordinate field; an
-        invisible one keeps the zeroed placeholder coordinates rather than being clamped into a
-        spurious corner position. An annotation without landmarks yields the all-zero, "not
-        labeled" table — see the module docstring.
+        One triple per name in ``schema.names``, in that order. A visible point is converted from
+        the annotation's pixel-centre space to the file's edge space (see :func:`_edge_flat`) and
+        clamped to the image extent like every other coordinate field; an invisible one keeps the
+        zeroed placeholder coordinates, unshifted, rather than being clamped into a spurious corner
+        position — ``(0.0, 0.0)`` there is a flag value, not a location. An annotation without
+        landmarks yields the all-zero, "not labeled" table — see the module docstring.
 
     """
     if ann.keypoints is None:
-        return [(0.0, 0.0, 0)] * len(ANIMAL_KEYPOINT_NAMES)
+        return [(0.0, 0.0, 0)] * len(schema.names)
     return [
-        (_clamp(x, 0.0, img_w), _clamp(y, 0.0, img_h), visibility) if visibility > 0 else (0.0, 0.0, visibility)
+        (_clamp(x + PIXEL_CENTRE_OFFSET, 0.0, img_w), _clamp(y + PIXEL_CENTRE_OFFSET, 0.0, img_h), visibility)
+        if visibility > 0
+        else (0.0, 0.0, visibility)
         for x, y, visibility in ann.keypoints
     ]
 
@@ -121,21 +143,65 @@ class DatasetWriter(ABC):
 
     Args:
         task: The annotation task determining which fields are emitted.
-        class_names: Ordered class vocabulary; list index is the class id.
+        vocabulary: The classes to declare, in id order — each entry keeps the shape and color it
+            was derived from, which is how a writer tells which categories its keypoint schema
+            covers without parsing their names.
+        keypoint_schema: The keypoint family a :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS`
+            run draws from; required for that task and ignored for every other. It used to default
+            to the animal schema for backward compatibility, which meant a directly-constructed
+            symbol or letter pose writer silently emitted a 16-landmark animal header over 7- or
+            15-landmark rows. There is no safe default, so there is none.
 
     """
 
-    def __init__(self, task: Task, class_names: list[str]) -> None:
-        """Store the task and class vocabulary."""
+    def __init__(self, task: Task, vocabulary: ClassVocabulary, keypoint_schema: KeypointSchema | None = None) -> None:
+        """Store the task and vocabulary, rejecting a keypoints task with no schema to write.
+
+        Raises:
+            ValueError: If ``task`` is :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS` and no
+                ``keypoint_schema`` was given.
+
+        """
+        if task is Task.KEYPOINTS and keypoint_schema is None:
+            raise ValueError(
+                "Task.KEYPOINTS needs a keypoint_schema naming the family being written; pass the "
+                "one keypoint_schema_for(config.shapes) returns"
+            )
         self.task = task
-        self.class_names = class_names
+        self.vocabulary = vocabulary
+        self.class_names = vocabulary.names
+        self.keypoint_schema = keypoint_schema
+
+    @property
+    def schema(self) -> KeypointSchema:
+        """Return the keypoint schema, which the constructor guarantees for a keypoints task.
+
+        Every landmark-writing path reaches the schema through here rather than through the
+        optional attribute, so the "a keypoints writer always has one" invariant is stated once and
+        checked, instead of being asserted implicitly at four call sites.
+
+        Raises:
+            ValueError: If no schema was supplied — only reachable by mutating the attribute after
+                construction, since the constructor rejects a keypoints task without one.
+
+        """
+        if self.keypoint_schema is None:
+            raise ValueError("this writer has no keypoint schema; it was not built for Task.KEYPOINTS")
+        return self.keypoint_schema
 
     @abstractmethod
     def write(self, splits: dict[str, Iterable[Sample]], output_dir: str | Path) -> None:
         """Write all splits under ``output_dir``.
 
+        **Consume each split exactly once, in the order given.** The splits
+        :func:`~fuse_augmentations.data.generate_dataset` passes are lazy views over a *single*
+        shared sample stream, so iterating them out of order, twice, or partially does not merely
+        repeat work — it silently redistributes samples between splits or empties them. An
+        implementation that needs a split more than once must materialize it itself, accepting the
+        memory that costs.
+
         Args:
-            splits: Mapping of split name to its samples.
+            splits: Mapping of split name to its samples, in the order they must be consumed.
             output_dir: Destination root directory (created if absent).
 
         """
@@ -146,9 +212,11 @@ class CocoWriter(DatasetWriter):
 
     Examples:
         ```pycon
+        >>> from fuse_augmentations.data.config import ClassMode, Task, class_vocabulary
+        >>> from fuse_augmentations.data.primitives import PrimitiveShape
         >>> from fuse_augmentations.data.writers import CocoWriter
-        >>> from fuse_augmentations.data.config import Task
-        >>> CocoWriter(Task.DETECTION, ["square"]).task.value
+        >>> vocab = class_vocabulary(ClassMode.SHAPE, (PrimitiveShape.SQUARE,))
+        >>> CocoWriter(Task.DETECTION, vocab).task.value
         'detection'
 
         ```
@@ -171,42 +239,44 @@ class CocoWriter(DatasetWriter):
             "iscrowd": 0,
         }
         if self.task is Task.SEGMENTATION:
-            record["segmentation"] = [_clamp_flat(ann.polygon, img_w, img_h)]
+            record["segmentation"] = [_clamp_flat(_edge_flat(ann.polygon), img_w, img_h)]
         elif self.task is Task.OBB:
-            record["segmentation"] = [_clamp_flat(ann.obb_corners, img_w, img_h)]
+            record["segmentation"] = [_clamp_flat(_edge_flat(ann.obb_corners), img_w, img_h)]
         elif self.task is Task.KEYPOINTS:
-            triples = _keypoint_triples(ann, img_w, img_h)
+            record["segmentation"] = [_clamp_flat(_edge_flat(ann.polygon), img_w, img_h)]
+            triples = _keypoint_triples(ann, img_w, img_h, self.schema)
             record["keypoints"] = [value for triple in triples for value in triple]
             record["num_keypoints"] = sum(1 for *_, visibility in triples if visibility > 0)
         return record
 
     def _categories(self) -> list[dict[str, Any]]:
-        """Build the category records, adding the keypoint schema to every keypoint-eligible category.
+        """Build the category records, adding the keypoint schema to every category it covers.
 
-        Under ``ClassMode.SHAPE`` or ``ClassMode.SHAPE_COLOR`` naming, ``class_names`` (see
-        :func:`~fuse_augmentations.data.config.class_names`) spans the full shape vocabulary
-        (``ClassMode.COLOR`` naming spans only the bare colors instead), so under
-        :attr:`Task.KEYPOINTS` it still includes the geometric-shape categories that
-        :meth:`SyntheticConfig._validate_vocabulary` rejects as undrawable for that task. Decorating
-        those with a keypoint schema they can never produce a matching annotation for would misdescribe
-        the dataset to any COCO consumer, so the geometric categories (see
-        :func:`_is_geometric_category`) are the ones skipped.
+        Under ``ClassMode.SHAPE`` or ``ClassMode.SHAPE_COLOR`` naming the vocabulary can span shapes
+        outside the run's own keypoint family — every primitive-shape category always, plus every
+        category of another keypoint-bearing family when one is active. Decorating those with a
+        schema they can never produce a matching annotation for would misdescribe the dataset to any
+        COCO consumer, so only the categories :func:`_covers` accepts are decorated.
 
-        Excluding the geometric names, rather than including only the animal ones, is what keeps
-        :attr:`ClassMode.COLOR` correct: its categories are bare colors, which name no shape family at
-        all, yet every annotation under them carries a full landmark table.
+        A category's ``skeleton`` prefers
+        :meth:`~fuse_augmentations.data.keypoints.KeypointSchema.skeleton_for` — the letter family's
+        per-letter stroke edges — falling back to the family-wide ``skeleton`` for a bare-color
+        category or a family whose members all share one topology (animals, symbols).
 
         """
         categories: list[dict[str, Any]] = [
-            {"id": i + 1, "name": name, "supercategory": "none"} for i, name in enumerate(self.class_names)
+            {"id": entry.index + 1, "name": entry.name, "supercategory": "none"} for entry in self.vocabulary.entries
         ]
-        if self.task is Task.KEYPOINTS:
-            for category in categories:
-                if _is_geometric_category(category["name"]):
-                    continue
-                category["keypoints"] = list(ANIMAL_KEYPOINT_NAMES)
-                # COCO skeleton edges are 1-based indices into the category's own keypoint list.
-                category["skeleton"] = [[i + 1, j + 1] for i, j in ANIMAL_KEYPOINT_SKELETON]
+        if self.task is not Task.KEYPOINTS or self.keypoint_schema is None:
+            return categories
+        schema = self.keypoint_schema
+        for entry, category in zip(self.vocabulary.entries, categories, strict=True):
+            if not _covers(entry, schema):
+                continue
+            category["keypoints"] = list(schema.names)
+            skeleton = schema.skeleton if entry.shape is None else schema.skeleton_for(str(entry.shape.value))
+            # COCO skeleton edges are 1-based indices into the category's own keypoint list.
+            category["skeleton"] = [[i + 1, j + 1] for i, j in skeleton]
         return categories
 
     def _coco_doc(self, images: list[dict[str, Any]], annotations: list[dict[str, Any]]) -> dict[str, Any]:
@@ -259,10 +329,12 @@ class YoloWriter(DatasetWriter):
 
     Examples:
         ```pycon
+        >>> from fuse_augmentations.data.config import ClassMode, Task, class_vocabulary
+        >>> from fuse_augmentations.data.primitives import PrimitiveShape
         >>> from fuse_augmentations.data.writers import YoloWriter
-        >>> from fuse_augmentations.data.config import Task
-        >>> YoloWriter(Task.OBB, ["square"]).task.value
-        'oriented_bounding_boxes'
+        >>> vocab = class_vocabulary(ClassMode.SHAPE, (PrimitiveShape.SQUARE,))
+        >>> YoloWriter(Task.OBB, vocab).task.value
+        'obb'
 
         ```
 
@@ -279,8 +351,7 @@ class YoloWriter(DatasetWriter):
         y2 = _clamp(ann.bbox_xyxy[3], 0.0, height)
         return [(x1 + x2) / 2 / width, (y1 + y2) / 2 / height, (x2 - x1) / width, (y2 - y1) / height]
 
-    @staticmethod
-    def _keypoint_tokens(ann: Annotation, width: int, height: int) -> list[str]:
+    def _keypoint_tokens(self, ann: Annotation, width: int, height: int) -> list[str]:
         """Return the trailing ``x y v`` tokens of a pose row, three per landmark.
 
         Coordinates are normalized and clamped like every other coordinate; the visibility flag is an index into COCO's
@@ -288,7 +359,7 @@ class YoloWriter(DatasetWriter):
 
         """
         tokens: list[str] = []
-        for x, y, visibility in _keypoint_triples(ann, float(width), float(height)):
+        for x, y, visibility in _keypoint_triples(ann, float(width), float(height), self.schema):
             tokens += [f"{_clamp(x / width, 0.0, 1.0):.6f}", f"{_clamp(y / height, 0.0, 1.0):.6f}", str(visibility)]
         return tokens
 
@@ -298,7 +369,7 @@ class YoloWriter(DatasetWriter):
             # A pose row is a detection row plus the landmark block (Ultralytics' order).
             coords = self._box_coords(ann, width, height)
         else:
-            flat = ann.polygon if self.task is Task.SEGMENTATION else ann.obb_corners
+            flat = _edge_flat(ann.polygon if self.task is Task.SEGMENTATION else ann.obb_corners)
             coords = [v / width if i % 2 == 0 else v / height for i, v in enumerate(flat)]
         tokens = [str(ann.class_id), *(f"{_clamp(c, 0.0, 1.0):.6f}" for c in coords)]
         if self.task is Task.KEYPOINTS:
@@ -330,14 +401,11 @@ class YoloWriter(DatasetWriter):
         if self.task is Task.KEYPOINTS:
             # Ultralytics carries one dataset-wide (num_keypoints, dims) shape, hence one shared
             # landmark schema for every class; dims is 3 because each point ships its visibility.
-            lines.append(f"kpt_shape: [{len(ANIMAL_KEYPOINT_NAMES)}, 3]")
-            # ``flip_idx`` names the landmark each one becomes under a horizontal flip. This
-            # schema's ``left``/``right`` are *viewer-relative* — ``left`` is the limb nearer the
-            # viewer, not the animal's anatomical left — so mirroring a side profile never turns a
-            # near limb into a far one: every landmark maps to itself. The identity permutation is
-            # therefore the correct mapping, and writing it out is what says "flip is a no-op here"
-            # rather than leaving a reader to guess at a key that is simply absent.
-            lines.append(f"flip_idx: {list(range(len(ANIMAL_KEYPOINT_NAMES)))}")
+            lines.append(f"kpt_shape: [{self.schema.kpt_shape}, 3]")
+            # ``flip_idx`` names the landmark each one becomes under a horizontal flip — see
+            # KeypointSchema.flip_idx for what makes each family's mapping (identity for animals,
+            # a genuine left/right swap for symbols) correct.
+            lines.append(f"flip_idx: {list(self.schema.flip_idx)}")
         lines.append("names:")
         lines.extend(f"  {i}: {name}" for i, name in enumerate(self.class_names))
         return "\n".join(lines) + "\n"
@@ -358,27 +426,77 @@ class YoloWriter(DatasetWriter):
         (output_dir / "data.yaml").write_text(self._data_yaml(splits), encoding="utf-8")
 
 
-def get_writer(fmt: OutputFormat, task: Task, class_names: list[str]) -> DatasetWriter:
-    """Return the writer for an output format.
+#: Writer class per output format. A dispatch table rather than an if/else so a third party can add
+#: a format (Pascal VOC, CVAT, a house schema) without forking this module — see
+#: :func:`register_writer`. The two built-ins register themselves below.
+_WRITERS: dict[str, type[DatasetWriter]] = {}
+
+
+def register_writer(fmt: OutputFormat | str, writer: type[DatasetWriter]) -> None:
+    """Register the writer class serving one output format.
 
     Args:
-        fmt: Target :class:`~fuse_augmentations.data.config.OutputFormat`.
+        fmt: The format key. An :class:`~fuse_augmentations.data.config.OutputFormat` member for the
+            built-ins, or any string for a custom format — :func:`get_writer` accepts both, so a
+            caller can pass ``fmt="voc"`` straight to
+            :func:`~fuse_augmentations.data.generate_dataset` once registered.
+        writer: A concrete :class:`DatasetWriter` subclass.
+
+    Raises:
+        TypeError: If ``writer`` is not a :class:`DatasetWriter` subclass.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.writers import YoloWriter, register_writer
+        >>> class UltralyticsWriter(YoloWriter):
+        ...     pass
+        >>> register_writer("ultralytics", UltralyticsWriter)
+
+        ```
+
+    """
+    if not (isinstance(writer, type) and issubclass(writer, DatasetWriter)):
+        raise TypeError(f"writer must be a DatasetWriter subclass, got {writer!r}")
+    _WRITERS[fmt.value if isinstance(fmt, OutputFormat) else str(fmt)] = writer
+
+
+register_writer(OutputFormat.COCO, CocoWriter)
+register_writer(OutputFormat.YOLO, YoloWriter)
+
+
+def get_writer(
+    fmt: OutputFormat | str, task: Task, vocabulary: ClassVocabulary, keypoint_schema: KeypointSchema | None = None
+) -> DatasetWriter:
+    """Return the writer registered for an output format.
+
+    Args:
+        fmt: Target format — an :class:`~fuse_augmentations.data.config.OutputFormat` member, its
+            string value, or any key passed to :func:`register_writer`.
         task: Annotation task to emit.
-        class_names: Ordered class vocabulary.
+        vocabulary: The classes to declare, in id order; see :class:`DatasetWriter`.
+        keypoint_schema: The keypoint family a :attr:`~fuse_augmentations.data.config.Task.KEYPOINTS`
+            run draws from; see :class:`DatasetWriter`. Required for that task, ignored otherwise.
 
     Returns:
         A concrete :class:`DatasetWriter`.
 
+    Raises:
+        ValueError: If no writer is registered for ``fmt``.
+
     Examples:
         ```pycon
-        >>> from fuse_augmentations.data.config import OutputFormat, Task
+        >>> from fuse_augmentations.data.config import ClassMode, OutputFormat, Task, class_vocabulary
+        >>> from fuse_augmentations.data.primitives import PrimitiveShape
         >>> from fuse_augmentations.data.writers import get_writer
-        >>> type(get_writer(OutputFormat.YOLO, Task.DETECTION, ["square"])).__name__
+        >>> vocab = class_vocabulary(ClassMode.SHAPE, (PrimitiveShape.SQUARE,))
+        >>> type(get_writer(OutputFormat.YOLO, Task.DETECTION, vocab)).__name__
         'YoloWriter'
 
         ```
 
     """
-    if fmt is OutputFormat.COCO:
-        return CocoWriter(task, class_names)
-    return YoloWriter(task, class_names)
+    key = fmt.value if isinstance(fmt, OutputFormat) else str(fmt)
+    writer = _WRITERS.get(key)
+    if writer is None:
+        raise ValueError(f"no writer registered for format {key!r}; known formats: {sorted(_WRITERS)}")
+    return writer(task, vocabulary, keypoint_schema)

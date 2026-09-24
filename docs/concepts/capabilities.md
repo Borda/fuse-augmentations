@@ -17,7 +17,7 @@ The standard pipeline contract is:
 - auxiliary targets: positional tensors declared with `data_keys`;
 - supported coordinate systems: pixel-space boxes and keypoints.
 
-An image-only Albumentations pipeline also has a native-style `pipe(image=<HWC ndarray>) -> {"image": ndarray}` path. That path does not accept auxiliary keys. Use tensor inputs with `data_keys` for masks, boxes, or keypoints.
+An Albumentations pipeline also has a native-style `pipe(image=<HWC ndarray>) -> {"image": ndarray}` path. Declared `data_keys` extend it to masks, boxes, keypoints and rotated boxes passed as arrays; without them the path is image-only and rejects auxiliary keys.
 
 The package is therefore Compose-like for supported tensor pipelines, not a universal behavioral replacement for each backend's native container. PIL input, arbitrary tv-tensors, arbitrary backend dictionaries, and every native Compose option are not part of the general contract.
 
@@ -46,12 +46,8 @@ An optional backend that is not installed reports an empty capability set for th
 from fuse_augmentations import Compose
 
 print(sorted(Compose.supported_ops("torchvision")))
-print(
-    {
-        backend: len(operations)
-        for backend, operations in sorted(Compose.capability_matrix().items())
-    }
-)
+matrix = {k: len(v) for k, v in sorted(Compose.capability_matrix().items())}
+print(matrix)
 ```
 
 <details>
@@ -133,7 +129,7 @@ Unregistered transforms from a recognized backend are normally classified as bar
 | Nonlinear pointwise, such as saturation/hue                                                              | Native passthrough; geometric fusion stops at the operation unless reordering moves it                                                                                                                                                                                             |
 | Spatial kernel other than Gaussian blur, such as Kornia sharpness                                        | Native passthrough and a segment boundary                                                                                                                                                                                                                                          |
 | Gaussian blur                                                                                            | Folds with adjacent Gaussian blurs and, when the following affine does not downscale, commutes past it so that affine collapses to one warp; otherwise native passthrough and a segment boundary. See [How fusion works](how-fusion-works.md#segmentation-comes-before-execution). |
-| Named coordinate-changing distortion on the finite refusal list, such as elastic/grid/optical distortion | Image-only passthrough; raises when auxiliary targets would become misaligned                                                                                                                                                                                                      |
+| Named coordinate-changing distortion on the finite refusal list, such as elastic/grid/optical distortion | Image-only passthrough; raises before execution when auxiliary targets are present                                                                                                                                                                                                 |
 | Unsupported `ColorJitter` saturation/hue                                                                 | The pending color run falls back to native passthrough rather than dropping nonlinear components                                                                                                                                                                                   |
 
 Passthrough means “call the native transform on the package's supported data representation,” not bit-for-bit transparency for every native workflow.
@@ -172,7 +168,7 @@ Supported `data_keys` are:
 | `bbox_xywh` | `(B, N, 4)`    | Converted through xyxy internally                                   |
 | `keypoints` | `(B, N, 2)`    | Pixel-space homogeneous transform                                   |
 
-Known kernel and pointwise passthrough operations leave auxiliary geometry unchanged. A passthrough raises only when its exact class name appears on the current coordinate-changing refusal list. Unknown spatial transforms are not structurally detected and may still run on the image only; treat every `Unknown ... SPATIAL_KERNEL barrier` warning as unsafe with `data_keys`.
+Known kernel and pointwise passthrough operations leave auxiliary geometry unchanged. A known coordinate-changing passthrough raises before execution when auxiliary targets are present, and unknown or unclassified spatial transforms fail closed under the same target-aware preflight. Image-only calls may still run native passthroughs; inspect every `Unknown ... SPATIAL_KERNEL barrier` warning.
 
 ## Experimental extension point
 

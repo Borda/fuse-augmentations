@@ -369,7 +369,9 @@ class _FlipAdapter:
 
     def build_matrix(self, transform, params, height, width):
         batch_size = int(params["_batch_size"].item())
-        return torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1)
+        if 3 in self.exact_flip_dims(transform):
+            return hflip_matrix(width=width, batch_size=batch_size, device=torch.device("cpu"), dtype=torch.float32)
+        return vflip_matrix(height=height, batch_size=batch_size, device=torch.device("cpu"), dtype=torch.float32)
 
     def call_nonfused(self, transform, image, **kwargs):
         return image
@@ -490,7 +492,7 @@ class TestExactAffineSegmentPerSampleMask:
 
 
 class TestExactAffineSegmentLastMatrix:
-    """Verify ExactAffineSegment.last_matrix is always None."""
+    """Verify ExactAffineSegment publishes actual exact-call matrices."""
 
     def test_last_matrix_none_before_forward(self):
         """last_matrix is None before any forward pass."""
@@ -499,13 +501,15 @@ class TestExactAffineSegmentLastMatrix:
         seg = ExactAffineSegment([transform], adapter)
         assert seg.last_matrix is None
 
-    def test_last_matrix_none_after_forward(self):
-        """last_matrix remains None after forward (ExactAffineSegment has no matrix)."""
+    def test_last_matrix_matches_the_lossless_flip(self):
+        """The published HFlip matrix follows the same image-centre convention as pixels."""
         adapter = _FlipAdapter()
         transform = _HFlipTransform(prob=1.0)
         seg = ExactAffineSegment([transform], adapter)
         seg(torch.rand(2, 3, 8, 8))
-        assert seg.last_matrix is None
+
+        expected = hflip_matrix(width=8, batch_size=2, device=torch.device("cpu"), dtype=torch.float32)
+        torch.testing.assert_close(seg.last_matrix, expected)
 
 
 class TestBuildSegmentsExactOnly:

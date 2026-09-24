@@ -31,6 +31,7 @@ from fuse_augmentations.types import (
     ComposePaddingModeStr,
     ExecutionStr,
     InterpolationStr,
+    MaskFillValue,
     MaskInterpolationStr,
     RandomnessPolicy,
     ReorderPolicy,
@@ -91,6 +92,9 @@ def _build_mixed_segments(
     antialias: bool = False,
     clip_policy: ClipPolicyStr = "final",
     mask_interpolation: MaskInterpolationStr = "nearest",
+    mask_fill: MaskFillValue = 0,
+    fill: tuple[float, ...] | None = None,
+    keypoint_flip_index: tuple[int, ...] | None = None,
 ) -> tuple[TransformAdapter, list[object], dict[int, TransformAdapter]]:
     """Build segments for a mixed-backend pipeline.
 
@@ -122,6 +126,12 @@ def _build_mixed_segments(
         clip_policy: Forwarded to ``build_segments`` — color-segment clamp policy
             (``"final"`` default, ``"per_op_parity"`` opt-in).
         mask_interpolation: Forwarded to ``build_segments`` for auxiliary masks.
+        mask_fill: Scalar border value forwarded to routed auxiliary masks.
+        fill: Forwarded to ``build_segments`` — constant image border consumed by the
+            warp calls of every backend group.
+        keypoint_flip_index: Forwarded to ``build_segments`` — keypoint pair permutation
+            applied per group wherever that group's composed matrix reverses orientation,
+            the same determinant-sign rule as the single-backend path.
 
     Returns:
         A 3-tuple ``(primary_adapter, segments, transform_adapters)`` where:
@@ -182,6 +192,9 @@ def _build_mixed_segments(
             antialias=antialias,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
+            fill=fill,
+            keypoint_flip_index=keypoint_flip_index,
         )
         all_segments.extend(group_segments)
 

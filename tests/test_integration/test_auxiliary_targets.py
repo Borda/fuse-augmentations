@@ -10,7 +10,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from fuse_augmentations._compat import _KORNIA_AVAILABLE
+from fuse_augmentations._compat import _ALBUMENTATIONS_AVAILABLE, _KORNIA_AVAILABLE
 from fuse_augmentations.compose import FusedCompose as Compose
 from fuse_augmentations.targets import transform_mask
 
@@ -18,6 +18,28 @@ if _KORNIA_AVAILABLE:
     import kornia.augmentation as kornia_aug
 
 pytestmark = pytest.mark.integration
+
+
+def _half_grid_sample_works_on_cpu() -> bool:
+    """Return whether this torch build can run ``grid_sample`` on a half-precision CPU tensor.
+
+    Probed rather than compared against a version number: support arrived in a minor release, and the
+    supported floor (torch 2.2) raises ``RuntimeError: grid_sampler_2d_cpu not implemented for Half``.
+
+    """
+    try:
+        F.grid_sample(
+            torch.zeros(1, 1, 2, 2, dtype=torch.float16),
+            torch.zeros(1, 2, 2, 2, dtype=torch.float16),
+            align_corners=False,
+        )
+    except RuntimeError:
+        return False
+    return True
+
+
+#: Whether the half-precision image path can be exercised at all on this build.
+_HALF_GRID_SAMPLE_ON_CPU = _half_grid_sample_works_on_cpu()
 
 BATCH, CHANNELS, HEIGHT, WIDTH = 2, 3, 32, 32
 
@@ -103,10 +125,10 @@ class TestBboxIdentity:
 
 @pytest.mark.skipif(not _KORNIA_AVAILABLE, reason="missing kornia")
 class TestBboxHFlip:
-    """#35: HFlip mirrors bbox x-coordinates: new_x = W - 1 - old_x."""
+    """#35: HFlip mirrors bbox pixel-edge x-coordinates: new_x = W - old_x."""
 
     def test_bbox_x_mirrored_after_hflip(self):
-        """After HFlip(p=1), bbox x-coords mirror: x_min' = W-1-x_max, x_max' = W-1-x_min."""
+        """After HFlip(p=1), bbox edges mirror: x_min' = W-x_max, x_max' = W-x_min."""
         pipe = Compose(
             [kornia_aug.RandomHorizontalFlip(p=1.0)],
             data_keys=["input", "bbox_xyxy"],
@@ -116,8 +138,8 @@ class TestBboxHFlip:
         boxes = torch.tensor([[[x1, y1, x2, y2]]] * BATCH)
         _, out_boxes = pipe(img, boxes)
 
-        expected_x1 = WIDTH - 1 - x2
-        expected_x2 = WIDTH - 1 - x1
+        expected_x1 = WIDTH - x2
+        expected_x2 = WIDTH - x1
         expected = torch.tensor([[[expected_x1, y1, expected_x2, y2]]] * BATCH)
         torch.testing.assert_close(out_boxes, expected, atol=1e-4, rtol=1e-4)
 
@@ -226,8 +248,8 @@ class TestBatchConsistency:
 
         out_img, out_boxes = pipe(img, boxes)
 
-        expected_x1 = WIDTH - 1 - x2
-        expected_x2 = WIDTH - 1 - x1
+        expected_x1 = WIDTH - x2
+        expected_x2 = WIDTH - x1
         for batch_idx in range(batch_size):
             # Image must be flipped
             expected_img_i = img[batch_idx].flip(dims=[-1])
@@ -336,3 +358,63 @@ class TestTransformMask:
 
         out = transform_mask(mask, grid)
         assert out.dtype == torch.float32, f"Expected float32 output dtype, got {out.dtype}"
+
+
+@pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
+class TestAuxGeometryDtype:
+    """Auxiliary coordinate routing keeps full geometric precision regardless of image dtype.
+
+    The composed matrix used to place boxes, keypoints and rotated boxes used to inherit the
+    image's own dtype. That is fine while images are float32, and quietly wrong the moment they are
+    not: a half-precision image rounds the affine coefficients that position its own targets, and an
+    integer image would truncate them to whole pixels. Nothing raises -- every shape still lines up
+    -- so these tests pin the decoupling rather than the symptom.
+
+    """
+
+    @staticmethod
+    def _rotation_pipeline() -> Compose:
+        """Build a multi-target pipeline whose matrix has deliberately non-representable entries.
+
+        A flip or a 90-degree rotation would not catch anything: their matrices are integer-valued
+        and survive any dtype exactly. The fractional angle and scale here produce coefficients that
+        float16 cannot hold. ``execution="torch"`` because ``cv2.warpAffine`` rejects a float16
+        image outright, and the point of the test is the coordinate routing, not the image warp.
+
+        """
+        import albumentations as albu
+
+        return Compose(
+            [albu.Affine(rotate=(17.0, 17.0), scale=(1.13, 1.13), p=1.0)],
+            data_keys=["input", "bbox_xyxy"],
+            execution="torch",
+        )
+
+    @pytest.mark.skipif(not _HALF_GRID_SAMPLE_ON_CPU, reason="torch build has no half-precision CPU grid_sample")
+    def test_half_precision_image_does_not_round_box_geometry(self):
+        """A float16 image routes its boxes through the same geometry a float32 image would.
+
+        A half-precision training pipeline is the realistic way to hit this: the image dtype is
+        chosen for memory, and there is no reason the box coordinates that ride along with it should
+        inherit that choice.
+
+        """
+        boxes = torch.tensor([[[5.0, 10.0, 20.0, 25.0]]])
+        pipe = self._rotation_pipeline()
+
+        _, boxes_f32 = pipe(torch.rand(1, CHANNELS, HEIGHT, WIDTH), boxes)
+        _, boxes_f16 = pipe(torch.rand(1, CHANNELS, HEIGHT, WIDTH, dtype=torch.float16), boxes)
+
+        assert boxes_f16.dtype == torch.float32
+        torch.testing.assert_close(boxes_f16, boxes_f32)
+
+    def test_geometry_dtype_maps_low_precision_to_float32(self):
+        """The geometry dtype keeps float64 and sends every narrower dtype to float32."""
+        from fuse_augmentations.affine.segment import _matrix_geometry_dtype
+
+        assert _matrix_geometry_dtype(torch.float64) is torch.float64
+        assert _matrix_geometry_dtype(torch.float32) is torch.float32
+        assert _matrix_geometry_dtype(torch.float16) is torch.float32
+        assert _matrix_geometry_dtype(torch.bfloat16) is torch.float32
+        assert _matrix_geometry_dtype(torch.uint8) is torch.float32
+        assert _matrix_geometry_dtype(torch.int64) is torch.float32

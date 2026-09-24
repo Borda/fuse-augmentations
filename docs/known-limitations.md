@@ -7,44 +7,32 @@ description: Verified compatibility, target-safety, numerical-parity, randomness
 
 `fuse-augmentations` is a tensor-first matrix-fusion engine. It has a real, tested advantage: compatible geometric transforms in one segment can share a single interpolation pass. It is not a behaviorally identical replacement for every Kornia, TorchVision, or Albumentations pipeline.
 
-!!! danger "Auxiliary targets can silently desynchronize"
+!!! danger "Auxiliary targets require a supported contract"
 
-```
-When `data_keys` contains a mask, boxes, or keypoints, treat any warning of
-the form `Unknown ... transform ... treating as SPATIAL_KERNEL barrier` as
-unsafe until you have proved that the transform leaves pixel coordinates
-unchanged.
+    When `data_keys` contains a mask, boxes, or keypoints, an unknown or unclassified spatial transform is refused before any segment executes. Treat any warning of the form `Unknown ... transform ... treating as SPATIAL_KERNEL barrier` as a review point for image-only calls.
 
-Common TorchVision transforms such as `RandomCrop`, `CenterCrop`, and
-`Resize` are not registered target-aware operations. They can change the
-image while the mask remains at its original shape. The runtime refusal
-list catches several named distortions, but it is not a complete detector
-for every spatial transform or custom callable.
+    Common TorchVision transforms such as `RandomCrop`, `CenterCrop`, and `Resize` are not registered target-aware operations. A target-aware call refuses them before they can change only the image; the image-only path may still invoke a native passthrough.
 
-Use only explicitly supported geometric transforms in a multi-target
-pipeline. Otherwise, apply the operation through a native target-aware
-pipeline or transform every target yourself. See
-[Auxiliary targets](guides/auxiliary-targets.md).
-```
+    Use only explicitly supported geometric transforms in a multi-target pipeline. Otherwise, apply the operation through a native target-aware pipeline or transform every target yourself. See [Auxiliary targets](guides/auxiliary-targets.md).
 
 ## Compatibility at a glance
 
-| Question                                          | Honest answer                                                                                                                                                         |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Is `Compose` a drop-in native compose class?      | No. It accepts transform objects from supported backends through its own tensor-first contract.                                                                       |
-| What is the normal image format?                  | A floating PyTorch tensor shaped `(B, C, H, W)`. Fused geometry does not generally accept PIL images or unbatched `(C, H, W)` tensors.                                |
-| Is Albumentations NumPy input supported?          | An image-only Albumentations pipeline has a native `image=HWC_array` path. NumPy auxiliary dictionaries such as `image=..., mask=...` are not supported by that path. |
-| Are all upstream transforms fused?                | No. Built-in adapters use finite registries. Unknown transforms become passthrough barriers or are refused.                                                           |
-| Does fused output equal native output?            | Not universally. Sampling, coordinate conventions, interpolation, padding, clipping, and operation order can differ.                                                  |
-| Does `transform_matrix` cover the whole pipeline? | No. It is the last matrix-producing affine or projective segment from the most recent call.                                                                           |
-| Is every GPU or MPS configuration faster?         | No. Speed depends on device, batch, image size, operation mix, warmup, and passthrough transfers. Benchmark your exact pipeline.                                      |
+| Question                                          | Honest answer                                                                                                                                                                                      |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Is `Compose` a drop-in native compose class?      | No. It accepts transform objects from supported backends through its own tensor-first contract.                                                                                                    |
+| What is the normal image format?                  | A floating PyTorch tensor shaped `(B, C, H, W)`. Fused geometry does not generally accept PIL images or unbatched `(C, H, W)` tensors.                                                             |
+| Is Albumentations NumPy input supported?          | Yes. `image=HWC_array` works on its own, and with `data_keys` declared the same call carries masks, boxes, keypoints and rotated boxes. Albumentations' label processors are still not replicated. |
+| Are all upstream transforms fused?                | No. Built-in adapters use finite registries. Unknown transforms become passthrough barriers or are refused.                                                                                        |
+| Does fused output equal native output?            | Not universally. Sampling, coordinate conventions, interpolation, padding, clipping, and operation order can differ.                                                                               |
+| Does `transform_matrix` cover the whole pipeline? | No. It is the actual matrix from the most recent call's last supported affine/projective, exact D4, or direct deterministic letterbox segment.                                                     |
+| Is every GPU or MPS configuration faster?         | No. Speed depends on device, batch, image size, operation mix, warmup, and passthrough transfers. Benchmark your exact pipeline.                                                                   |
 
 ## Input and backend limits
 
 The main fused path expects BCHW tensors. Native compose classes accept broader families of inputs and metadata that this package does not reproduce:
 
 - TorchVision pipelines may accept PIL images, unbatched tensors, TVTensors, and nested sample structures. Fused geometric segments require BCHW tensors.
-- Albumentations' image-only HWC NumPy keyword path is separate from the tensor `data_keys` path. It does not provide native multi-target dictionary parity.
+- Albumentations' HWC NumPy keyword path accepts auxiliary targets only when the pipeline declares `data_keys`, and only for chains whose every segment publishes a matrix; a crop, an exact affine or an opaque passthrough sends the call back through tensors. Either way the targets are this package's contract, not Albumentations' label-processor semantics.
 - Kornia's `AugmentationSequential` has container behavior and metadata contracts beyond the transform-object compatibility provided here.
 - Multi-backend pipelines are supported for BCHW tensors, but a backend change creates a segment boundary. Transforms from different backends do not share one fused matrix.
 
@@ -54,31 +42,44 @@ TorchVision `RandomRotation(expand=True)` is explicitly unsupported. The fused T
 
 ### Safe only within the declared contract
 
-| Pipeline element                                          | Mask/box/keypoint behavior                               | Safety decision                                                               |
-| --------------------------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| Registered affine/projective transform                    | Routes supported targets with the segment grid or matrix | Supported, subject to the numerical limits below                              |
-| Registered exact flip or discrete operation               | Routes supported targets through exact or matrix logic   | Supported for the registered operation                                        |
-| Registered `RandomResizedCrop`                            | Routes targets to the target spatial size                | Supported; output size changes                                                |
-| Known pointwise or kernel passthrough                     | Leaves coordinate targets unchanged                      | Safe only when the operation truly preserves coordinates                      |
-| Named coordinate-changing passthrough on the refusal list | Raises rather than silently misaligning targets          | Safe refusal, not target support                                              |
-| Unknown transform or custom callable                      | May run on the image only                                | Unsafe with auxiliary targets unless independently proved geometry-preserving |
+| Pipeline element                                          | Mask/box/keypoint behavior                                | Safety decision                                                 |
+| --------------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------- |
+| Registered affine/projective transform                    | Routes supported targets with the segment grid or matrix  | Supported, subject to the numerical limits below                |
+| Registered exact flip or discrete operation               | Routes supported targets through exact or matrix logic    | Supported for the registered operation                          |
+| Registered `RandomResizedCrop`                            | Routes targets to the target spatial size                 | Supported; output size changes                                  |
+| Known pointwise or kernel passthrough                     | Leaves coordinate targets unchanged                       | Safe only when the operation truly preserves coordinates        |
+| Named coordinate-changing passthrough on the refusal list | Raises rather than silently misaligning targets           | Safe refusal, not target support                                |
+| Unknown transform or custom callable                      | Raises before any segment executes with auxiliary targets | Fail-closed; image-only passthrough remains a separate contract |
 
 Masks and coordinates have additional contracts:
 
-- Nearest-neighbor mask sampling uses zero padding even when the image uses `padding_mode="border"` or `"reflection"`. Label `0` must therefore be an acceptable out-of-bounds fill value.
+- Detection `bbox_xyxy` and `bbox_xywh` use pixel-edge extents: a full `(H, W)` canvas is `[0, W] x [0, H]`. Image sampling, keypoints, and rotated boxes retain pixel-centre coordinates through `[0, W - 1] x [0, H - 1]`; box helpers perform the centre-to-edge matrix conversion at their boundary. Do not apply the box convention to image, keypoint, or rotated-box matrices.
+- `fuse_augmentations.data` follows the same split: a generated `polygon`, `keypoints` table and `obb_corners` are in pixel-centre coordinates, while `bbox_xyxy` is in pixel-edge ones, so each field can be passed to its matching transform unchanged. Exported COCO and YOLO files convert the point fields back to edge space at the file boundary and carry one convention throughout. See [Tasks and keypoints](datasets/tasks.md#coordinate-conventions).
+- Nearest-neighbor mask sampling uses scalar `mask_fill=0` by default, independently of image `fill` and `padding_mode`. Configure a finite dtype-compatible scalar for an ignore value such as `255` (`uint8`) or `-1` (signed integer). Bilinear masks remain floating-only; nearest masks retain their no-autograd contract.
+- `padding_mode="reflection"` reflects about the outer pixel *centres* (OpenCV `BORDER_REFLECT_101`), following this package's `align_corners=True` sampling. An implementation sampling with `align_corners=False` reflects about the outer pixel *edges* (`BORDER_REFLECT`) and its mirrored band differs by a pixel of phase. `"zeros"` and `"border"` are convention-free; see "Half-pixel convention" in `guides/configuration.md`.
+- A canvas thinner than two pixels on either axis is refused: the `align_corners=True` normalization divides by `L - 1`. A `(H, 1)` or `(1, W)` image raises naming the axis rather than warping through an infinite scale.
 - The nearest mask path is deliberately executed without autograd. This removes gradients with respect to both the mask values and sampling grid. Bilinear sampling is available for floating soft masks, mixes values at boundaries, and keeps an autograd path.
-- Boxes are dense `(B, N, 4)` tensors and keypoints are dense `(B, N, 2)` tensors. The package does not clip them to image bounds, filter invisible or zero-area boxes, calculate visibility, carry labels, or manage variable `N`.
+- Boxes are dense `(B, N, 4)` tensors and keypoints are dense `(B, N, 2)` tensors. Validation rejects batch mismatches, mask-canvas mismatches, wrong coordinate widths, and extra box columns before execution; empty `N=0` tables remain valid. The package does not clip them to image bounds, filter invisible or zero-area boxes, calculate visibility, carry labels, or manage variable `N`.
 - Rotated boxes are returned as axis-aligned bounding boxes, which can be larger than the rotated object.
 - Coordinate targets remain PyTorch tensors when image and mask outputs are converted with `output_backend="numpy"`.
 
+The dense auxiliary-target route intentionally does not understand detector metadata or ragged instance axes. `augment_detection_batch` is the explicit TorchVision-style adapter: it accepts one mapping per image with `boxes` and int64 `labels`, packs and unpacks the dense box route, clips to pixel-edge extents, recomputes supplied `area`, and applies one keep mask to supported `iscrowd` and `image_id` fields. Unsupported per-instance fields raise instead of being silently discarded.
+
 ## Passthrough is not transparent
 
-An unregistered transform can execute through its native backend, but "passthrough" does not mean identical data or behavior:
+An unregistered transform can execute through its native backend on image-only calls, but "passthrough" does not mean identical data or behavior. With auxiliary targets, unknown or unsafe passthroughs are refused before any segment runs:
 
 - It splits fusion segments and can add transfers or native calls.
-- A coordinate-changing passthrough may be unsafe for auxiliary targets as described above.
+- A coordinate-changing or unclassified passthrough cannot route auxiliary targets and is refused as described above.
 - Albumentations passthrough on the tensor path receives HWC float data derived from the BCHW tensor. Operations designed around uint8 magnitude, including some noise, fog, and compression transforms, may behave differently or become ineffective.
 - `substitute_passthrough=True` is explicitly behavior-changing. The current substitution can replace Albumentations Gaussian blur with a Kornia blur that has different kernels, borders, and randomness.
+
+Two common Albumentations transforms produce a passthrough for reasons worth knowing before you plan a chain around them:
+
+- `HueSaturationValue` always does. It is registered `POINTWISE`: reorderable, but non-linear in RGB, so it composes into neither a color matrix nor a per-channel lookup table. There is no fused segment for it and, in the current design, cannot be one. A chain of geometry plus `HueSaturationValue` therefore fuses the geometry and then leaves the tensor for the color step.
+- `RandomResizedCrop` and `RandomSizedCrop` do so **only on image-only calls under `execution="cv2"` or `"auto"`**. Under `execution="torch"` the crop routes through the segment instead, because that chain already resamples the image with `grid_sample` and the native crop would buy parity the chain has given up while still paying a device round trip. A historical MPS sweep reported 0.83x at batch 8, 1.17x at 32 and 1.39x at 64; treat those values as dated evidence, not a current performance guarantee. The small-batch regression was attributed to the segment's then-current matrix assembly, so rerun the current path before carrying that explanation forward. `"auto"` stays on the passthrough because it resolves per call and the device is unknown when segments are built. When the call carries a mask, box, or keypoint target, the crop routes through a `CropResizeSegment` and no passthrough appears. Without an auxiliary target the crop runs natively instead, which keeps it bit-exact against Albumentations at the cost of a segment break. This is a parity choice, not a missing registration — but it means the same chain plans differently depending on whether you declared `data_keys`, and the image-only plan is the slower one on an accelerator.
+
+Kornia and TorchVision fuse a crop into the preceding affine as a single segment regardless of auxiliary targets, so a plan comparison across backends is not a like-for-like comparison of the same chain.
 
 ## Reordering changes semantics
 
@@ -109,21 +110,27 @@ Fast paths and different batch sizes can consume random draws differently. For s
 
 `compile=True` is off by default and is a no-op on CPU. Non-CPU compilation is environment-dependent; the test suite does not establish a universal CUDA or MPS speedup, dynamic-shape guarantee, or compiler compatibility matrix. Measure warmup and steady state separately on the deployment host.
 
-`antialias=True` is limited to aggressive crop-resize downscaling. It depends on Kornia's Gaussian blur and silently falls back to the unfiltered warp when Kornia is absent. The decision and blur strength are batch-global: one strongly downscaled sample can cause the whole batch to be filtered. Scale estimation also reads device values into Python, which can synchronize accelerator work.
+`antialias=True` is limited to aggressive crop-resize downscaling. Each sample's axis scales determine whether it is prefiltered and its Gaussian support; safe samples remain unchanged. Enabling the option requires Kornia and raises `ImportError` during pipeline construction when that optional dependency is unavailable. The flag is off by default, so ordinary pipelines do not acquire this dependency or filtering cost. Scale estimation reads bounded device values into Python, which can synchronize accelerator work.
 
-Passthrough operations are particularly important on accelerators. A native CPU-only passthrough can erase the advantage of a fused GPU segment through device transfers. Inspect the plan and benchmark the complete pipeline, not only the fused warp.
+Passthrough operations are particularly important on accelerators. A native CPU-only passthrough can erase the advantage of a fused GPU segment through device transfers. `execution="torch"` keeps the registered Albumentations fused warp on the input device, but it cannot move an opaque CPU-only native transform onto that device. Inspect the plan and benchmark the complete pipeline, not only the fused warp.
+
+That cost was measured in the historical September 5, 2026 NVIDIA L4 sweep rather than asserted. Chains carrying exactly one passthrough ran 2.0x to 3.0x slower on CUDA than the same chains on the CPU engine, while chains with no passthrough tied or won — and the penalty grew with batch size, because `call_nonfused` copies the whole batch to the host and back once per passthrough per call. One passthrough was enough to erase a fused warp's advantage in that run; revalidate on the current revision and deployment hardware.
+
+Fusion's value on an accelerator is backend-dependent, and the dated CPU/MPS profile below is no longer a current attribution. An older MPS profile attributed 40% of a fused call to `.to()`, a further 26% to `torch.tensor`, and 86% cumulatively to matrix composition. That profile predates the current batched matrix-transfer path and must not be used to explain current timings. The historical CUDA sweep still showed backend-specific wins and losses, but current-head CUDA/MPS measurements and runner availability are unverified. Do not assume a CPU speedup transfers to a GPU; measure the complete deployment pipeline. See the dated [Benchmarks](research/benchmarks.md#historical-cuda-batch-sweep-september-5-2026).
 
 ## Introspection limits
 
 `fusion_plan` and `fusion_plan_descriptors` describe segmentation. They are the right tools for detecting barriers and backend boundaries.
 
-`transform_matrix` and `return_matrix=True` expose only the last matrix-producing segment. They do not compose across backend boundaries, passthrough barriers, separate affine/projective segments, exact-only segments, or multiple fused segments. The property is mutable per-call state and should not be read concurrently from a shared pipeline instance.
+`transform_matrix` and `return_matrix=True` expose the actual forward pixel-centre matrix for the last supported matrix-producing segment. Fused affine/projective segments, exact D4/flip/quarter-turn segments, and direct deterministic `letterbox` publish this `(B, 3, 3)` coordinate provenance. They do not compose across backend boundaries, passthrough barriers, separate affine/projective segments, or multiple fused segments; the matrix is never a whole-pipeline trace. The property is mutable per-call state and should not be read concurrently from a shared pipeline instance. Before a call, or after a call with no supported geometry, it is `None`.
+
+Native NumPy single-image exact calls retain the native layout, including rectangular outputs when a 90-degree or transpose operation swaps height and width, and publish the same actual-call matrix. Uniform BCHW exact D4/90-degree/transpose batches also support rectangular inputs and swap the common output shape. A batch whose samples would produce heterogeneous spatial shapes is refused; use a uniform exact draw (for example `same_on_batch=True`) or separate those samples.
 
 `n_warps_saved` is a planning heuristic, not a literal count of native interpolations or an observed speedup. In particular, exact flips can contribute to the metric even though native flips are already non-interpolating.
 
 ## Test-time inverse limits
 
-`pipe.inverse(prediction, matrix=matrix)` maps a prediction back to the original geometric frame, but only for a pipeline that reduces to one fused affine or projective segment. It raises for crop-resize (cropped pixels are lost and cannot be recovered), color/LUT/blur or passthrough segments, exact-only segments, and multi-segment pipelines, because `return_matrix` records only the last segment's matrix.
+`pipe.inverse(prediction, matrix=matrix)` maps a prediction back to the original geometric frame, but only for a pipeline that reduces to one fused affine or projective image segment. It raises for crop-resize or standalone deterministic letterbox (cropped, padded, or resized pixels are not reconstructed), color/LUT/blur or passthrough segments, exact-only images, and multi-segment pipelines. Exact D4/flip/quarter-turn and letterbox matrices remain useful for coordinate recovery through the target helpers; publishing provenance does not widen the image-inverse contract.
 
 The inverse is geometric-only. It cannot recover values discarded by interpolation or padding, and it does not undo color, LUT, or blur operations. Recovered boxes are axis-aligned, so a forward-then-inverse box is exact only for axis-aligned transforms (flip, scale, translation) and inflates under rotation, shear, or a projective warp. Always pass the matrix returned by the same `forward(..., return_matrix=True)` call rather than the mutable `transform_matrix` property.
 

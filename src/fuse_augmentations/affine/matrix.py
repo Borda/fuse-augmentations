@@ -18,6 +18,8 @@ Examples:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 
 _SINGULARITY_EPS_SCALE = 1.0
@@ -976,3 +978,158 @@ def perspective_grid(matrix_inv_norm: torch.Tensor, height: int, width: int) -> 
     )
     normalized_coords = transformed[:, :2, :] / tw_clamped  # (B, 2, H*W)
     return normalized_coords.permute(0, 2, 1).reshape(batch_size, height, width, 2)
+
+
+@dataclass(frozen=True, slots=True)
+class LetterboxGeometry:
+    """Resolved aspect-preserving fit of one source canvas into one output canvas.
+
+    Attributes:
+        r: Aspect-preserving scale ratio applied to both axes.
+        new_h: Height of the resized content region, ``round(height_in * r)``.
+        new_w: Width of the resized content region, ``round(width_in * r)``.
+        pad_left: Left padding, the floor of half the horizontal slack.
+        pad_top: Top padding, the floor of half the vertical slack.
+        out_h: Output canvas height.
+        out_w: Output canvas width.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.affine.matrix import letterbox_geometry
+        >>> letterbox_geometry(height_in=20, width_in=40, height_out=32, width_out=32)
+        LetterboxGeometry(r=0.8, new_h=16, new_w=32, pad_left=0, pad_top=8, out_h=32, out_w=32)
+
+        ```
+
+    """
+
+    r: float
+    new_h: int
+    new_w: int
+    pad_left: int
+    pad_top: int
+    out_h: int
+    out_w: int
+
+
+def letterbox_geometry(
+    height_in: int,
+    width_in: int,
+    height_out: int,
+    width_out: int,
+    allow_upscale: bool = True,
+) -> LetterboxGeometry:
+    """Resolve the aspect-preserving fit of a source canvas into an output canvas.
+
+    The single ratio ``r = min(height_out / height_in, width_out / width_in)`` keeps the
+    aspect, and the leftover slack is padded on both sides of the short axis. The pads are
+    integers -- the floor of half the slack -- so an odd slack puts the extra pixel on the
+    right or the bottom. That asymmetry is the YOLO-lineage convention this fit follows and
+    is what makes it agree with a resize-then-pad implementation pixel for pixel.
+
+    Args:
+        height_in: Source canvas height in pixels.
+        width_in: Source canvas width in pixels.
+        height_out: Output canvas height in pixels.
+        width_out: Output canvas width in pixels.
+        allow_upscale: Whether the fit may enlarge content past its native size when the
+            output canvas is larger than the source. ``False`` caps the ratio at ``1.0``,
+            so the content is padded rather than magnified.
+
+    Returns:
+        The resolved :class:`LetterboxGeometry`.
+
+    Raises:
+        ValueError: If any dimension is not positive.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.affine.matrix import letterbox_geometry
+        >>> letterbox_geometry(8, 8, 4, 4).r
+        0.5
+        >>> letterbox_geometry(8, 8, 16, 16, allow_upscale=False).r
+        1.0
+
+        ```
+
+    """
+    for name, value in (
+        ("height_in", height_in),
+        ("width_in", width_in),
+        ("height_out", height_out),
+        ("width_out", width_out),
+    ):
+        if value <= 0:
+            msg = f"{name} must be positive, got {value}."
+            raise ValueError(msg)
+
+    ratio = min(height_out / height_in, width_out / width_in)
+    if not allow_upscale:
+        ratio = min(ratio, 1.0)
+    # round() is round-half-even, matching the resize-then-pad implementations this fit has
+    # to agree with; substituting floor(x + 0.5) shifts the content by a pixel on ties.
+    new_w = max(1, round(width_in * ratio))
+    new_h = max(1, round(height_in * ratio))
+    return LetterboxGeometry(
+        r=ratio,
+        new_h=new_h,
+        new_w=new_w,
+        pad_left=(width_out - new_w) // 2,
+        pad_top=(height_out - new_h) // 2,
+        out_h=height_out,
+        out_w=width_out,
+    )
+
+
+def letterbox_matrix(
+    height_in: int,
+    width_in: int,
+    height_out: int,
+    width_out: int,
+    allow_upscale: bool = True,
+    batch_size: int = 1,
+    device: torch.device | None = None,
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """Build the forward source-to-letterboxed pixel matrix for an aspect-preserving fit.
+
+    The map is a pure scale plus translation, ``[[r, 0, pad_left], [0, r, pad_top], [0, 0, 1]]``,
+    so it has an exact analytic inverse: a prediction made in letterboxed coordinates maps
+    back to source coordinates through :func:`inv3x3` with no loss and no resampling. That
+    is what makes a letterbox usable as an inference preprocessor rather than only as a
+    training-time resize.
+
+    The ratio is the unrounded ``r`` while the pads come from the rounded content size, the
+    same pairing a resize-then-pad implementation produces.
+
+    Args:
+        height_in: Source canvas height in pixels.
+        width_in: Source canvas width in pixels.
+        height_out: Output canvas height in pixels.
+        width_out: Output canvas width in pixels.
+        allow_upscale: Whether the fit may enlarge content past its native size.
+        batch_size: Number of identical matrices to return.
+        device: Target device, or ``None`` for the default device.
+        dtype: Matrix dtype.
+
+    Returns:
+        ``(batch_size, 3, 3)`` forward pixel matrix mapping source to letterboxed coordinates.
+
+    Examples:
+        ```pycon
+        >>> import torch
+        >>> from fuse_augmentations.affine.matrix import letterbox_matrix
+        >>> matrix = letterbox_matrix(height_in=20, width_in=40, height_out=32, width_out=32)
+        >>> [round(value, 4) for value in matrix[0].flatten().tolist()]
+        [0.8, 0.0, 0.0, 0.0, 0.8, 8.0, 0.0, 0.0, 1.0]
+
+        ```
+
+    """
+    geometry = letterbox_geometry(height_in, width_in, height_out, width_out, allow_upscale)
+    matrix = torch.eye(3, device=device, dtype=dtype)
+    matrix[0, 0] = geometry.r
+    matrix[1, 1] = geometry.r
+    matrix[0, 2] = float(geometry.pad_left)
+    matrix[1, 2] = float(geometry.pad_top)
+    return matrix.unsqueeze(0).expand(batch_size, -1, -1).contiguous()

@@ -9,33 +9,25 @@ Use `data_keys` to route dense tensor targets through a supported fused geometri
 
 !!! danger "Stop on unknown spatial transforms"
 
-```
-Before using any example on this page, inspect construction warnings and
-`pipe.fusion_plan`.
+    Before using any example on this page, inspect construction warnings and `pipe.fusion_plan`.
 
-If you see `Unknown ... transform ... treating as SPATIAL_KERNEL barrier`,
-do not use that pipeline with masks, boxes, or keypoints until you have
-proved the transform preserves coordinates. `RandomCrop`, `CenterCrop`, and
-`Resize` can transform only the image and leave the mask at its old shape.
-The runtime refusal list catches several named distortions, but it is not a
-complete spatial-transform detector.
+    An unknown or unclassified spatial transform is refused before any segment executes when auxiliary targets are present. `RandomCrop`, `CenterCrop`, and `Resize` would transform only the image if run through an unaware native path; use a registered target-aware operation or handle the image and targets together outside `Compose`.
 
-Replace an unsupported spatial transform with a registered operation, run
-it through a native target-aware pipeline, or transform every target
-yourself. A warning is not a safety guarantee.
-```
+    Replace an unsupported spatial transform with a registered operation, run it through a native target-aware pipeline, or transform every target yourself. A warning is not a safety guarantee.
 
 ## Supported target contract
 
 | Key           | Required tensor shape                        | Output behavior                                               |
 | ------------- | -------------------------------------------- | ------------------------------------------------------------- |
 | `"input"`     | `(B, C, H, W)` floating image                | Warped by the selected image interpolation and padding policy |
-| `"mask"`      | `(B, C_mask, H, W)` integer or floating mask | Nearest sampling by default; zero-filled out of bounds        |
+| `"mask"`      | `(B, C_mask, H, W)` integer or floating mask | Nearest sampling by default; `mask_fill=0` out of bounds      |
 | `"bbox_xyxy"` | `(B, N, 4)` floating `[x1, y1, x2, y2]`      | Four corners transformed, then wrapped in an axis-aligned box |
 | `"bbox_xywh"` | `(B, N, 4)` floating `[x, y, width, height]` | Converted through xyxy, transformed, then converted back      |
 | `"keypoints"` | `(B, N, 2)` floating `[x, y]`                | Transformed by the forward homogeneous matrix                 |
 
-The batch dimension is mandatory. Box and keypoint counts are dense and fixed within a batch. This API does not carry class labels, visibility flags, or per-image variable-length lists.
+The batch dimension is mandatory. Before the first segment runs, the pipeline checks that every target batch matches the image batch, masks have the image's spatial dimensions, and coordinate targets have exactly the trailing widths shown above. Empty instance axes are valid; extra box columns are rejected rather than interpreted as labels. Box and keypoint counts are dense and fixed within a batch. This API does not carry class labels, visibility flags, or per-image variable-length lists.
+
+`bbox_xyxy` and `bbox_xywh` use pixel-edge coordinates: a canvas of width `W` and height `H` spans `[0, W] x [0, H]`, so a full-canvas box is `[0, 0, W, H]`. Image sampling, keypoints, and rotated boxes keep the pixel-centre convention `[0, W - 1] x [0, H - 1]`. The public box helpers convert the image-centre matrix to edge coordinates internally before mapping box corners; do not replace `W - 1` with `W` in image, keypoint, or rotated-box calculations.
 
 ## A contract-safe example
 
@@ -55,13 +47,13 @@ boxes = torch.tensor(
     [
         [[12.0, 18.0, 70.0, 92.0]],
         [[24.0, 10.0, 100.0, 80.0]],
-    ]
+    ],
 )
 keypoints = torch.tensor(
     [
         [[20.0, 30.0], [60.0, 75.0]],
         [[40.0, 20.0], [90.0, 70.0]],
-    ]
+    ],
 )
 
 pipe = Compose.from_params(
@@ -123,11 +115,38 @@ assert soft_masks_out.grad_fn is not None
 
 Bilinear sampling mixes neighboring values. It is not appropriate for integer class IDs, and the package rejects integer masks in bilinear mode.
 
-## Mask padding is always zero
+## Mask padding
 
-Mask sampling uses zero padding independently of image `padding_mode`.
+Mask sampling uses a scalar `mask_fill`, independently of image `fill` and `padding_mode`. It defaults to `0`, so existing pipelines keep zero padding. Set it when an out-of-canvas sample must carry an ignore label, for example `255` for a `uint8` mask or `-1` for a signed integer mask:
 
-If the image uses `padding_mode="border"` or `"reflection"`, the image and mask share the same geometric grid but not the same out-of-bounds fill rule. Ensure label `0` means background or an acceptable ignore/background value. If it does not, remap labels before augmentation and restore them afterward, or avoid warps that sample outside the image.
+```python
+import torch
+
+from fuse_augmentations import Compose
+
+image = torch.zeros(1, 1, 8, 8)
+mask = torch.zeros(1, 1, 8, 8, dtype=torch.uint8)
+pipe = Compose.from_params(
+    translate_x=(-4.0, -4.0),
+    data_keys=["input", "mask"],
+    mask_fill=255,
+)
+_, warped_mask = pipe(image, mask)
+print(sorted(torch.unique(warped_mask).tolist()))
+```
+
+<details>
+<summary>Mask values include the configured ignore fill</summary>
+
+```
+[0, 255]
+```
+
+</details>
+
+`mask_fill` must be one finite scalar. Integer and boolean masks require a value representable by that dtype and exactly by the sampler's float32 conversion; `255` is valid for `uint8`, while `-1` is valid for signed integer masks and invalid for `uint8`. Bilinear mode still requires floating masks; nearest mode keeps its deliberate no-autograd behavior.
+
+If the image uses `padding_mode="border"` or `"reflection"`, the image and mask share the same geometric grid but not the same out-of-bounds fill rule. Choose `mask_fill` to match the background or ignore value your loss expects; image `fill` never changes mask labels.
 
 ## Postprocess boxes and keypoints
 
@@ -143,8 +162,8 @@ def clip_and_filter_xyxy(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Clip dense xyxy boxes and return a validity mask for positive-area boxes."""
     clipped = boxes_xyxy.clone()
-    clipped[..., 0::2].clamp_(0, image_width - 1)
-    clipped[..., 1::2].clamp_(0, image_height - 1)
+    clipped[..., 0::2].clamp_(0, image_width)
+    clipped[..., 1::2].clamp_(0, image_height)
     valid = (clipped[..., 2] > clipped[..., 0]) & (clipped[..., 3] > clipped[..., 1])
     return clipped, valid
 
@@ -156,15 +175,16 @@ Apply `valid_boxes` to the corresponding class labels, scores, instance masks, a
 
 ## Safe and unsafe pipeline matrix
 
-| Pattern                                                         | Decision                           | Reason                                                 |
-| --------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------ |
-| Registered rotation/affine/flip with declared targets           | Use                                | Targets share the supported grid or matrix path        |
-| Registered `RandomResizedCrop`                                  | Use with output-size awareness     | Image and targets change to the configured output size |
-| Blur, noise, or color passthrough known to preserve coordinates | Use with backend-domain validation | Coordinate targets may remain unchanged legitimately   |
-| Named elastic/grid/optical distortion refused at runtime        | Do not expect support              | Raising prevents known target desynchronization        |
-| Unknown crop, resize, spatial transform, or custom callable     | Do not use with targets            | It can transform only the image                        |
-| Albumentations HWC NumPy call with `image` and `mask` keywords  | Do not use                         | The native NumPy compatibility path is image-only      |
-| BCHW tensor call with supported `data_keys`                     | Use                                | This is the intended multi-target API                  |
+| Pattern                                                         | Decision                           | Reason                                                             |
+| --------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------ |
+| Registered rotation/affine/flip with declared targets           | Use                                | Targets share the supported grid or matrix path                    |
+| Registered `RandomResizedCrop`                                  | Use with output-size awareness     | Image and targets change to the configured output size             |
+| Blur, noise, or color passthrough known to preserve coordinates | Use with backend-domain validation | Coordinate targets may remain unchanged legitimately               |
+| Named elastic/grid/optical distortion refused at runtime        | Do not expect support              | Raising prevents known target desynchronization                    |
+| Unknown crop, resize, spatial transform, or custom callable     | Do not use with targets            | Refused before any segment executes; image-only calls are separate |
+| Albumentations HWC NumPy call with no `data_keys`               | Do not use with targets            | Without `data_keys` the NumPy path is image-only                   |
+| HWC NumPy call with supported `data_keys`                       | Use                                | Targets route through the same matrix as tensors                   |
+| BCHW tensor call with supported `data_keys`                     | Use                                | This is the intended multi-target API                              |
 
 ## Validate every production pipeline
 
@@ -178,3 +198,98 @@ For each pipeline used in training or evaluation:
 6. Compare a small fixed-seed batch with an independently trusted geometric reference before accepting a new transform or backend version.
 
 See [Known limitations](../known-limitations.md) for parity, randomness, and device constraints.
+
+## Keypoint pairs under a mirror (`keypoint_flip_index`)
+
+A mirrored image has its left and right anatomy swapped. The warp already puts the coordinates in the right places; what has to follow is the *identity* of each keypoint slot — "left elbow" now sits where the right elbow is. `keypoint_flip_index` is that permutation: slot `i` takes its value from slot `flip_index[i]`.
+
+```python
+import torch
+
+from fuse_augmentations import Compose
+
+points = torch.tensor([[[4.0, 4.0], [8.0, 6.0], [12.0, 10.0]]])
+augment = Compose.from_params(
+    hflip_p=1.0,
+    data_keys=["input", "keypoints"],
+    keypoint_flip_index=(0, 2, 1),
+)
+
+_, swapped = augment(torch.zeros(1, 3, 16, 16), points)
+print(swapped[0].tolist())
+```
+
+```
+[[11.0, 4.0], [3.0, 10.0], [7.0, 6.0]]
+```
+
+- **When it fires is decided by the composed matrix's determinant**, never by whether a flip transform appears in the pipeline. After fusion the mirror is part of a larger matrix and is no longer a discrete op, and two mirrors compose back to a rotation — which must *not* swap. A rotation past 90 degrees looks like a flip and is not one; the determinant is what tells them apart.
+- **Every path applies it**, including the ones that never build a warp grid: the exact-flip route and the D4 fast path (a pure flip is applied by tensor reversal, skipping `grid_sample` entirely). A permutation wired only into the interpolating route would leave those images mirrored with unswapped labels, and nothing about the shapes would say so.
+- **The pair table is dataset schema and stays with you.** It must be an involutive permutation of `range(len(flip_index))`: fixed points and disjoint two-slot pairs are valid, while a cycle such as `(1, 2, 0)` is rejected. A mirror applied twice must restore the original slot order; replace any older arbitrary permutation with explicit fixed points and pairs.
+- `None` (the default) leaves the keypoint axis in input order, unchanged.
+- The same decision is available directly: `orientation_reversed(matrix)` and `permute_keypoint_pairs(points, flip_index, reversed_mask)`.
+
+## Rotated boxes (`rboxes`)
+
+`"rboxes"` is a data key like any other: `(B, N, 5)` as `(cx, cy, w, h, theta)`, `theta` in radians, routed by every path that routes plain boxes — fused affine, exact flip, crop-resize, letterbox, and the Albumentations tensor path.
+
+```python
+import torch
+
+from fuse_augmentations import Compose, rbox_envelopes
+
+image = torch.rand(1, 3, 16, 32)
+rboxes = torch.tensor([[[16.0, 8.0, 8.0, 4.0, 0.0]]])
+augment = Compose.from_params(rotation=(90.0, 90.0), data_keys=["input", "rboxes"])
+
+_, warped = augment(image, rboxes)
+print([round(value, 3) for value in warped[0, 0].tolist()])
+print([round(value, 3) for value in rbox_envelopes(warped)[0, 0].tolist()])
+```
+
+```
+[15.0, 8.0, 8.0, 4.0, 1.571]
+[13.0, 4.0, 17.0, 12.0]
+```
+
+What the transport does and does not promise:
+
+- **A general affine does not map a rectangle to a rectangle** — only a similarity does. Shear sends a rectangle to a parallelogram, which no `(cx, cy, w, h, theta)` describes. So the box is expanded to four corners, those are mapped, and a box is re-fitted to them. Under rotation, uniform scale, translation and mirroring the fit is exact; under a shear of angle `s` the fitted corners sit `(h / 2) * sqrt(tan(s)**2 + (1 - 1/cos(s))**2)` from the warped ones, where `h` is the extent across the shear. The first-order form of that is the familiar `h * sin(s / 2)`.
+- **No canonical form is imposed.** The package returns whatever the fit produced: no `w >= h` swap, no angle range. The long-edge convention is one reading of the literature among several and belongs with the assigner, the loss and the evaluation kernel that share it. `transform_rboxes`, `mirror_rboxes` and `shift_rboxes` take an optional `canonicalize=` callable if you want yours applied in one place.
+- **Mirroring uses this package's flip axis**, `(width - 1) / 2`, matching the image flip under `align_corners=True` — not the `width / 2` an extent-convention implementation uses.
+- **Clipping is not provided**, because a rotated box clipped to the canvas is generally a polygon rather than a rotated box. Use `rbox_envelopes` with `clip_bbox_xyxy` and `instance_keep_mask` to decide survival on the axis-aligned envelope.
+- Helpers: `rboxes_to_corners`, `corners_to_rboxes`, `transform_rboxes`, `mirror_rboxes`, `shift_rboxes`, `rbox_envelopes`.
+
+The Albumentations *native NumPy* dict path without `data_keys` (`pipe(image=<ndarray>)`) transforms the image only and refuses auxiliary targets outright. Declare `data_keys` and rotated boxes route through the same composed matrix the tensor path uses, in NumPy or in tensors alike.
+
+## Deciding which instances survive a warp
+
+A warp pushes some instances off the canvas and clips others to slivers. This package supplies the geometry for that decision and leaves the decision itself to the caller:
+
+```python
+import torch
+
+from fuse_augmentations import Compose, clip_bbox_xyxy, instance_keep_mask
+
+image = torch.rand(1, 3, 32, 32)
+boxes = torch.tensor([[[2.0, 2.0, 10.0, 10.0], [26.0, 26.0, 31.0, 31.0]]])
+augment = Compose.from_params(
+    translate_x=(12.0, 12.0),
+    data_keys=["input", "bbox_xyxy"],
+)
+
+warped_image, warped_boxes = augment(image, boxes)
+clipped = clip_bbox_xyxy(warped_boxes, height=32, width=32)
+keep = instance_keep_mask(warped_boxes, clipped, min_size=2.0, min_visibility=0.25)
+print(keep.tolist())
+```
+
+```
+[[True, False]]
+```
+
+- `clip_bbox_xyxy` clamps boxes to the `[0, width] x [0, height]` pixel-edge canvas extent — geometry, not policy.
+- `instance_keep_mask` keeps an instance whose clipped box is at least `min_size` on both axes **and** retains at least `min_visibility` of its unclipped area. Both thresholds are yours; the defaults are `0.0`, which drops nothing.
+- **It returns the mask, not filtered boxes.** Labels, keypoints, rotated boxes, polygon rings and any per-instance flag live on the same instance axis, and only you hold all of them. Filter every one of them with this single mask: a pipeline that filtered boxes but not the keypoints on the same instances is corrupt while every shape still lines up and nothing raises.
+
+Do not confuse this with `clip_policy`, which decides when a fused *colour* chain clamps to `[0, 1]`. The names are close; the concepts share nothing.

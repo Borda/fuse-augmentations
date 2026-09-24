@@ -1,10 +1,22 @@
 # ⚛️ Fuse augmentations
 
-**Write image augmentation as independent transforms — from Kornia, TorchVision, Albumentations, or plain numeric ranges. Execute compatible geometry with fewer resampling passes, and compatible color as one fused matrix or lookup table.**
+**Generate synthetic computer vision datasets. Fuse compatible image augmentations. Build and test your training pipeline with reproducible data.**
 
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/fuse-augmentations)](https://pypi.org/project/fuse-augmentations/) [![PyPI version](https://img.shields.io/pypi/v/fuse-augmentations)](https://pypi.org/project/fuse-augmentations/) [![Documentation](https://img.shields.io/badge/docs-MkDocs%20Material-4051b5)](https://borda.github.io/fuse-augmentations/) [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/Borda/fuse-augmentations/blob/main/LICENSE) [![CI](https://github.com/Borda/fuse-augmentations/actions/workflows/ci_testing.yml/badge.svg)](https://github.com/Borda/fuse-augmentations/actions/workflows/ci_testing.yml)
 
-`fuse-augmentations` is a PyTorch tensor-first engine for reducing repeated interpolation in image augmentation pipelines. It recognizes a finite set of Kornia, TorchVision, and Albumentations transforms—or builds a pipeline directly from numeric ranges—then composes compatible transform matrices before pixels are sampled.
+`fuse-augmentations` is a Python package for **synthetic dataset generation** and **PyTorch image augmentation**. Generate labelled shapes in COCO or YOLO format for object detection, instance segmentation, oriented bounding boxes, and keypoint / pose estimation. Use fixed seeds and configurable scenes to prototype models, check convergence, and test increasing difficulty.
+
+| I need to…                                          | Start here                                                                             |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Generate a synthetic computer vision dataset        | [Install and generate](#-synthetic-datasets)                                           |
+| Choose detection, segmentation, OBB, or pose labels | [Task recipes](docs/datasets/index.md#choose-your-computer-vision-task)                |
+| Check model convergence or scale difficulty         | [Prototyping guide](docs/datasets/prototyping.md)                                      |
+| Stream samples into a PyTorch DataLoader            | [In-memory generation](docs/datasets/outputs.md#in-memory-streaming-and-training-feed) |
+| Fuse an existing augmentation pipeline              | [Augmentation quickstart](docs/getting-started/quickstart.md)                          |
+
+Synthetic generation uses drawn primitives, animal silhouettes, symbols, and letters; it needs no source images or optional augmentation backend. Your trainer handles learning and evaluation. See the [dataset guide](docs/datasets/index.md) for capabilities and output contracts.
+
+For augmentation, the tensor-first engine recognizes supported Kornia, TorchVision, and Albumentations transforms—or builds a pipeline directly from numeric ranges—then composes compatible transform matrices before pixels are sampled.
 
 ![Animated: three native resamples versus one fused warp](https://raw.githubusercontent.com/Borda/fuse-augmentations/main/docs/assets/images/animated-sequential-vs-fused-albumentations-camera-jitter.webp)
 
@@ -18,7 +30,7 @@ You keep the readable pipeline: rotate, scale, shear, translate, flip. The engin
 
 > [!WARNING]
 >
-> Use auxiliary targets only with explicitly supported spatial transforms. An unknown crop, resize, or other spatial passthrough can modify the image while leaving a mask, box, or keypoint tensor stale. Treat every `Unknown ... SPATIAL_KERNEL barrier` warning as unsafe when `data_keys` is present.
+> Use auxiliary targets only with explicitly supported spatial transforms. With `data_keys` present, an unknown or unclassified spatial passthrough is rejected before any segment executes, so the image and targets cannot silently diverge. Image-only calls may still run such a transform as a native passthrough; inspect every `Unknown ... SPATIAL_KERNEL barrier` warning before relying on it.
 
 ## 🔄 The problem: every warp resamples the image
 
@@ -95,11 +107,14 @@ See [three fixed recipes for each of Kornia, TorchVision, and Albumentations](ht
 | Flexible construction  | Native numeric ranges, Kornia transforms, TorchVision transforms, Albumentations transforms, or a mixed-backend list.                                                                                                |
 | Portable configuration | Frozen `TransformSpec` values resolve a declarative pipeline against a chosen backend with strict unsupported-operation handling.                                                                                    |
 | Auxiliary coordinates  | Masks, dense xyxy/xywh boxes, and dense keypoints can follow supported fused matrices, subject to the safety limits below.                                                                                           |
+| Ragged detection       | `augment_detection_batch` adapts a `FusedCompose` with `data_keys=["input", "bbox_xyxy"]` to one TorchVision-style target mapping per image, including clipping and aligned filtering.                               |
 | NumPy bridges          | HWC/BHWC NumPy ↔ BCHW torch converters and NumPy output are available; conversion to NumPy detaches and moves data to CPU.                                                                                           |
 | Execution controls     | Albumentations cv2 or torch execution, Kornia-dependent downscale antialiasing, interpolation, padding, and color clipping policies.                                                                                 |
 | Precision and compile  | Optional `torch.compile` of warp/color/LUT cores on non-CPU paths; opt-in `pipeline_dtype="bfloat16"\|"float16"` low-precision cores with matrices and parameter sampling kept in float32/64, no accuracy guarantee. |
 | Plan inspection        | Human-readable plans, structured descriptors, a warp-saving estimate, and the last matrix-producing segment are exposed.                                                                                             |
 | Training integration   | Pipelines are `nn.Module` objects and have tested pickle/serialization paths for common worker use.                                                                                                                  |
+
+`antialias=True` is opt-in for aggressive crop-resize downscales. It evaluates each sample's scale and prefilters only samples that need it; enabling the option requires Kornia and raises `ImportError` during pipeline construction when that optional dependency is missing. The default remains unfiltered and does not require Kornia.
 
 ### Built-in live-transform coverage
 
@@ -185,12 +200,8 @@ assert matrix is not None
 assert matrix.shape == (4, 3, 3)
 
 print(augment.fusion_plan)
-print(
-    [
-        (descriptor.kind, descriptor.n_warps_saved)
-        for descriptor in augment.fusion_plan_descriptors
-    ]
-)
+descriptors = [(d.kind, d.n_warps_saved) for d in augment.fusion_plan_descriptors]
+print(descriptors)
 ```
 
 <details>
@@ -231,18 +242,20 @@ Mixed-backend pipelines are supported, with every backend change acting as a har
 
 ## 📊 What the measurements say
 
-These numbers are from the 2026-07-12 local audit on macOS arm64, `fuse-augmentations 0.9.0.dev0`, Python 3.12, PyTorch 2.10, 256×256 inputs. They demonstrate the shape of the opportunity—not a release-wide promise.
+These numbers are historical smoke measurements from the 2026-07-12 local audit on macOS arm64, `fuse-augmentations 0.9.0.dev0`, Python 3.12, PyTorch 2.10, and 256×256 inputs. They demonstrate the shape of the opportunity, not current-head or release-wide performance. The [benchmark methodology](docs/research/methodology.md) records the controls still required before reusing them.
 
-| Measurement                          |                                             Observed result | Interpretation                                                                             |
-| ------------------------------------ | ----------------------------------------------------------: | ------------------------------------------------------------------------------------------ |
-| Fixed 45-case CPU, batch-1 score     |            **1.79×** geometric mean of native/fused latency | Real aggregate gain for the synthetic bank; mixed cases use opt-in reordering.             |
-| Five-op geometric chain, CPU batch 1 |   **6.52× Kornia**, **14.48× TorchVision** in one quick run | Long geometric chains are the strongest fit; quick-run effect sizes are noisy.             |
-| Sampled CPU tensor peak memory       |                           Lower in **12/12** compared pairs | Fewer intermediate warped tensors can reduce peak; allocation count improved in only 8/12. |
-| TorchVision 3-op, CPU batch 8 peak   |                        **117.5 MB → 38.0 MB** (~3.1× lower) | One profiler result, not a universal memory ratio.                                         |
-| Apple MPS quick sweep                | Faster in only **9/28** comparable Kornia/TorchVision pairs | GPU-capable does not mean faster; TorchVision MPS often regressed here.                    |
-| CUDA                                 |                                              **Not tested** | No CUDA performance claim is made by this audit.                                           |
+| Measurement                          |                                             Observed result | Interpretation                                                                                                                                                                    |
+| ------------------------------------ | ----------------------------------------------------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fixed 45-case CPU, batch-1 score     |            **1.79×** geometric mean of native/fused latency | Historical, unpaired smoke result; rerun after the benchmark RNG controls before using it as a comparison claim.                                                                  |
+| Five-op geometric chain, CPU batch 1 |   **6.52× Kornia**, **14.48× TorchVision** in one quick run | Historical quick-run result; sampled-parameter pairing and endpoint equivalence were not established.                                                                             |
+| Sampled CPU tensor peak memory       |                           **Withdrawn pending fresh sweep** | The historical profiler output is retained in the benchmark page for traceability; collect a new sweep with the corrected action-aware tool before citing peak/allocation ratios. |
+| TorchVision 3-op, CPU batch 8 peak   |                           **Withdrawn pending fresh sweep** | The historical `117.5 MB → 38.0 MB` output must not be used as a memory claim until a corrected-tool sweep replaces it.                                                           |
+| Apple MPS quick sweep                | Faster in only **9/28** comparable Kornia/TorchVision pairs | Historical quick sweep; benchmark the current pipeline on the deployment device.                                                                                                  |
+| CUDA                                 |                  **Historical sweep documented separately** | The September 5, 2026 CUDA run is historical; current runner availability and current-head measurements are unverified.                                                           |
 
-Single operations can be slower because there is no resampling to eliminate. Color-heavy pipelines retain color cost. Small accelerator workloads can be dominated by launch, sampling, compilation, or conversion overhead. Always benchmark the exact production pipeline and keep a correctness/parity gate beside the timing.
+Single operations can be slower because there is no resampling to eliminate. Color-heavy pipelines retain color cost. Small accelerator workloads can be dominated by launch, sampling, compilation, or conversion overhead. Always benchmark the exact production pipeline and keep a correctness/parity gate beside the timing. See the [historical benchmark record](docs/research/benchmarks.md) for dated results and the current measurement boundaries.
+
+The current benchmark tools have stricter contracts than the historical runs above. `bench_memory.py` accounts for live bytes, preexisting baseline, incremental peak, and physical allocation events; unavailable counters are recorded as null with an error. `bench_rfdetr_shape.py` makes all four variants reproducible and converts them to a common CPU model-ready endpoint: `float32` BCHW images in `[0, 1]`, `float32` `(N, 4)` boxes, and `int64` `(N,)` labels. It does not replay shared sampled geometry, so it is not a paired raster comparison. Collect a fresh sweep before replacing the withdrawn historical ratios.
 
 ## 🔬 Quality and semantics
 
@@ -269,8 +282,8 @@ Registered fused geometry can route:
 
 Important boundaries:
 
-- unknown spatial transforms may desynchronize image and targets;
-- mask padding is always zero even when image padding is border/reflection;
+- unknown or unclassified spatial transforms with auxiliary targets are rejected before execution; image-only passthroughs still need review;
+- mask padding uses the independent scalar `mask_fill` (default `0`) even when image padding is border/reflection;
 - nearest masks are intentionally detached; bilinear requires floating soft masks;
 - boxes are AABB-wrapped after rotation but are not clipped or filtered;
 - labels, visibility, ragged instances, invalid-box removal, and keypoint validity are application responsibilities;
@@ -283,13 +296,13 @@ For detection and segmentation, validate every transform class and warning befor
 - `fusion_plan` describes the current segment structure.
 - `fusion_plan_descriptors` provides structured, serializable segment metadata.
 - `n_warps_saved` is a plan estimate, not a literal native interpolation counter for exact operations.
-- `return_matrix=True` and `transform_matrix` expose the **last matrix-producing segment**, not an automatic whole-pipeline matrix across backend, projective, crop, or passthrough boundaries.
+- `return_matrix=True` and `transform_matrix` expose the actual forward pixel-centre matrix from the **last supported matrix-producing segment**. Fused affine/projective, exact D4/flip/quarter-turn, and direct deterministic `letterbox` segments publish a `(B, 3, 3)` matrix; it is not an automatic whole-pipeline matrix across backend, projective, crop, or passthrough boundaries.
 
 Use per-call matrix return when output and transform provenance must stay paired.
 
 ### Test-time de-augmentation
 
-For one fused affine or projective geometric segment, pass the matrix returned by the same call to `inverse` to map a prediction back into the original frame. This pairing is safe for concurrent calls; `inverse` deliberately does not read the mutable `transform_matrix` property.
+For one fused affine or projective geometric segment, pass the matrix returned by the same call to `inverse` to map a prediction back into the original frame. Exact and deterministic letterbox matrices are available for coordinate recovery through the target helpers, while the image inverse remains narrower. This pairing is safe for concurrent calls; `inverse` deliberately does not read the mutable `transform_matrix` property.
 
 ```python
 import torch
@@ -306,9 +319,17 @@ assert prediction_original.shape == images.shape
 
 With `data_keys`, pass the augmented auxiliary targets in the same positional order; masks use the matching sampling grid and boxes/keypoints use the inverse pixel matrix. Keypoints and masks recover to sampling precision, but bounding boxes are axis-aligned: a forward-then-inverse box is exact only for axis-aligned transforms (flip, scale, translation) and inflates under a rotation, shear, or projective warp. `inverse` raises instead of guessing for crop-resize (cropped pixels are lost), color/LUT/blur or passthrough segments, exact-only segments, multiple segments, or a missing paired matrix. It is geometric-only and cannot recover values discarded by interpolation or padding.
 
+For ragged detector targets, import `augment_detection_batch` from the package root. It requires a pipeline whose `data_keys` are exactly `["input", "bbox_xyxy"]`, accepts one mapping per image with floating `boxes` and int64 `labels`, and returns new mappings after pixel-edge clipping and aligned filtering. See [Detection and keypoints](docs/applications/detection-and-keypoints.md#augment-a-ragged-detector-batch) for optional fields and thresholds.
+
 ## 🎨 Synthetic datasets
 
-Generate small labelled datasets of colored shapes — no training loop, no Lightning. Draw `square`/`rectangle`/`triangle`/`circle` in red/green/blue and export **COCO** or **YOLO** for **detection**, **segmentation**, or **oriented bounding box (OBB)**.
+```bash
+pip install fuse-augmentations
+```
+
+Generate labelled synthetic data for computer vision prototyping, model convergence checks, and controlled difficulty experiments. Draw from four vocabularies — geometric primitives, animal silhouettes, symbols, and letters — and export **COCO** or **YOLO** for **detection**, **segmentation**, **oriented bounding box (OBB)**, or **keypoints**. Your application supplies the model and training loop.
+
+Start with the [prototyping and convergence guide](docs/datasets/prototyping.md): check a loader on a small export, overfit fixed easy samples, then evaluate held-out data while increasing scene difficulty. Passing a synthetic check does not establish accuracy on real images.
 
 ```python
 import tempfile
@@ -318,7 +339,11 @@ from fuse_augmentations import generate_dataset
 with tempfile.TemporaryDirectory() as out_dir:
     # COCO detection, 70/20/10 split, reproducible (pass a real path to keep it)
     counts = generate_dataset(
-        out_dir, num_images=100, fmt="coco", task="detection", seed=0
+        out_dir,
+        num_images=100,
+        fmt="coco",
+        task="detection",
+        seed=0,
     )
 
 print(counts)
@@ -335,7 +360,13 @@ print(counts)
 
 Swap `fmt="yolo"`, `task="obb"`, or `class_mode="color"` for other layouts, tasks, and class schemes.
 
-`rectangle` plus random per-shape rotation give oriented boxes real orientation; all generation is seeded for byte-identical output. Generation streams — feed a training loop straight from `SyntheticGenerator.generate(n)` or a `DataLoader` via `SyntheticIterableDataset`, with no disk round-trip and bounded memory even for huge datasets. See the [synthetic datasets guide](docs/guides/synthetic-datasets.md) and `examples/generate_synthetic_dataset.py`.
+`rectangle` plus random per-shape rotation give oriented boxes real orientation. A fixed seed and configuration reproduce generation in the same environment. Feed samples from `SyntheticGenerator.generate(n, seed=...)` or a `DataLoader` via `SyntheticIterableDataset` without a disk round-trip. Direct generation and YOLO export keep sample storage bounded; COCO export retains per-split annotation metadata, and DataLoader batching/prefetching adds memory. See [output and streaming contracts](docs/datasets/outputs.md).
+
+How hard the samples are to read is a set of ordinary config fields: `background` picks the canvas (flat, gradient, Gaussian or impulse noise, value-noise texture, or crops of your own pictures), `degrade` bakes camera effects into the pixels, and `distractors`/`occluders` add unlabelled shapes under and over the labelled ones.
+
+![A value-noise canvas, bare and then carrying its objects and their boxes](https://raw.githubusercontent.com/Borda/fuse-augmentations/main/docs/assets/datasets/scene/backgrounds/texture.webp)
+
+Above is one such knob, `TextureBackground()`: the canvas it paints, and the same canvas carrying its objects and their exported boxes. The docs picture every mode this way. Each knob draws from a side stream of its own rather than from the placement stream, so at a fixed seed switching one on cannot move an object — the shapes land in the same three places on every canvas. See the [synthetic datasets docs](docs/datasets/index.md), the [difficulty bands](docs/datasets/difficulty.md), and `examples/generate_synthetic_dataset.py`.
 
 ## 🧭 Where it fits
 
@@ -384,7 +415,7 @@ uv run --all-extras --group benchmark python experiments/bench_gpu_batch.py --qu
 uv run --all-extras --group benchmark python experiments/bench_memory.py --quick
 ```
 
-These three headline commands are not the full set: `experiments/` holds five benchmark scripts in total, including `bench_augmentation_pipelines.py` and `bench_primitive_vs_affine.py`, and the [quality and benchmark evidence](https://borda.github.io/fuse-augmentations/research/benchmarks/) documentation page walks through all of them.
+These three headline commands are not the full set: `experiments/` holds five benchmark scripts in total, including `bench_augmentation_pipelines.py`, `bench_primitive_vs_affine.py`, and `bench_rfdetr_shape.py`, and the [quality and benchmark evidence](https://borda.github.io/fuse-augmentations/research/benchmarks/) documentation page walks through all of them.
 
 Treat quick runs as smoke evidence. Release-grade comparisons need independent processes, uncertainty intervals, paired RNG state, output-parity assertions, and full environment provenance.
 

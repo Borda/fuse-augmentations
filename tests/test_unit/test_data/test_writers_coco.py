@@ -8,19 +8,36 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, AnimalShape
-from fuse_augmentations.data.config import ClassMode, Color, SyntheticConfig, Task, class_names
+from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, ANIMAL_KEYPOINT_SCHEMA, AnimalShape
+from fuse_augmentations.data.config import ClassMode, Color, SyntheticConfig, Task, class_vocabulary
+from fuse_augmentations.data.families import ALL_SHAPES, keypoint_schema_for
 from fuse_augmentations.data.generator import SyntheticGenerator
+from fuse_augmentations.data.keypoints import KeypointSchema
+from fuse_augmentations.data.letters import LETTER_KEYPOINT_SCHEMA, LetterShape
+from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_NAMES, SYMBOL_KEYPOINT_SCHEMA, SymbolShape
 from fuse_augmentations.data.writers import CocoWriter
 
 
-def _write(tmp_path: Path, writer_task: Task, count: int = 4, seed: int = 5, **config_kwargs: object) -> tuple:  # type: ignore[type-arg]
+def _write(
+    tmp_path: Path,
+    writer_task: Task,
+    count: int = 4,
+    seed: int = 5,
+    keypoint_schema: KeypointSchema | None = None,
+    full_vocabulary: bool = False,
+    **config_kwargs: object,
+) -> tuple:  # type: ignore[type-arg]
     """Generate a seeded dataset, write it as COCO, and return its parsed JSON, samples, and class names.
 
     Every knob the individual tests vary — sample count, seed, and any `SyntheticConfig` field such as `shapes`,
     `img_size`, or `task` — is a keyword here, so a test states only what makes it different from the others. The
     writer's `task` is positional and separate from the config's: the writer formats whatever the samples already carry,
-    so a detection-configured stream can still be written out as segmentation or OBB.
+    so a detection-configured stream can still be written out as segmentation or OBB. `keypoint_schema` is only relevant
+    to `Task.KEYPOINTS` runs and defaults to whichever family the config's own `shapes` name.
+
+    The writer's vocabulary is narrowed to the config's own `shapes`, exactly as `generate_dataset` narrows it, so the
+    ids the generator stamps index the very `categories` block written beside them. `full_vocabulary=True` hands the
+    writer the full 49-shape list instead — for the one test that needs categories the run never draws.
 
     """
     settings = {"img_size": 96, "min_objects": 2, "max_objects": 4, **config_kwargs}
@@ -28,8 +45,19 @@ def _write(tmp_path: Path, writer_task: Task, count: int = 4, seed: int = 5, **c
     generator = SyntheticGenerator(config)
     rng = np.random.default_rng(seed)
     samples = [generator.sample(rng) for _ in range(count)]
-    names = class_names(config.class_mode)
-    CocoWriter(writer_task, names).write({"train": samples}, tmp_path)
+    # `shapes` is required now, so "the full vocabulary" is spelled out as ALL_SHAPES rather than
+    # signalled by omitting the argument.
+    vocabulary = class_vocabulary(config.class_mode, ALL_SHAPES if full_vocabulary else config.shapes)
+    names = vocabulary.names
+    # A keypoints *writer* over a non-keypoints *config* is a case several tests here exercise on
+    # purpose. The config's own shapes then name no schema, so the family has to be stated — which
+    # is exactly what removing the writer's implicit animal default forces, and why the choice is
+    # visible here instead of hidden in the writer.
+    schema = keypoint_schema if keypoint_schema is not None else keypoint_schema_for(config.shapes)
+    if schema is None and writer_task is Task.KEYPOINTS:
+        schema = ANIMAL_KEYPOINT_SCHEMA
+    writer_kwargs = {} if schema is None else {"keypoint_schema": schema}
+    CocoWriter(writer_task, vocabulary, **writer_kwargs).write({"train": samples}, tmp_path)
     doc = json.loads((tmp_path / "train" / "_annotations.coco.json").read_text())
     return doc, samples, names
 
@@ -81,6 +109,21 @@ def test_obb_stores_four_corner_polygon(tmp_path: Path) -> None:
         assert len(ann["segmentation"][0]) == 8
 
 
+def test_keypoints_includes_segmentation_polygon(tmp_path: Path) -> None:
+    """KEYPOINTS task includes the same outline polygon as SEGMENTATION.
+
+    Real COCO person-keypoint annotations carry both `keypoints` and `segmentation`; a COCO consumer that gates instance
+    retention on a parseable `segmentation` ring (as lit-YOLOs' `CocoDetectionDataset` does per its crowd/RLE-exclusion
+    policy) would silently drop every keypoint annotation without this.
+
+    """
+    doc, _, _ = _write(tmp_path, Task.KEYPOINTS, task=Task.KEYPOINTS, shapes=tuple(AnimalShape))
+    assert doc["annotations"]
+    for ann in doc["annotations"]:
+        assert "segmentation" in ann
+        assert len(ann["segmentation"][0]) >= 6
+
+
 def test_images_written_to_disk(tmp_path: Path) -> None:
     """Generated images are written to disk."""
     _write(tmp_path, Task.DETECTION)
@@ -116,6 +159,8 @@ def test_animal_shape_dataset_round_trips(tmp_path: Path, task: Task) -> None:
             assert len(ann["segmentation"][0]) >= 2 * 15
         elif task is Task.OBB:
             assert len(ann["segmentation"][0]) == 8
+        elif task is Task.KEYPOINTS:
+            assert len(ann["segmentation"][0]) >= 2 * 15
 
 
 def test_keypoints_task_declares_the_sixteen_point_schema_and_fifteen_edge_skeleton(tmp_path: Path) -> None:
@@ -146,13 +191,15 @@ def test_keypoints_task_declares_the_sixteen_point_schema_and_fifteen_edge_skele
             assert 1 <= j <= 16
 
 
-def test_keypoints_task_leaves_geometric_categories_without_a_keypoint_schema(tmp_path: Path) -> None:
-    """The four geometric-shape categories stay undecorated even though `class_names` still lists them.
+def test_keypoints_task_leaves_categories_outside_the_run_family_without_a_keypoint_schema(tmp_path: Path) -> None:
+    """Only the run's own keypoint-bearing family is decorated — every category outside it stays undecorated.
 
-    `class_names` always spans the full shape vocabulary (geometric shapes plus animals), independently of the `shapes`
-    a run actually draws; a `Task.KEYPOINTS` writer restricted to animal shapes still emits those geometric categories,
-    but only the animal-silhouette schema applies to them, and a category the writer never draws a matching annotation
-    for must not claim a landmark schema it can't back.
+    A `CocoWriter` is handed whatever vocabulary its caller chooses, and a full-vocabulary one (`class_vocabulary` over
+    `ALL_SHAPES`) covers categories the run's own family never includes: every geometric-shape category always, plus
+    every category of the *other* keypoint-bearing family. A category the writer never draws a matching annotation for
+    must not claim a landmark schema it can't back — checked here for an animal run (geometric categories undecorated)
+    and a symbol run (both geometric *and* animal categories undecorated). `generate_dataset` narrows the vocabulary and
+    so never hits this path, but the writer is public and must stay correct without it.
 
     """
     doc, _samples, names = _write(
@@ -164,6 +211,7 @@ def test_keypoints_task_leaves_geometric_categories_without_a_keypoint_schema(tm
         max_objects=3,
         task=Task.KEYPOINTS,
         shapes=tuple(AnimalShape),
+        full_vocabulary=True,
     )
     animal_values = {shape.value for shape in AnimalShape}
     geometric_categories = [c for c, name in zip(doc["categories"], names, strict=True) if name not in animal_values]
@@ -171,6 +219,34 @@ def test_keypoints_task_leaves_geometric_categories_without_a_keypoint_schema(tm
     for category in geometric_categories:
         assert "keypoints" not in category
         assert "skeleton" not in category
+
+    symbol_doc, _symbol_samples, symbol_names = _write(
+        tmp_path / "symbols",
+        Task.KEYPOINTS,
+        count=3,
+        seed=11,
+        img_size=192,
+        max_objects=3,
+        task=Task.KEYPOINTS,
+        shapes=tuple(SymbolShape),
+        keypoint_schema=SYMBOL_KEYPOINT_SCHEMA,
+        full_vocabulary=True,
+    )
+    symbol_values = {shape.value for shape in SymbolShape}
+    outside_symbol_family = [
+        c for c, name in zip(symbol_doc["categories"], symbol_names, strict=True) if name not in symbol_values
+    ]
+    assert outside_symbol_family
+    for category in outside_symbol_family:
+        assert "keypoints" not in category
+        assert "skeleton" not in category
+    symbol_categories = [
+        c for c, name in zip(symbol_doc["categories"], symbol_names, strict=True) if name in symbol_values
+    ]
+    assert symbol_categories
+    for category in symbol_categories:
+        assert category["keypoints"] == list(SYMBOL_KEYPOINT_NAMES)
+        assert len(category["skeleton"]) == 6
 
 
 def test_keypoints_color_class_mode_categories_carry_the_keypoint_schema(tmp_path: Path) -> None:
@@ -233,6 +309,60 @@ def test_keypoints_num_keypoints_excludes_absent_landmarks(tmp_path: Path) -> No
             if name in absent_names:
                 continue
             assert triple[2] == 2
+
+
+def test_letter_shape_dataset_emits_a_single_segmentation_ring(tmp_path: Path) -> None:
+    """A letter's `segmentation` is one ring, exactly like every other single-polygon family.
+
+    A letter is one outline polygon (see `fuse_augmentations.data.letters`), not a pile of disjoint stroke ribbons, so
+    this must behave identically to a symbol or animal run rather than needing any letter-specific handling.
+
+    """
+    doc, _samples, names = _write(
+        tmp_path,
+        Task.SEGMENTATION,
+        count=3,
+        seed=7,
+        img_size=192,
+        max_objects=3,
+        shapes=(LetterShape.X,),
+    )
+    assert doc["annotations"]
+    x_id = names.index(LetterShape.X.value) + 1
+    for ann in doc["annotations"]:
+        assert ann["category_id"] == x_id
+        assert len(ann["segmentation"]) == 1
+        assert len(ann["segmentation"][0]) >= 6
+
+
+def test_letter_categories_carry_their_own_per_letter_skeleton(tmp_path: Path) -> None:
+    """Two different letter categories under one run get two different `skeleton` edge lists.
+
+    Every member of the animal and symbol families shares one topology, so their category `skeleton` is identical across
+    the whole family; a letter's stroke topology genuinely differs per letter (that's what makes it that letter), so
+    `_category_shape_value`/`skeleton_for` must resolve each category to its own edges, not the family-wide fallback.
+
+    """
+    doc, _samples, names = _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        count=4,
+        seed=9,
+        img_size=192,
+        max_objects=4,
+        task=Task.KEYPOINTS,
+        shapes=(LetterShape.I, LetterShape.X),
+        keypoint_schema=LETTER_KEYPOINT_SCHEMA,
+    )
+    categories = {c["name"]: c for c in doc["categories"] if c["name"] in {"i", "x"}}
+    assert set(categories) == {"i", "x"}
+    assert len(categories["i"]["skeleton"]) == 5  # LetterShape.I has 5 stroke edges (stem + two serif bars)
+    assert len(categories["x"]["skeleton"]) == 4  # LetterShape.X has 4 stroke edges
+    assert categories["i"]["skeleton"] != categories["x"]["skeleton"][: len(categories["i"]["skeleton"])]
+    # Every category still declares the shared 15-name landmark list, regardless of its own topology.
+    assert names  # sanity: class_names resolved for this run
+    for category in categories.values():
+        assert len(category["keypoints"]) == 15
 
 
 def test_keypoints_writer_task_with_non_keypoints_config_emits_the_all_zero_table(tmp_path: Path) -> None:

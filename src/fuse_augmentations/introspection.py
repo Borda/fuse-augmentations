@@ -51,7 +51,7 @@ class IntrospectionMixin:
             if isinstance(segment, _PassthroughSegment):
                 return "Cannot inverse a pipeline containing a passthrough segment without a recorded matrix."
             if isinstance(segment, ExactAffineSegment):
-                return "Cannot inverse a pipeline containing an exact geometric segment without a recorded matrix."
+                return "Cannot inverse exact images through this API; recover coordinates with the recorded matrix."
         if len(self._segments) != 1:
             return "Cannot inverse a multi-segment pipeline: return_matrix records only the last segment matrix."
         if not isinstance(
@@ -63,44 +63,66 @@ class IntrospectionMixin:
 
     @property
     def transform_matrix(self) -> torch.Tensor | None:
-        """Return the ``(batch_size, 3, 3)`` composed matrix for the last fused segment.
+        """Return the last supported geometric segment's forward pixel-centre matrix.
 
-        This is the composed forward transform matrix produced by the last
-        fused geometric segment executed in the most recent :meth:`forward`
-        call. This includes affine segments and projective segments, so the
-        returned matrix may encode either an affine or a full homography-style
-        projective warp depending on the last fused segment type. Passthrough
-        (non-fused) transforms do not affect this value, and multiple fused
-        segments are *not* composed into a single whole-pipeline matrix. In
-        mixed-backend pipelines, only the last fused segment across all
-        backends contributes to this value.
+        Affine, projective, exact D4, and direct deterministic letterbox segments
+        publish their actual-call ``(batch_size, 3, 3)`` matrix. A matrix maps input
+        pixel centres to output pixel centres; bbox helpers convert it to pixel-edge
+        geometry. Recover prediction coordinates with its inverse and the appropriate
+        target helper, keeping the input and output canvases explicit.
+
+        Multiple segment matrices are not composed into a whole-pipeline transform.
+        Colour, passthrough and unmarked random-crop operations do not contribute;
+        a matrix alone therefore does not establish complete pipeline invertibility.
+        The narrower :meth:`inverse` image contract remains separately checked.
 
         Returns:
-            The composed matrix for the last fused affine or projective segment, or ``None`` if no such segment has
-            been executed yet (including before the first call to :meth:`forward` or if the last forward contained
-            only passthrough transforms).
+            The last recorded supported matrix, or ``None`` before a call or when
+            the latest call produced no supported geometry.
 
         Note:
-            This is per-instance mutable state written on every ``forward``. Reading it from another
-            thread while a shared instance is running ``forward`` is racy; use one pipeline instance
-            per thread (or read the matrix in the same thread that ran the forward pass).
+            Per-instance mutable state is racy across threads sharing a pipeline.
+            Prefer ``return_matrix=True`` for the matrix paired with a specific call.
 
         """
         return self._last_transform_matrix
 
     @property
-    def n_warps_saved(self) -> int:
-        """Return the number of interpolation passes eliminated vs sequential execution.
+    def resolved_execution(self) -> str | None:
+        """Return the warp engine the most recent call actually used.
 
-        For affine fused segments with *n* transforms, *n - 1* warp passes
-        are saved. For exact (flip-only) segments with *n* transforms, *n*
-        passes are saved because no interpolation is performed at all.
-        For color fused segments with *n* transforms, *n - 1* matrix-multiply
-        passes are saved (all ops collapse to one ``torch.bmm`` call).
-        Single-transform fused segments contribute zero savings.
+        Equal to the configured ``execution`` unless that is ``"auto"``, whose routing rule picks
+        ``"cv2"`` for host data and ``"torch"`` for accelerator data. ``"auto"`` is the only setting
+        under which this can differ from the recorded configuration, which is why it is readable at
+        all: a run that cannot say which engine drew its pixels cannot explain its own numerics.
 
         Returns:
-            Total number of eliminated warp passes across all fused segments.
+            ``"cv2"``, ``"torch"``, or ``None`` when no fused geometric segment has warped anything yet
+            -- before the first call, or after one whose segments were all passthrough.
+
+        Note:
+            Per-instance mutable state written on every ``forward``, with the same threading caveat as
+            :attr:`transform_matrix`.
+
+        """
+        for segment in reversed(self._segments):
+            resolved = getattr(segment, "_last_execution", None)
+            if resolved is not None:
+                return str(resolved)
+        return None
+
+    @property
+    def n_warps_saved(self) -> int:
+        """Return the legacy heuristic for operations combined or routed exactly.
+
+        This compatibility counter includes exact transforms and fused colour,
+        lookup, and blur work. It is not a literal count of removed interpolation
+        passes and does not predict latency or memory savings. Inspect the actual
+        segment plan and profile the intended workload for those decisions.
+
+        Returns:
+            Historical aggregate count across planned segments, independent of
+            which random operations activate on a particular call.
 
         """
         total = 0
@@ -117,10 +139,8 @@ class IntrospectionMixin:
                 continue
 
             if isinstance(seg, ExactAffineSegment):
-                # Each flip in an ExactAffineSegment avoids grid_sample entirely
-                # (uses tensor.flip), so every transform saves exactly 1 warp.
-                # This is why ExactAffineSegment contributes n rather than n-1:
-                # even a single flip is lossless and free of grid_sample cost.
+                # Preserve the historical exact-operation count; exact native
+                # operations need not have performed interpolation originally.
                 total += len(seg.transforms)
                 continue
 

@@ -1,0 +1,78 @@
+name: Release to PyPI
+
+# A release is cut by pushing an annotated tag ``vX.Y.Z`` whose version matches
+# ``fuse_augmentations.__version__``; nothing publishes on a branch push. The tag is the
+# only trigger, so a release is always a deliberate act rather than a side effect of a merge.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+[ab][0-9]+", "v[0-9]+.[0-9]+.[0-9]+rc[0-9]+"]
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build distributions
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 🔍 Check package manifest
+        run: |
+          pip install check-manifest
+          check-manifest
+      - name: 🏗️ Build package
+        run: |
+          pip install --upgrade setuptools wheel build
+          python -m build
+      # The tag and the packaged version must agree, or the artifact on PyPI carries a
+      # version no tag in this repository points at. Checked before upload, never after.
+      - name: 🔖 Verify the tag matches the package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(python -c "import re, pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/fuse_augmentations/__about__.py').read_text()).group(1))")
+          echo "tag=${TAG_VERSION} package=${PKG_VERSION}"
+          test "${TAG_VERSION}" = "${PKG_VERSION}"
+      - name: ✅ Verify distributions
+        run: |
+          pip install --upgrade pip
+          pip install --group dev
+          twine check dist/*
+      - name: 📦 Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: ["build"]
+    # A GitHub environment gates the publish behind whatever protection rules the
+    # repository sets (a required reviewer, for instance), so the operator stays in the loop.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/fuse-augmentations
+    permissions:
+      # Trusted Publishing: PyPI verifies this workflow's OIDC identity, so no long-lived
+      # API token is stored anywhere. Requires a one-time publisher configured on PyPI for
+      # this repository and this workflow file.
+      id-token: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 📥 Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+      - name: 🚀 Publish
+        uses: pypa/gh-action-pypi-publish@release/v1

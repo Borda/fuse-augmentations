@@ -4,51 +4,192 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-All `0.x` versions below were published to PyPI as `dev0` snapshots on 2026-07-11 (batch-uploaded from their respective `bump vX` commits); no stable release has shipped yet.
+Versions below `0.12.0` are `dev0` snapshots, each cut from its own `bump vX` commit's tree. `0.1.0.dev0` through `0.9.0.dev0` were batch-uploaded to PyPI together on 2026-07-11, catching up nine commits at once; `0.10.0.dev0` followed separately on 2026-08-02. `0.11.0.dev0` was never published to PyPI — only `0.12.0` and later exist there next to it. `0.12.0` is the first stable release and the first cut from a `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-23
+
+Synthetic-dataset scene realism: image-crop backgrounds, procedural background types, distractor clutter, occluders, pixel-value degradations, and a measured difficulty ladder; plus a 1px label-emission fix.
+
 ### Added
 
-- `fuse_augmentations.data`: standalone synthetic dataset generator that draws colored shapes (square, rectangle, triangle, circle) on a canvas and exports **COCO** or **YOLO** datasets for **detection**, **segmentation**, and **oriented-bounding-box (OBB)** tasks. One `generate_dataset(output_dir, num_images, fmt=, task=, class_mode=, split_ratios=, seed=)` facade (also re-exported as `fuse_augmentations.generate_dataset`) over a format-agnostic `SyntheticGenerator` and `CocoWriter`/`YoloWriter`; `class_mode` selects shape / color / shape_color classes; rectangle plus per-shape rotation give OBB real orientation, and generation is fully seeded for byte-identical output. Generation and writing are streaming (one sample materialized at a time): `SyntheticGenerator.generate(n, seed=)` yields a lazy `Sample` iterator, the writers persist single-pass, and `generate_dataset` streams to disk so arbitrarily large datasets stay memory-bounded. `fuse_augmentations.data.datasets.SyntheticIterableDataset` (a worker-shard-aware `torch.utils.data.IterableDataset`) feeds samples straight into a `DataLoader` with no disk round-trip. Rendering uses Pillow, now a base dependency. See `docs/guides/synthetic-datasets.md` and `examples/generate_synthetic_dataset.py`.
-- `fuse_augmentations.data.animals.AnimalShape` adds 12 animal side-profile silhouettes — `duck`, `elephant`, `giraffe`, `fish`, `rabbit`, `camel`, `eagle`, `penguin`, `whale`, `kangaroo`, `flamingo`, `crocodile` — fixed outline tables loaded in that same module. Unlike the geometric shapes, none is rotationally symmetric, so every silhouette carries real orientation under any rotation angle; they were added as a basis for future keypoint annotation work, where a symmetric outline makes a landmark's identity ambiguous under rotation. `SyntheticConfig` gains a `shapes: tuple[Shape, ...]` field (default `DEFAULT_SHAPES`, the original 4 geometric shapes) that restricts which shapes the generator draws, so existing callers' seeded output is unchanged; pass e.g. `shapes=(AnimalShape.DUCK, AnimalShape.GIRAFFE)` to draw animals instead, or `shapes=animal_shapes(4)` to take the first four animals in declaration order (`animal_shapes()` with no argument is the whole roster). `class_names()` and class ids still always span the full vocabulary for the selected `class_mode` regardless of `cfg.shapes` (`ClassMode.SHAPE` spans all 16 shapes, `ClassMode.SHAPE_COLOR` spans all 16 shapes times 3 colors -- 48 combined classes -- and `ClassMode.COLOR` spans only the 3 colors), so a class id means the same thing across every configuration. Works with the existing detection/segmentation/OBB tasks and both writers with no writer code changes. See the "Animal shapes" section of `docs/guides/synthetic-datasets.md` and `examples/animate_synthetic_dataset.py --shapes animals`.
-- `Task.KEYPOINTS` adds a fixed sixteen-keypoint anatomical pose schema — `mouth`, `eye`, `ear`, `head`, `neck`, `body_top`, `body_bottom`, `tail`, plus `front_elbow_left/right`, `front_limb_left/right`, `hind_knee_left/right` and `hind_limb_left/right` pairs — shared across quadrupeds, birds, and swimmers (a front limb is the paw, wing, or fin/flipper; every limb is articulated in two points because a limb's bend is the clearest pose cue; `left` = viewer-near by convention; placement rules documented in `fuse_augmentations/data/zoo/README.md`), with COCO keypoint annotations and a 15-edge category skeleton plus Ultralytics YOLO pose rows and `kpt_shape: [16, 3]`. `ear` and the four hind-leg points are the only optional landmarks (a fish's or a whale's silhouette shows pectoral fins/flippers but no hind legs, and neither taxon has an external ear); an animal without them carries NaN rows in its packaged table rather than faked points, and every writer already treats a NaN coordinate the same as a canvas-clipped one (`0.0 <= nan` is `False`), so it needs no special-casing. Every keypoint renders in a fixed per-name color, identical across all animals, and `examples/edit_zoo_keypoints.py` opens a minimal drag-and-save editor for fixing placements by hand. The per-animal outline, keypoints, skeleton edges, and CC0/Public Domain Mark provenance now live in one editable SVG per animal (`fuse_augmentations/data/zoo/<animal>.svg`, superseding the earlier per-animal JSON) — keypoints and their skeleton render visible by default, so opening the file shows shape and pose together; keypoint placement is hand-edited per the documented rule, not script-derived.
-- `inverse()` test-time de-augmentation: pass the image and matrix from a `return_matrix=True` forward call to map predictions (image, masks, xyxy/xywh boxes, keypoints) back to the original frame through the inverse of the fused pixel matrix in one `grid_sample`. Supported only for a pipeline that fuses to a single affine or projective segment; raises a named error for crop-resize, color/lookup/blur, exact-only or passthrough segments, multi-segment pipelines, and a missing paired matrix. Keypoints and masks recover to sampling precision; bounding boxes are axis-aligned (AABB) and recover exactly only under axis-aligned transforms (flip, scale, translation), inflating under rotation, shear, or a projective warp. The paired matrix is not validated against the image — passing a matrix from a different call yields silently wrong geometry.
-- `pipeline_dtype="bfloat16"|"float16"` opt-in on `Compose`: runs the image warp and fused color/lookup applies in half precision on a non-CPU device for roughly 2x memory bandwidth. Matrix composition and inversion stay float32/float64 and are cast to the low precision only at the sampling-grid boundary, so the public `transform_matrix` always keeps full precision. Default (`None`) is bit-identical to before; CPU ignores the option.
+- `ImageBackground` crops the canvas from a directory of the caller's own pictures (`image_dir` required, no default; refuses a missing, empty, or corrupt-file directory at construction rather than rendering black). Recursive, sorted, cached file listing for reproducible seeding; upscales a picture smaller than the canvas. Source path recorded on `sample.scene.background_source` via new `Background.render_with_source`.
+- `docs/datasets/difficulty.md` maps easy/moderate/hard configurations to a difficulty band, ranked by five deterministic proxy statistics (object area, small-object share, boundary contrast, background SNR, clutter coverage). Deliberately no `difficulty=` parameter — difficulty stays a property of the knob combination.
+- `Sample.scene` carries a `SceneRecord` (typed side-car, defaults to a shared empty record, `eq=False`; re-clears mask writability after unpickling for `num_workers > 0`).
+- `SyntheticConfig.occluders` draws unlabelled shapes over labelled objects; demotes a covered landmark from COCO visibility `2` to `1` (never promotes `0`). `sample.scene.occluder_mask` publishes the modal mask (read-only, `None` if unused). Ignores `boundary_tolerance`/`overlap_iou`.
+- `SyntheticConfig.distractors` draws unlabelled shapes beneath labelled objects from `distractor_shapes`/`distractor_colors` (default: complement of `shapes`/`colors`, plus a new `DISTRACTOR_PALETTE`). No annotation, no IoU constraint, best-effort placement; raises at construction if a pool is empty. `resolved_distractor_shapes`/`resolved_distractor_colors` derive pools on read so `dataclasses.replace` can't stale them.
+- `SyntheticConfig.degrade`: a tuple of pointwise finishing effects — `GaussianNoise`, `GaussianBlur`, `JPEG`, `Contrast`, `ColorCast`, `Vignette`, `Quantize` — applied in order, pixel values only, no label movement. `uint8` in/out; `degrade=()` is a no-op.
+- Background, distractors, occluders, and degradations each now draw from their own side stream (`Generator.spawn`), so enabling one knob no longer perturbs the others' draws.
+- `SyntheticConfig.background` accepts a `Background` object as well as a plain fill: `SolidBackground`, `GradientBackground`, `NoiseBackground`, `ImpulseNoiseBackground`, `TextureBackground`. A bare `(r, g, b)` normalizes to `SolidBackground`. **Breaking:** `config.background` reads back as a `Background` object, not the passed triple; a colour name (`"white"`, `"#204080"`) is now rejected at construction instead of silently rendering black. Pinned by digest fixtures across 25 configurations.
+- Documented recipe for a tight rotated box: warp the polygon through `["input", "keypoints"]` and take its extent (0.96–0.98 IoU) instead of the corner-based `transform_bbox_xyxy` AABB (0.51–0.83 IoU at 37°). No API change.
 
 ### Fixed
 
-- `inverse()` normalizes and inverts the paired matrix in full precision even when the augmented image is low precision, casting only the sampling grid to the image dtype at the `grid_sample` boundary (float32/float64 images unaffected). The Albumentations-backed affine/projective segments' public matrix now keeps the image's own precision (float32 or float64) instead of always promoting to float32; only a float16/bfloat16 image promotes it to float32, so float64 Albumentations pipelines no longer lose matrix precision.
+- `polygon`, `keypoints`, and `obb_corners` are now emitted in pixel-centre coordinates (previously off by 1px in the rasterizer's edge space after any flip/quarter-turn; sub-pixel and unnoticed under generic rotation). `bbox_xyxy` and exported COCO/YOLO files are unchanged — writers still convert back to edge space at the file boundary.
+
+## [0.13.0] - 2026-09-06
+
+Training-loop boundaries (`mask_fill`, `augment_detection_batch`, dataset sharding), NumPy-native multi-target execution (`execution="auto"`, channel-last arrays), and the pixel-edge bounding-box migration. Performance figures below reflect their original measurement runs; current numbers live in `docs/research/benchmarks.md` — historical CUDA/MPS ratios need revalidation.
+
+### Added
+
+- Executable classification/segmentation model-step checks alongside the existing detector/pose/TTA/letterbox integration tests (losses, gradients, ignore-label routing — not accuracy).
+- `mask_fill` on `Compose`: scalar auxiliary-mask border independent of image `fill`, including ignore labels `255`/`-1`.
+- `augment_detection_batch`: packs per-image boxes/labels through the dense box pipeline, clips/filters via one survival mask, keeps `area`/`iscrowd`/`image_id` aligned.
+- `SyntheticIterableDataset` accepts explicit `rank`, `world_size`, immutable `epoch` (`num_images` is per rank); recreate per epoch with `persistent_workers=False`.
+- Exact geometric ops and deterministic letterbox expose their actual pixel-centre matrix via `return_matrix=True`.
+- Multi-target path accepts channel-last NumPy images (`Compose(..., data_keys=[...])`); returns results in the caller's own dtype/layout. Tensor and array inputs can't mix in one call (`TypeError`).
+- `rotation_p`/`scale_p` on `Compose.from_params` (keyword-only, default `1.0`, bit-identical at default): per-sample probability for the geometric ranges, matching `hflip_p`/`vflip_p`.
+- Albumentations `RandomSizedCrop` registered as a crop-resize op, routing masks/boxes/keypoints like `RandomResizedCrop`. `RandomSizedBBoxSafeCrop` stays an unregistered barrier by design.
+- `execution="auto"`: resolves cv2/torch per call by device (host → cv2, accelerator → `grid_sample`); never the default. New `resolved_execution` property reports the engine actually used.
+- Multi-target NumPy calls now stay in NumPy/cv2 space instead of round-tripping through the tensor path — 1.05x native Albumentations at 640/1024px, 2.9x on a four-op chain (previously 0.48x).
+- Multi-target pipeline accepts the image positionally alongside keyword auxiliary targets (`pipe(image, bboxes=...)`).
 
 ### Changed
 
-- **`fuse_augmentations.data.shapes` moved to `fuse_augmentations.data.geometry`** — the old path keeps working as a deprecated re-export shim that emits a `DeprecationWarning` on import, so existing `from fuse_augmentations.data.shapes import ...` code is unaffected for now; update the import to `fuse_augmentations.data.geometry`, as the shim will be removed in a future release. It forwards the geometry surface the module published (`CIRCLE_POINTS`, `RECT_ASPECT`, `GEOMETRIC_SHAPES`, `rotate_polygon`, `shape_polygon`, `polygon_to_bbox_xyxy`, `polygon_to_obb`, `bbox_iou`).
-- **`Shape` is now `GeomShape | AnimalShape`, not a single `Enum`** — the drawable vocabulary is split by family, `GeomShape` (square, rectangle, triangle, circle) in `fuse_augmentations.data.geometry` and `AnimalShape` (the 12 animal silhouettes) in `fuse_augmentations.data.animals`. `isinstance(value, Shape)` still works and still rejects a bare string, but `Shape.SQUARE`, `Shape("square")`, `tuple(Shape)`, and `for s in Shape` no longer work — a plain union has no members and is not iterable. Use `GeomShape` directly for the old enum-only behavior, or build the full vocabulary as `[*GeomShape, *AnimalShape]`.
-- `compile=True` on `Compose` now also wraps the fused color-matrix application and the lookup-table application in their own dynamic-shape `torch.compile` regions (previously only the warp core), cutting kernel launches for color- and lookup-heavy pipelines on GPU; each tensor core compiles separately so varying height, width, and batch do not trigger a recompile storm. Per-sample probability masks and the equalize runtime histogram table stay outside compiled regions. Default `compile=False` path and outputs are unchanged.
+- Malformed target shapes and non-involutive keypoint pair tables now fail at the boundary instead of silently misbehaving. Unknown spatial passthroughs are refused up front when auxiliary targets are supplied.
+- Public docs cover pixel-edge boxes, mask padding, the ragged detector adapter, rank/epoch lifecycle, exact/letterbox metadata, CPU-only passthrough transfers.
+- Albumentations affine/projective tensor paths reuse native NumPy matrix preparation; older perspective pickles rebuild the cache on restore.
+- `antialias=True` now requires Kornia; filters aggressive crop-resize downscales per sample instead of per batch. Default `False` unchanged.
+- **Bounding-box numerical migration:** xyxy/xywh now use pixel-edge extents `[0, W] x [0, H]`; full-frame boxes survive flips without a 1px shift. Convert rbox envelopes by `+0.5` against edge-space AABBs.
+- NumPy auxiliary masks retain label values/dtype during layout conversion; integer masks reject bilinear sampling like tensor masks.
+- Fused affine segments on an accelerator now sample parameters and build matrices on host, then transfer once — 1.51x faster on MPS at batch 8 (previously ~10 host-device copies per call).
+- Under `execution="torch"`, image-only Albumentations crops route through `CropResizeSegment` instead of a native passthrough — 0.83x at batch 8, 1.17x at 32, 1.39x at 64 on MPS.
+- `transform_bbox_xyxy`'s four-corner AABB reduction uses `torch.amin`/`amax` instead of `Tensor.min/max(dim=)` — detection-step cost fell from 0.40ms to 0.15ms. Backward-pass subgradient tie-breaking and NaN propagation change; forward values unaffected.
+- Residual float32/float64 divergence between the NumPy and adapter matrix paths is now bounded (≤1 float32 epsilon) and tested (`TestEntryPointAgreement`).
 
-## [0.8.0.dev0] - 2026-07-11
+### Fixed
+
+- The NumPy image path now always draws one Bernoulli activation per transform, matching the tensor path (previously skipped the draw at `p=0.0`/`p=1.0`, desyncing the shared `numpy.random` stream).
+- Auxiliary-target geometry no longer inherits the image's dtype (was rounding affine coefficients to low precision); routes in float64/float32 matching the image warp.
+- A raw NumPy image on the multi-target path no longer crashes with a shape-unpacking error (`_forward_kwargs_dict`'s `cast` was a no-op at runtime).
+
+## [0.12.0] - 2026-09-02
+
+First release published from a tag rather than a batch upload, and the first non-`dev0` version. Adds keypoint mirroring, rotated boxes, letterbox with an exact inverse, instance-survival helpers, constant fill, and caller-owned generators.
+
+### Added
+
+- `keypoint_flip_index=` (`Compose`/`from_params`/`from_config`): caller-supplied keypoint pair permutation, swapped whenever the composed transform reverses orientation (read off the matrix determinant's sign, not a discrete flip op). Applies on every routing path, including the exact-flip and D4 fast paths. `orientation_reversed()`/`permute_keypoint_pairs()` expose the same decision. Default `None` = no swap.
+- Rotated boxes are a first-class target: `"rboxes"` data key `(B, N, 5)` `(cx, cy, w, h, theta)`, routed by every existing box path. Public helpers: `rboxes_to_corners`, `corners_to_rboxes`, `transform_rboxes`, `mirror_rboxes`, `shift_rboxes`, `rbox_envelopes`. The corner re-fit is exact under rotation/scale/translation/mirror, approximate under shear. No canonical form imposed (`canonicalize=` callable available). Clipping not provided — use `rbox_envelopes` with `clip_bbox_xyxy`/`instance_keep_mask`.
+- `letterbox=(height, width)` on `from_params`: single-ratio scale plus pad, exact inverse via `inv3x3`. Also public `letterbox_matrix()`/`letterbox_geometry()`/`LetterboxGeometry`. Fuses into the geometric chain (one `grid_sample`). `allow_upscale=False` caps the ratio at `1.0`. Backend-free only.
+- `instance_keep_mask()` and `clip_bbox_xyxy()` (`fuse_augmentations.targets`, also top-level): the post-warp instance-survival rule. `clip_bbox_xyxy` clamps to the canvas extent; `instance_keep_mask(boxes, clipped_boxes, min_size=, min_visibility=)` returns a **mask**, never filtered boxes, keeping labels/keypoints/rboxes aligned.
+- `fill=` (`Compose`/`from_params`/`from_config`): constant out-of-canvas colour in the image's own value range, per-channel or scalar. Requires `padding_mode="zeros"`; raises against other modes. Image only — routed masks keep zero padding.
+- `generator=` (`Compose`/`from_params`/`from_config`): caller-owned `torch.Generator` drives every pipeline draw, isolating it from the global RNG stream. `None` (default) unchanged. Direct-parameter engine only — raises if combined with backend transforms (Kornia/TorchVision/Albumentations sample from their own RNGs). Pickled state carries the generator.
+
+### Fixed
+
+- Pipelines built with `generator=` now pickle on every supported torch version (`torch._C.Generator` was previously unpicklable); state is serialized and segments rebind to one restored instance.
+- `_build_mixed_segments` now forwards `fill` and `keypoint_flip_index` (previously silently dropped on the mixed-backend planner path).
+
+### Changed
+
+- **Half-pixel convention pinned as a single, tested convention.** `align_corners=True` sampling against the derived normalization sandwich already matches `align_corners=False` implementations (TorchVision, Albumentations, YOLO pipelines) in pixel space; now asserted across shifts, scales, rotation, non-square canvases, and cross-size `normalize_matrix_io`. `padding_mode="reflection"` genuinely differs (pixel-centre vs. pixel-edge reflection), and canvases thinner than 2px on an axis are refused by name. No `align_corners` parameter added.
+- **Releases now cut from a `vX.Y.Z` tag, not a batch upload.** `.github/workflows/release.yml` verifies tag/`__version__` agreement, runs `twine check`, and publishes via PyPI Trusted Publishing. `.github/CONTRIBUTING.md` documents the three release steps (close the changelog, bump `__version__`, tag and push).
+
+## [0.11.0.dev0] - 2026-09-02
+
+Three new shape vocabularies — animals, symbols, letters — each with a keypoint schema, followed by a `data` module restructure into one shape-family registry.
+
+### Added
+
+- `AnimalShape`: 12 animal side-profile silhouettes (duck, elephant, giraffe, fish, rabbit, camel, eagle, penguin, whale, kangaroo, flamingo, crocodile), none rotationally symmetric. `SyntheticConfig.shapes` restricts the drawn vocabulary (default: the original 4 geometric shapes, so existing seeded output is unchanged).
+- `Task.KEYPOINTS`: 16-point anatomical schema (mouth, eye, ear, head, neck, body_top/bottom, tail, front_elbow/limb, hind_knee/limb pairs) shared across quadrupeds/birds/swimmers; `ear` and hind-leg points are optional (NaN when absent). COCO skeleton plus YOLO pose (`kpt_shape: [16, 3]`). One editable SVG per animal.
+- `SymbolShape`: 7 analytically-computed straight-edge symbols (kite, trapezoid, house, arrow, cross, teardrop, anchor); 3 are concave. `Shape` widens to `GeomShape | AnimalShape | SymbolShape` (23 classes total).
+- `Task.KEYPOINTS` for `SymbolShape`: 7-point schema (`center` mandatory; `apex`/`tail`/`flank_*`/`base_*` optional) with a genuine `flip_idx` swap.
+- `SyntheticConfig.asymmetry_jitter` (default `0.0`, range `[0, 0.5)`): narrows a random half of each placed object to break left/right OBB symmetry; excludes `circle`.
+- `examples/render_shape_reference.py`: one static reference image per shape with its detection box and, where applicable, keypoints/skeleton.
+- `LetterShape`: 26 capital letters, authored skeleton-first (nodes plus edges, stroked into a polygon at import time) so every keypoint sits strictly inside the ink. Rounded stroke tips/corners; 7 letters split their counter-closing edge to keep one simple ring. `Shape` widens to include `LetterShape` (49 classes total).
+- `Task.KEYPOINTS` for `LetterShape`: 15-point schema whose keypoints/skeleton are the stroke graph's own nodes/edges (`KeypointSchema.skeleton_by_value`/`skeleton_for()`). Mirroring is not label-preserving for letters (`flip_idx` still published for format completeness).
+- Symbols'/letters' raw shape data packaged as JSON assets loaded at import time (superseded later this cycle by per-shape SVGs).
+
+### Fixed
+
+- `Annotation` now carries its own `KeypointSchema` instead of inferring the family from table length.
+- `DatasetWriter`/`get_writer` no longer default `keypoint_schema` to the animal schema; `Task.KEYPOINTS` without one now raises.
+- `class_names()`/`class_id()` require an explicit `shapes` vocabulary (default previously spanned all 49 shapes against a 4-shape config default).
+- **Annotation class ids now resolve against the vocabulary written beside them.** A narrowed shape family (any animal/symbol/letter run) previously wrote renumbered categories but globally-numbered annotation ids, raising `KeyError` on read. `class_id_of`/`class_id` now take the same `shapes` argument as `class_names`. Non-prefix families' ids shift to start at `0` — compare datasets by class name, not raw id.
+- A bare-string `class_mode` (e.g. `"shape"`) no longer selects the wrong vocabulary — `SyntheticConfig` and both vocabulary functions now coerce to a real `ClassMode` member.
+- `polygon_to_obb`'s chosen orientation no longer flips between renders of the same shape at different angles (resolved outright by the upright-frame OBB semantics below).
+
+### Changed
+
+- **`fuse_augmentations.data` API restructure — breaking, no compatibility shims:**
+    - One shape-family registry (`data.families.SHAPE_FAMILIES`, `ShapeFamily`, `ALL_SHAPES`, `family_of`, `shape_outline`) replaces six independently-encoded family lists.
+    - `generate_dataset` no longer takes `task=`/`class_mode=` — both are `SyntheticConfig` fields.
+    - `class_vocabulary()` returns typed `ClassEntry` records instead of splitting class names on `"_"`.
+    - `fuse_augmentations.data` resolves `SyntheticIterableDataset` lazily (PEP 562) — no torch import.
+    - `register_writer()` and `SplitRatios.custom()` open extension points for output formats and split names.
+    - Every family enum now derives from `data.shape_enum.ShapeEnum`; `Shape` **is** that base rather than a hand-written union.
+    - `Fill` (frozen dataclass: RGB plus originating `Color`, if any) is the fill type everywhere past the config boundary; `SyntheticConfig` normalizes any spelling via `Fill.parse()`. **Breaking:** `config.colors` reads back as `Fill` objects.
+- **Renames (breaking):** `GeomShape`→`PrimitiveShape` (→ `data.primitives`), `shape_polygon`→`shape_outline` (→ `data.families`), `class_id_of`→`class_id`, `data.landmarks`→`data.keypoints`, `Task.OBB`'s value `"oriented_bounding_boxes"`→`"obb"`. `data.shapes` shim removed; per-family `*_shapes(n)` helpers removed (use `tuple(Family)[:n]`).
+- **Oriented boxes are now upright-frame, not minimum-area.** `Annotation.obb_corners` is the shape's own axis-aligned box rotated rigidly by the placement angle (previously the true minimum-area rectangle via rotating calipers, which leaned off-axis for shapes like `kite`/`arrow`/`teardrop`). New `Annotation.angle` field, inserted before `keypoints` — positional callers must switch to keywords. **Breaking** for consumers expecting minimum-area boxes.
+- Symbol SVGs gain a `skeleton` visualization group, matching the animal assets.
+- Synthetic-dataset docs split from one 800-line guide into a 5-page `docs/datasets/` section.
+- Symbols and letters ship as editable per-shape SVGs (`data/symbols/`, `data/letters/`) instead of JSON, parsed by one `data.svgio` module and edited by `examples/edit_shape_keypoints.py`.
+- `animate_synthetic_dataset.py` family previews now guarantee every shape in the family appears at least once (previously a lucky subset).
+- `data.shapes` moved to `data.geometry` (deprecated re-export shim kept temporarily, removed above later this cycle).
+- `Shape` widened progressively: `GeomShape | AnimalShape` → `+ SymbolShape` → `+ LetterShape` → replaced by the one-base-class registry.
+- Animal/symbol outline normalization now centers on the polygon's area centroid instead of the vertex mean (small position shift; `GeomShape` unaffected).
+
+## [0.10.0.dev0] - 2026-08-01
+
+Synthetic dataset generator ships; test-time `inverse()` de-augmentation; Gaussian-blur and lookup-table fusion; per-transform padding mode.
+
+### Added
+
+- `fuse_augmentations.data`: standalone synthetic dataset generator — colored shapes on a canvas, COCO/YOLO export for detection/segmentation/OBB. `generate_dataset(...)` facade over `SyntheticGenerator`/`CocoWriter`/`YoloWriter`; fully seeded, streaming (memory-bounded), plus `SyntheticIterableDataset` for zero-round-trip `DataLoader` use. Pillow now a base dependency.
+- `inverse()`: maps predictions (image, masks, boxes, keypoints) back to the original frame via the inverse fused matrix, from a `return_matrix=True` call. Supported only for a single affine/projective segment; boxes are AABB and inflate under rotation/shear.
+- `pipeline_dtype="bfloat16"|"float16"`: half-precision warp/color ops on non-CPU (~2x bandwidth); matrix math stays float32/64. Default unchanged.
+- Gaussian blur now folds and commutes instead of being a hard fusion barrier: consecutive blurs merge by variance addition; a blur before a fusible affine commutes to share one warp (axis-aligned, then general affine via the full covariance transform). Downscaling affines and rotated/sheared cv2-native runs keep it a barrier.
+- Per-channel non-linear maps (`gamma`, `solarize`, `posterize`, `equalize`) fuse into a single lookup table (`POINTWISE_LUT`/`FusedLUTSegment`) instead of one pass each; `equalize`'s runtime histogram is built per call.
+- `padding_mode="per_transform"`: honors each transform's own border mode instead of one pipeline-wide override; modes without an exact `grid_sample` equivalent stay a native passthrough with a warning.
+
+### Fixed
+
+- `inverse()` normalizes/inverts the paired matrix in full precision regardless of image dtype.
+- `RandomRotate90`/D4 quarter-turn matrix direction corrected to match native `np.rot90`/`exact_apply`.
+- Downscale antialias prefilter now reads the correct axis for anisotropic downscales; `Perspective(keep_size=False)` now raises `NotImplementedError` instead of silently mis-warping.
+- Albumentations `RandomResizedCrop` with auxiliary targets now routes through a real `CropResizeSegment`.
+- `DatasetWriter.write` documents that split iteration must happen once each, in order (shared lazy sample stream).
+- Backend replay parity fixes: Kornia affine composition/quarter-turn direction, Albumentations keep-size perspective scaling, TorchVision rotation convention.
+- Blur-commute singular-value guard now tolerates float32 rounding (`1e-6`); `clip_policy="per_op_parity"` contrast midpoint now recomputed from the clamped intermediate.
+
+### Changed
+
+- `compile=True` also wraps the fused color-matrix and lookup-table applies in their own `torch.compile` regions.
+- Base dependency audit: dropped then reinstated `pillow` (needed by the data generator); dropped unused `rich`/`scipy`. CI now covers Python 3.11–3.14, including a previously-missing 3.12 leg.
+- Pipeline pickling rebuilds derived dispatch attributes on unpickling instead of only at construction; `fusion_plan` reports backend-boundary `split_reason` and marks cv2 fused/projective segments as CPU-passthrough on non-CPU pipelines.
+
+### Performance
+
+- Oriented box now derives from the polygon on first access instead of at generation time — 75% of generation time on a mixed-family run (311ms → 56ms over 538 objects). Deleted outright in the next cycle's upright-frame rewrite.
+- Several host-sync/FLOP reductions: skipped exact-D4 device readback off-CPU, `baddbmm` color-matrix apply (~25% fewer FLOPs), closed-form `normalize_matrix_io`, a batch-size sentinel avoiding a `.item()` sync, redundant `.copy()` removed from cv2 warp paths.
+
+## [0.9.0.dev0] - 2026-07-11
+
+Pluggable adapter registry, exact D4 execution, crop+resize fusion, and multi-target routing through Albumentations; opt-in `compile`/`antialias`/`clip_policy`/`mask_interpolation`.
 
 ### Added
 
 - Pluggable adapter registry: public `register_adapter()` plus the `fuse_augmentations.adapters` entry-point group (experimental); `Compose.supported_ops(backend)` and `Compose.capability_matrix()` report config-time op coverage, and `from_config` aggregates all invalid specs in one error.
 - Exact execution for composed flip / quarter-turn (90°/180°/270°) chains: dispatched via `tensor.flip`/`rot90` with zero interpolation error; auxiliary targets (masks, boxes, keypoints) fall back to the grid path automatically instead of raising.
 - Crop+resize fusion: a geometric chain followed by `RandomResizedCrop` now fuses into a single warp at the target output size.
-- `execution="cv2" | "torch"` flag on `Compose` for fused Albumentations segments: `"cv2"` (default) keeps per-sample cv2 warps bit-identical to earlier releases; `"torch"` opts into one batched `grid_sample` per segment (batch-size-independent throughput, native GPU/MPS execution).
+- `execution="cv2" | "torch"` flag on `Compose` for fused Albumentations segments: `"cv2"` (default) keeps per-sample cv2 warps bit-identical to earlier releases; `"torch"` opts into one batched `grid_sample` per segment.
 - Multi-target `data_keys` with Albumentations fused segments: masks, bounding boxes, and keypoints are routed through the composed pixel matrix (previously a construction-time `ValueError`).
-- Albumentations-style keyword calls on multi-target pipelines (`pipe(image=..., mask=..., bboxes=...)`) return a dict keyed by the caller's keyword names; the positional tuple API is unchanged. Colliding keyword aliases raise `ValueError`.
+- Albumentations-style keyword calls on multi-target pipelines (`pipe(image=..., mask=..., bboxes=...)`) return a dict keyed by the caller's keyword names. Colliding keyword aliases raise `ValueError`.
 - `output_backend="numpy"` now converts each convertible target of a multi-target output (image, mask); coordinate targets remain tensors.
-- `Normalize` (Kornia, TorchVision v2, standard Albumentations) now fuses into the color matrix as a per-channel affine, deleting one full-tensor pass from pipelines that end in normalization; the final gamut clamp is suppressed for the normalized output (image-statistics Normalize modes remain passthrough).
-- `clip_policy="final" | "per_op_parity"` on `Compose`: `"final"` (default, unchanged) clamps once after the fused color matmul; `"per_op_parity"` splits the fused color run wherever an intermediate would leave `[0, 1]`, matching a native per-op clamped chain.
-- Opt-in `compile=True` on `Compose`: wraps the warp core (matrix normalize → `affine_grid` → `grid_sample`) in `torch.compile` on torch ≥ 2.2 (no-op otherwise and on CPU; default off, outputs unchanged).
-- Opt-in `antialias=True` on `Compose`: crop-resize segments prefilter aggressive downscales (worst-axis scale < 0.5) before the single warp, removing aliasing; default off, outputs bit-identical.
-- Opt-in `substitute_passthrough=True` on `Compose`: replaces registered non-fusible ops with an installed backend's torch-native equivalent (initially Albumentations `GaussianBlur` → Kornia `RandomGaussianBlur`) so GPU pipelines stay on-device; behaviour-changing and warns per substitution.
-- Passthrough segments now cross the CPU boundary once per batch (one device-to-host and one host-to-device transfer per segment instead of per sample), with identical numerics.
-- `fusion_plan` marks passthrough entries with `[CPU passthrough]` on non-CPU pipelines, and `fusion_plan_descriptors` carries machine-readable `split_reason` / `barrier` / `refused` fields.
-- Opt-in `mask_interpolation="bilinear"` on `Compose` and `from_params`: differentiable soft-mask sampling for auxiliary masks (float masks required; labels mix at boundaries). Default `"nearest"` is unchanged and bit-identical.
-- Memory benchmark (`experiments/bench_memory.py`): peak memory + allocation counts, fused vs native, per pipeline and batch size.
-- `backend="native"` is now a first-class option for `from_config` (and `from_params` gains a `native` flag): the zero-dependency, fully batched pure-torch engine, including native `brightness`/`contrast` builders. Opt-in — backend auto-detection remains the default.
-- `return_matrix=True` per-call flag: returns `(output, matrix)` without reading shared instance state, making matrix retrieval thread-safe; the `transform_matrix` property remains for compatibility.
-- One `finfo(dtype).eps`-scaled near-singular threshold shared by all three matrix-inversion paths (torch, compile-friendly, numpy); `fusion_plan` / `fusion_plan_descriptors` results are cached (device-aware, pickle-safe).
+- `Normalize` (Kornia, TorchVision v2, standard Albumentations) now fuses into the color matrix as a per-channel affine; the final gamut clamp is suppressed for normalized output.
+- `clip_policy="final" | "per_op_parity"` on `Compose`: `"final"` (default) clamps once after the fused color matmul; `"per_op_parity"` splits the fused run wherever an intermediate would leave `[0, 1]`.
+- Opt-in `compile=True`: wraps the warp core in `torch.compile` on torch ≥ 2.2. Opt-in `antialias=True`: crop-resize segments prefilter aggressive downscales. Opt-in `substitute_passthrough=True`: replaces registered non-fusible ops with an installed backend's torch-native equivalent (initially Albumentations `GaussianBlur` → Kornia `RandomGaussianBlur`); warns per substitution.
+- Passthrough segments now cross the CPU boundary once per batch instead of per sample, with identical numerics.
+- `fusion_plan` marks passthrough entries with `[CPU passthrough]` on non-CPU pipelines; `fusion_plan_descriptors` carries machine-readable `split_reason`/`barrier`/`refused` fields.
+- Opt-in `mask_interpolation="bilinear"`: differentiable soft-mask sampling for auxiliary masks. Default `"nearest"` unchanged.
+- Memory benchmark (`experiments/bench_memory.py`): peak memory and allocation counts, fused vs. native, per pipeline and batch size.
+- `backend="native"` is now a first-class option for `from_config`: the zero-dependency, fully batched pure-torch engine. Opt-in — auto-detection remains the default.
+- `return_matrix=True` per-call flag: returns `(output, matrix)` without reading shared instance state, making matrix retrieval thread-safe.
+- One `finfo(dtype).eps`-scaled near-singular threshold shared by all three matrix-inversion paths; `fusion_plan`/`fusion_plan_descriptors` results are cached (device-aware, pickle-safe).
 
 ### Fixed
 
@@ -56,7 +197,7 @@ All `0.x` versions below were published to PyPI as `dev0` snapshots on 2026-07-1
 - `from_params(scale=...)` now draws a single isotropic factor shared by both axes, as documented; explicit `scale_x`/`scale_y` keep independent draws.
 - cv2 `"reflection"` padding now maps to `BORDER_REFLECT_101`, matching torch `grid_sample(padding_mode="reflection", align_corners=True)`.
 - Bounding-box zero-`w` guard uses `finfo.eps` (the previous `finfo.tiny` clamp overflowed float32 to `inf`).
-- Near-singular affine matrices raise consistently across the torch and cv2 inversion paths; eager and `torch.compile` branches of `inv3x3` share one threshold.
+- Near-singular affine matrices raise consistently across the torch and cv2 inversion paths.
 - cv2 fast-path activation gates respond to `torch.manual_seed`; Albumentations segment `forward` no longer consumes RNG draws for inactive transforms.
 - `uint16` NumPy inputs are normalised to `[0, 1]` (previously cast without rescaling).
 - Albumentations native dict path raises instead of silently dropping non-image keys; unrecognised transforms are rejected in Albumentations-backed pipelines.
@@ -65,12 +206,14 @@ All `0.x` versions below were published to PyPI as `dev0` snapshots on 2026-07-1
 
 ### Changed
 
-- **Fused contrast midpoint is now the per-image mean luminance** (matching native TorchVision/Kornia `ColorJitter` semantics) instead of a fixed `0.5`. Fused pipelines containing contrast produce different (more native-faithful) values than previous releases; pin the previous behavior only by comparing against your own stored baselines. Parity holds under `reorder=NONE`; with pointwise reordering the mean is taken over the warped image and diverges from native by construction.
-- Coordinate-changing passthrough ops (elastic/grid/optical distortion and similar) now **raise `ValueError`** when they execute in a multi-target pipeline (previously a `UserWarning`): auxiliary targets skip passthrough segments, so continuing would silently misalign masks/boxes/keypoints. Kernel/pointwise passthrough (blur, noise) with auxiliary targets no longer warns — skipping them is the correct semantics.
+- **Fused contrast midpoint is now the per-image mean luminance** (matching native TorchVision/Kornia `ColorJitter` semantics) instead of a fixed `0.5`. Pin previous behavior only by comparing against your own stored baselines.
+- Coordinate-changing passthrough ops (elastic/grid/optical distortion) now **raise `ValueError`** in a multi-target pipeline (previously a `UserWarning`). Kernel/pointwise passthrough (blur, noise) no longer warns — skipping them is correct.
 - `same_on_batch=True` on Albumentations-backed fused segments now shares the sampled parameters across the batch, not just the activation decision.
 - Documented color-fusion accuracy caveats (final-only clamping; fixed 0.5 contrast midpoint) and the seeding contract limits between warp backends.
 
-## [0.7.0.dev0] - 2026-05-14
+## [0.8.0.dev0] - 2026-05-14
+
+Single-op fast paths and a native Albumentations-dict I/O path.
 
 ### Added
 
@@ -82,46 +225,50 @@ All `0.x` versions below were published to PyPI as `dev0` snapshots on 2026-07-1
 
 ### Changed
 
-- Performance: single-op fast paths that skip the matrix pipeline and `grid_sample` for one-transform chains, numpy-direct matrix builders with cached identity/inverse buffers for the cv2 and Albumentations warp paths, and fused sample+build for the TorchVision cv2 path; cumulative gains tracked via an expanded 45-case benchmark suite.
 - CI gains a matrix strategy exercising the optional Kornia/TorchVision/Albumentations extras independently.
 
 ### Performance
 
-- Single-op fast paths for `FusedAffineSegment` (Kornia/TorchVision) and the Albumentations numpy path skip matrix reconstruction and `grid_sample`/`cv2.warpAffine` entirely for one-transform chains, and bypass `nn.Module.__call__` in favor of direct `.forward()` dispatch in the compose loop.
-- `matmul3x3` moved to `torch.bmm` and the eager `inv3x3` path to `torch.linalg.inv` (~150x and ~6x faster per call respectively, measured); the Albumentations numpy path gained a closed-form Cramer's-rule 3x3 inverse and an `np.flip` bypass for pure horizontal/vertical-flip chains, replacing `scipy.ndimage` with `cv2.warpAffine` for its warp step.
-- Fused sample+build helpers (`sample_and_build_matrix_numpy_b1_kornia`/`_tv`) combine parameter sampling and matrix construction into one call on the Kornia and TorchVision cv2 fast paths, cutting several intermediate tensor allocations per active transform.
-- Pre-allocated matrix buffers, cached identity matrices, and pre-classified segment-dispatch tags remove per-call allocations and `isinstance` checks from the hot cv2/Albumentations forward path.
-- Individual optimization commits are pinned to measured per-change deltas against the running 45-case composite benchmark score (e.g. `A.Rotate` numpy fast path +1.45%, fused sample+build for the TorchVision cv2 path +1.68%, Albumentations direct-dispatch bypass +0.94%, redundant-copy removal in the cv2 batch-size-1 path +0.61%).
-- `experiments/optimize_score.py` grew from a 15-case to a 45-case benchmark with a computed theoretical-target ceiling per case; `examples/bench_augmentation_pipelines.py` and `examples/bench_primitive_vs_affine.py` were added to compare fused vs. native throughput across all three backends.
+- Single-op fast paths for `FusedAffineSegment` (Kornia/TorchVision) and the Albumentations numpy path skip matrix reconstruction and `grid_sample`/`cv2.warpAffine` entirely for one-transform chains, and bypass `nn.Module.__call__` in favor of direct `.forward()` dispatch.
+- `matmul3x3` moved to `torch.bmm` and eager `inv3x3` to `torch.linalg.inv` (~150x and ~6x faster per call, measured); the Albumentations numpy path gained a closed-form Cramer's-rule 3x3 inverse and an `np.flip` bypass for pure flip chains, replacing `scipy.ndimage` with `cv2.warpAffine`.
+- Fused sample+build helpers combine parameter sampling and matrix construction into one call on the Kornia and TorchVision cv2 fast paths.
+- Pre-allocated matrix buffers, cached identity matrices, and pre-classified segment-dispatch tags remove per-call allocations and `isinstance` checks from the hot forward path.
+- `experiments/optimize_score.py` grew from a 15-case to a 45-case benchmark with a computed theoretical-target ceiling per case; individual optimizations pinned to measured deltas against it.
 
-## [0.6.0.dev0] - 2026-03-28
+## [0.7.0.dev0] - 2026-03-28
+
+Declarative `from_config()` construction, crop-resize fusion, and color-matrix fusion.
 
 ### Added
 
-- `Compose.from_config()` classmethod, backed by a backend resolver, an op-name registry, and a frozen `TransformSpec` dataclass, for declarative pipeline construction.
-- `output_backend` parameter on `Compose.__init__` for cross-backend output conversion, backed by new `NumpyToTorchConverter` / `TorchToNumpyConverter` and a `BackendConverter` protocol.
+- `Compose.from_config()` classmethod, backed by a backend resolver, an op-name registry, and a frozen `TransformSpec` dataclass.
+- `output_backend` parameter on `Compose.__init__` for cross-backend output conversion (`NumpyToTorchConverter`/`TorchToNumpyConverter`, `BackendConverter` protocol).
 - `CROP_RESIZE_FIXED` op category and `CropResizeSegment`, with adapter registrations across all three backends.
-- `POINTWISE_LINEAR` color fusion: `build_color_matrix` per adapter, `FusedColorSegment`, and `reorder_pointwise`/`build_segments` integration.
+- `POINTWISE_LINEAR` color fusion: `build_color_matrix` per adapter, `FusedColorSegment`, `reorder_pointwise`/`build_segments` integration.
 - `ReorderPolicy.AGGRESSIVE`, and extended `GEOMETRIC_EXACT` dispatch with an `exact_apply` protocol method.
-- `fusion_plan_descriptors` property (backed by a new `SegmentDescriptor` dataclass) and a `backend=` kwarg on `from_params` for full-parity delegation.
+- `fusion_plan_descriptors` property (`SegmentDescriptor` dataclass) and a `backend=` kwarg on `from_params` for full-parity delegation.
 
 ### Changed
 
-- `ExactSegment` renamed to `ExactAffineSegment` (deprecation alias kept); expanded Kornia and Albumentations adapter coverage surveys (`SafeRotate`, `RandomShear`, `RandomTranslate` registrations).
+- `ExactSegment` renamed to `ExactAffineSegment` (deprecation alias kept); expanded Kornia and Albumentations adapter coverage (`SafeRotate`, `RandomShear`, `RandomTranslate`).
 
 ### Fixed
 
 - Aux-target corruption, batch-randomness, and backend-attribution bugs found across the review cycle; `_d4_matrix` now guards shape-changing D4 elements on non-square images.
 
-## [0.5.0.dev0] - 2026-03-20
+## [0.6.0.dev0] - 2026-03-20
+
+Fused perspective/projective warp chains.
 
 ### Added
 
 - `ProjectiveSegment` and `AlbuProjectiveSegment` for fused perspective-warp chains, with perspective division applied to auxiliary targets (masks, boxes, keypoints).
-- `RandomPerspective` / `Perspective` registered across all three adapters (Kornia, TorchVision, Albumentations), wired into `Compose` via `ProjectiveSegment`.
+- `RandomPerspective` / `Perspective` registered across all three adapters, wired into `Compose` via `ProjectiveSegment`.
 - `PROJECTIVE` op-category enum and perspective matrix utilities.
 
-## [0.4.0.dev0] - 2026-03-20
+## [0.5.0.dev0] - 2026-03-20
+
+TorchVision adapter and mixed-backend pipelines.
 
 ### Added
 
@@ -133,7 +280,9 @@ All `0.x` versions below were published to PyPI as `dev0` snapshots on 2026-07-1
 - `RandomAffine` matrix composition corrected to match TorchVision semantics; TorchVision v2 batch semantics fixed.
 - `id()`-keyed adapter map replaced with a stable lookup (fixes pickle-stability of passthrough adapter dispatch); `Backend.UNKNOWN` handling clarified.
 
-## [0.3.0.dev0] - 2026-03-19
+## [0.4.0.dev0] - 2026-03-19
+
+Albumentations adapter.
 
 ### Added
 
@@ -148,7 +297,9 @@ All `0.x` versions below were published to PyPI as `dev0` snapshots on 2026-07-1
 
 - `torch.from_numpy` incompatibility with NumPy 2.x.
 
-## [0.2.0.dev0] - 2026-03-18
+## [0.3.0.dev0] - 2026-03-18
+
+Auxiliary-target routing and `from_params()`.
 
 ### Added
 
@@ -160,9 +311,21 @@ All `0.x` versions below were published to PyPI as `dev0` snapshots on 2026-07-1
 - `transform_mask` now supports integer masks with dtype preservation (previously float32-only).
 - Duplicate `data_keys` handling in the forward loop.
 
-## [0.1.0.dev0] - 2026-03-18
+## [0.2.0.dev0] - 2026-03-18
+
+Lossless exact-flip chains.
 
 - `ExactSegment` for lossless flip-only chains, dispatched via `build_segments` detection of EXACT-only op chains.
 - `ReorderPolicy.POINTWISE` reordering support.
 - `same_on_batch` support verified and extended in `KorniaAdapter`.
 - `FusedCompose` renamed and reworked for `Protocol` conformance.
+
+## [0.1.0.dev0] - 2026-03-17
+
+Initial release: fused-affine `Compose` orchestrator and the Kornia adapter.
+
+- Initial `Compose` orchestrator (`fusion_plan`, `n_warps_saved`, `transform_matrix`) wired to `FusedAffineSegment` and `build_segments`.
+- `KorniaAdapter` with corrected shear/rotation sign conventions.
+- Core primitives: `TransformCategory`, `ReorderPolicy`, `InterpolationMode`, `PaddingMode`, `TransformAdapter` protocol (`_types.py`); matrix primitives `matmul3x3`, `inv3x3`, `normalize_matrix` (`_matrix.py`); interpolation and backend resolution (`_interpolation.py`, `_backend.py`).
+- `fuse_aug` re-export package and public `__all__` surface.
+- Test infrastructure scaffold.

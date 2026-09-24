@@ -20,6 +20,11 @@ import os
 from typing import Any
 
 from fuse_augmentations.__about__ import *  # noqa: F403
+from fuse_augmentations.affine.matrix import (
+    LetterboxGeometry,
+    letterbox_geometry,
+    letterbox_matrix,
+)
 from fuse_augmentations.affine.segment import (
     CropResizeSegment,
     ExactAffineSegment,
@@ -30,6 +35,7 @@ from fuse_augmentations.affine.segment import (
     build_segments,
 )
 from fuse_augmentations.converters import NumpyToTorchConverter, TorchToNumpyConverter
+from fuse_augmentations.detection import augment_detection_batch
 
 # Import from the implementation module (not the ``compose`` compatibility
 # shim, whose runtime ``__getattr__`` forwarding is invisible to static doc
@@ -41,10 +47,20 @@ from fuse_augmentations.pipeline import (
     FusedCompose,
 )
 from fuse_augmentations.targets import (
+    clip_bbox_xyxy,
+    corners_to_rboxes,
+    instance_keep_mask,
+    mirror_rboxes,
+    orientation_reversed,
+    permute_keypoint_pairs,
+    rbox_envelopes,
+    rboxes_to_corners,
+    shift_rboxes,
     transform_bbox_xywh,
     transform_bbox_xyxy,
     transform_keypoints,
     transform_mask,
+    transform_rboxes,
 )
 from fuse_augmentations.types import (
     BackendConverter,
@@ -71,6 +87,7 @@ __all__ = [
     "FusedCompose",
     "FusedLUTSegment",
     "InterpolationMode",
+    "LetterboxGeometry",
     "NumpyToTorchConverter",
     "PaddingMode",
     "ProjectiveSegment",
@@ -81,12 +98,25 @@ __all__ = [
     "TransformAdapter",
     "TransformCategory",
     "TransformSpec",
+    "augment_detection_batch",
     "build_segments",
+    "clip_bbox_xyxy",
+    "corners_to_rboxes",
     "generate_dataset",  # noqa: F405 - provided lazily via module __getattr__
+    "instance_keep_mask",
+    "letterbox_geometry",
+    "letterbox_matrix",
+    "mirror_rboxes",
+    "orientation_reversed",
+    "permute_keypoint_pairs",
+    "rbox_envelopes",
+    "rboxes_to_corners",
+    "shift_rboxes",
     "transform_bbox_xywh",
     "transform_bbox_xyxy",
     "transform_keypoints",
     "transform_mask",
+    "transform_rboxes",
 ]
 
 

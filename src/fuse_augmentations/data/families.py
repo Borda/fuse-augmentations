@@ -1,0 +1,401 @@
+"""The shape-family registry: the one place that knows which shape families exist.
+
+Every family — :mod:`~fuse_augmentations.data.primitives`,
+:mod:`~fuse_augmentations.data.animals`, :mod:`~fuse_augmentations.data.symbols`,
+:mod:`~fuse_augmentations.data.letters` — contributes exactly one :class:`ShapeFamily` entry to
+:data:`SHAPE_FAMILIES`, and every other module in the package consults that tuple instead of
+naming the families itself.
+
+That is the whole point. Before this module existed, "which families exist" was re-derived in six
+places, each in a different representation: a type union, a dict keyed by class, a dict keyed by
+landmark-table *length*, an if-chain over polygon tables, an ``isinstance`` chain, and a block of
+per-family re-exports. Adding a family meant finding all six, and missing one failed quietly —
+forget the ``isinstance`` chain and the family generated no landmarks at all, which a writer then
+serialized as a structurally valid all-zero keypoint table.
+
+Adding a family now means exactly one edit: write the module and append one :class:`ShapeFamily`
+here. :data:`Shape` used to be a second, easily forgotten site — a hand-written
+``PrimitiveShape | AnimalShape | ...`` union, needed because a type checker cannot infer the member
+types from :data:`SHAPE_FAMILIES`. It is now the shared base class
+:class:`~fuse_augmentations.data.shape_enum.ShapeEnum` instead, which a checker reads directly off
+each family's own declaration, so there is nothing left to keep in sync.
+
+Examples:
+    ```pycon
+    >>> from fuse_augmentations.data.families import SHAPE_FAMILIES, family_of, shape_outline
+    >>> [family.name for family in SHAPE_FAMILIES]
+    ['primitives', 'animals', 'symbols', 'letters']
+    >>> from fuse_augmentations.data.animals import AnimalShape
+    >>> family_of(AnimalShape.DUCK).name
+    'animals'
+    >>> shape_outline("square", center=(0.0, 0.0), size=2.0).shape
+    (4, 2)
+
+    ```
+
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Protocol
+
+import numpy as np
+
+from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_SCHEMA, ANIMAL_POLYGONS, AnimalShape, animal_keypoints
+from fuse_augmentations.data.geometry import place_points
+from fuse_augmentations.data.letters import LETTER_KEYPOINT_SCHEMA, LETTER_POLYGONS, LetterShape, letter_keypoints
+from fuse_augmentations.data.primitives import PrimitiveShape, primitive_outline
+from fuse_augmentations.data.shape_enum import ShapeEnum
+from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_SCHEMA, SYMBOL_POLYGONS, SymbolShape, symbol_keypoints
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from enum import Enum
+
+    from numpy.typing import NDArray
+
+    from fuse_augmentations.data.keypoints import KeypointSchema
+
+#: Any drawable shape, as a static type *and* as a runtime check: every family's enum derives from
+#: :class:`~fuse_augmentations.data.shape_enum.ShapeEnum`, so ``isinstance(value, Shape)`` accepts
+#: any member type and still rejects a bare ``"duck"`` string — which is what
+#: :meth:`~fuse_augmentations.data.config.SyntheticConfig._validate_vocabulary` relies on. This was
+#: a hand-written ``PrimitiveShape | AnimalShape | ...`` union until the base class replaced it,
+#: which is what reduced adding a family to a single edit site. It is not iterable — use
+#: :data:`ALL_SHAPES` for the full vocabulary.
+Shape = ShapeEnum
+
+
+class PlaceKeypoints(Protocol):
+    """The signature every family's landmark placer shares.
+
+    ``shape`` is :class:`~typing.Any` rather than :data:`Shape` on purpose: each family's placer accepts only its *own*
+    member type, and a callable taking a narrower parameter is not assignable to one declared over the whole union. The
+    registry only ever calls a placer with a shape of its own family — :func:`place_keypoints` looks the family up by
+    ``type(shape)`` — so the guarantee holds at the call site rather than in the annotation.
+
+    """
+
+    def __call__(
+        self,
+        shape: Any,  # noqa: ANN401 - see the class docstring: each family's placer accepts only its own
+        # member type, and a callable over the narrower type is not assignable to one declared over the union
+        center: tuple[float, float],
+        size: float,
+        angle: float,
+        skew: float,
+    ) -> NDArray[np.float64]:
+        """Return the placed ``(num_keypoints, 2)`` landmark table for one shape."""
+        ...
+
+
+def _table_outline(table: Mapping[str, NDArray[np.float64]]) -> Callable[[str, float], NDArray[np.float64]]:
+    """Return an outline accessor reading one asset-backed family's unit-space polygon table.
+
+    The stored table is frozen (read-only), so multiplying by ``size`` returns a fresh writable
+    array and never aliases the packaged constant.
+
+    Args:
+        table: The family's ``shape value -> unit-space outline`` mapping.
+
+    Returns:
+        A ``(value, size) -> outline`` callable matching :attr:`ShapeFamily.base_outline`, raising
+        :class:`KeyError` for a value the family does not own — callers reach it through
+        :func:`shape_outline`, which checks family membership first.
+
+    """
+    return lambda value, size: table[value] * size
+
+
+@dataclass(frozen=True)
+class ShapeFamily:
+    """One shape family's contribution to the drawable vocabulary.
+
+    Args:
+        name: The family's short name, used in error messages and diagnostics (``"animals"``).
+        members: Every member of the family's enum, in declaration order — which is also the order
+            :func:`~fuse_augmentations.data.config.class_names` numbers them in.
+        base_outline: Returns the origin-centered ``(num_points, 2)`` outline for one member
+            *value* at a given size. Analytic for :mod:`~fuse_augmentations.data.primitives`, a
+            table lookup for every asset-backed family; the two are interchangeable here precisely
+            because both share the unit convention (area centroid at the origin, larger extent
+            equal to ``size``).
+        keypoint_schema: The family's landmark vocabulary, or ``None`` for a family whose members
+            carry no landmarks (:class:`~fuse_augmentations.data.primitives.PrimitiveShape`). A
+            family with a schema must also supply ``place_keypoints``, and vice versa.
+        place_keypoints: Places the family's landmark table through the same skew/rotate/translate
+            pipeline its outline goes through, or ``None`` for a family with no landmarks.
+
+    Raises:
+        ValueError: If ``members`` is empty, or if exactly one of ``keypoint_schema`` and
+            ``place_keypoints`` is given — a family either has landmarks or does not.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.families import SHAPE_FAMILIES
+        >>> primitives = SHAPE_FAMILIES[0]
+        >>> primitives.name, primitives.has_keypoints
+        ('primitives', False)
+        >>> SHAPE_FAMILIES[1].member_type.__name__
+        'AnimalShape'
+
+        ```
+
+    """
+
+    name: str
+    members: tuple[Shape, ...]
+    base_outline: Callable[[str, float], NDArray[np.float64]]
+    keypoint_schema: KeypointSchema | None = None
+    place_keypoints: PlaceKeypoints | None = None
+
+    def __post_init__(self) -> None:
+        """Reject an empty family or a half-declared landmark capability."""
+        if not self.members:
+            raise ValueError(f"shape family {self.name!r} must have at least one member")
+        if (self.keypoint_schema is None) != (self.place_keypoints is None):
+            raise ValueError(
+                f"shape family {self.name!r} must declare both keypoint_schema and place_keypoints, or neither"
+            )
+
+    @property
+    def member_type(self) -> type[Enum]:
+        """Return the family's enum class — the type ``isinstance`` and ``type(shape)`` see."""
+        return type(self.members[0])
+
+    @property
+    def has_keypoints(self) -> bool:
+        """Return whether this family's members carry a landmark table."""
+        return self.keypoint_schema is not None
+
+    @property
+    def values(self) -> tuple[str, ...]:
+        """Return every member's string value, in declaration order."""
+        return tuple(str(member.value) for member in self.members)
+
+
+#: Every shape family, in the order their classes are numbered by
+#: :func:`~fuse_augmentations.data.config.class_names`. Append here to add a family — and extend
+#: :data:`Shape` on the same change.
+SHAPE_FAMILIES: tuple[ShapeFamily, ...] = (
+    ShapeFamily(name="primitives", members=tuple(PrimitiveShape), base_outline=primitive_outline),
+    ShapeFamily(
+        name="animals",
+        members=tuple(AnimalShape),
+        base_outline=_table_outline(ANIMAL_POLYGONS),
+        keypoint_schema=ANIMAL_KEYPOINT_SCHEMA,
+        place_keypoints=animal_keypoints,
+    ),
+    ShapeFamily(
+        name="symbols",
+        members=tuple(SymbolShape),
+        base_outline=_table_outline(SYMBOL_POLYGONS),
+        keypoint_schema=SYMBOL_KEYPOINT_SCHEMA,
+        place_keypoints=symbol_keypoints,
+    ),
+    ShapeFamily(
+        name="letters",
+        members=tuple(LetterShape),
+        base_outline=_table_outline(LETTER_POLYGONS),
+        keypoint_schema=LETTER_KEYPOINT_SCHEMA,
+        place_keypoints=letter_keypoints,
+    ),
+)
+
+#: Every drawable shape, across every family, in class-id order. This is the full vocabulary
+#: :func:`~fuse_augmentations.data.config.class_names` numbers when a run is not narrowed.
+ALL_SHAPES: tuple[Shape, ...] = tuple(member for family in SHAPE_FAMILIES for member in family.members)
+
+#: The shapes a :class:`~fuse_augmentations.data.config.SyntheticConfig` draws when ``shapes`` is not
+#: overridden — the analytic family alone, i.e. the vocabulary that predates every asset-backed one.
+DEFAULT_SHAPES: tuple[Shape, ...] = SHAPE_FAMILIES[0].members
+
+_BY_TYPE: dict[type, ShapeFamily] = {family.member_type: family for family in SHAPE_FAMILIES}
+_BY_VALUE: dict[str, ShapeFamily] = {value: family for family in SHAPE_FAMILIES for value in family.values}
+
+
+def family_of(shape: Shape) -> ShapeFamily:
+    """Return the family a shape member belongs to.
+
+    Args:
+        shape: Any :data:`Shape` member.
+
+    Returns:
+        The owning :class:`ShapeFamily`.
+
+    Raises:
+        KeyError: If ``shape`` is not a member of any registered family — which for a genuine
+            :data:`Shape` member is impossible, and for a bare string is the intended failure.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.families import family_of
+        >>> from fuse_augmentations.data.symbols import SymbolShape
+        >>> family_of(SymbolShape.KITE).name
+        'symbols'
+
+        ```
+
+    """
+    return _BY_TYPE[type(shape)]
+
+
+def base_outline(value: str, size: float) -> NDArray[np.float64]:
+    """Return the origin-centered outline for any shape value, from any family.
+
+    The single dispatch point that replaced the per-family if-chain: a new family becomes reachable
+    here the moment it is registered, with no edit to this function.
+
+    Args:
+        value: A :data:`Shape` value — ``"square"``, ``"duck"``, ``"kite"``, ``"a"``, and so on.
+        size: Bounding size (side / diameter / larger extent) in pixels.
+
+    Returns:
+        ``(num_points, 2)`` float array centered at the origin.
+
+    Raises:
+        ValueError: If ``value`` names no shape in any registered family.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.families import base_outline
+        >>> base_outline("triangle", 6.0).shape
+        (3, 2)
+
+        ```
+
+    """
+    family = _BY_VALUE.get(value)
+    if family is None:
+        known = ", ".join(shape.value for shape in ALL_SHAPES)
+        raise ValueError(f"unknown shape {value!r}; expected one of {known}")
+    return family.base_outline(value, size)
+
+
+def shape_outline(
+    value: str, center: tuple[float, float], size: float, angle: float = 0.0, skew: float = 0.0
+) -> NDArray[np.float64]:
+    """Build the skewed, rotated, translated outline for any shape value, from any family.
+
+    The drawing entry point. It replaced ``geometry.shape_outline``, whose name said "polygon" while
+    :attr:`~fuse_augmentations.data.sample.Annotation.polygon` means the *flat* coordinate list a
+    writer emits — two different things one word away from each other.
+
+    Args:
+        value: A :data:`Shape` value — ``"square"``, ``"duck"``, ``"kite"``, ``"a"``, and so on.
+        center: Target center ``(x, y)`` in pixels.
+        size: Bounding size in pixels.
+        angle: Rotation in radians applied about the shape center.
+        skew: Signed fraction narrowing one pre-rotation half — see
+            :attr:`~fuse_augmentations.data.config.SyntheticConfig.asymmetry_jitter`. ``0.0`` (the
+            default) leaves the outline unchanged.
+
+    Returns:
+        ``(num_points, 2)`` float array in image coordinates.
+
+    Raises:
+        ValueError: If ``value`` names no shape in any registered family.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.families import shape_outline
+        >>> shape_outline("triangle", center=(10.0, 10.0), size=6.0).shape
+        (3, 2)
+
+        ```
+
+    """
+    return place_points(base_outline(value, size), center, angle, skew)
+
+
+def keypoint_schema_for(shapes: Iterable[Shape]) -> KeypointSchema | None:
+    """Return the schema shared by every shape in ``shapes``, when there is exactly one.
+
+    Args:
+        shapes: The shapes a run draws from — typically
+            :attr:`~fuse_augmentations.data.config.SyntheticConfig.shapes`.
+
+    Returns:
+        The :class:`~fuse_augmentations.data.keypoints.KeypointSchema` every shape shares, or
+        ``None`` when ``shapes`` spans no single keypoint-bearing family. Use
+        :func:`describe_keypoint_mismatch` to find out *which* of those cases it was.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.animals import AnimalShape
+        >>> from fuse_augmentations.data.families import keypoint_schema_for
+        >>> from fuse_augmentations.data.primitives import PrimitiveShape
+        >>> keypoint_schema_for((AnimalShape.DUCK, AnimalShape.CAMEL)).kpt_shape
+        16
+        >>> keypoint_schema_for((PrimitiveShape.SQUARE,)) is None
+        True
+
+        ```
+
+    """
+    families = {type(shape) for shape in shapes}
+    if len(families) != 1:
+        return None
+    return _BY_TYPE[families.pop()].keypoint_schema if families else None
+
+
+def describe_keypoint_mismatch(shapes: Iterable[Shape]) -> str:
+    """Return a caller-facing explanation of why ``shapes`` names no single keypoint schema.
+
+    :func:`keypoint_schema_for` collapses three distinct situations into one ``None``; the config
+    validator needs to tell them apart to write a useful message, and re-deriving the distinction at
+    the call site is exactly the duplication this function removes.
+
+    Args:
+        shapes: The shapes that failed :func:`keypoint_schema_for`.
+
+    Returns:
+        A sentence naming the specific problem: shapes with no landmark table at all, a mix of two
+        keypoint-bearing families, or an empty vocabulary.
+
+    Examples:
+        ```pycon
+        >>> from fuse_augmentations.data.families import describe_keypoint_mismatch
+        >>> from fuse_augmentations.data.primitives import PrimitiveShape
+        >>> describe_keypoint_mismatch((PrimitiveShape.SQUARE,)).startswith("['square'] have no keypoint table")
+        True
+
+        ```
+
+    """
+    shapes = tuple(shapes)
+    if not shapes:
+        return "the shape vocabulary is empty, so it names no keypoint family"
+    # Shapes with no table at all are the primary failure and are reported first; only a *pure* mix
+    # of two keypoint-bearing families (nothing table-less present) falls through to the second case.
+    unsupported = [shape.value for shape in shapes if not _BY_TYPE[type(shape)].has_keypoints]
+    if unsupported:
+        supported = ", ".join(value for family in SHAPE_FAMILIES if family.has_keypoints for value in family.values)
+        return f"{unsupported} have no keypoint table; restrict shapes to a keypoint-bearing family: {supported}"
+    families = sorted({_BY_TYPE[type(shape)].name for shape in shapes})
+    return f"shapes mix the {families} families; a dataset carries only one landmark schema"
+
+
+def place_keypoints(
+    shape: Shape, center: tuple[float, float], size: float, angle: float, skew: float
+) -> NDArray[np.float64] | None:
+    """Place one shape's landmark table, or return ``None`` for a family with no landmarks.
+
+    Args:
+        shape: The shape being placed.
+        center: Target center ``(x, y)`` in pixels.
+        size: Bounding size in pixels.
+        angle: Rotation in radians about the shape center.
+        skew: Signed asymmetry fraction; see
+            :attr:`~fuse_augmentations.data.config.SyntheticConfig.asymmetry_jitter`.
+
+    Returns:
+        The placed ``(num_keypoints, 2)`` table, or ``None`` when ``shape``'s family carries none.
+
+    """
+    family = _BY_TYPE[type(shape)]
+    if family.place_keypoints is None:
+        return None
+    return family.place_keypoints(shape, center, size, angle, skew)

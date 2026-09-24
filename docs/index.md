@@ -1,17 +1,40 @@
 ---
-title: Fewer resampling passes for image augmentation
-description: Learn where fuse-augmentations safely composes image transforms, what it accelerates, and where its compatibility and parity limits matter.
+title: Image augmentation and synthetic computer vision datasets
+description: Fuse compatible image augmentations and generate synthetic COCO or YOLO datasets for prototyping, convergence checks, and controlled difficulty experiments.
 ---
 
-# Fuse compatible augmentations, once
+# Synthetic vision datasets and fused image augmentation
+
+`fuse-augmentations` generates labelled synthetic computer vision datasets and fuses compatible PyTorch image augmentations. Use generated shapes to prototype a model, check its training pipeline, and explore controlled changes in scene difficulty.
+
+## Generate a synthetic dataset
+
+Start here when you need **COCO or YOLO training data** for **object detection**, **instance segmentation**, **oriented bounding boxes (OBB)**, or **keypoint / pose estimation**. Generate primitives, animal silhouettes, symbols, or letters with reproducible seeds and configurable backgrounds, object sizes, clutter, occlusion, and camera effects. No source images or optional augmentation backend is required.
+
+```bash
+pip install fuse-augmentations
+```
+
+- [Generate your first dataset](datasets/index.md#quickstart) — one Python call, images and labels, train/validation/test splits.
+- [Choose a task and output format](datasets/index.md#choose-your-computer-vision-task) — copy a recipe for your trainer.
+- [Check convergence and scale difficulty](datasets/prototyping.md) — fixed tiny sets, held-out evaluation, and controlled experiments.
+- [Stream into a DataLoader](datasets/outputs.md#in-memory-streaming-and-training-feed) — generate samples without exporting files.
+
+The generator draws synthetic shapes; your application supplies the model and training loop. A passing synthetic experiment checks that setup, while real-world accuracy requires real held-out data.
+
+## Fuse compatible augmentations
 
 `fuse-augmentations` is a PyTorch-based matrix-fusion engine for image augmentation pipelines. It recognizes a finite set of Kornia, TorchVision, and Albumentations transforms—or builds a pipeline directly from numeric ranges—then composes compatible transforms so a geometric chain can use fewer interpolation passes.
 
 The strongest use case is a BCHW tensor pipeline with several consecutive, registered geometric transforms. Reducing repeated resampling can preserve more image detail, lower peak tensor memory, and accelerate long CPU chains.
 
-!!! warning "This is not a general drop-in Compose replacement" Native PIL, CHW, Albumentations dictionary, target-processing, fill, center, random-number, and hook contracts are not preserved in general. Use the package as a tensor-first fusion engine and validate the exact pipeline you intend to ship.
+!!! tip "This is not a general drop-in Compose replacement"
 
-!!! critical "Auxiliary targets require an allowlisted pipeline" An unknown spatial transform can be passed through on the image while a mask, box, or keypoint tensor remains unchanged. Ordinary unsupported TorchVision crops and resize operations can therefore desynchronize targets. Treat every `Unknown ... SPATIAL_KERNEL barrier` warning as unsafe when `data_keys` is present. See [Known limitations](known-limitations.md).
+    Native PIL, CHW, Albumentations dictionary, target-processing, fill, center, random-number, and hook contracts are not preserved in general. Use the package as a tensor-first fusion engine and validate the exact pipeline you intend to ship.
+
+!!! warning "Auxiliary targets require an allowlisted pipeline"
+
+    With `data_keys` present, an unknown or unclassified spatial transform is rejected before any segment executes, preventing silent image/target divergence. Image-only calls may still use native passthrough; review every `Unknown ... SPATIAL_KERNEL barrier` warning. See [Known limitations](known-limitations.md).
 
 ## What is verified
 
@@ -28,7 +51,7 @@ The strongest use case is a BCHW tensor pipeline with several consecutive, regis
 - **Native parity:** fewer resampling passes deliberately change numerics, and TorchVision center/fill/interpolation behavior is not generally pixel-equivalent.
 - **Targets:** only registered and explicitly handled spatial operations are safe for multi-target routing.
 - **Reordering:** `POINTWISE` and `AGGRESSIVE` can change pixels because border handling and clipping make operation order observable.
-- **Accelerators:** device execution is supported on torch paths, but the current full latency run provides CPU evidence only; CUDA and stable MPS latency still need measurement on the deployment host.
+- **Accelerators:** device execution is supported on torch paths. The published evidence includes a July 12, 2026 CPU run and a separate September 5, 2026 historical CUDA sweep; current-head CUDA/MPS measurements and runner availability remain unverified. See the [benchmark record](research/benchmarks.md) before making a device claim.
 
 ## Choose your route
 
@@ -42,6 +65,7 @@ The strongest use case is a BCHW tensor pipeline with several consecutive, regis
 | Check an exact supported transform or restriction | [Capabilities](concepts/capabilities.md)             |
 | Understand known unsafe or approximate behavior   | [Known limitations](known-limitations.md)            |
 | Inspect signatures and docstrings                 | [API reference](reference/core.md)                   |
+| Prototype a labelled vision pipeline              | [Synthetic datasets](datasets/index.md)              |
 
 ## Evidence standard
 

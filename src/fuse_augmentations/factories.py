@@ -10,14 +10,16 @@ from __future__ import annotations
 import contextlib
 import math
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import torch
 from torch import nn
 
+from fuse_augmentations._random import uniform as _uniform
 from fuse_augmentations.affine.matrix import (
     hflip_matrix,
+    letterbox_matrix,
     matmul3x3,
     rotation_matrix,
     scale_matrix,
@@ -27,11 +29,19 @@ from fuse_augmentations.affine.matrix import (
     vflip_matrix,
 )
 from fuse_augmentations.affine.segment import build_segments
-from fuse_augmentations.config_validation import _coerce_randomness_policy, _has_coord_aux
+from fuse_augmentations.config_validation import (
+    _coerce_randomness_policy,
+    _has_coord_aux,
+    _validate_fill,
+    _validate_keypoint_flip_index,
+    _validate_mask_fill,
+)
 from fuse_augmentations.types import (
     ClipPolicyStr,
     ComposePaddingModeStr,
+    FillValue,
     InterpolationStr,
+    MaskFillValue,
     MaskInterpolationStr,
     PipelineDtypeStr,
     RandomnessPolicy,
@@ -67,6 +77,10 @@ class FactoriesMixin:
         on_unsupported: Literal["raise", "warn_skip"] = "raise",
         mask_interpolation: MaskInterpolationStr = "nearest",
         pipeline_dtype: PipelineDtypeStr | None = None,
+        generator: torch.Generator | None = None,
+        fill: FillValue | None = None,
+        keypoint_flip_index: Sequence[int] | None = None,
+        mask_fill: MaskFillValue = 0,
     ) -> object:
         """Create a FusedCompose pipeline from a list of TransformSpec objects.
 
@@ -95,8 +109,18 @@ class FactoriesMixin:
             clip_policy: Clamp policy for fused color segments.
             mask_interpolation: Auxiliary mask sampling mode forwarded to
                 :meth:`__init__`.
+            mask_fill: Scalar border value for routed auxiliary masks, forwarded to
+                :meth:`__init__`.
             pipeline_dtype: Optional fused GPU image-operation dtype forwarded to
                 :meth:`__init__`.
+            generator: Caller-owned ``torch.Generator`` driving every sampled
+                parameter. Supported for ``backend="native"`` only — the other
+                backends sample through their own libraries, which cannot be
+                seeded from a ``torch.Generator`` (see :meth:`from_params`).
+            fill: Constant out-of-canvas image border in the image's own value range,
+                forwarded to :meth:`__init__`; requires ``padding_mode="zeros"``.
+            keypoint_flip_index: Keypoint pair permutation forwarded to :meth:`__init__`,
+                applied whenever the composed transform reverses orientation.
             on_unsupported: Policy for specs whose op the backend cannot build.
                 ``"raise"`` (default) aggregates all offenders into one
                 ``ValueError``; ``"warn_skip"`` drops each unsupported spec with
@@ -128,6 +152,7 @@ class FactoriesMixin:
         if backend not in SUPPORTED_BACKENDS:
             msg = f"unknown backend {backend!r}; supported: {sorted(SUPPORTED_BACKENDS)}"
             raise ValueError(msg)
+        mask_fill = _validate_mask_fill(mask_fill)
 
         kept_specs = cls._validate_specs(specs, backend, on_unsupported)
         if backend == "native":
@@ -141,15 +166,22 @@ class FactoriesMixin:
                 randomness=_coerce_randomness_policy(randomness),
                 clip_policy=clip_policy,
                 mask_interpolation=mask_interpolation,
+                mask_fill=mask_fill,
                 pipeline_dtype=pipeline_dtype,
                 route_coords_via_grid=_has_coord_aux(data_keys),
                 native=True,
+                generator=generator,
+                fill=fill,
+                keypoint_flip_index=keypoint_flip_index,
             )
         transforms = [cls._build_transform(spec, backend) for spec in kept_specs]
 
         constructor = cast(Callable[..., object], cls)
         return constructor(
             transforms,
+            generator=generator,
+            fill=fill,
+            keypoint_flip_index=keypoint_flip_index,
             interpolation=interpolation,
             padding_mode=padding_mode,
             data_keys=data_keys,
@@ -158,6 +190,7 @@ class FactoriesMixin:
             randomness=randomness,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
             pipeline_dtype=pipeline_dtype,
         )
 
@@ -340,10 +373,18 @@ class FactoriesMixin:
         clip_policy: ClipPolicyStr = "final",
         mask_interpolation: MaskInterpolationStr = "nearest",
         pipeline_dtype: PipelineDtypeStr | None = None,
+        generator: torch.Generator | None = None,
+        fill: FillValue | None = None,
+        keypoint_flip_index: Sequence[int] | None = None,
+        letterbox: tuple[int, int] | int | None = None,
+        allow_upscale: bool = True,
         *,
+        rotation_p: float = 1.0,
+        scale_p: float = 1.0,
         specs: list[TransformSpec] | None = None,
         backend: BackendStr | None = None,
         route_coords_via_grid: bool = False,
+        mask_fill: MaskFillValue = 0,
     ) -> object:
         """Create a ``FusedCompose`` pipeline directly from parameter ranges.
 
@@ -381,6 +422,15 @@ class FactoriesMixin:
                 or ``None``. Per-axis only in backend-free mode -- see note below.
             hflip_p: Probability of horizontal flip per sample. Default 0.0.
             vflip_p: Probability of vertical flip per sample. Default 0.0.
+            rotation_p: Probability of applying ``rotation`` per sample, keyword-only.
+                Default ``1.0``, which applies it to every sample — the historical
+                behaviour, so an existing call is unchanged. Ignored when
+                ``rotation`` is ``None``.
+            scale_p: Probability of applying the scale family (``scale``,
+                ``scale_x``, ``scale_y``) per sample, keyword-only. The three share
+                one probability because they describe one scaling of the same
+                sample; use ``specs=`` or :meth:`from_config` for finer control.
+                Default ``1.0``. Ignored when no scale range is set.
             brightness: Maximum multiplicative brightness deviation. A value
                 of ``0.1`` samples factors in ``[0.9, 1.1]``.
             contrast: Maximum multiplicative contrast deviation. A value of
@@ -405,8 +455,36 @@ class FactoriesMixin:
             clip_policy: Clamp policy forwarded to fused color segments.
             mask_interpolation: Auxiliary mask sampling mode forwarded to
                 :meth:`__init__` or :meth:`from_config`.
+            mask_fill: Scalar border value for routed auxiliary masks, forwarded to
+                :meth:`__init__` or :meth:`from_config`.
             pipeline_dtype: Optional fused GPU image-operation dtype forwarded to
                 :meth:`__init__` or :meth:`from_config`.
+            generator: Caller-owned ``torch.Generator`` driving every sampled
+                parameter and every per-transform probability gate. ``None``
+                (default) keeps the global torch stream, so existing pipelines
+                are unchanged. Supported in backend-free mode and with
+                ``backend="native"``; every other backend samples through its own
+                library and rejects a generator at construction rather than
+                silently falling back to the global stream.
+            fill: Constant value written outside the source canvas of every warp, in
+                the image's own value range (``114`` for a uint8 grey, ``114 / 255`` as
+                float); a scalar fills every channel, a sequence one channel each.
+                ``None`` (default) keeps the plain zero border. Images only — auxiliary
+                masks keep zero padding. Requires ``padding_mode="zeros"``.
+            keypoint_flip_index: Keypoint pair permutation applied whenever the composed
+                transform reverses orientation, forwarded to :meth:`__init__`; slot ``i``
+                takes its value from slot ``flip_index[i]``. The pair table is dataset
+                schema and stays with the caller.
+            letterbox: Output canvas as ``(height, width)``, or one ``int`` for a square.
+                Appends a deterministic aspect-preserving fit: content is scaled by
+                ``r = min(height_out / H, width_out / W)`` and the slack is padded with
+                ``fill``. It sits after the geometry and before any brightness/contrast, so
+                the affine and the letterbox compose into a single matrix and one resample
+                — which also means a colour op in the same call acts on the padded canvas,
+                pad region included. Backend-free mode only. ``None`` (default) adds nothing.
+            allow_upscale: Whether ``letterbox`` may enlarge content past its native size
+                when the output canvas is larger than the source. ``False`` caps the ratio
+                at ``1.0``, padding instead of magnifying. Ignored without ``letterbox``.
             route_coords_via_grid: Force coordinate auxiliary targets through
                 the grid path for direct-param construction.
             specs: List of :class:`TransformSpec` objects. When provided,
@@ -459,7 +537,28 @@ class FactoriesMixin:
 
             ```
 
+            Caller-owned randomness: two identically seeded generators give
+            identical output, independent of the global torch stream.
+
+            ```pycon
+            >>> import torch
+            >>> from fuse_augmentations.compose import FusedCompose
+            >>> image = torch.rand(2, 3, 32, 32)
+            >>> def run(seed):
+            ...     gen = torch.Generator().manual_seed(seed)
+            ...     return FusedCompose.from_params(rotation=(-30, 30), generator=gen)(image)
+            >>> bool(torch.equal(run(0), run(0)))
+            True
+            >>> bool(torch.equal(run(0), run(1)))
+            False
+
+            ```
+
         """
+        _validate_geometric_probability("rotation_p", rotation_p)
+        _validate_geometric_probability("scale_p", scale_p)
+        mask_fill = _validate_mask_fill(mask_fill)
+
         # --- specs= overload path ---
         # Note: specs= is a convenience alias for declarative pipeline construction.
         # In a future minor version this dual-path may be split into a from_specs()
@@ -470,6 +569,7 @@ class FactoriesMixin:
             # checks so invalid falsey values (e.g. empty tuple/list) are still
             # treated as "provided" and rejected in specs mode.
             has_keyword_params = any((
+                letterbox is not None,
                 rotation is not None,
                 scale is not None,
                 scale_x is not None,
@@ -480,6 +580,8 @@ class FactoriesMixin:
                 translate_y is not None,
                 hflip_p != 0.0,
                 vflip_p != 0.0,
+                rotation_p != 1.0,
+                scale_p != 1.0,
                 brightness is not None,
                 contrast is not None,
             ))
@@ -491,6 +593,9 @@ class FactoriesMixin:
                 return cls.from_config(
                     specs=specs,
                     backend=backend,
+                    generator=generator,
+                    fill=fill,
+                    keypoint_flip_index=keypoint_flip_index,
                     interpolation=interpolation,
                     padding_mode=padding_mode,
                     reorder=reorder,
@@ -499,11 +604,15 @@ class FactoriesMixin:
                     randomness=randomness,
                     clip_policy=clip_policy,
                     mask_interpolation=mask_interpolation,
+                    mask_fill=mask_fill,
                     pipeline_dtype=pipeline_dtype,
                 )
 
             return cls._from_param_specs(
                 specs=specs,
+                generator=generator,
+                fill=fill,
+                keypoint_flip_index=keypoint_flip_index,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 reorder=reorder,
@@ -512,6 +621,7 @@ class FactoriesMixin:
                 randomness=_coerce_randomness_policy(randomness),
                 clip_policy=clip_policy,
                 mask_interpolation=mask_interpolation,
+                mask_fill=mask_fill,
                 pipeline_dtype=pipeline_dtype,
                 route_coords_via_grid=route_coords_via_grid,
             )
@@ -519,6 +629,11 @@ class FactoriesMixin:
         # When backend is set and geometric kwargs are provided (no specs),
         # convert the kwargs to TransformSpec objects and delegate to from_config.
         if backend is not None:
+            if letterbox is not None:
+                raise NotImplementedError(
+                    "letterbox= is only available in backend-free mode (backend=None); the backend= path routes "
+                    "through from_config, whose canonical op vocabulary has no letterbox op."
+                )
             if backend != "native" and (brightness is not None or contrast is not None):
                 raise NotImplementedError("brightness and contrast from_params require backend='native'")
             config_specs = cls._geometric_kwargs_to_specs(
@@ -532,6 +647,8 @@ class FactoriesMixin:
                 translate_y=translate_y,
                 hflip_p=hflip_p,
                 vflip_p=vflip_p,
+                rotation_p=rotation_p,
+                scale_p=scale_p,
             )
             if backend == "native":
                 config_specs.extend(
@@ -541,6 +658,9 @@ class FactoriesMixin:
             return cls.from_config(
                 specs=config_specs,
                 backend=backend,
+                generator=generator,
+                fill=fill,
+                keypoint_flip_index=keypoint_flip_index,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 reorder=reorder,
@@ -549,6 +669,7 @@ class FactoriesMixin:
                 randomness=randomness,
                 clip_policy=clip_policy,
                 mask_interpolation=mask_interpolation,
+                mask_fill=mask_fill,
                 pipeline_dtype=pipeline_dtype,
             )
 
@@ -575,14 +696,18 @@ class FactoriesMixin:
         has_affine = bool(param_specs)
         has_flips = hflip_p > 0.0 or vflip_p > 0.0
         has_color = bool(color_specs)
+        has_letterbox = letterbox is not None
 
         # NOTE: The identity path (all params None) returns a normal __init__ instance
         # with _adapter=None. The non-identity path uses _DirectParamAdapter.
         # Both handle empty _segments correctly; do not branch on isinstance(_adapter, ...).
-        if not has_affine and not has_flips and not has_color:
+        if not has_affine and not has_flips and not has_color and not has_letterbox:
             constructor = cast(Callable[..., object], cls)
             return constructor(
                 transforms=[],
+                generator=generator,
+                fill=fill,
+                keypoint_flip_index=keypoint_flip_index,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 data_keys=data_keys,
@@ -591,6 +716,7 @@ class FactoriesMixin:
                 randomness=randomness,
                 clip_policy=clip_policy,
                 mask_interpolation=mask_interpolation,
+                mask_fill=mask_fill,
                 pipeline_dtype=pipeline_dtype,
             )
 
@@ -599,7 +725,7 @@ class FactoriesMixin:
         transforms: list[object] = []
 
         if has_affine:
-            transforms.append(_DirectParamTransform(param_specs, prob=1.0))
+            transforms.extend(_geometric_param_transforms(param_specs, rotation_p, scale_p))
 
         if hflip_p > 0.0:
             transforms.append(_DirectFlipTransform(flip_type="hflip", prob=hflip_p))
@@ -607,9 +733,18 @@ class FactoriesMixin:
         if vflip_p > 0.0:
             transforms.append(_DirectFlipTransform(flip_type="vflip", prob=vflip_p))
 
+        if letterbox is not None:
+            height_out, width_out = (letterbox, letterbox) if isinstance(letterbox, int) else letterbox
+            # Placed after the geometry and before any colour op: the crop-resize category is
+            # a reorder barrier, so a colour op buffered ahead of it would be flushed between
+            # the geometric run and the letterbox and break the single-segment fusion.
+            transforms.append(_DirectLetterboxTransform(height_out, width_out, allow_upscale))
+
         transforms.extend(_DirectParamTransform(param_specs={key: value}, prob=1.0) for key, value in color_specs)
 
         # Build instance bypassing detect_backend
+        fill_values = _validate_fill(fill, padding_mode)
+        flip_index = _validate_keypoint_flip_index(keypoint_flip_index)
         instance = cls.__new__(cls)
         nn.Module.__init__(cast(nn.Module, instance))
 
@@ -622,8 +757,12 @@ class FactoriesMixin:
             randomness_policy,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
             route_coords_via_grid=route_coords_via_grid or _has_coord_aux(data_keys),
             per_transform_padding=padding_mode == "per_transform",
+            generator=generator,
+            fill=fill_values,
+            keypoint_flip_index=flip_index,
         )
         cast(Any, instance)._setup_instance(
             transforms=transforms,
@@ -637,7 +776,11 @@ class FactoriesMixin:
             randomness=randomness_policy,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
             pipeline_dtype=pipeline_dtype,
+            generator=generator,
+            fill=fill_values,
+            keypoint_flip_index=flip_index,
         )
 
         return instance
@@ -657,6 +800,10 @@ class FactoriesMixin:
         pipeline_dtype: PipelineDtypeStr | None = None,
         route_coords_via_grid: bool = False,
         native: bool = False,
+        generator: torch.Generator | None = None,
+        fill: FillValue | None = None,
+        keypoint_flip_index: Sequence[int] | None = None,
+        mask_fill: MaskFillValue = 0,
     ) -> object:
         """Build a from_params pipeline from a list of TransformSpec objects.
 
@@ -716,6 +863,9 @@ class FactoriesMixin:
             constructor = cast(Callable[..., object], cls)
             return constructor(
                 transforms=[],
+                generator=generator,
+                fill=fill,
+                keypoint_flip_index=keypoint_flip_index,
                 interpolation=interpolation,
                 padding_mode=padding_mode,
                 data_keys=data_keys,
@@ -724,9 +874,12 @@ class FactoriesMixin:
                 randomness=randomness,
                 clip_policy=clip_policy,
                 mask_interpolation=mask_interpolation,
+                mask_fill=mask_fill,
                 pipeline_dtype=pipeline_dtype,
             )
 
+        fill_values = _validate_fill(fill, padding_mode)
+        flip_index = _validate_keypoint_flip_index(keypoint_flip_index)
         instance = cls.__new__(cls)
         nn.Module.__init__(cast(nn.Module, instance))
 
@@ -738,8 +891,12 @@ class FactoriesMixin:
             randomness,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
             route_coords_via_grid=route_coords_via_grid or _has_coord_aux(data_keys),
             per_transform_padding=padding_mode == "per_transform",
+            generator=generator,
+            fill=fill_values,
+            keypoint_flip_index=flip_index,
         )
         cast(Any, instance)._setup_instance(
             transforms=transforms,
@@ -753,7 +910,11 @@ class FactoriesMixin:
             randomness=randomness,
             clip_policy=clip_policy,
             mask_interpolation=mask_interpolation,
+            mask_fill=mask_fill,
             pipeline_dtype=pipeline_dtype,
+            generator=generator,
+            fill=fill_values,
+            keypoint_flip_index=flip_index,
         )
 
         return instance
@@ -820,11 +981,14 @@ class FactoriesMixin:
         translate_y: tuple[float, float] | None = None,
         hflip_p: float = 0.0,
         vflip_p: float = 0.0,
+        rotation_p: float = 1.0,
+        scale_p: float = 1.0,
     ) -> list[TransformSpec]:
         """Convert geometric keyword arguments to a list of TransformSpec objects.
 
         Used internally by :meth:`from_params` when ``backend`` is set and geometric kwargs (rather than ``specs``) are
-        provided.
+        provided. ``rotation_p`` and ``scale_p`` become the corresponding spec's ``prob``, the same field the flip
+        probabilities already use.
 
         """
         if scale_x is not None or scale_y is not None:
@@ -846,10 +1010,10 @@ class FactoriesMixin:
 
         specs: list[TransformSpec] = []
 
-        # Map geometric tuple params to their canonical op and param key
-        _kwarg_to_op: dict[str, tuple[str, str]] = {
-            "rotation": ("rotation", "degrees"),
-            "scale": ("scale", "factor"),
+        # Map geometric tuple params to their canonical op, param key, and per-op probability
+        _kwarg_to_op: dict[str, tuple[str, str, float]] = {
+            "rotation": ("rotation", "degrees", rotation_p),
+            "scale": ("scale", "factor", scale_p),
         }
 
         # Geometric tuple params
@@ -858,8 +1022,8 @@ class FactoriesMixin:
             ("scale", scale),
         ]:
             if value is not None:
-                op_name, param_key = _kwarg_to_op[kwarg_name]
-                specs.append(TransformSpec(operation=op_name, params={param_key: value}, prob=1.0))
+                op_name, param_key, probability = _kwarg_to_op[kwarg_name]
+                specs.append(TransformSpec(operation=op_name, params={param_key: value}, prob=probability))
 
         # Flip params
         if hflip_p > 0.0:
@@ -868,6 +1032,58 @@ class FactoriesMixin:
             specs.append(TransformSpec(operation="vflip", params={}, prob=vflip_p))
 
         return specs
+
+
+#: Geometric kwargs that describe one scaling of the same sample and therefore share ``scale_p``.
+_SCALE_PARAM_KEYS = ("scale", "scale_x", "scale_y")
+
+
+def _validate_geometric_probability(name: str, value: float) -> None:
+    """Reject an out-of-range per-op probability at construction rather than at the first draw.
+
+    Mirrors the bound :class:`~fuse_augmentations.types.TransformSpec` enforces, so the backend-free engine and the
+    spec-building path refuse the same values.
+
+    """
+    if not (0.0 <= value <= 1.0):
+        msg = f"{name} must be in [0.0, 1.0], got {value!r}"
+        raise ValueError(msg)
+
+
+def _geometric_param_transforms(
+    param_specs: dict[str, tuple[float, float]],
+    rotation_p: float,
+    scale_p: float,
+) -> list[_DirectParamTransform]:
+    """Split geometric parameter ranges into direct-parameter transforms by per-op probability.
+
+    With both probabilities at their ``1.0`` default every range stays in a single transform, which is the historical
+    layout — the split would otherwise change how many probability draws the generator makes per call and move seeded
+    output for pipelines that never asked for per-op probabilities. A range whose probability is below one moves into
+    its own transform so its gate is sampled independently of the rest of the geometry.
+
+    """
+    if rotation_p == 1.0 and scale_p == 1.0:
+        return [_DirectParamTransform(param_specs, prob=1.0)]
+
+    gated: list[tuple[dict[str, tuple[float, float]], float]] = []
+    always: dict[str, tuple[float, float]] = {}
+    for key, value in param_specs.items():
+        probability = rotation_p if key == "rotation" else scale_p if key in _SCALE_PARAM_KEYS else 1.0
+        if probability == 1.0:
+            always[key] = value
+        else:
+            gated.append(({key: value}, probability))
+
+    # One transform per distinct gated probability keeps the scale family under a single draw
+    # rather than sampling scale_x and scale_y against the same probability independently.
+    merged: dict[float, dict[str, tuple[float, float]]] = {}
+    for params, probability in gated:
+        merged.setdefault(probability, {}).update(params)
+
+    transforms = [_DirectParamTransform(always, prob=1.0)] if always else []
+    transforms.extend(_DirectParamTransform(params, prob=probability) for probability, params in merged.items())
+    return transforms
 
 
 class _DirectParamTransform:
@@ -896,12 +1112,37 @@ class _DirectFlipTransform:
         self.same_on_batch = False
 
 
+class _DirectLetterboxTransform:
+    """Internal deterministic letterbox op for from_params().
+
+    Not exported. Classified ``CROP_RESIZE_FIXED`` so it reuses the shape-changing warp
+    machinery: standalone it becomes a ``CropResizeSegment``, and after a geometric run it
+    fuses into a ``_FusedGeoCropSegment`` -- one composed matrix, one resample from the
+    source canvas straight to the letterboxed one.
+
+    """
+
+    _coordinate_matrix_recoverable = True
+
+    def __init__(self, height_out: int, width_out: int, allow_upscale: bool = True) -> None:
+        self.height_out = int(height_out)
+        self.width_out = int(width_out)
+        self.allow_upscale = bool(allow_upscale)
+        #: Deterministic: applied to every sample, identically across the batch.
+        self.prob = 1.0
+        self.same_on_batch = True
+
+
 class _DirectParamAdapter:
     """Internal adapter for from_params() that samples directly from param ranges.
 
     Not exported. Implements the TransformAdapter protocol for _DirectParamTransform and _DirectFlipTransform objects.
 
     """
+
+    #: Marks this adapter as able to draw from a caller-supplied ``torch.Generator``.
+    #: The backend adapters sample through their own libraries and leave it unset.
+    supports_generator = True
 
     @staticmethod
     def category(transform: object) -> TransformCategory:
@@ -912,6 +1153,8 @@ class _DirectParamAdapter:
             return TransformCategory.GEOMETRIC_INTERP
         if isinstance(transform, _DirectFlipTransform):
             return TransformCategory.GEOMETRIC_EXACT
+        if isinstance(transform, _DirectLetterboxTransform):
+            return TransformCategory.CROP_RESIZE_FIXED
         return TransformCategory.SPATIAL_KERNEL
 
     @staticmethod
@@ -919,12 +1162,32 @@ class _DirectParamAdapter:
         transform: object,
         input_shape: tuple[int, int, int, int],
         device: torch.device,
+        generator: torch.Generator | None = None,
     ) -> dict[str, torch.Tensor]:
-        """Sample random parameters from the stored ranges."""
+        """Sample random parameters from the stored ranges.
+
+        Args:
+            transform: A ``_DirectParamTransform`` or ``_DirectFlipTransform``.
+            input_shape: ``(batch_size, channels, height, width)`` shape tuple.
+            device: Target device for the returned tensors.
+            generator: Caller-owned generator driving every draw, or ``None`` for the global stream.
+
+        Returns:
+            Dict of canonical parameter tensors; a ``_batch_size`` sentinel for flips.
+
+        """
         batch_size = input_shape[0]
 
         if isinstance(transform, _DirectFlipTransform):
             return {"_batch_size": torch.tensor([batch_size], device=device, dtype=torch.int64)}
+
+        if isinstance(transform, _DirectLetterboxTransform):
+            # Deterministic op: the output size is configuration, not a draw, so the
+            # generator is deliberately unused here rather than silently consumed.
+            return {
+                "target_h": torch.full((batch_size,), transform.height_out, device=device, dtype=torch.int64),
+                "target_w": torch.full((batch_size,), transform.width_out, device=device, dtype=torch.int64),
+            }
 
         if isinstance(transform, _DirectParamTransform):
             specs = transform.param_specs
@@ -933,7 +1196,7 @@ class _DirectParamAdapter:
             if "rotation" in specs:
                 low, high = specs["rotation"]
                 low_rad, high_rad = math.radians(low), math.radians(high)
-                result["angle_rad"] = torch.empty(batch_size, device=device).uniform_(low_rad, high_rad)
+                result["angle_rad"] = _uniform(batch_size, low_rad, high_rad, device=device, generator=generator)
 
             # Scale: if uniform 'scale' is set, use it for both axes
             # Individual scale_x/scale_y override uniform scale
@@ -942,45 +1205,51 @@ class _DirectParamAdapter:
             if scale_x_range is not None and scale_y_range is not None:
                 if "scale_x" not in specs and "scale_y" not in specs:
                     # Uniform 'scale' promises isotropic scaling: one draw shared by both axes
-                    scale = torch.empty(batch_size, device=device).uniform_(*scale_x_range)
+                    scale = _uniform(batch_size, *scale_x_range, device=device, generator=generator)
                     result["scale_x"] = scale
                     result["scale_y"] = scale.clone()
                 else:
-                    result["scale_x"] = torch.empty(batch_size, device=device).uniform_(*scale_x_range)
-                    result["scale_y"] = torch.empty(batch_size, device=device).uniform_(*scale_y_range)
+                    result["scale_x"] = _uniform(batch_size, *scale_x_range, device=device, generator=generator)
+                    result["scale_y"] = _uniform(batch_size, *scale_y_range, device=device, generator=generator)
             if scale_x_range is not None and scale_y_range is None:
-                result["scale_x"] = torch.empty(batch_size, device=device).uniform_(*scale_x_range)
+                result["scale_x"] = _uniform(batch_size, *scale_x_range, device=device, generator=generator)
                 result["scale_y"] = torch.ones(batch_size, device=device)
             if scale_y_range is not None and scale_x_range is None:
                 result["scale_x"] = torch.ones(batch_size, device=device)
-                result["scale_y"] = torch.empty(batch_size, device=device).uniform_(*scale_y_range)
+                result["scale_y"] = _uniform(batch_size, *scale_y_range, device=device, generator=generator)
 
             if "shear_x" in specs:
                 low, high = specs["shear_x"]
-                result["shear_x_rad"] = torch.empty(batch_size, device=device).uniform_(
-                    math.radians(low), math.radians(high)
+                result["shear_x_rad"] = _uniform(
+                    batch_size, math.radians(low), math.radians(high), device=device, generator=generator
                 )
 
             if "shear_y" in specs:
                 low, high = specs["shear_y"]
-                result["shear_y_rad"] = torch.empty(batch_size, device=device).uniform_(
-                    math.radians(low), math.radians(high)
+                result["shear_y_rad"] = _uniform(
+                    batch_size, math.radians(low), math.radians(high), device=device, generator=generator
                 )
 
             if "translate_x" in specs or "translate_y" in specs:
                 if "translate_x" in specs:
-                    result["translate_x"] = torch.empty(batch_size, device=device).uniform_(*specs["translate_x"])
+                    result["translate_x"] = _uniform(
+                        batch_size, *specs["translate_x"], device=device, generator=generator
+                    )
                 else:
                     result["translate_x"] = torch.zeros(batch_size, device=device)
                 if "translate_y" in specs:
-                    result["translate_y"] = torch.empty(batch_size, device=device).uniform_(*specs["translate_y"])
+                    result["translate_y"] = _uniform(
+                        batch_size, *specs["translate_y"], device=device, generator=generator
+                    )
                 else:
                     result["translate_y"] = torch.zeros(batch_size, device=device)
 
             if "brightness" in specs:
-                result["brightness_factor"] = torch.empty(batch_size, device=device).uniform_(*specs["brightness"])
+                result["brightness_factor"] = _uniform(
+                    batch_size, *specs["brightness"], device=device, generator=generator
+                )
             if "contrast" in specs:
-                result["contrast_factor"] = torch.empty(batch_size, device=device).uniform_(*specs["contrast"])
+                result["contrast_factor"] = _uniform(batch_size, *specs["contrast"], device=device, generator=generator)
 
             return result
 
@@ -995,6 +1264,17 @@ class _DirectParamAdapter:
     ) -> torch.Tensor:
         """Build a (batch_size, 3, 3) forward affine matrix from sampled params."""
         batch_size: int | None = None
+        if isinstance(transform, _DirectLetterboxTransform):
+            reference = params["target_h"]
+            return letterbox_matrix(
+                height_in=height,
+                width_in=width,
+                height_out=transform.height_out,
+                width_out=transform.width_out,
+                allow_upscale=transform.allow_upscale,
+                batch_size=int(reference.shape[0]),
+                device=reference.device,
+            )
         if isinstance(transform, _DirectFlipTransform):
             batch_size = int(params["_batch_size"].item())
             device = params["_batch_size"].device
@@ -1096,8 +1376,14 @@ class _DirectParamAdapter:
         raise TypeError(msg)
 
     @staticmethod
-    def exact_apply(transform: object, image: torch.Tensor) -> torch.Tensor:
+    def exact_apply(
+        transform: object,
+        image: torch.Tensor,
+        *,
+        params: dict[str, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         """Apply a GEOMETRIC_EXACT transform losslessly."""
+        del params
         if isinstance(transform, _DirectFlipTransform):
             if transform.flip_type == "hflip":
                 return image.flip(dims=[3])

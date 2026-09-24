@@ -8,10 +8,15 @@ import numpy as np
 import pytest
 import yaml
 
-from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, AnimalShape
-from fuse_augmentations.data.config import SyntheticConfig, Task, class_names
+from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, ANIMAL_KEYPOINT_SCHEMA, AnimalShape
+from fuse_augmentations.data.config import SyntheticConfig, Task, class_vocabulary
+from fuse_augmentations.data.families import keypoint_schema_for
 from fuse_augmentations.data.generator import SyntheticGenerator
+from fuse_augmentations.data.geometry import PIXEL_CENTRE_OFFSET
+from fuse_augmentations.data.keypoints import KeypointSchema
+from fuse_augmentations.data.letters import LETTER_KEYPOINT_SCHEMA, LetterShape
 from fuse_augmentations.data.sample import Annotation, Sample
+from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_SCHEMA, SymbolShape
 from fuse_augmentations.data.writers import YoloWriter
 
 
@@ -21,6 +26,7 @@ def _write(
     splits: tuple[str, ...] = ("train", "val"),
     count: int = 3,
     seed: int = 9,
+    keypoint_schema: KeypointSchema | None = None,
     **config_kwargs: object,
 ) -> tuple:  # type: ignore[type-arg]
     """Generate a seeded dataset, write it as YOLO, and return the samples per split plus the class names.
@@ -28,7 +34,8 @@ def _write(
     Every knob the individual tests vary — splits, sample count, seed, and any `SyntheticConfig` field such as `shapes`,
     `img_size`, or `task` — is a keyword here, so a test states only what makes it different from the others. The
     writer's task is positional and separate from the config's: the writer formats whatever the samples already carry,
-    so a detection-configured stream can still be written out as segmentation or OBB.
+    so a detection-configured stream can still be written out as segmentation or OBB. `keypoint_schema` is only relevant
+    to `Task.KEYPOINTS` runs and defaults to whichever family the config's own `shapes` name.
 
     """
     settings = {"img_size": 96, "min_objects": 2, "max_objects": 4, **config_kwargs}
@@ -36,8 +43,19 @@ def _write(
     generator = SyntheticGenerator(config)
     rng = np.random.default_rng(seed)
     data = {split: [generator.sample(rng) for _ in range(count)] for split in splits}
-    names = class_names(config.class_mode)
-    YoloWriter(writer_task, names).write(data, tmp_path)
+    vocabulary = class_vocabulary(config.class_mode, config.shapes)
+    names = vocabulary.names
+    # A keypoints writer has no default schema any more, so fall back to the one the config's own
+    # shapes name rather than to whichever family happens to be first.
+    # A keypoints *writer* over a non-keypoints *config* is a case several tests here exercise on
+    # purpose. The config's own shapes then name no schema, so the family has to be stated — which
+    # is exactly what removing the writer's implicit animal default forces, and why the choice is
+    # visible here instead of hidden in the writer.
+    schema = keypoint_schema if keypoint_schema is not None else keypoint_schema_for(config.shapes)
+    if schema is None and writer_task is Task.KEYPOINTS:
+        schema = ANIMAL_KEYPOINT_SCHEMA
+    writer_kwargs = {} if schema is None else {"keypoint_schema": schema}
+    YoloWriter(writer_task, vocabulary, **writer_kwargs).write(data, tmp_path)
     return data, names
 
 
@@ -113,9 +131,10 @@ def test_image_label_parity(tmp_path: Path) -> None:
 
 def test_write_rejects_empty_splits(tmp_path: Path) -> None:
     """Empty splits dict is rejected."""
-    names = class_names(SyntheticConfig().class_mode)
     with pytest.raises(ValueError, match="at least one split"):
-        YoloWriter(Task.DETECTION, names).write({}, tmp_path)
+        YoloWriter(Task.DETECTION, class_vocabulary(SyntheticConfig().class_mode, SyntheticConfig().shapes)).write(
+            {}, tmp_path
+        )
     assert list(tmp_path.iterdir()) == []  # guarded before any partial output is created
 
 
@@ -152,10 +171,11 @@ def test_detection_label_clamps_edge_crossing_box(tmp_path: Path) -> None:
         class_name="square",
         polygon=[-20.0, 10.0, 40.0, 10.0, 40.0, 50.0, -20.0, 50.0],
         bbox_xyxy=(-20.0, 10.0, 40.0, 50.0),
-        obb_corners=[-20.0, 10.0, 40.0, 10.0, 40.0, 50.0, -20.0, 50.0],
     )
     sample = Sample(image=np.zeros((100, 100, 3), dtype=np.uint8), annotations=[ann], width=100, height=100)
-    YoloWriter(Task.DETECTION, class_names(SyntheticConfig().class_mode)).write({"train": [sample]}, tmp_path)
+    YoloWriter(Task.DETECTION, class_vocabulary(SyntheticConfig().class_mode, SyntheticConfig().shapes)).write(
+        {"train": [sample]}, tmp_path
+    )
     cx, cy, w, h = (float(v) for v in (tmp_path / "labels" / "train" / "img_000000.txt").read_text().split()[1:])
     # Clipped box is (0, 10, 40, 50): cx=0.2, cy=0.3, w=0.4, h=0.4 — not the unclipped cx=0.1, w=0.6.
     assert (cx, cy, w, h) == pytest.approx((0.2, 0.3, 0.4, 0.4))
@@ -200,8 +220,9 @@ def test_keypoints_row_has_fifty_three_tokens(tmp_path: Path) -> None:
             kp_x, kp_y, kp_v = ann.keypoints[i]
             assert int(v_tok) == kp_v
             if kp_v > 0:
-                assert float(x_tok) == pytest.approx(kp_x / img_size, abs=1e-3)
-                assert float(y_tok) == pytest.approx(kp_y / img_size, abs=1e-3)
+                # A row carries edge-space coordinates; the annotation carries pixel-centre ones.
+                assert float(x_tok) == pytest.approx((kp_x + PIXEL_CENTRE_OFFSET) / img_size, abs=1e-3)
+                assert float(y_tok) == pytest.approx((kp_y + PIXEL_CENTRE_OFFSET) / img_size, abs=1e-3)
 
 
 def test_keypoints_writer_task_with_non_keypoints_config_emits_the_all_zero_row(tmp_path: Path) -> None:
@@ -267,3 +288,168 @@ def test_data_yaml_declares_an_identity_flip_idx(tmp_path: Path) -> None:
 
     doc = yaml.safe_load((tmp_path / "data.yaml").read_text())
     assert doc["flip_idx"] == list(range(len(ANIMAL_KEYPOINT_NAMES)))
+
+
+def test_symbol_keypoints_row_has_twenty_six_tokens(tmp_path: Path) -> None:
+    """A symbol pose row is `cls cx cy w h` (5) plus 7 `x y v` triples (21) = 26 tokens, always.
+
+    Mirrors `test_keypoints_row_has_fifty_three_tokens` for the 7-slot symbol schema: a symbol whose outline uses
+    fewer than all 7 slots (every symbol but house/cross) still emits its absent slots' zeroed `0.000000 0.000000 0`
+    triples, keeping the row fixed-width.
+
+    """
+    img_size = 128
+    data, _ = _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        splits=("train",),
+        count=2,
+        seed=4,
+        img_size=img_size,
+        max_objects=2,
+        task=Task.KEYPOINTS,
+        shapes=(SymbolShape.KITE,),
+        keypoint_schema=SYMBOL_KEYPOINT_SCHEMA,
+    )
+
+    rows = _rows(tmp_path)
+    anns = [ann for sample in data["train"] for ann in sample.annotations]
+    assert rows
+    assert len(rows) == len(anns)
+    for row, ann in zip(rows, anns, strict=True):
+        tokens = row.split()
+        assert len(tokens) == 26
+        for i in range(len(SYMBOL_KEYPOINT_SCHEMA.names)):
+            x_tok, y_tok, v_tok = tokens[5 + 3 * i : 8 + 3 * i]
+            kp_x, kp_y, kp_v = ann.keypoints[i]
+            assert int(v_tok) == kp_v
+            if kp_v > 0:
+                # A row carries edge-space coordinates; the annotation carries pixel-centre ones.
+                assert float(x_tok) == pytest.approx((kp_x + PIXEL_CENTRE_OFFSET) / img_size, abs=1e-3)
+                assert float(y_tok) == pytest.approx((kp_y + PIXEL_CENTRE_OFFSET) / img_size, abs=1e-3)
+
+
+def test_data_yaml_declares_kpt_shape_seven_three_for_symbols(tmp_path: Path) -> None:
+    """`data.yaml` declares `kpt_shape: [7, 3]` for a symbol-family keypoints run."""
+    _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        splits=("train",),
+        count=2,
+        seed=0,
+        img_size=128,
+        max_objects=2,
+        task=Task.KEYPOINTS,
+        shapes=tuple(SymbolShape),
+        keypoint_schema=SYMBOL_KEYPOINT_SCHEMA,
+    )
+
+    doc = yaml.safe_load((tmp_path / "data.yaml").read_text())
+    assert doc["kpt_shape"] == [7, 3]
+
+
+def test_data_yaml_declares_the_symbol_flip_idx(tmp_path: Path) -> None:
+    """`data.yaml` declares `flip_idx` as the symbol schema's left/right swap, not the animals' identity mapping.
+
+    Unlike the animal schema, every symbol is bilaterally symmetric about its own vertical axis, so a horizontal flip
+    genuinely exchanges `flank_left`/`flank_right` (indices 3, 4) and `base_left`/`base_right` (indices 5, 6) — see
+    `SYMBOL_KEYPOINT_FLIP_IDX`.
+
+    """
+    _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        splits=("train",),
+        count=2,
+        seed=0,
+        img_size=128,
+        max_objects=2,
+        task=Task.KEYPOINTS,
+        shapes=tuple(SymbolShape),
+        keypoint_schema=SYMBOL_KEYPOINT_SCHEMA,
+    )
+
+    doc = yaml.safe_load((tmp_path / "data.yaml").read_text())
+    assert doc["flip_idx"] == [0, 1, 2, 4, 3, 6, 5]
+
+
+def test_letter_keypoints_row_has_fifty_tokens(tmp_path: Path) -> None:
+    """A letter pose row is `cls cx cy w h` (5) plus 15 `x y v` triples (45) = 50 tokens, always.
+
+    Mirrors `test_keypoints_row_has_fifty_three_tokens` for the 15-node letter schema: a letter that
+    uses fewer than all 15 grid slots (every letter but the few that touch every row/column) still
+    emits its unused slots' zeroed `0.000000 0.000000 0` triples, keeping the row fixed-width.
+
+    """
+    img_size = 192
+    data, _ = _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        splits=("train",),
+        count=2,
+        seed=4,
+        img_size=img_size,
+        max_objects=2,
+        task=Task.KEYPOINTS,
+        shapes=(LetterShape.X,),
+        keypoint_schema=LETTER_KEYPOINT_SCHEMA,
+    )
+
+    rows = _rows(tmp_path)
+    anns = [ann for sample in data["train"] for ann in sample.annotations]
+    assert rows
+    assert len(rows) == len(anns)
+    for row, ann in zip(rows, anns, strict=True):
+        tokens = row.split()
+        assert len(tokens) == 50
+        for i in range(len(LETTER_KEYPOINT_SCHEMA.names)):
+            x_tok, y_tok, v_tok = tokens[5 + 3 * i : 8 + 3 * i]
+            kp_x, kp_y, kp_v = ann.keypoints[i]
+            assert int(v_tok) == kp_v
+            if kp_v > 0:
+                # A row carries edge-space coordinates; the annotation carries pixel-centre ones.
+                assert float(x_tok) == pytest.approx((kp_x + PIXEL_CENTRE_OFFSET) / img_size, abs=1e-3)
+                assert float(y_tok) == pytest.approx((kp_y + PIXEL_CENTRE_OFFSET) / img_size, abs=1e-3)
+
+
+def test_data_yaml_declares_kpt_shape_fifteen_three_for_letters(tmp_path: Path) -> None:
+    """`data.yaml` declares `kpt_shape: [15, 3]` for a letter-family keypoints run."""
+    _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        splits=("train",),
+        count=2,
+        seed=0,
+        img_size=192,
+        max_objects=2,
+        task=Task.KEYPOINTS,
+        shapes=tuple(LetterShape),
+        keypoint_schema=LETTER_KEYPOINT_SCHEMA,
+    )
+
+    doc = yaml.safe_load((tmp_path / "data.yaml").read_text())
+    assert doc["kpt_shape"] == [15, 3]
+
+
+def test_data_yaml_declares_the_letter_grid_flip_idx(tmp_path: Path) -> None:
+    """`data.yaml` declares `flip_idx` as the grid's own column mirror, not the animals' identity mapping.
+
+    Every letter's node table shares one 3x5 grid; the flip mapping swaps each row's left/right column and holds the
+    middle column fixed regardless of which letters a run actually draws — see `LETTER_KEYPOINT_FLIP_IDX`.
+
+    """
+    _write(
+        tmp_path,
+        Task.KEYPOINTS,
+        splits=("train",),
+        count=2,
+        seed=0,
+        img_size=192,
+        max_objects=2,
+        task=Task.KEYPOINTS,
+        shapes=tuple(LetterShape),
+        keypoint_schema=LETTER_KEYPOINT_SCHEMA,
+    )
+
+    doc = yaml.safe_load((tmp_path / "data.yaml").read_text())
+    assert doc["flip_idx"] == [2, 1, 0, 5, 4, 3, 8, 7, 6, 11, 10, 9, 14, 13, 12]

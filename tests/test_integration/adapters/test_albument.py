@@ -302,6 +302,49 @@ class TestExactDiscreteNativeParity:
         assert fused.shape == (2, NUM_CHANNELS, 64, 48), label
         torch.testing.assert_close(fused, native, rtol=1e-4, atol=1e-6)
 
+    def test_native_uint8_horizontal_flip_publishes_float_matrix_above_byte_canvas(self) -> None:
+        """A native uint8 flip keeps a 512-pixel translation in its float matrix."""
+        height, width = 257, 513
+        image = np.zeros((height, width, 3), dtype=np.uint8)
+        image[17, 500] = [9, 31, 255]
+
+        result, matrix = Compose([albu.HorizontalFlip(p=1.0)])(image=image, return_matrix=True)
+
+        assert matrix is not None
+        assert matrix.dtype == torch.float32
+        expected = torch.tensor([[[-1.0, 0.0, 512.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]])
+        torch.testing.assert_close(matrix, expected)
+        assert result["image"].dtype == np.uint8
+        assert result["image"][17, 12].tolist() == [9, 31, 255]
+
+    def test_native_uint8_quarter_turn_publishes_float_matrix_above_byte_canvas(self) -> None:
+        """A fixed native quarter turn maps its marker through the unwrapped matrix."""
+        height, width = 257, 513
+        image = np.zeros((height, width, 3), dtype=np.uint8)
+        image[17, 500] = [9, 31, 255]
+        transform = albu.RandomRotate90(p=1.0)
+        transform.get_params = lambda: {"factor": 1}
+
+        result, matrix = Compose([transform])(image=image, return_matrix=True)
+
+        assert matrix is not None
+        assert matrix.dtype == torch.float32
+        expected = torch.tensor([[[0.0, 1.0, 0.0], [-1.0, 0.0, 512.0], [0.0, 0.0, 1.0]]])
+        torch.testing.assert_close(matrix, expected)
+        assert result["image"].shape == (width, height, 3)
+        assert result["image"].dtype == np.uint8
+        assert result["image"][12, 17].tolist() == [9, 31, 255]
+
+    def test_non_square_heterogeneous_quarter_turns_remain_rejected(self) -> None:
+        """A tensor batch cannot stack one swapped and one unchanged canvas."""
+        transform = albu.RandomRotate90(p=1.0)
+        samples = iter(({"factor": 1}, {"factor": 2}))
+        transform.get_params = lambda: next(samples)
+        image = torch.rand(2, NUM_CHANNELS, 48, 64)
+
+        with pytest.raises(RuntimeError, match="one shared quarter-turn"):
+            Compose([transform])(image)
+
 
 @pytest.mark.skipif(not _ALBUMENTATIONS_AVAILABLE, reason="missing albumentations")
 class TestBatchCorrectness:

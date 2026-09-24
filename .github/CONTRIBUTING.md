@@ -58,7 +58,9 @@ pre-commit run --all-files
 
 The CI matrix tests Python 3.10, 3.11, 3.12, 3.13, and 3.14, the supported optional backends, and the all-extras configuration. Keep tests deterministic and include specific assertions that would fail for plausible but incorrect behavior.
 
-No CI runner has GPU access: tests marked `gpu` (`pytest -m gpu`) are skipped in every workflow and never exercise a real CUDA device, so CUDA numeric correctness has no automated verification. If you change GPU-specific code, run the `gpu`-marked tests locally on a CUDA-capable machine before opening a pull request.
+Each backend leg installs exactly one optional backend, so a test that imports `albumentations`, `kornia` or `torchvision` without guarding it on the matching `fuse_augmentations._compat` flag passes in a development environment with every backend installed and fails only once CI runs. `make test-matrix` reproduces those legs locally — one cached environment per extra under `.venv-ci-<extra>`, running the same suite CI does — and `make test-kornia` runs a single leg. Guard the import and the module-level objects built from it: a module-level `skipif` marks the tests skipped but does not stop the module body from executing.
+
+The ordinary test jobs use CPU Torch builds, so they do not establish CUDA numeric correctness. A separate manual/scheduled GPU workflow is defined in [`ci_gpu.yml`](workflows/ci_gpu.yml), but this guide does not verify whether its self-hosted runner is currently attached or when it last completed. If you change GPU-specific code, run the `gpu`-marked tests locally on a CUDA-capable machine or record a successful GPU workflow run before opening a pull request.
 
 ## Executable documentation examples
 
@@ -108,6 +110,18 @@ The generator scans `README.md` and all Markdown files below `docs/`, removes st
 ## Pull requests
 
 The [pull request template](PULL_REQUEST_TEMPLATE.md) carries the full checklist; complete it when you open a PR. Use a descriptive branch name such as `fix/123-short-description`, `feat/123-short-description`, `docs/update-examples`, or `test/add-regression-case`.
+
+## Cutting a release
+
+Releases are cut from a tag, never from a branch push, so publishing is always a deliberate act:
+
+1. Move the `## [Unreleased]` entries in `CHANGELOG.md` under a `## [X.Y.Z] - YYYY-MM-DD` heading.
+2. Set `__version__` in `src/fuse_augmentations/__about__.py` to `X.Y.Z` and commit both.
+3. Tag that commit `vX.Y.Z` (annotated) and push the tag.
+
+`.github/workflows/release.yml` then builds the distributions, checks the manifest, verifies that the tag and `__version__` agree — a mismatch fails the run before anything is uploaded — runs `twine check`, and publishes through PyPI Trusted Publishing. No API token is stored: PyPI verifies the workflow's OIDC identity, which requires a one-time trusted publisher configured for this repository and this workflow file, and the `pypi` GitHub environment gates the upload behind whatever protection rules the repository sets.
+
+Pre-release tags (`vX.Y.Za1`, `vX.Y.Zrc1`) are accepted by the same workflow. Note that a `dev` version is not: a `>=X.Y,<X.Y+1` pin cannot resolve one without `--pre`, which is why versions below `0.12.0` — published only as `dev0` snapshots — are not usable as ordinary dependencies.
 
 ## Review expectations
 

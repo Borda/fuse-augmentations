@@ -1,16 +1,21 @@
-"""Analytic shape geometry: polygons, keypoints, rotation, and box derivation.
+"""Family-agnostic polygon math: placement, rotation, and box derivation.
 
-Pure NumPy, no image-library dependency. Polygons are ``(num_points, 2)`` float
-arrays of ``(x, y)`` pixel coordinates. Boxes are derived from the polygon so
-annotations always match the rasterized pixels. :func:`animal_keypoints` places an
-animal's landmark table through the very same scale/rotate/translate pipeline as
-:func:`shape_polygon`, so keypoints always land on the silhouette that was drawn.
+Pure NumPy, no image-library dependency and no knowledge of which shape families exist. Polygons are
+``(num_points, 2)`` float arrays of ``(x, y)`` pixel coordinates. Boxes are derived from the polygon
+so annotations always match the rasterized pixels.
+
+The analytic shape family that used to live here moved to
+:mod:`~fuse_augmentations.data.primitives`, and the per-family outline dispatch moved to
+:mod:`~fuse_augmentations.data.families`. What is left is the math every family shares — which is
+what lets each family module import this one without the import cycle the old arrangement dodged
+with deferred imports.
 
 Examples:
     ```pycon
-    >>> from fuse_augmentations.data.geometry import shape_polygon, polygon_to_bbox_xyxy
-    >>> poly = shape_polygon("square", center=(5.0, 5.0), size=4.0)
-    >>> polygon_to_bbox_xyxy(poly)
+    >>> import numpy as np
+    >>> from fuse_augmentations.data.geometry import polygon_to_bbox_xyxy
+    >>> square = np.array([[3.0, 3.0], [7.0, 3.0], [7.0, 7.0], [3.0, 7.0]])
+    >>> polygon_to_bbox_xyxy(square)
     (3.0, 3.0, 7.0, 7.0)
 
     ```
@@ -19,100 +24,12 @@ Examples:
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from fuse_augmentations.data.animals import ANIMAL_POLYGONS
-
 if TYPE_CHECKING:
     from numpy.typing import NDArray
-
-#: Number of vertices used to approximate a circle outline.
-CIRCLE_POINTS = 32
-
-#: Height-to-width ratio for the ``rectangle`` shape (non-square, so its OBB is oriented).
-RECT_ASPECT = 0.5
-
-
-class GeomShape(str, Enum):
-    """Analytically computed shape vocabulary (definition order is the geometric class order).
-
-    Computed from ``size`` rather than looked up in a table. ``RECTANGLE`` is deliberately
-    non-square and every shape but ``CIRCLE`` takes a per-shape rotation, so oriented bounding
-    boxes carry real orientation variety; ``CIRCLE`` is rotation-invariant, so its OBB collapses to
-    the axis-aligned box. None of them carries a landmark table: a square is 4-fold symmetric and a
-    circle rotation-invariant, so a fixed landmark on them has no identity a model could learn.
-
-    Attributes:
-        SQUARE: Axis-aligned equal-sided quadrilateral.
-        RECTANGLE: Non-square quadrilateral.
-        TRIANGLE: Equilateral triangle.
-        CIRCLE: Polygon-approximated circle.
-
-    Examples:
-        ```pycon
-        >>> from fuse_augmentations.data.geometry import GeomShape
-        >>> [shape.value for shape in GeomShape]
-        ['square', 'rectangle', 'triangle', 'circle']
-
-        ```
-
-    """
-
-    SQUARE = "square"
-    RECTANGLE = "rectangle"
-    TRIANGLE = "triangle"
-    CIRCLE = "circle"
-
-
-#: Analytically computed shape names, in :class:`GeomShape` declaration order.
-GEOMETRIC_SHAPES: tuple[str, ...] = tuple(shape.value for shape in GeomShape)
-
-
-def _base_polygon(shape: str, size: float) -> NDArray[np.float64]:
-    """Return an origin-centered polygon for ``shape`` spanning ``size`` pixels.
-
-    Geometric shapes are computed analytically; animal shapes are looked up in
-    :data:`~fuse_augmentations.data.animals.ANIMAL_POLYGONS`, whose tables share this
-    function's unit convention (vertex centroid at the origin, larger extent equal to ``1``)
-    and therefore need only a scale by ``size``.
-
-    Args:
-        shape: A :class:`~fuse_augmentations.data.config.Shape` value — one of the four
-            geometric names (``"square"``, ``"rectangle"``, ``"triangle"``, ``"circle"``)
-            or one of the twelve animal names (``"duck"``, ``"elephant"``, ``"giraffe"``,
-            ``"fish"``, ``"rabbit"``, ``"camel"``, ``"eagle"``, ``"penguin"``, ``"whale"``,
-            ``"kangaroo"``, ``"flamingo"``, ``"crocodile"``).
-        size: Bounding size (side / diameter / larger extent) in pixels.
-
-    Returns:
-        ``(num_points, 2)`` float array centered at the origin.
-
-    Raises:
-        ValueError: If ``shape`` is not recognised.
-
-    """
-    half = size / 2.0
-    if shape == "square":
-        return np.array([[-half, -half], [half, -half], [half, half], [-half, half]], dtype=np.float64)
-    if shape == "rectangle":
-        h = half * RECT_ASPECT
-        return np.array([[-half, -h], [half, -h], [half, h], [-half, h]], dtype=np.float64)
-    if shape == "triangle":
-        height = size * np.sqrt(3.0) / 2.0
-        return np.array([[0.0, -2.0 * height / 3.0], [half, height / 3.0], [-half, height / 3.0]], dtype=np.float64)
-    if shape == "circle":
-        angles = np.linspace(0.0, 2.0 * np.pi, CIRCLE_POINTS, endpoint=False)
-        return np.stack([half * np.cos(angles), half * np.sin(angles)], axis=1).astype(np.float64)
-    animal = ANIMAL_POLYGONS.get(shape)
-    if animal is not None:
-        # One lookup rather than eight near-identical branches; the stored table is frozen,
-        # so multiplying returns a fresh writable array and never aliases the constant.
-        return animal * size
-    known = ", ".join((*GEOMETRIC_SHAPES, *ANIMAL_POLYGONS))
-    raise ValueError(f"unknown shape {shape!r}; expected one of {known}")
 
 
 def _rotation_matrix(angle: float) -> NDArray[np.float64]:
@@ -151,49 +68,116 @@ def rotate_polygon(
     return rotated
 
 
-def _placed(points: NDArray[np.float64], center: tuple[float, float], angle: float) -> NDArray[np.float64]:
-    """Rotate origin-centered ``points`` by ``angle`` and translate them onto ``center``.
+def _skewed(points: NDArray[np.float64], skew: float) -> NDArray[np.float64]:
+    """Narrow one half of origin-centered ``points`` toward the vertical axis.
 
-    Shared by :func:`shape_polygon` and :func:`animal_keypoints` so an outline and its landmarks
-    can never drift apart: both are placed by this one implementation.
+    Every shape in this package but :attr:`PrimitiveShape.CIRCLE` is drawn mirror-symmetric about its
+    own local vertical axis (before rotation), so its oriented bounding box would otherwise show
+    identical margins on both sides of that axis — see
+    :attr:`~fuse_augmentations.data.config.SyntheticConfig.asymmetry_jitter`. This breaks that
+    symmetry per placed instance instead.
+
+    Args:
+        points: ``(num_points, 2)`` array already centered on the origin, in the shape's own
+            pre-rotation frame — "left" and "right" are only meaningful there, which is why this
+            runs before :func:`place_points` applies ``angle``. NaN rows (absent landmarks) pass through
+            unchanged: a comparison against NaN is always false, so the selection mask below never
+            selects one.
+        skew: Signed fraction narrowing one half. Positive narrows the ``x > 0`` half, negative the
+            ``x < 0`` half; magnitude is the fractional narrowing (``0.2`` == 20% narrower).
+
+    Returns:
+        A new ``(num_points, 2)`` array; ``points`` itself is never mutated.
+
+    """
+    narrowed: NDArray[np.float64] = points.copy()
+    on_narrowed_side = (points[:, 0] * np.sign(skew)) > 0.0
+    narrowed[on_narrowed_side, 0] *= 1.0 - abs(skew)
+    return narrowed
+
+
+def place_points(
+    points: NDArray[np.float64], center: tuple[float, float], angle: float, skew: float = 0.0
+) -> NDArray[np.float64]:
+    """Skew, rotate, and translate origin-centered ``points`` onto ``center``, in that order.
+
+    The single placement implementation every family shares — outlines via
+    :func:`~fuse_augmentations.data.families.shape_outline`, landmarks via each family's own
+    ``*_keypoints`` — so an outline and its landmarks can never drift apart. Skew runs first because
+    "left"/"right" are only meaningful in the shape's own pre-rotation frame.
 
     Args:
         points: ``(num_points, 2)`` array already scaled and centered on the origin.
         center: Target center ``(x, y)`` in pixels.
         angle: Rotation in radians applied about the origin (i.e. about the shape center).
+        skew: Signed fraction (see :func:`_skewed`) narrowing one pre-rotation half. ``0.0`` (the
+            default) skips the step entirely, so existing callers are unaffected.
 
     Returns:
         ``(num_points, 2)`` float array in image coordinates.
 
     """
+    if skew:
+        points = _skewed(points, skew)
     if angle:
         points = points @ _rotation_matrix(angle).T
     return points + np.asarray(center, dtype=np.float64)
 
 
-def shape_polygon(shape: str, center: tuple[float, float], size: float, angle: float = 0.0) -> NDArray[np.float64]:
-    """Build a rotated, translated polygon for a shape.
+#: Distance between a pixel's edge-space and centre-space coordinate. Pillow fills pixel
+#: ``floor(x)`` for a vertex at ``x``, so an outline authored for the rasterizer is in *edge* space
+#: (pixel ``i`` spans ``[i, i + 1)``), while the matrices in
+#: :mod:`~fuse_augmentations.targets` resample images -- and therefore move keypoints -- in *centre*
+#: space (pixel ``i`` is the point ``i``). The two differ by half a pixel each way, which becomes a
+#: full pixel under any reflection, so a point field has to declare which space it is in.
+PIXEL_CENTRE_OFFSET = 0.5
+
+
+def to_pixel_centre(points: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Convert edge-space coordinates to the pixel-centre space the point transforms assume.
 
     Args:
-        shape: Shape name (see :func:`_base_polygon`).
-        center: Target center ``(x, y)`` in pixels.
-        size: Bounding size in pixels.
-        angle: Rotation in radians applied about the shape center.
+        points: Coordinates in edge space, any shape ending in the coordinate axis.
 
     Returns:
-        ``(num_points, 2)`` float array in image coordinates.
+        The same array shifted by ``-`` :data:`PIXEL_CENTRE_OFFSET`.
 
     Examples:
         ```pycon
-        >>> from fuse_augmentations.data.geometry import shape_polygon
-        >>> poly = shape_polygon("triangle", center=(10.0, 10.0), size=6.0)
-        >>> poly.shape
-        (3, 2)
+        >>> import numpy as np
+        >>> from fuse_augmentations.data.geometry import to_pixel_centre
+        >>> to_pixel_centre(np.array([[3.0, 4.0]]))
+        array([[2.5, 3.5]])
 
         ```
 
     """
-    return _placed(_base_polygon(shape, size), center, angle)
+    return np.asarray(points, dtype=np.float64) - PIXEL_CENTRE_OFFSET
+
+
+def to_pixel_edge(points: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Convert pixel-centre coordinates back to the edge space the rasterizer and writers use.
+
+    Inverse of :func:`to_pixel_centre`; the dataset writers apply it so an exported COCO or YOLO
+    file stays in one space with the ``bbox`` beside it.
+
+    Args:
+        points: Coordinates in pixel-centre space, any shape ending in the coordinate axis.
+
+    Returns:
+        The same array shifted by ``+`` :data:`PIXEL_CENTRE_OFFSET`.
+
+    Examples:
+        ```pycon
+        >>> import numpy as np
+        >>> from fuse_augmentations.data.geometry import to_pixel_edge
+        >>> to_pixel_edge(np.array([[2.5, 3.5]]))
+        array([[3., 4.]])
+
+        ```
+
+    """
+    return np.asarray(points, dtype=np.float64) + PIXEL_CENTRE_OFFSET
 
 
 def polygon_to_bbox_xyxy(points: NDArray[np.float64]) -> tuple[float, float, float, float]:
@@ -220,50 +204,32 @@ def polygon_to_bbox_xyxy(points: NDArray[np.float64]) -> tuple[float, float, flo
     return (float(mins[0]), float(mins[1]), float(maxs[0]), float(maxs[1]))
 
 
-def _convex_hull(points: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Return the convex hull of ``points`` (counter-clockwise) via monotone chain.
+def polygon_to_obb(points: NDArray[np.float64], angle: float = 0.0) -> NDArray[np.float64]:
+    """Return the oriented bounding box aligned with the shape's own upright frame.
+
+    The box is the polygon's axis-aligned bounding box *in the shape's pre-rotation frame*,
+    carried rigidly through the placement rotation: the polygon is de-rotated by ``-angle``
+    about its centroid, its min/max extents taken, and the four corners rotated back by
+    ``angle``. Every shape in this package is authored upright (mirror-symmetric about its
+    local vertical axis where it has a symmetry at all — see
+    :mod:`~fuse_augmentations.data.symbols`), so the box's sides always run along and across
+    that upright axis, matching how a human would draw the box around the object.
+
+    This deliberately is *not* the minimum-area rectangle. A minimum-area box must lie flush
+    to a convex-hull edge, so for a shape with no horizontal or vertical hull edge in its
+    upright pose (``kite``, ``arrow``, ``teardrop``) it sits tilted against the shape's own
+    symmetry axis — geometrically tighter, but visually wrong as a pose annotation.
 
     Args:
-        points: ``(num_points, 2)`` array.
+        points: ``(num_points, 2)`` array of polygon coordinates in the image frame.
+        angle: Rotation in radians that was applied when the polygon was placed (see
+            :func:`place_points`). **Defaults to ``0.0``, which returns the plain axis-aligned
+            box** — a rotated polygon passed without its angle gets a loose upright box, not
+            the tight oriented one, so real callers must pass the placement angle through.
 
     Returns:
-        ``(hull_points, 2)`` array of hull vertices.
-
-    """
-    pts = np.unique(points, axis=0)
-    if len(pts) <= 2:
-        return pts
-    order = np.lexsort((pts[:, 1], pts[:, 0]))
-    pts = pts[order]
-
-    def _cross(o: NDArray[np.float64], a: NDArray[np.float64], b: NDArray[np.float64]) -> float:
-        return float((a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]))
-
-    lower: list[NDArray[np.float64]] = []
-    for p in pts:
-        while len(lower) >= 2 and _cross(lower[-2], lower[-1], p) <= 0:
-            lower.pop()
-        lower.append(p)
-    upper: list[NDArray[np.float64]] = []
-    for p in pts[::-1]:
-        while len(upper) >= 2 and _cross(upper[-2], upper[-1], p) <= 0:
-            upper.pop()
-        upper.append(p)
-    return np.array(lower[:-1] + upper[:-1], dtype=np.float64)
-
-
-def polygon_to_obb(points: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Return the minimum-area oriented bounding box of a polygon as four corners.
-
-    Uses the rotating-calipers property that a minimum-area rectangle shares an edge
-    with the convex hull. For a rotation-invariant outline (e.g. a circle) the result
-    is effectively the axis-aligned box.
-
-    Args:
-        points: ``(num_points, 2)`` array of polygon coordinates.
-
-    Returns:
-        ``(4, 2)`` array of corner coordinates in order.
+        ``(4, 2)`` array of corner coordinates in order (a rigid rotation of
+        ``(min, min) → (max, min) → (max, max) → (min, max)`` in the de-rotated frame).
 
     Examples:
         ```pycon
@@ -272,38 +238,30 @@ def polygon_to_obb(points: NDArray[np.float64]) -> NDArray[np.float64]:
         >>> corners = polygon_to_obb(np.array([[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]]))
         >>> corners.shape
         (4, 2)
+        >>> corners[2] - corners[0]
+        array([2., 1.])
 
         ```
 
     """
-    hull = _convex_hull(points)
-    if len(hull) < 3:
+    if not angle:
         x1, y1, x2, y2 = polygon_to_bbox_xyxy(points)
         return np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float64)
-
-    best_corners: NDArray[np.float64] | None = None
-    best_area = np.inf
-    for i in range(len(hull)):
-        edge = hull[(i + 1) % len(hull)] - hull[i]
-        angle = np.arctan2(edge[1], edge[0])
-        rot = hull @ _rotation_matrix(-angle).T
-        min_xy = rot.min(axis=0)
-        max_xy = rot.max(axis=0)
-        area = float((max_xy[0] - min_xy[0]) * (max_xy[1] - min_xy[1]))
-        if area < best_area:
-            best_area = area
-            aligned = np.array(
-                [
-                    [min_xy[0], min_xy[1]],
-                    [max_xy[0], min_xy[1]],
-                    [max_xy[0], max_xy[1]],
-                    [min_xy[0], max_xy[1]],
-                ],
-                dtype=np.float64,
-            )
-            best_corners = aligned @ _rotation_matrix(angle).T
-    assert best_corners is not None  # noqa: S101 - loop over >=3 hull edges always assigns
-    return best_corners
+    pivot = points.mean(axis=0)
+    upright = (points - pivot) @ _rotation_matrix(-angle).T
+    min_xy = upright.min(axis=0)
+    max_xy = upright.max(axis=0)
+    aligned = np.array(
+        [
+            [min_xy[0], min_xy[1]],
+            [max_xy[0], min_xy[1]],
+            [max_xy[0], max_xy[1]],
+            [min_xy[0], max_xy[1]],
+        ],
+        dtype=np.float64,
+    )
+    corners: NDArray[np.float64] = aligned @ _rotation_matrix(angle).T + pivot
+    return corners
 
 
 def bbox_iou(box_a: tuple[float, float, float, float], box_b: tuple[float, float, float, float]) -> float:

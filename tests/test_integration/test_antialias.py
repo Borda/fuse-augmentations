@@ -20,9 +20,15 @@ import pytest
 import torch
 
 import fuse_augmentations.affine.segment as segment
+import fuse_augmentations.pipeline as pipeline
 from fuse_augmentations._compat import _KORNIA_AVAILABLE, _TORCHVISION_AVAILABLE
 from fuse_augmentations.affine.matrix import estimate_scale
-from fuse_augmentations.affine.segment import _antialias_axis_scales, _maybe_antialias_prefilter, _mipmap_sigma
+from fuse_augmentations.affine.segment import (
+    _antialias_axis_scales,
+    _maybe_antialias_prefilter,
+    _mipmap_sigma,
+    build_segments,
+)
 
 
 def _gaussian_window(window_size: int, sigma: float) -> torch.Tensor:
@@ -85,8 +91,8 @@ class TestAntialiasAxisScales:
         mtx[:, 0, 0] = 0.9  # width shrinks mildly
         mtx[:, 1, 1] = 0.2  # height shrinks hard
         scale_x, scale_y = _antialias_axis_scales(mtx)
-        assert scale_x == pytest.approx(0.9, abs=1e-4)  # width axis, NOT the smaller singular value
-        assert scale_y == pytest.approx(0.2, abs=1e-4)  # height axis carries the aggressive shrink
+        assert float(scale_x[0]) == pytest.approx(0.9, abs=1e-4)  # width axis, NOT the smaller singular value
+        assert float(scale_y[0]) == pytest.approx(0.2, abs=1e-4)  # height axis carries the aggressive shrink
 
     def test_width_dominant_shrink_maps_to_width_axis(self) -> None:
         """A width-dominant axis-aligned shrink puts the small scale on the width axis."""
@@ -94,8 +100,8 @@ class TestAntialiasAxisScales:
         mtx[:, 0, 0] = 0.2  # width shrinks hard
         mtx[:, 1, 1] = 0.9  # height shrinks mildly
         scale_x, scale_y = _antialias_axis_scales(mtx)
-        assert scale_x == pytest.approx(0.2, abs=1e-4)
-        assert scale_y == pytest.approx(0.9, abs=1e-4)
+        assert float(scale_x[0]) == pytest.approx(0.2, abs=1e-4)
+        assert float(scale_y[0]) == pytest.approx(0.9, abs=1e-4)
 
     def test_rotated_matrix_uses_isotropic_min_singular_value(self) -> None:
         """A rotated (non-axis-aligned) shrink falls back to the worst-axis singular value on both axes."""
@@ -105,17 +111,17 @@ class TestAntialiasAxisScales:
         mtx = torch.eye(3).unsqueeze(0)
         mtx[0, :2, :2] = rot @ scale
         scale_x, scale_y = _antialias_axis_scales(mtx)
-        assert scale_x == pytest.approx(0.3, abs=1e-4)  # smallest singular value
-        assert scale_x == scale_y  # applied isotropically for a rotated warp
+        assert float(scale_x[0]) == pytest.approx(0.3, abs=1e-4)  # smallest singular value
+        torch.testing.assert_close(scale_x, scale_y)  # applied isotropically for a rotated warp
 
-    def test_batched_reduces_to_smallest_scale_per_axis(self) -> None:
-        """A batch takes the smallest per-axis scale so any downscaling sample is antialiased."""
+    def test_batched_scales_remain_per_sample(self) -> None:
+        """One sample's downscale cannot choose another sample's blur sigma."""
         mtx = torch.eye(3).unsqueeze(0).repeat(2, 1, 1)
         mtx[0, 0, 0], mtx[0, 1, 1] = 0.9, 0.7
         mtx[1, 0, 0], mtx[1, 1, 1] = 0.4, 0.95
         scale_x, scale_y = _antialias_axis_scales(mtx)
-        assert scale_x == pytest.approx(0.4, abs=1e-4)  # min width scale across the batch
-        assert scale_y == pytest.approx(0.7, abs=1e-4)  # min height scale across the batch
+        torch.testing.assert_close(scale_x, torch.tensor([0.9, 0.4]))
+        torch.testing.assert_close(scale_y, torch.tensor([0.7, 0.95]))
 
 
 def _axis_total_variation(image: torch.Tensor) -> tuple[float, float]:
@@ -149,6 +155,26 @@ class TestAnisotropicPrefilterAxis:
         ratio_h = tv_h_after / tv_h_before  # height smoothing (should be strong -> small ratio)
         ratio_w = tv_w_after / tv_w_before  # width smoothing (should be weak -> ratio near 1)
         assert ratio_h < 0.6 * ratio_w
+
+    def test_heterogeneous_aggressive_batch_matches_independent_filtering(self) -> None:
+        """Each aggressive row keeps the Gaussian support it gets alone.
+
+        Both rows downscale, but each has a different anisotropic sigma. A batched blur using the maximum kernel support
+        would change both results relative to these single-row calls.
+
+        """
+        torch.manual_seed(3)
+        image = torch.rand(2, 3, 48, 48)
+        mtx = torch.eye(3).unsqueeze(0).repeat(2, 1, 1)
+        mtx[0, 0, 0], mtx[0, 1, 1] = 0.25, 0.4
+        mtx[1, 0, 0], mtx[1, 1, 1] = 0.45, 0.2
+
+        batched = _maybe_antialias_prefilter(image, mtx, enabled=True)
+        first = _maybe_antialias_prefilter(image[:1], mtx[:1], enabled=True)
+        second = _maybe_antialias_prefilter(image[1:], mtx[1:], enabled=True)
+
+        torch.testing.assert_close(batched[:1], first, rtol=0.0, atol=0.0)
+        torch.testing.assert_close(batched[1:], second, rtol=0.0, atol=0.0)
 
 
 class TestMipmapSigma:
@@ -210,30 +236,77 @@ class TestAntialiasDownscale:
         antialiased = self._pipe_out(image, target, antialias=True)
         assert torch.equal(unfiltered, antialiased)
 
+    def test_prefilter_preserves_input_gradient(self) -> None:
+        """The opt-in image prefilter remains differentiable through the crop-resize warp."""
+        image = _high_frequency_image(96).requires_grad_()
+        self._pipe_out(image, 24, antialias=True).square().mean().backward()
+        assert image.grad is not None
+        assert torch.isfinite(image.grad).all()
+        assert bool(image.grad.abs().any())
+
+    def test_prefilter_does_not_change_routed_mask(self) -> None:
+        """Antialiasing filters the image only; mask routing remains the same nearest warp."""
+        import kornia.augmentation as kornia_aug
+
+        from fuse_augmentations.adapters.kornia import KorniaAdapter
+        from fuse_augmentations.compose import FusedCompose
+
+        image = _high_frequency_image(96)
+        mask = torch.arange(96 * 96, dtype=torch.uint8).reshape(1, 1, 96, 96)
+
+        def run(antialias: bool) -> tuple[torch.Tensor, torch.Tensor]:
+            """Apply the fixed full-image crop under one antialias setting."""
+            crop = kornia_aug.RandomResizedCrop(size=(24, 24), scale=(1.0, 1.0), ratio=(1.0, 1.0), p=1.0)
+            pipe = FusedCompose([crop], adapter=KorniaAdapter(), data_keys=["input", "mask"], antialias=antialias)
+            return pipe(image, mask)
+
+        unfiltered_image, unfiltered_mask = run(antialias=False)
+        filtered_image, filtered_mask = run(antialias=True)
+        assert not torch.equal(filtered_image, unfiltered_image)
+        assert torch.equal(filtered_mask, unfiltered_mask)
+
     @pytest.mark.parametrize(
         ("target", "antialias", "expected_calls"),
         [(24, False, 0), (64, True, 0), (24, True, 1)],
         ids=("flag-off", "mild-downscale", "aggressive-downscale"),
     )
-    def test_crop_resize_only_enters_prefilter_when_required(
+    def test_crop_resize_filters_only_aggressive_rows(
         self,
         monkeypatch: pytest.MonkeyPatch,
         target: int,
         antialias: bool,
         expected_calls: int,
     ) -> None:
-        """Crop-resize invokes the prefilter only for opt-in aggressive downscales."""
+        """Crop-resize enters Gaussian blur only for opt-in aggressive downscales."""
         image = _high_frequency_image(96)
-        original = segment._maybe_antialias_prefilter
+        original = segment._kornia_gaussian_blur
         calls: list[bool] = []
 
-        def spy_prefilter(image: torch.Tensor, mtx: torch.Tensor, enabled: bool) -> torch.Tensor:
-            """Record prefilter entry while preserving the underlying result."""
-            calls.append(enabled)
-            return original(image, mtx, enabled)
+        def spy_gaussian(image: torch.Tensor, sigma_x, sigma_y):
+            """Record Gaussian work while preserving the underlying result."""
+            calls.append(True)
+            return original(image, sigma_x, sigma_y)
 
-        monkeypatch.setattr(segment, "_maybe_antialias_prefilter", spy_prefilter)
+        monkeypatch.setattr(segment, "_kornia_gaussian_blur", spy_gaussian)
 
         self._pipe_out(image, target, antialias=antialias)
 
         assert len(calls) == expected_calls
+
+
+def test_antialias_true_rejects_missing_kornia_at_construction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit antialiasing never silently degrades when Kornia is unavailable."""
+    from fuse_augmentations.compose import FusedCompose
+
+    monkeypatch.setattr(pipeline, "_KORNIA_AVAILABLE", False)
+
+    with pytest.raises(ImportError, match="antialias=True requires the optional kornia dependency"):
+        FusedCompose([], antialias=True)
+
+
+def test_build_segments_antialias_rejects_missing_kornia(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The exported segment builder has the same explicit optional-dependency contract."""
+    monkeypatch.setattr(segment, "_KORNIA_AVAILABLE", False)
+
+    with pytest.raises(ImportError, match="antialias=True requires the optional kornia dependency"):
+        build_segments([], adapter=object(), antialias=True)  # type: ignore[arg-type]

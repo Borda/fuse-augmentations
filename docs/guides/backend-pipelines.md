@@ -59,7 +59,7 @@ augment = Compose(
         T.RandomRotation(degrees=15.0),
         T.RandomAffine(degrees=0.0, scale=(0.9, 1.1)),
         T.RandomHorizontalFlip(p=0.5),
-    ]
+    ],
 )
 
 output = augment(torch.rand(8, 3, 224, 224))
@@ -87,9 +87,11 @@ augment = Compose(
 output = augment(torch.rand(4, 3, 224, 224))
 ```
 
-`execution="cv2"` is the default CPU path. `execution="torch"` applies the composed matrices through a batched torch sampling grid and can remain on a torch device, but its border and subpixel numerics differ from OpenCV.
+`execution="cv2"` is the default CPU path. `execution="torch"` applies registered geometry through a batched torch sampling grid and can remain on a torch device, but its border and subpixel numerics differ from OpenCV. An opaque CPU-only Albumentations passthrough still transfers an accelerator tensor to the host and back; `execution="torch"` keeps the fused warp on-device but cannot make that native operation device-native. `execution="auto"` resolves per call — host data to cv2, accelerator data to torch — and `pipeline.resolved_execution` reports which one ran; it trades cross-environment bit-reproducibility for that convenience, so [Reproducibility](reproducibility.md) covers when it is the wrong choice.
 
-An image-only HWC NumPy compatibility path also exists:
+An HWC NumPy path also exists. Without `data_keys` it transforms the image only:
+
+<!--phmdoctest-share-names-->
 
 ```python
 import numpy as np
@@ -99,7 +101,18 @@ result = augment(image=image)
 assert result["image"].shape == image.shape
 ```
 
-This is not a full Albumentations dictionary replacement: NumPy masks, boxes, keypoints, labels, and processor behavior are not supported through that special path. Tensor passthrough converts images into float32 `[0, 1]`; native Albumentations transforms that expect uint8 ranges can behave incorrectly.
+Declare `data_keys` and the same call carries masks, boxes, keypoints and rotated boxes:
+
+```python
+with_boxes = Compose(
+    [A.Affine(rotate=(-10.0, 10.0), p=1.0)],
+    data_keys=["input", "bbox_xyxy"],
+)
+out = with_boxes(image=image, bboxes=np.zeros((4, 4), dtype=np.float32))
+assert out["image"].dtype == np.uint8
+```
+
+A NumPy image comes back in the dtype it was passed in, as Albumentations returns it. Routed NumPy masks are labels rather than image intensities: their dtype and values are preserved through the round trip, and they are never normalized to `[0, 1]`; nearest sampling is the hard-label default. Labels and Albumentations' own processor behaviour are still not replicated — filtering instances after a warp is the caller's, and [Auxiliary targets](auxiliary-targets.md) covers the helpers for it. Tensor input is a separate contract: images stay float32 `[0, 1]` throughout, while native Albumentations transforms that expect uint8 ranges can behave incorrectly on image tensors.
 
 ## Mixed backends
 
@@ -114,7 +127,7 @@ augment = Compose(
         T.RandomRotation(10.0),
         K.RandomHorizontalFlip(p=0.5),
         K.RandomBrightness(brightness=(0.9, 1.1), p=1.0),
-    ]
+    ],
 )
 ```
 
@@ -124,4 +137,6 @@ Each transform is routed to its registered adapter. A backend change is a hard s
 
 An unregistered transform becomes a passthrough barrier when the adapter can safely call it. That does not mean the operation is transparent or target-safe.
 
-!!! danger Never ignore an `Unknown ... SPATIAL_KERNEL barrier` warning in a pipeline with `data_keys`. Unsupported spatial transforms can modify only the image and leave auxiliary targets stale. Replace the transform with a registered operation, split the pipeline and route every target yourself, or do not use this package for that pipeline.
+!!! danger
+
+    With `data_keys`, an unknown or unclassified spatial transform is refused before any segment executes, so it cannot silently leave auxiliary targets stale. Image-only calls may still execute native passthrough; replace the transform with a registered operation or route targets through a native target-aware pipeline when you need explicit semantics.

@@ -12,21 +12,31 @@ repos:
     rev: v6.0.0
     hooks:
       - id: end-of-file-fixer
+        name: 📄 File ends with one newline
       - id: trailing-whitespace
+        name: ✂️ No trailing whitespace
       - id: check-case-conflict
+        name: 🔠 No case-conflicting filenames
       - id: check-json
+        name: 🧩 Valid JSON
       - id: check-yaml
+        name: 📐 Valid YAML
       - id: check-toml
+        name: 🧾 Valid TOML
       - id: check-added-large-files
+        name: 🐘 No oversized files added
         exclude: .*\.ipynb
         args: ["--maxkb=300", "--enforce-all"]
       - id: check-docstring-first
+        name: 📝 Docstring before code
       - id: detect-private-key
+        name: 🔑 No private keys
 
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.3
     hooks:
       - id: codespell
+        name: 🔤 Spelling
         additional_dependencies: [tomli]
         args: ["--write-changes"]
         exclude: pyproject.toml
@@ -35,6 +45,7 @@ repos:
     rev: 1.0.0
     hooks:
       - id: mdformat
+        name: 📚 Markdown formatter
         args: ["--number", "--wrap=no"]
         additional_dependencies:
           - mdformat-gfm
@@ -43,18 +54,19 @@ repos:
           - mdformat-mkdocs==5.2.0
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.1
+    rev: v0.16.6
     hooks:
       - id: ruff-check
-        name: Ruff linter
+        name: 🐍 Ruff linter
         args: ["--fix", "--unsafe-fixes"]
       - id: ruff-format
-        name: Ruff/black formatter
+        name: 🎨 Ruff/black formatter
 
   - repo: https://github.com/rbubley/mirrors-prettier
     rev: v3.9.6
     hooks:
       - id: prettier
+        name: 💅 Prettier for JSON/YAML/TOML
         files: \.(json|yml|yaml|toml)
         # https://prettier.io/docs/en/options.html#print-width
         args: ["--print-width=120"]
@@ -63,23 +75,32 @@ repos:
     rev: v1.7.8
     hooks:
       - id: docformatter
+        name: 🧹 Docstring formatter
         additional_dependencies: [tomli]
         args: ["--in-place"]
+
+  - repo: https://github.com/tox-dev/pyproject-fmt
+    rev: v2.29.3
+    hooks:
+      - id: pyproject-fmt
+        name: 📦 pyproject.toml formatter
+        additional_dependencies: [tox]
+  - repo: https://github.com/abravalheri/validate-pyproject
+    rev: "0.26"
+    hooks:
+      - id: validate-pyproject
+        name: ✅ pyproject.toml schema
 
   - repo: local
     hooks:
       - id: check-doctest-fences
-        name: Doctest examples wrapped in ```pycon fences
+        name: 🧪 Doctest examples wrapped in ```pycon fences
         entry: python .github/scripts/check_doctest_fences.py
         language: system
         files: ^src/.*\.py$
-
-  - repo: https://github.com/tox-dev/pyproject-fmt
-    rev: v2.26.0
-    hooks:
-      - id: pyproject-fmt
-        additional_dependencies: [tox]
-  - repo: https://github.com/abravalheri/validate-pyproject
-    rev: v0.25
-    hooks:
-      - id: validate-pyproject
+      - id: check-unused-assets
+        name: 🖼️ Every docs/assets file is referenced by a page
+        entry: python .github/scripts/check_unused_assets.py
+        language: system
+        pass_filenames: false
+        always_run: true

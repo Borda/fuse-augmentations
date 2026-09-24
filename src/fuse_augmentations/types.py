@@ -192,6 +192,18 @@ PaddingModeStr = Literal["zeros", "border", "reflection"]
 #: opt-in segmentation policy rather than a ``grid_sample`` padding value.
 ComposePaddingModeStr = PaddingModeStr | Literal["per_transform"]
 
+#: Constant value written into the out-of-canvas region of a warped **image**, in
+#: the image's own value range (``114`` for a uint8 grey, ``114 / 255`` for the same
+#: grey as float). A scalar fills every channel; a sequence fills one channel each.
+#: ``None`` keeps the plain zero padding. Auxiliary masks are never filled -- an
+#: out-of-canvas mask region means "no instance", not "the fill colour".
+FillValue = float | Sequence[float]
+
+#: Constant scalar written into the out-of-canvas region of a warped **mask**.
+#: This is independent of :data:`FillValue`: masks carry one label per pixel, not
+#: image channels. Boolean values are accepted at runtime as the integer values 0 and 1.
+MaskFillValue = int | float
+
 #: String literal type for the ``kind`` field of :class:`SegmentDescriptor`.
 SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color", "lut", "crop_resize", "gaussian_blur"]
 
@@ -201,7 +213,11 @@ SegmentKind = Literal["fused", "exact", "projective", "passthrough", "color", "l
 #: ``"torch"`` composes the same per-sample matrices but applies one batched
 #: ``grid_sample`` for the whole batch, giving batch-size-independent throughput and
 #: a native GPU/MPS warp; its border/bilinear numerics differ slightly from cv2.
-ExecutionStr = Literal["cv2", "torch"]
+#: ``"auto"`` resolves per call by a fixed, documented rule -- host input to cv2,
+#: accelerator input to torch -- and is never the default. Choosing it opts out of
+#: bit-reproducibility across environments, because the engine is then a function of
+#: where the data happens to live rather than of the recorded configuration.
+ExecutionStr = Literal["cv2", "torch", "auto"]
 
 #: String literal type for the ``clip_policy`` of the fused color segment.
 #: ``"final"`` (default) applies the whole color chain as one 4x4 matmul and clamps
@@ -334,7 +350,13 @@ class TransformAdapter(Protocol):
         """
         raise NotImplementedError("Adapter does not implement exact_flip_dims; required for ExactAffineSegment support")
 
-    def exact_apply(self, transform: object, image: Tensor) -> Tensor:
+    def exact_apply(
+        self,
+        transform: object,
+        image: Tensor,
+        *,
+        params: dict[str, Tensor] | None = None,
+    ) -> Tensor:
         """Apply a GEOMETRIC_EXACT transform losslessly to an image batch.
 
         Implementers **must** provide this method for adapters that are used with :class:`ExactAffineSegment`.
@@ -342,21 +364,17 @@ class TransformAdapter(Protocol):
         Adapters that support non-flip discrete ops (e.g. 90-degree rotations, transposes) can instead dispatch via
         ``torch.rot90``, ``.permute``, etc.
 
-        Warning:
-            Implementations for stochastic discrete ops (``RandomRotate90``, ``D4``) draw their own random
-            parameters internally, independent of :meth:`sample_params`. Never combine an ``exact_apply``
-            image path with a :meth:`sample_params`-derived matrix for the SAME transform in one forward —
-            the two draws are unrelated and image vs coordinate outputs would diverge. Current segments keep
-            these paths mutually exclusive.
-
         Args:
             transform: The backend transform object (GEOMETRIC_EXACT category).
             image: ``(batch_size, channels, height, width)`` input tensor.
+            params: Canonical parameters sampled for this exact application. Stochastic
+                discrete adapters must consume these rather than draw a second value.
 
         Returns:
             Transformed ``(batch_size, channels, height, width)`` tensor.
 
         """
+        del params
         return image.flip(dims=self.exact_flip_dims(transform))
 
     def call_nonfused(

@@ -138,6 +138,7 @@ celerybeat.pid
 .env
 .envrc
 .venv
+.venv-ci-*/
 env/
 venv/
 ENV/
@@ -208,6 +209,9 @@ __marimo__/
 
 # IntelliJ IDEA specific template and configuration files
 .idea/
+
+# macOS Finder metadata
+.DS_Store
 
 # Codex temporary files
 .codex/handover/
