@@ -67,7 +67,8 @@ env:
   PERF_MIN_EFFICIENCY: "0.40"
 
 jobs:
-  # Benchmark the last 5 commits on main, one per matrix leg, in parallel. No committed
+  # Benchmark the last 5 commits on main, one per matrix leg, in parallel. Each leg uses
+  # optimize_score.py's default three complete passes. No committed
   # baseline file anywhere -- the reference is recomputed from actual git history on every
   # run, so it can never go stale, and a squash-push of several commits at once still has
   # each individual commit sampled (a per-push rolling file would only ever see the push's
@@ -129,6 +130,7 @@ jobs:
           set -euo pipefail
           HIST_SHA=$(git rev-parse "FETCH_HEAD~${{ matrix.n }}")
           echo "Benchmarking src/ as of $HIST_SHA against the current experiments/optimize_score.py"
+          echo "BENCH_SOURCE_SHA=$HIST_SHA" >> "$GITHUB_ENV"
           git checkout "$HIST_SHA" -- src
 
       - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
@@ -149,7 +151,10 @@ jobs:
       - name: 🏃 Run benchmark and record score
         timeout-minutes: 15
         run: |
-          uv run python experiments/optimize_score.py | tee /tmp/bench_raw.txt
+          set -euo pipefail
+          uv run python experiments/optimize_score.py \
+            --details-json "perf-details-${{ matrix.n }}.json" \
+            --summary-file "$GITHUB_STEP_SUMMARY" | tee /tmp/bench_raw.txt
           grep '^real_score=' /tmp/bench_raw.txt | cut -d= -f2 > "${{ matrix.n }}.txt"
           cat "${{ matrix.n }}.txt"
 
@@ -157,7 +162,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: perf-history-${{ matrix.n }}
-          path: ${{ matrix.n }}.txt
+          path: |
+            ${{ matrix.n }}.txt
+            perf-details-${{ matrix.n }}.json
           retention-days: 14
 
   # Downloads all history samples, medians them into the number the live gate compares
@@ -249,9 +256,18 @@ jobs:
         timeout-minutes: 15
         run: |
           set -euo pipefail
-          uv run python experiments/optimize_score.py --repetitions "$PR_REPETITIONS" | tee /tmp/bench_raw.txt
+          uv run python experiments/optimize_score.py --repetitions "$PR_REPETITIONS" \
+            --details-json perf-details-pr.json \
+            --summary-file "$GITHUB_STEP_SUMMARY" | tee /tmp/bench_raw.txt
           grep '^real_score=' /tmp/bench_raw.txt >> "$GITHUB_OUTPUT"
           grep '^theoretical_target=' /tmp/bench_raw.txt >> "$GITHUB_OUTPUT"
+
+      - name: 📤 Upload per-case PR timings
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-pr-details
+          path: perf-details-pr.json
+          retention-days: 14
 
   # Gates the median PR score (benchmark-pr) against the dynamic baseline (aggregate-baseline).
   # No benchmarking happens in this job -- ci_perf_gate_compare.py needs only the `fire` CLI

@@ -37,7 +37,7 @@ Do not combine cross-backend latency into a hardware-independent ranking. HWC ui
 
 | Script                            | Useful evidence                                                                         | Main limitation                                                                                                                        |
 | --------------------------------- | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `optimize_score.py`               | One fixed 45-case CPU score with warmup and a deterministic run order                   | Batch 1, zero synthetic inputs, no raw samples, paired RNG reset, or uncertainty                                                       |
+| `optimize_score.py`               | Fixed 45-case CPU score, seeded Albumentations pipelines, optional per-case timing JSON | Batch 1, zero synthetic inputs, no raw samples or paired native/fused parameter replay; separate CI runners remain unpaired            |
 | `bench_augmentation_pipelines.py` | 168 CPU cases, raw per-call samples, summaries, plans, metadata, and visual examples    | Native/fused order is fixed; timing RNG states are not paired; visual parity is not asserted                                           |
 | `bench_gpu_batch.py`              | Device synchronization, batch sweep, median, p10/p90, throughput, explicit skips        | Quick mode uses only 10 samples; one process; native always precedes fused                                                             |
 | `bench_memory.py`                 | Action-aware live/incremental peak, preexisting baseline, and physical allocation count | Current output records unavailable counters as null with an error; counters are not comparable across devices; NumPy/OpenCV blind spot |
@@ -50,7 +50,7 @@ The scripts are valuable developer probes. Their historical output should not be
 
 ### Why one global seed is insufficient
 
-The current timing scripts call `torch.manual_seed(0)` and `numpy.random.seed(0)` once, then execute native and fused pipelines sequentially. That makes the overall run order repeatable, but it does not guarantee that each native/fused pair draws identical parameters.
+Some timing scripts call `torch.manual_seed(0)` and `numpy.random.seed(0)` once, then execute native and fused pipelines sequentially. That does not guarantee that each pair draws identical parameters. `optimize_score.py` now also seeds each native Albumentations `Compose` and each fused transform copy per complete pass; its two paths remain independently sampled rather than replaying matched parameters.
 
 Albumentations 2 adds another RNG domain:
 
