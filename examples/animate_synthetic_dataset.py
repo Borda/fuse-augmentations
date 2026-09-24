@@ -28,12 +28,12 @@ four geometric shapes do. Coverage is then confirmed rather than hoped for —
 ``_covering_stream`` walks the seed forward until the stream contains every
 shape, and prints which seed it settled on.
 
-A letter (see :mod:`~fuse_augmentations.data.letters`) is a single outline polygon exactly like a
+A letter (see :mod:`~synth_datasets.letters`) is a single outline polygon exactly like a
 geometric, animal, or symbol shape, so its ``segmentation``/``obb`` overlay draws the same one
 closed loop through ``ann.polygon``/``ann.obb_corners`` every other family uses. Its keypoints
 overlay differs per letter, though — unlike the animal/symbol families' one shared topology, a
 letter's skeleton edges come from
-:meth:`~fuse_augmentations.data.keypoints.KeypointSchema.skeleton_for` per
+:meth:`~synth_datasets.keypoints.KeypointSchema.skeleton_for` per
 annotation instead of one schema-wide tuple.
 
 Render every task (detection, segmentation, obb; keypoints when using animals, symbols, or letters):
@@ -60,16 +60,16 @@ from typing import TYPE_CHECKING, TypedDict
 
 from PIL import Image, ImageDraw
 
-from fuse_augmentations.data import SyntheticConfig, SyntheticGenerator
-from fuse_augmentations.data.animals import AnimalShape
-from fuse_augmentations.data.config import DEFAULT_SHAPES, Task, keypoint_schema_for
-from fuse_augmentations.data.geometry import PIXEL_CENTRE_OFFSET
-from fuse_augmentations.data.letters import LetterShape
-from fuse_augmentations.data.sample import Annotation, Sample
-from fuse_augmentations.data.symbols import SymbolShape
+from synth_datasets import SyntheticConfig, SyntheticGenerator
+from synth_datasets.animals import AnimalShape
+from synth_datasets.config import DEFAULT_SHAPES, Task, keypoint_schema_for
+from synth_datasets.geometry import PIXEL_CENTRE_OFFSET
+from synth_datasets.letters import LetterShape
+from synth_datasets.sample import Annotation, Sample
+from synth_datasets.symbols import SymbolShape
 
 if TYPE_CHECKING:
-    from fuse_augmentations.data.keypoints import KeypointSchema
+    from synth_datasets.keypoints import KeypointSchema
 
 TASKS = ("detection", "segmentation", "obb", "keypoints")
 
@@ -145,9 +145,9 @@ def _draw_annotation(
     """Draw one annotation's overlay for the given task onto ``draw``.
 
     ``schema`` is the active run's keypoint schema — see
-    :func:`~fuse_augmentations.data.config.keypoint_schema_for` — and is only read for the
+    :func:`~synth_datasets.config.keypoint_schema_for` — and is only read for the
     ``"keypoints"`` task, resolved to ``ann``'s own edges via
-    :meth:`~fuse_augmentations.data.keypoints.KeypointSchema.skeleton_for` (identical to
+    :meth:`~synth_datasets.keypoints.KeypointSchema.skeleton_for` (identical to
     ``schema.skeleton`` for every family but letters, whose topology genuinely differs per member);
     every other task ignores it.
 

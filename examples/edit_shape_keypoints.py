@@ -51,10 +51,10 @@ os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
 # the schema *and* the path parser live in the package, not here — one definition for the loader, the
 # writers and this editor, so a document the loader accepts (relative commands, H/V) is read the same
 # way here instead of through a second, stricter parser that would silently misplace its vertices
-from fuse_augmentations.data.animals import ANIMAL_KEYPOINT_NAMES, ANIMAL_KEYPOINT_SKELETON
-from fuse_augmentations.data.letters import LETTER_KEYPOINT_NAMES
-from fuse_augmentations.data.svgio import parse_path_d
-from fuse_augmentations.data.symbols import SYMBOL_KEYPOINT_NAMES, SYMBOL_KEYPOINT_SKELETON
+from synth_datasets.animals import ANIMAL_KEYPOINT_NAMES, ANIMAL_KEYPOINT_SKELETON
+from synth_datasets.letters import LETTER_KEYPOINT_NAMES
+from synth_datasets.svgio import parse_path_d
+from synth_datasets.symbols import SYMBOL_KEYPOINT_NAMES, SYMBOL_KEYPOINT_SKELETON
 
 #: Fill color per point, written into every ``<circle>`` this editor saves. Lives here rather than
 #: in the package because nothing in the library reads a fill — only this authoring tool does. A test
@@ -100,7 +100,7 @@ _PALETTE_CYCLE = (
     "#469990",
 )
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "src" / "fuse_augmentations" / "data"
+DATA_DIR = Path(__file__).resolve().parents[1] / "src" / "synth_datasets"
 SVG_NS = "http://www.w3.org/2000/svg"
 ZOO_NS = "https://github.com/Borda/fuse-augmentations/ns/zoo"
 ET.register_namespace("", SVG_NS)

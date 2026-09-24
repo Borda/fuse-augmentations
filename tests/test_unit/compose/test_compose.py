@@ -1,7 +1,7 @@
 """Unit tests for _compose.py: empty pipeline, fusion_plan, n_warps_saved.
 
 Pure-unit tests use stub transforms and do NOT require Kornia. Integration tests (marked @pytest.mark.integration)
-require kornia >= 0.6.12.
+require ``kornia``.
 
 """
 

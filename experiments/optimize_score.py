@@ -27,12 +27,17 @@ Usage::
 
     uv run python experiments/optimize_score.py
     uv run python experiments/optimize_score.py --repetitions 3
+    uv run python experiments/optimize_score.py --details-json perf-details.json
 
 Each repetition measures the complete case bank. The final score is the median
 of those repetitions. Standard output remains two lines::
 
     real_score=X.XXXX
     theoretical_target=X.XXXX
+
+Optional JSON preserves every case's native/fused latency and boost for each
+complete pass, plus CI runner identity. ``--summary-file`` appends a Markdown
+per-case table to a job summary without changing the two stdout score lines.
 
 """
 
@@ -53,9 +58,11 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import copy
+import json
 import statistics
 import sys
 import time
+from pathlib import Path
 
 import albumentations as A
 import cv2
@@ -317,13 +324,14 @@ _MIXED_AGR_CASES: list[tuple[str, int, list, list, list]] = [
 ]
 
 
-def _measure_once() -> tuple[float, float]:
-    """Measure the complete 45-case score and its fixed theoretical target once."""
+def _measure_once() -> tuple[float, float, list[dict[str, float | str]]]:
+    """Measure all cases once and retain the timings behind the aggregate score."""
     # Fix random state for reproducibility across runs.
     torch.manual_seed(0)
     np.random.seed(0)
 
     boosts: list[float] = []
+    case_timings: list[dict[str, float | str]] = []
 
     # ── a-group + b-group: Kornia and TorchVision ────────────────────────────
     for _label, _num_geometric_ops, k_tfms, tv_tfms in _CASES:
@@ -337,17 +345,37 @@ def _measure_once() -> tuple[float, float]:
             fused(_IMAGE_TENSOR)
             native_ms = _bench(native)
             fused_ms = _bench(fused)
-            boosts.append(native_ms / fused_ms if fused_ms > 0 else 0.0)
+            boost = native_ms / fused_ms if fused_ms > 0 else 0.0
+            boosts.append(boost)
+            case_timings.append({
+                "case": _label,
+                "backend": _backend,
+                "native_ms": native_ms,
+                "fused_ms": fused_ms,
+                "boost": boost,
+            })
 
     # ── a-group + b-group: Albumentations (dict-input path) ─────────────────
     for _label, _num_geometric_ops, albu_tfms in _ALBU_CASES:
-        native = A.Compose(copy.deepcopy(albu_tfms))
-        fused = FuseCompose(copy.deepcopy(albu_tfms))
+        native = A.Compose(copy.deepcopy(albu_tfms), seed=0)
+        fused_transforms = copy.deepcopy(albu_tfms)
+        # Albumentations transforms own RNG state; global NumPy seeding does not reach it.
+        for transform in fused_transforms:
+            transform.set_random_seed(0)
+        fused = FuseCompose(fused_transforms)
         native(image=_IMAGE_NDARRAY)
         fused(image=_IMAGE_NDARRAY)
         native_ms = _bench_albu(native)
         fused_ms = _bench_albu(fused)
-        boosts.append(native_ms / fused_ms if fused_ms > 0 else 0.0)
+        boost = native_ms / fused_ms if fused_ms > 0 else 0.0
+        boosts.append(boost)
+        case_timings.append({
+            "case": _label,
+            "backend": "albumentations",
+            "native_ms": native_ms,
+            "fused_ms": fused_ms,
+            "boost": boost,
+        })
 
     # ── d-group AGGRESSIVE: Kornia, TorchVision, Albumentations ─────────────
     for _label, _num_geometric_ops, alb_tfms, k_tfms, tv_tfms in _MIXED_AGR_CASES:
@@ -358,7 +386,15 @@ def _measure_once() -> tuple[float, float]:
         fused_k(_IMAGE_TENSOR)
         native_ms = _bench(native_k)
         fused_ms = _bench(fused_k)
-        boosts.append(native_ms / fused_ms if fused_ms > 0 else 0.0)
+        boost = native_ms / fused_ms if fused_ms > 0 else 0.0
+        boosts.append(boost)
+        case_timings.append({
+            "case": _label,
+            "backend": "kornia",
+            "native_ms": native_ms,
+            "fused_ms": fused_ms,
+            "boost": boost,
+        })
 
         # TorchVision
         native_tv = tv.Compose(copy.deepcopy(tv_tfms))
@@ -367,16 +403,35 @@ def _measure_once() -> tuple[float, float]:
         fused_tv(_IMAGE_TENSOR)
         native_ms = _bench(native_tv)
         fused_ms = _bench(fused_tv)
-        boosts.append(native_ms / fused_ms if fused_ms > 0 else 0.0)
+        boost = native_ms / fused_ms if fused_ms > 0 else 0.0
+        boosts.append(boost)
+        case_timings.append({
+            "case": _label,
+            "backend": "torchvision",
+            "native_ms": native_ms,
+            "fused_ms": fused_ms,
+            "boost": boost,
+        })
 
         # Albumentations
-        native_alb = A.Compose(copy.deepcopy(alb_tfms))
-        fused_alb = FuseCompose(copy.deepcopy(alb_tfms), reorder=ReorderPolicy.AGGRESSIVE)
+        native_alb = A.Compose(copy.deepcopy(alb_tfms), seed=0)
+        fused_transforms = copy.deepcopy(alb_tfms)
+        for transform in fused_transforms:
+            transform.set_random_seed(0)
+        fused_alb = FuseCompose(fused_transforms, reorder=ReorderPolicy.AGGRESSIVE)
         native_alb(image=_IMAGE_NDARRAY)
         fused_alb(image=_IMAGE_NDARRAY)
         native_ms = _bench_albu(native_alb)
         fused_ms = _bench_albu(fused_alb)
-        boosts.append(native_ms / fused_ms if fused_ms > 0 else 0.0)
+        boost = native_ms / fused_ms if fused_ms > 0 else 0.0
+        boosts.append(boost)
+        case_timings.append({
+            "case": _label,
+            "backend": "albumentations",
+            "native_ms": native_ms,
+            "fused_ms": fused_ms,
+            "boost": boost,
+        })
 
     score = statistics.geometric_mean(boosts)
 
@@ -389,14 +444,59 @@ def _measure_once() -> tuple[float, float]:
     )
     theoretical_target = statistics.geometric_mean(all_num_geometric_ops)
 
-    return score, theoretical_target
+    return score, theoretical_target, case_timings
 
 
-def main(repetitions: int = 3) -> None:
-    """Print the median score from complete benchmark repetitions.
+def _write_details(
+    repetitions: list[dict[str, object]],
+    score: float,
+    target: float,
+    details_json: str | None,
+    summary_file: str | None,
+) -> None:
+    """Publish per-case timings and runner identity outside the timed benchmark loops."""
+    runner = {
+        "name": os.environ.get("RUNNER_NAME", "local"),
+        "os": os.environ.get("RUNNER_OS", sys.platform),
+        "job": os.environ.get("GITHUB_JOB", "local"),
+    }
+    if details_json:
+        report = {
+            "runner": runner,
+            "source_sha": os.environ.get("BENCH_SOURCE_SHA", os.environ.get("GITHUB_SHA", "")),
+            "real_score": score,
+            "theoretical_target": target,
+            "repetitions": repetitions,
+        }
+        Path(details_json).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+    if summary_file:
+        lines = [
+            f"## Performance cases: {runner['job']} on {runner['name']} ({runner['os']})",
+            "",
+            f"Median score: `{score:.4f}` from {len(repetitions)} complete passes.",
+            "",
+            "| Backend | Case | Native ms | Fused ms | Boost |",
+            "| --- | --- | ---: | ---: | ---: |",
+        ]
+        first_cases = repetitions[0]["cases"]
+        for index, case in enumerate(first_cases):
+            measured = [trial["cases"][index] for trial in repetitions]
+            native_ms = statistics.median(float(row["native_ms"]) for row in measured)
+            fused_ms = statistics.median(float(row["fused_ms"]) for row in measured)
+            boost = statistics.median(float(row["boost"]) for row in measured)
+            lines.append(f"| {case['backend']} | {case['case']} | {native_ms:.4f} | {fused_ms:.4f} | {boost:.3f}x |")
+        with Path(summary_file).open("a", encoding="utf-8") as summary:
+            summary.write("\n".join(lines) + "\n")
+
+
+def main(repetitions: int = 3, details_json: str | None = None, summary_file: str | None = None) -> None:
+    """Print the median score and optionally publish case-level benchmark evidence.
 
     Args:
         repetitions: Number of complete 45-case measurements, at least one.
+        details_json: Optional path for per-repetition case timings and runner metadata.
+        summary_file: Optional Markdown file to append per-case medians to.
 
     Raises:
         ValueError: If ``repetitions`` is not positive.
@@ -408,17 +508,23 @@ def main(repetitions: int = 3) -> None:
 
     scores: list[float] = []
     targets: set[float] = set()
+    repetition_results: list[dict[str, object]] = []
     for trial in range(1, repetitions + 1):
-        score, target = _measure_once()
+        score, target, cases = _measure_once()
         scores.append(score)
         targets.add(target)
+        repetition_results.append({"score": score, "cases": cases})
         print(f"repetition={trial}/{repetitions} real_score={score:.4f}", file=sys.stderr)
 
     if len(targets) != 1:
         raise RuntimeError("theoretical_target changed between repetitions")
 
-    print(f"real_score={statistics.median(scores):.4f}")
-    print(f"theoretical_target={targets.pop():.4f}")
+    median_score = statistics.median(scores)
+    theoretical_target = targets.pop()
+    if details_json or summary_file:
+        _write_details(repetition_results, median_score, theoretical_target, details_json, summary_file)
+    print(f"real_score={median_score:.4f}")
+    print(f"theoretical_target={theoretical_target:.4f}")
 
 
 if __name__ == "__main__":

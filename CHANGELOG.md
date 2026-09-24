@@ -8,6 +8,13 @@ Versions below `0.12.0` are `dev0` snapshots, each cut from its own `bump vX` co
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `torch` moved from a hard dependency to the `torch` extra. `pip install fuse-augmentations` no longer installs torch; the augmentation engine (`Compose`, `FusedCompose`, `AugmentationSequential`, and everything else at the `fuse_augmentations` package root) now needs `pip install "fuse-augmentations[torch]"` (or any adapter extra — `kornia`, `torchvision`, `albumentations`, `all` — which each now pull `torch` explicitly). Importing `fuse_augmentations` without torch installed raises a clear `ModuleNotFoundError` naming the extra, instead of a raw error from deep inside a submodule.
+- The synthetic-dataset generator moved from `fuse_augmentations.data` to a new standalone top-level package, `synth_datasets` (`pip install fuse-augmentations` alone is enough; `import synth_datasets`). Direct generation through `synth_datasets` is torch-free. The `fuse_augmentations.data` package-level facade and `fuse_augmentations.generate_dataset` alias remain available with the `torch` extra; former submodule paths such as `fuse_augmentations.data.geometry` are removed and must be imported from `synth_datasets` instead.
+- The `torchvision` floor was raised from `>=0.15` to `>=0.17` in the `torchvision` and `all` extras, to match the `torch>=2.2` pin now explicit alongside it; `torchvision` 0.17 is torch 2.2's paired release, and keeping `0.15` would let the resolver pick a `torchvision` build against `torch` 1.x/2.0.
+- The `torch` floor stays at `>=2.2`, accepted as-is: this range resolves two known advisories, [GHSA-rrmf-rvhw-rf47](https://github.com/advisories/GHSA-rrmf-rvhw-rf47) (CVE-2025-3000 / PYSEC-2025-194, fixed in `torch` 2.13.0) and CVE-2026-4538 / PYSEC-2026-139, which has no fix released for any `torch` version yet. Both are local-vector, low-privilege issues. Applications that need the patched `torch.jit.script` should pin `torch>=2.13` themselves.
+
 ## [0.14.0] - 2026-09-23
 
 Synthetic-dataset scene realism: image-crop backgrounds, procedural background types, distractor clutter, occluders, pixel-value degradations, and a measured difficulty ladder; plus a 1px label-emission fix.
@@ -115,7 +122,7 @@ Three new shape vocabularies — animals, symbols, letters — each with a keypo
 
 ### Changed
 
-- **`fuse_augmentations.data` API restructure — breaking, no compatibility shims:**
+- **`fuse_augmentations.data` API restructure — breaking for former submodule imports; package-level facade retained:**
     - One shape-family registry (`data.families.SHAPE_FAMILIES`, `ShapeFamily`, `ALL_SHAPES`, `family_of`, `shape_outline`) replaces six independently-encoded family lists.
     - `generate_dataset` no longer takes `task=`/`class_mode=` — both are `SyntheticConfig` fields.
     - `class_vocabulary()` returns typed `ClassEntry` records instead of splitting class names on `"_"`.

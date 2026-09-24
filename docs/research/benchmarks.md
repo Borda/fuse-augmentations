@@ -104,6 +104,8 @@ theoretical_target=2.3752
 
 `real_score` is the geometric mean of `native latency / fused latency` for this fixed synthetic bank. In plain language: on that bank, the fused path had a 1.7861x geometric-mean latency advantage. It is not an estimate of a typical user workload.
 
+The current CI perf gate publishes `perf-details-<history-leg>.json` and `perf-details-pr.json` with every complete score pass, each case's native/fused latency and boost, and the runner name, OS, job, and source SHA. Each benchmark job summary also shows median per-case timings. Albumentations' transform-owned RNG is seeded for each pass; this makes its own draw sequences reproducible but does not make native and fused pipelines replay identical parameters.
+
 `theoretical_target` is the geometric mean number of geometric operations in the bank. It is a warp-count reference, not a speed ceiling: backend overhead, exact-operation fast paths, color work, caching, and wrapper costs all matter.
 
 ## Exhaustive CPU pipeline latency

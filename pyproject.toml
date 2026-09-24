@@ -44,25 +44,33 @@ classifiers = [
 dynamic = [ "version" ]
 dependencies = [
   "numpy",
-  "pillow>=10",
-  "torch>=2.2",
+  "pillow>=12.3",
 ]
 optional-dependencies.albumentations = [
-  "albumentations>=2.0.0",
+  "albumentations>=2.0.1",
+  "fuse-augmentations[torch]",
 ]
 optional-dependencies.all = [
-  "albumentations>=2.0.0",
-  "kornia>=0.6.12",
-  "torchvision>=0.15",
+  "albumentations>=2.0.1",
+  "fuse-augmentations[torch]",
+  "kornia>=0.7.4",
+  "torchvision>=0.17",
 ]
 optional-dependencies.cli = [
   "fire>=0.6",
 ]
 optional-dependencies.kornia = [
-  "kornia>=0.6.12",
+  "fuse-augmentations[torch]",
+  "kornia>=0.7.4",
+]
+# Single literal home of the torch floor: every other extra reaches it through the
+# self-reference above, so the version lives in exactly one place.
+optional-dependencies.torch = [
+  "torch>=2.2",
 ]
 optional-dependencies.torchvision = [
-  "torchvision>=0.15",
+  "fuse-augmentations[torch]",
+  "torchvision>=0.17",
 ]
 urls."Source Code" = "https://github.com/Borda/fuse-augmentations"
 urls."Synthetic Datasets" = "https://borda.github.io/fuse-augmentations/datasets/"
@@ -94,6 +102,7 @@ dev = [
   "scipy>=1.10",
   "setuptools>=61",
   # "tomlkit>=0.13",
+  "torch>=2.2",
   "twine>=6.1,<6.3",
 ]
 docs = [
@@ -112,8 +121,8 @@ benchmark = [
 
 [tool.setuptools]
 packages.find.where = [ "src" ]
-packages.find.include = [ "fuse_aug*", "fuse_augmentations*" ]
-package-data.fuse_augmentations = [ "data/letters/*.svg", "data/symbols/*.svg", "data/zoo/*.svg" ]
+packages.find.include = [ "fuse_aug*", "fuse_augmentations*", "synth_datasets*" ]
+package-data.synth_datasets = [ "letters/*.svg", "symbols/*.svg", "zoo/*.md", "zoo/*.svg" ]
 dynamic.version.attr = "fuse_augmentations.__about__.__version__"
 
 [tool.ruff]
@@ -199,7 +208,7 @@ blank = true
 keep_full_version = true
 
 [tool.mypy]
-files = [ "src/fuse_augmentations" ]
+files = [ "src/fuse_aug", "src/fuse_augmentations", "src/synth_datasets" ]
 exclude = [ "^tests/" ]
 ignore_missing_imports = true
 python_version = "3.10"

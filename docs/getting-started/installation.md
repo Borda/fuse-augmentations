@@ -5,7 +5,7 @@ description: Install fuse-augmentations for synthetic COCO/YOLO dataset generati
 
 # Install fuse-augmentations
 
-The base package requires Python 3.10 or newer and PyTorch 2.2 or newer. Kornia, TorchVision, and Albumentations are optional because the native builder can create a useful pipeline without them.
+The base package requires Python 3.10 or newer. Direct generation through `synth_datasets` is torch-free. PyTorch is an optional `torch` extra required by the image-augmentation engine and by `SyntheticIterableDataset` for PyTorch `DataLoader` integration. Kornia, TorchVision, and Albumentations are optional on top of that because the native builder can create a useful augmentation pipeline without them.
 
 !!! note "Project maturity"
 
@@ -17,11 +17,23 @@ The base package requires Python 3.10 or newer and PyTorch 2.2 or newer. Kornia,
 python -m pip install fuse-augmentations
 ```
 
-This installs NumPy, Pillow, PyTorch, and the package itself. It is enough for [synthetic dataset generation](../datasets/index.md) and [`Compose.from_params`](quickstart.md). Generating COCO or YOLO data requires no optional extra, source images, or model download.
+This installs NumPy, Pillow, and the package itself — no torch. It is enough for [synthetic dataset generation](../datasets/index.md) via `import synth_datasets`, which never imports torch. Generating COCO or YOLO data requires no optional extra, source images, or model download.
+
+The `SyntheticIterableDataset` wrapper and its PyTorch `DataLoader` integration require the `torch` extra below; direct use of `SyntheticGenerator` and `generate_dataset` does not.
+
+## Image augmentation (needs torch)
+
+`Compose`, `FusedCompose`, `AugmentationSequential`, and everything else at the `fuse_augmentations` package root need the `torch` extra:
+
+```bash
+python -m pip install "fuse-augmentations[torch]"
+```
+
+This is enough for [`Compose.from_params`](quickstart.md) with no optional adapter backend.
 
 ## Optional backends
 
-Install only the adapter ecosystems you use:
+Install only the adapter ecosystems you use — each of these already includes the `torch` extra:
 
 === "Kornia"
 
@@ -52,17 +64,22 @@ The extras enable adapter support; they do not make every upstream transform or 
 ## Verify the installation
 
 ```bash
+python -c "import synth_datasets"
+```
+
+This check uses only the base installation. For the image-augmentation features, verify the optional `torch` extra:
+
+```bash
 python -c "import torch, fuse_augmentations"
 ```
 
-The same smoke check is executable in the generated documentation test suite:
+The base smoke check is executable in the generated documentation test suite:
 
 ```python
-import torch
-import fuse_augmentations
+import synth_datasets
 
-assert torch.__version__
-assert fuse_augmentations.__version__
+assert callable(synth_datasets.generate_dataset)
+assert synth_datasets.__version__
 ```
 
 Both import namespaces expose the same objects:

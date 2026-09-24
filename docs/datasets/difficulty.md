@@ -80,13 +80,13 @@ A band is nothing but the fields in its row, and each of those is pictured on it
     ![Synthetic detection sample with letter shapes](../assets/datasets/tasks/letters-detection.webp)
 
 ```python
-from fuse_augmentations.data import (
+from synth_datasets import (
     JPEG,
     GaussianBlur,
     SyntheticConfig,
     TextureBackground,
 )
-from fuse_augmentations.data.letters import LetterShape
+from synth_datasets.letters import LetterShape
 
 hard = SyntheticConfig(
     img_size=256,
@@ -114,7 +114,7 @@ print(len(hard.shapes), hard.distractors, len(hard.degrade))
 
 ## What ranks them
 
-The ladder is measured in this repository by a **training-free proxy**: five deterministic, numpy-only statistics over a fixed seed, run as part of the unit suite (`tests/test_unit/test_data/_difficulty.py`). Measured over eight images per band on a 256-pixel canvas:
+The ladder is measured in this repository by a **training-free proxy**: five deterministic, numpy-only statistics over a fixed seed, run as part of the unit suite (`tests/test_unit/test_synth_datasets/_difficulty.py`). Measured over eight images per band on a 256-pixel canvas:
 
 | band     | mean area px | p10 area px | small fraction | boundary contrast | background SNR | clutter |
 | -------- | ------------ | ----------- | -------------- | ----------------- | -------------- | ------- |
@@ -133,7 +133,7 @@ All five axes agree on the ordering, which is not something the table was tuned 
 Regenerate the table from the code that produced it rather than editing it by hand:
 
 ```bash
-python -c "from tests.test_unit.test_data._difficulty import render_table; print(render_table())"
+python -c "from tests.test_unit.test_synth_datasets._difficulty import render_table; print(render_table())"
 ```
 
 ## What this does not claim

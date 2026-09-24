@@ -2,8 +2,9 @@
 
 Produces small labelled datasets of colored shapes (square, rectangle, triangle,
 circle) for detection, segmentation, and oriented-bounding-box (OBB) tasks, in both
-COCO and YOLO formats. Rendering uses Pillow (a base dependency); the CLI below uses
-``fire``, which ships in the ``cli`` extra:
+COCO and YOLO formats. Generation goes through the torch-free ``synth_datasets`` package and
+needs only Pillow and numpy (both base dependencies), so the base install is enough; the CLI
+below uses ``fire``, which ships in the ``cli`` extra:
 
     pip install "fuse-augmentations[cli]"
 
@@ -20,7 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fuse_augmentations.data import generate_dataset
+from synth_datasets import generate_dataset
 
 FORMATS = ("coco", "yolo")
 TASKS = ("detection", "segmentation", "obb")

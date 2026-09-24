@@ -26,12 +26,15 @@ is not importable in this environment.
 
 from __future__ import annotations
 
+import ast
+import copy
 import json
 import os
 import statistics
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -50,6 +53,16 @@ except ImportError:
 _skip_no_fire = pytest.mark.skipif(
     not _FIRE_AVAILABLE, reason="fire (the `cli` extra) is not importable in this environment"
 )
+
+
+def _benchmark_function(name: str, namespace: dict[str, object]):
+    """Load one benchmark function while replacing unavailable binary dependencies at its boundary."""
+    tree = ast.parse(_OPTIMIZE_SCORE_PATH.read_text(encoding="utf-8"))
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
+    exec(  # noqa: S102 - only a named function from this project-controlled benchmark is compiled
+        compile(ast.Module(body=[function], type_ignores=[]), str(_OPTIMIZE_SCORE_PATH), "exec"), namespace
+    )
+    return namespace[name]
 
 
 def _run_script(script: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -322,7 +335,7 @@ try:
 except ImportError as exc:
     print(f"IMPORT_ERROR: {exc}")
     sys.exit(3)
-samples = iter([(1.0, 2.0), (5.0, 2.0), (3.0, 2.0)])
+samples = iter([(1.0, 2.0, []), (5.0, 2.0, []), (3.0, 2.0, [])])
 calls = []
 def measure():
     calls.append(1)
@@ -344,3 +357,104 @@ print(json.dumps({"output": output.getvalue(), "calls": len(calls)}))
         assert result.returncode == 0, result.stderr
         measured = json.loads(result.stdout)
         assert measured == {"output": "real_score=3.0000\ntheoretical_target=2.0000\n", "calls": 3}
+
+
+def test_albumentations_benchmark_reseeds_native_and_fused_copies():
+    """Each whole-score pass seeds both Albumentations copies independently of global NumPy state."""
+    native_seeds: list[int | None] = []
+    fused_seeds: list[int | None] = []
+
+    class Transform:
+        def __init__(self):
+            self.seed: int | None = None
+
+        def set_random_seed(self, seed: int):
+            self.seed = seed
+
+    class NativeCompose:
+        def __init__(self, transforms, seed=None):
+            native_seeds.append(seed)
+            for transform in transforms:
+                transform.set_random_seed(seed)
+
+        def __call__(self, **_kwargs):
+            return None
+
+    class FusedCompose:
+        def __init__(self, transforms, reorder=None):
+            fused_seeds.extend(transform.seed for transform in transforms if isinstance(transform, Transform))
+
+        def __call__(self, *_args, **_kwargs):
+            return None
+
+    class TensorNative:
+        def __call__(self, *_args):
+            return None
+
+    namespace = {
+        "A": SimpleNamespace(Compose=NativeCompose),
+        "FuseCompose": FusedCompose,
+        "_ALBU_CASES": [("a01_rotate", 1, [Transform()])],
+        "_CASES": [],
+        "_MIXED_AGR_CASES": [("d01_mixed", 3, [Transform()], [object()], [object()])],
+        "_IMAGE_NDARRAY": object(),
+        "_IMAGE_TENSOR": object(),
+        "_bench": lambda _pipeline: 1.0,
+        "_bench_albu": lambda _pipeline: 1.0,
+        "copy": copy,
+        "K": SimpleNamespace(AugmentationSequential=lambda *_transforms: TensorNative()),
+        "np": SimpleNamespace(random=SimpleNamespace(seed=lambda _seed: None)),
+        "ReorderPolicy": SimpleNamespace(AGGRESSIVE="aggressive"),
+        "statistics": statistics,
+        "torch": SimpleNamespace(manual_seed=lambda _seed: None),
+        "tv": SimpleNamespace(Compose=lambda _transforms: TensorNative()),
+    }
+    measure = _benchmark_function("_measure_once", namespace)
+
+    first = measure()
+    second = measure()
+
+    assert native_seeds == [0, 0, 0, 0]
+    assert fused_seeds == [0, 0, 0, 0]
+    assert first == second
+    assert {(case["case"], case["backend"]) for case in first[2]} == {
+        ("a01_rotate", "albumentations"),
+        ("d01_mixed", "kornia"),
+        ("d01_mixed", "torchvision"),
+        ("d01_mixed", "albumentations"),
+    }
+
+
+def test_score_details_include_repetitions_cases_and_runner(tmp_path: Path, monkeypatch, capsys):
+    """The optional report preserves every case and runner while stdout stays gate-parseable."""
+    first_cases = [{"case": "a01_rotate", "backend": "albumentations", "native_ms": 2.0, "fused_ms": 1.0, "boost": 2.0}]
+    second_cases = [
+        {"case": "a01_rotate", "backend": "albumentations", "native_ms": 6.0, "fused_ms": 2.0, "boost": 3.0}
+    ]
+    samples = iter([(1.0, 2.0, first_cases), (3.0, 2.0, second_cases)])
+    details = tmp_path / "details.json"
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("RUNNER_NAME", "runner-17")
+    monkeypatch.setenv("RUNNER_OS", "Linux")
+    monkeypatch.setenv("GITHUB_JOB", "benchmark-pr")
+    monkeypatch.setenv("BENCH_SOURCE_SHA", "history-commit")
+    namespace = {
+        "_measure_once": lambda: next(samples),
+        "json": json,
+        "os": os,
+        "Path": Path,
+        "statistics": statistics,
+        "sys": sys,
+    }
+    _benchmark_function("_write_details", namespace)
+    main = _benchmark_function("main", namespace)
+
+    main(repetitions=2, details_json=str(details), summary_file=str(summary))
+
+    assert capsys.readouterr().out == "real_score=2.0000\ntheoretical_target=2.0000\n"
+    report = json.loads(details.read_text(encoding="utf-8"))
+    assert report["runner"] == {"name": "runner-17", "os": "Linux", "job": "benchmark-pr"}
+    assert report["source_sha"] == "history-commit"
+    assert [trial["score"] for trial in report["repetitions"]] == [1.0, 3.0]
+    assert [trial["cases"] for trial in report["repetitions"]] == [first_cases, second_cases]
+    assert "| albumentations | a01_rotate | 4.0000 | 1.5000 | 2.500x |" in summary.read_text(encoding="utf-8")

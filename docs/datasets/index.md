@@ -5,7 +5,9 @@ description: Generate synthetic COCO and YOLO datasets for computer vision proto
 
 # Synthetic data generation for computer vision
 
-`fuse_augmentations.data` draws labelled shapes for computer vision experiments. Export COCO or YOLO files for your trainer, or stream samples into a PyTorch DataLoader. Use it to prototype a pipeline, check whether a model can overfit a tiny dataset, and measure sensitivity to smaller objects, clutter, occlusion, or degraded images. The package generates data; your application owns training and evaluation.
+`synth_datasets` draws labelled shapes for computer vision experiments. Export COCO or YOLO files for your trainer, or stream samples into a PyTorch DataLoader. Use it to prototype a pipeline, check whether a model can overfit a tiny dataset, and measure sensitivity to smaller objects, clutter, occlusion, or degraded images. The package generates data; your application owns training and evaluation.
+
+`synth_datasets` is a standalone top-level package: it never imports the `fuse_augmentations` augmentation engine and needs no `torch` install for direct generation. The `fuse_augmentations.data` facade re-exports the package-level API for migration, but it imports the torch-dependent augmentation stack and does not preserve former submodule paths such as `fuse_augmentations.data.geometry`; use `synth_datasets.geometry` and other `synth_datasets.*` modules instead. `SyntheticIterableDataset` and PyTorch `DataLoader` integration require the `torch` extra.
 
 **Start with [Prototyping and convergence checks](prototyping.md)** for runnable recipes and an experiment sequence: check the loader, fit fixed easy samples, evaluate held-out images, then increase difficulty.
 
@@ -17,7 +19,7 @@ How hard the samples are to read is set by ordinary config fields rather than by
 
 ## Install
 
-Rendering uses [Pillow](https://python-pillow.github.io/), which ships as a base dependency — nothing extra to install:
+Rendering uses [Pillow](https://python-pillow.github.io/) and NumPy, both base dependencies — nothing extra to install, and no `torch` required:
 
 ```bash
 pip install fuse-augmentations
@@ -28,7 +30,7 @@ pip install fuse-augmentations
 ```python
 import tempfile
 
-from fuse_augmentations import generate_dataset
+from synth_datasets import generate_dataset
 
 with tempfile.TemporaryDirectory() as out_dir:
     counts = generate_dataset(
@@ -65,7 +67,7 @@ Keep the same `generate_dataset` call and select these arguments. Both formats s
 | Oriented object detection  | `task="obb"`                                  | Four oriented-box corners and classes                     |
 | Keypoint / pose estimation | `task="keypoints", shapes=tuple(AnimalShape)` | Boxes, classes, and the animal landmark/visibility schema |
 
-For the pose recipe, import `AnimalShape` from `fuse_augmentations.data.animals`. Symbols and letters also support pose, each with its own schema; use one family per keypoint dataset. The default geometric primitives support detection, segmentation, and OBB.
+For the pose recipe, import `AnimalShape` from `synth_datasets.animals`. Symbols and letters also support pose, each with its own schema; use one family per keypoint dataset. The default geometric primitives support detection, segmentation, and OBB.
 
 Use `fmt="coco"` for per-split `_annotations.coco.json` files or `fmt="yolo"` for normalized text labels plus `data.yaml`. Set `class_mode="shape"` to predict shape names; `"color"` and `"shape_color"` select other class vocabularies. Coordinate conventions and the COCO OBB representation are documented in [Annotation formats](outputs.md).
 
@@ -77,8 +79,8 @@ This example creates ten images for each task, checks the exported labels and da
 import tempfile
 from pathlib import Path
 
-from fuse_augmentations import generate_dataset
-from fuse_augmentations.data.animals import AnimalShape
+from synth_datasets import generate_dataset
+from synth_datasets.animals import AnimalShape
 
 with tempfile.TemporaryDirectory() as out_dir:
     for task in ("detection", "segmentation", "obb", "keypoints"):

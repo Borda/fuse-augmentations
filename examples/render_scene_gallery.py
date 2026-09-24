@@ -19,7 +19,7 @@ is named by the page, so re-wording a caption does not mean re-rendering to rena
 Every file is rendered from the same seed, so the three shapes sit in the same three places in all of
 them. That is not decoration: every background and clutter knob draws from a side stream rather than
 from the placement stream (see
-:attr:`~fuse_augmentations.data.backgrounds.Background.consumes_randomness`), so switching one on
+:attr:`~synth_datasets.backgrounds.Background.consumes_randomness`), so switching one on
 cannot move an object, and a reader flipping between two of these files sees exactly that.
 
 Rendering uses Pillow and numpy (both base dependencies); the CLI below uses ``fire``, which ships
@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from fuse_augmentations.data import (
+from synth_datasets import (
     JPEG,
     ColorCast,
     Contrast,
@@ -61,15 +61,15 @@ from fuse_augmentations.data import (
     TextureBackground,
     Vignette,
 )
-from fuse_augmentations.data.generator import _SIDE_STREAM_ROLES
-from fuse_augmentations.data.geometry import PIXEL_CENTRE_OFFSET
-from fuse_augmentations.data.letters import LetterShape
+from synth_datasets.generator import _SIDE_STREAM_ROLES
+from synth_datasets.geometry import PIXEL_CENTRE_OFFSET
+from synth_datasets.letters import LetterShape
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from fuse_augmentations.data.backgrounds import Background
-    from fuse_augmentations.data.degradations import Degradation
+    from synth_datasets.backgrounds import Background
+    from synth_datasets.degradations import Degradation
 
 #: Side length of one panel. A file holds two of them side by side, so the written picture is roughly
 #: 520 pixels wide -- wide enough that the caption under each panel reads at the size a docs column
