@@ -152,7 +152,14 @@ def main(
         sys.exit(2)
 
     current_score = _load_json(current)
-    real_score: float = current_score["real_score"]
+    try:
+        real_score = float(current_score["real_score"])
+    except (KeyError, TypeError, ValueError):
+        print(f"ERROR: current score must contain a numeric real_score, got {current_score!r}", file=sys.stderr)
+        sys.exit(2)
+    if not math.isfinite(real_score) or real_score <= 0:
+        print(f"ERROR: real_score must be finite and positive, got {real_score}", file=sys.stderr)
+        sys.exit(2)
 
     min_score_val = baseline_score * threshold
     passed = real_score >= min_score_val
