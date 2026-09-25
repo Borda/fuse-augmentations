@@ -6,15 +6,106 @@
 
 `vision-synth` is a Python package for **synthetic dataset generation** and **PyTorch image augmentation**. Generate labelled shapes in COCO or YOLO format for object detection, instance segmentation, oriented bounding boxes, and keypoint / pose estimation. Use fixed seeds and configurable scenes to prototype models, check convergence, and test increasing difficulty.
 
+The distribution ships two independent top-level packages. `synth_datasets` generates data and is torch-free. `fused_transforms` fuses compatible augmentations on torch tensors. Neither imports the other, so you can install and use either half alone.
+
 | I need to…                                          | Start here                                                                             |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | Generate a synthetic computer vision dataset        | [Install and generate](#-synthetic-datasets)                                           |
 | Choose detection, segmentation, OBB, or pose labels | [Task recipes](docs/datasets/index.md#choose-your-computer-vision-task)                |
 | Check model convergence or scale difficulty         | [Prototyping guide](docs/datasets/prototyping.md)                                      |
 | Stream samples into a PyTorch DataLoader            | [In-memory generation](docs/datasets/outputs.md#in-memory-streaming-and-training-feed) |
-| Fuse an existing augmentation pipeline              | [Augmentation quickstart](docs/getting-started/quickstart.md)                          |
+| Fuse an existing augmentation pipeline              | [Augmentation quickstart](#-quick-start-augmentation-core-no-optional-backend)         |
+| Augment generated samples                           | [Generate and augment](docs/applications/generate-and-augment.md)                      |
 
-Synthetic generation uses drawn primitives, animal silhouettes, symbols, and letters; it needs no source images or optional augmentation backend. Your trainer handles learning and evaluation. See the [dataset guide](docs/datasets/index.md) for capabilities and output contracts.
+> [!IMPORTANT]
+>
+> This package is Beta. The augmentation engine is **not** a general drop-in replacement for native Compose containers: it does not guarantee native pixels, input types, target processors, random streams, hooks, or universal speedups.
+
+## 📦 Install
+
+```bash
+pip install vision-synth
+```
+
+The base package requires Python 3.10+ and needs no PyTorch install: it is enough for [synthetic dataset generation](#-synthetic-datasets) (`import synth_datasets`), which is entirely torch-free. The image-augmentation engine needs the `torch` extra:
+
+```bash
+pip install "vision-synth[torch]"
+```
+
+Install optional adapter ecosystems only when needed — each already pulls in `torch`:
+
+```bash
+pip install "vision-synth[kornia]"
+pip install "vision-synth[torchvision]"
+pip install "vision-synth[albumentations]"
+pip install "vision-synth[all]"
+```
+
+## 🎨 Synthetic datasets
+
+Dataset generation lives in the standalone `synth_datasets` package (`import synth_datasets`), which never imports torch and needs no extra. There is no alias for it on the augmentation package; `synth_datasets` is the only import path.
+
+Generate labelled synthetic data for computer vision prototyping, model convergence checks, and controlled difficulty experiments. Draw from four vocabularies — geometric primitives, animal silhouettes, symbols, and letters — and export **COCO** or **YOLO** for **detection**, **segmentation**, **oriented bounding box (OBB)**, or **keypoints**. Your application supplies the model and training loop.
+
+```python
+import tempfile
+
+from synth_datasets import generate_dataset
+
+with tempfile.TemporaryDirectory() as out_dir:
+    # COCO detection, 70/20/10 split, reproducible (pass a real path to keep it)
+    counts = generate_dataset(
+        out_dir,
+        num_images=100,
+        fmt="coco",
+        task="detection",
+        seed=0,
+    )
+
+print(counts)
+```
+
+<details>
+<summary>Per-split image counts for the synthetic COCO dataset</summary>
+
+```
+{'train': 70, 'val': 20, 'test': 10}
+```
+
+</details>
+
+Swap `fmt="yolo"`, `task="obb"`, or `class_mode="color"` for other layouts, tasks, and class schemes. `rectangle` plus random per-shape rotation give oriented boxes real orientation. Feed samples from `SyntheticGenerator.generate(n, seed=...)` or a `DataLoader` via `SyntheticIterableDataset` without a disk round-trip. Direct generation and YOLO export keep sample storage bounded; COCO export retains per-split annotation metadata, and DataLoader batching/prefetching adds memory. See [output and streaming contracts](docs/datasets/outputs.md).
+
+### What the generator can do
+
+| Capability         | What is implemented                                                                                                                                                  |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Annotation tasks   | Detection, instance segmentation, oriented bounding boxes, and keypoints / pose.                                                                                     |
+| Output formats     | COCO per-split `_annotations.coco.json`, or YOLO normalized text labels plus `data.yaml`.                                                                            |
+| Shape vocabularies | Geometric primitives, traced animal silhouettes, symbols, and stroke letters, each a registered family.                                                              |
+| Class schemes      | `class_mode="shape"`, `"color"`, or `"shape_color"`; COCO categories are 1-based on disk and YOLO classes 0-based.                                                   |
+| Keypoint schemas   | Per-family landmark tables with COCO visibility flags, for animals, symbols, and letters. Geometric primitives have no pose schema.                                  |
+| Backgrounds        | Flat, gradient, Gaussian or impulse noise, value-noise texture, or crops of your own pictures.                                                                       |
+| Baked degradations | Gaussian blur and noise, JPEG, contrast, color cast, vignette, and quantization, applied once into the exported pixels.                                              |
+| Unlabelled clutter | `distractors` behind and `occluders` over the labelled objects; boxes and polygons keep full-object geometry.                                                        |
+| Splits             | Train/validation/test via split ratios, defaulting to 70/20/10.                                                                                                      |
+| Reproducibility    | A fixed seed plus configuration reproduces generation in one environment. Background, clutter, and degradation knobs draw from side streams, so placement is stable. |
+| Streaming          | `SyntheticGenerator.generate(n, seed=...)` yields samples; `SyntheticIterableDataset` feeds a PyTorch `DataLoader` (needs the `torch` extra).                        |
+| Extension          | `register_writer` adds an output format, and new shape families or keypoint schemas can be registered.                                                               |
+| Dependencies       | Direct generation uses Pillow and NumPy only — no torch, no source images, no optional augmentation backend.                                                         |
+
+### Difficulty is ordinary configuration
+
+How hard the samples are to read is a set of ordinary config fields: `background` picks the canvas, `degrade` bakes camera effects into the pixels, and `distractors`/`occluders` add unlabelled shapes under and over the labelled ones. There is no `difficulty=` argument and no curriculum scheduler.
+
+![A value-noise canvas, bare and then carrying its objects and their boxes](https://raw.githubusercontent.com/Borda/vision-synth/main/docs/assets/datasets/scene/backgrounds/texture.webp)
+
+Above is one such knob, `TextureBackground()`: the canvas it paints, and the same canvas carrying its objects and their exported boxes. The docs picture every mode this way. Each knob draws from a side stream of its own rather than from the placement stream, so at a fixed seed switching one on cannot move an object — the shapes land in the same three places on every canvas.
+
+Start with the [prototyping and convergence guide](docs/datasets/prototyping.md): check a loader on a small export, overfit fixed easy samples, then evaluate held-out data while increasing scene difficulty. Passing a synthetic check does not establish accuracy on real images. See also the [synthetic datasets docs](docs/datasets/index.md), the [difficulty bands](docs/datasets/difficulty.md), the [dataset generation API](docs/reference/datasets-generation.md), and `examples/generate_synthetic_dataset.py`.
+
+## 🔄 Fused augmentation: every warp resamples the image
 
 For augmentation, the tensor-first engine recognizes supported Kornia, TorchVision, and Albumentations transforms—or builds a pipeline directly from numeric ranges—then composes compatible transform matrices before pixels are sampled.
 
@@ -24,15 +115,9 @@ For augmentation, the tensor-first engine recognizes supported Kornia, TorchVisi
 
 You keep the readable pipeline: rotate, scale, shear, translate, flip. The engine finds compatible runs and can replace several geometric warps with one.
 
-> [!IMPORTANT]
->
-> This package is Beta and is **not** a general drop-in replacement for native Compose containers. It does not guarantee native pixels, input types, target processors, random streams, hooks, or universal speedups.
-
 > [!WARNING]
 >
 > Use auxiliary targets only with explicitly supported spatial transforms. With `data_keys` present, an unknown or unclassified spatial passthrough is rejected before any segment executes, so the image and targets cannot silently diverge. Image-only calls may still run such a transform as a native passthrough; inspect every `Unknown ... SPATIAL_KERNEL barrier` warning before relying on it.
-
-## 🔄 The problem: every warp resamples the image
 
 A conventional chain may interpolate the same pixels after every geometric operation:
 
@@ -95,7 +180,7 @@ The same fixed Kornia rotation → scale → shear recipe is evaluated below. Th
 
 See [three fixed recipes for each of Kornia, TorchVision, and Albumentations](https://borda.github.io/vision-synth/research/quality-and-fidelity/), including their exact limits.
 
-## ✨ What the package can do
+## ✨ What the augmentation engine can do
 
 | Capability             | What is implemented                                                                                                                                                                                                  |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -155,27 +240,6 @@ Per-channel non-linear scalar maps — `gamma`, `solarize`, `posterize`, and sup
 Other unknown and nonlinear operations generally become passthrough barriers. That preserves pipeline construction in many image-only cases, but passthrough is not automatically numerically transparent, device-efficient, or auxiliary-target safe.
 
 Gaussian blur is a narrow exception: consecutive Gaussian blurs fold into one operation, and a Gaussian blur commutes to the end of the run when the affine that immediately follows it does not downscale, letting that affine run collapse to a single warp (the surrounding affines then fuse as any affine chain does). Axis-aligned affine scales use Kornia's native Gaussian primitive; rotated (or sheared-and-upscaled) affines use a normalized sampled full-covariance Gaussian with 3-sigma support capped at 63 pixels. A pure shear has a smallest singular value below one, so it is refused like any other downscale — only a shear combined with enough upscale to keep both singular values at or above one reaches the covariance path. The blur stays a barrier when the following affine downscales (its smallest singular value drops below one), and always for projective transforms and non-linear kernels. Kornia's installed sharpness remains a barrier because it clamps intermediate values and restores borders, so it is not a linear shift-invariant kernel chain. The native Albumentations Gaussian path folds consecutive blurs only; it does not commute through affines because that fused path cannot guarantee the backend's random-number stream.
-
-## 📦 Install
-
-```bash
-pip install vision-synth
-```
-
-The base package requires Python 3.10+ and needs no PyTorch install: it is enough for [synthetic dataset generation](#-synthetic-datasets) (`import synth_datasets`), which is entirely torch-free. The image-augmentation engine below needs the `torch` extra:
-
-```bash
-pip install "vision-synth[torch]"
-```
-
-Install optional adapter ecosystems only when needed — each already pulls in `torch`:
-
-```bash
-pip install "vision-synth[kornia]"
-pip install "vision-synth[torchvision]"
-pip install "vision-synth[albumentations]"
-pip install "vision-synth[all]"
-```
 
 ## 🚀 Quick start: augmentation core, no optional backend
 
@@ -243,6 +307,8 @@ output = augment(torch.rand(8, 3, 224, 224))
 Kornia and Albumentations transform objects follow the same BCHW entry point when used in tensor pipelines. Albumentations also has an image-only HWC NumPy compatibility call, but it is not a replacement for native multi-target dictionaries and processors.
 
 Mixed-backend pipelines are supported, with every backend change acting as a hard fusion boundary.
+
+To route generated samples through a fused pipeline, see [Generate and augment](docs/applications/generate-and-augment.md): the HWC `uint8` arrays and pixel-edge boxes `synth_datasets` produces already match the conventions the engine expects.
 
 ## 📊 What the measurements say
 
@@ -325,58 +391,20 @@ With `data_keys`, pass the augmented auxiliary targets in the same positional or
 
 For ragged detector targets, import `augment_detection_batch` from the package root. It requires a pipeline whose `data_keys` are exactly `["input", "bbox_xyxy"]`, accepts one mapping per image with floating `boxes` and int64 `labels`, and returns new mappings after pixel-edge clipping and aligned filtering. See [Detection and keypoints](docs/applications/detection-and-keypoints.md#augment-a-ragged-detector-batch) for optional fields and thresholds.
 
-## 🎨 Synthetic datasets
-
-```bash
-pip install vision-synth
-```
-
-This is all you need — dataset generation lives in the standalone `synth_datasets` package (`import synth_datasets`), which never imports torch and needs no extra. There is no alias for it on the augmentation package; `synth_datasets` is the only import path.
-
-Generate labelled synthetic data for computer vision prototyping, model convergence checks, and controlled difficulty experiments. Draw from four vocabularies — geometric primitives, animal silhouettes, symbols, and letters — and export **COCO** or **YOLO** for **detection**, **segmentation**, **oriented bounding box (OBB)**, or **keypoints**. Your application supplies the model and training loop.
-
-Start with the [prototyping and convergence guide](docs/datasets/prototyping.md): check a loader on a small export, overfit fixed easy samples, then evaluate held-out data while increasing scene difficulty. Passing a synthetic check does not establish accuracy on real images.
-
-```python
-import tempfile
-
-from synth_datasets import generate_dataset
-
-with tempfile.TemporaryDirectory() as out_dir:
-    # COCO detection, 70/20/10 split, reproducible (pass a real path to keep it)
-    counts = generate_dataset(
-        out_dir,
-        num_images=100,
-        fmt="coco",
-        task="detection",
-        seed=0,
-    )
-
-print(counts)
-```
-
-<details>
-<summary>Per-split image counts for the synthetic COCO dataset</summary>
-
-```
-{'train': 70, 'val': 20, 'test': 10}
-```
-
-</details>
-
-Swap `fmt="yolo"`, `task="obb"`, or `class_mode="color"` for other layouts, tasks, and class schemes.
-
-`rectangle` plus random per-shape rotation give oriented boxes real orientation. A fixed seed and configuration reproduce generation in the same environment. Feed samples from `SyntheticGenerator.generate(n, seed=...)` or a `DataLoader` via `SyntheticIterableDataset` without a disk round-trip. Direct generation and YOLO export keep sample storage bounded; COCO export retains per-split annotation metadata, and DataLoader batching/prefetching adds memory. See [output and streaming contracts](docs/datasets/outputs.md).
-
-How hard the samples are to read is a set of ordinary config fields: `background` picks the canvas (flat, gradient, Gaussian or impulse noise, value-noise texture, or crops of your own pictures), `degrade` bakes camera effects into the pixels, and `distractors`/`occluders` add unlabelled shapes under and over the labelled ones.
-
-![A value-noise canvas, bare and then carrying its objects and their boxes](https://raw.githubusercontent.com/Borda/vision-synth/main/docs/assets/datasets/scene/backgrounds/texture.webp)
-
-Above is one such knob, `TextureBackground()`: the canvas it paints, and the same canvas carrying its objects and their exported boxes. The docs picture every mode this way. Each knob draws from a side stream of its own rather than from the placement stream, so at a fixed seed switching one on cannot move an object — the shapes land in the same three places on every canvas. See the [synthetic datasets docs](docs/datasets/index.md), the [difficulty bands](docs/datasets/difficulty.md), and `examples/generate_synthetic_dataset.py`.
-
 ## 🧭 Where it fits
 
-Use `vision-synth` when:
+Use `synth_datasets` when:
+
+- you need labelled images before collecting or annotating real data;
+- you want a repeatable loader, target-conversion, or convergence check;
+- you want to vary one nuisance at a time while placement stays fixed.
+
+Prefer real data when:
+
+- you need an accuracy claim about photographs or production data;
+- your task depends on texture, lighting, or appearance that drawn shapes do not model.
+
+Use `fused_transforms` when:
 
 - data is already a BCHW torch tensor;
 - the pipeline contains several registered geometric transforms;
@@ -396,18 +424,29 @@ Prefer the native backend container when you require:
 The repository includes a complete MkDocs Material site:
 
 - [Overview](https://borda.github.io/vision-synth/)
-- [Installation and backend-free quickstart](https://borda.github.io/vision-synth/getting-started/quickstart/)
-- [How fusion works](https://borda.github.io/vision-synth/concepts/how-fusion-works/)
-- [Exact capabilities](https://borda.github.io/vision-synth/concepts/capabilities/)
+- [Installation](https://borda.github.io/vision-synth/getting-started/installation/)
+- [Known limitations](https://borda.github.io/vision-synth/known-limitations/) — for both halves
+- [FAQ](https://borda.github.io/vision-synth/faq/)
+- [Application walkthroughs](https://borda.github.io/vision-synth/applications/)
+
+Synthetic datasets:
+
+- [Synthetic data generation](https://borda.github.io/vision-synth/datasets/)
+- [Prototyping and convergence checks](https://borda.github.io/vision-synth/datasets/prototyping/)
+- [Shape families](https://borda.github.io/vision-synth/datasets/shapes/) and [tasks and keypoints](https://borda.github.io/vision-synth/datasets/tasks/)
+- [Annotation formats](https://borda.github.io/vision-synth/datasets/outputs/) and [difficulty bands](https://borda.github.io/vision-synth/datasets/difficulty/)
+- [Customization and extension](https://borda.github.io/vision-synth/datasets/customization/)
+- [Dataset generation API](https://borda.github.io/vision-synth/reference/datasets-generation/) and [dataset scenes and outputs API](https://borda.github.io/vision-synth/reference/datasets-scenes/)
+
+Fused augmentation:
+
+- [Backend-free quickstart](https://borda.github.io/vision-synth/getting-started/quickstart/)
+- [How fusion works](https://borda.github.io/vision-synth/concepts/how-fusion-works/) and [exact capabilities](https://borda.github.io/vision-synth/concepts/capabilities/)
 - [Backend and configuration guides](https://borda.github.io/vision-synth/guides/backend-pipelines/)
 - [Auxiliary-target safety](https://borda.github.io/vision-synth/guides/auxiliary-targets/)
 - [Reproducibility](https://borda.github.io/vision-synth/guides/reproducibility/)
-- [Quality and benchmark evidence](https://borda.github.io/vision-synth/research/benchmarks/)
-- [Research methodology](https://borda.github.io/vision-synth/research/methodology/)
-- [Known limitations](https://borda.github.io/vision-synth/known-limitations/)
-- [FAQ](https://borda.github.io/vision-synth/faq/)
-- [Application walkthroughs](https://borda.github.io/vision-synth/applications/)
-- generated references for the notable public API
+- [Quality and benchmark evidence](https://borda.github.io/vision-synth/research/benchmarks/) and [research methodology](https://borda.github.io/vision-synth/research/methodology/)
+- [Core API](https://borda.github.io/vision-synth/reference/core/) and the generated references for the notable public API
 
 The site configuration provides local search, per-page descriptions, canonical/Open Graph metadata, sitemap and crawler files, an `llms.txt` agent index, and GitHub Pages publication automation.
 
@@ -422,6 +461,8 @@ uv run --all-extras --group benchmark python experiments/bench_memory.py --quick
 ```
 
 These three headline commands are not the full set: `experiments/` holds five benchmark scripts in total, including `bench_augmentation_pipelines.py`, `bench_primitive_vs_affine.py`, and `bench_rfdetr_shape.py`, and the [quality and benchmark evidence](https://borda.github.io/vision-synth/research/benchmarks/) documentation page walks through all of them.
+
+Dataset rendering and gallery scripts live in [`examples/`](https://github.com/Borda/vision-synth/tree/main/examples), including `generate_synthetic_dataset.py`, `render_scene_gallery.py`, and `render_shape_reference.py`.
 
 Treat quick runs as smoke evidence. Release-grade comparisons need independent processes, uncertainty intervals, paired RNG state, output-parity assertions, and full environment provenance.
 

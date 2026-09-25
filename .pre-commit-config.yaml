@@ -49,7 +49,7 @@ repos:
         args: ["--number", "--wrap=no"]
         additional_dependencies:
           - mdformat-gfm
-          - mdformat-black
+          - mdformat-ruff
           - mdformat_frontmatter
           - mdformat-mkdocs==5.2.0
 

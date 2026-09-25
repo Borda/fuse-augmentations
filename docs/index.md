@@ -38,6 +38,16 @@ The strongest use case is a BCHW tensor pipeline with several consecutive, regis
 
 ## What is verified
 
+### Synthetic generation
+
+- Four shape vocabularies — geometric primitives, animal silhouettes, symbols, and letters — export COCO or YOLO labels for detection, instance segmentation, oriented boxes, and keypoints.
+- Both writers convert point fields back to pixel-edge space at the file boundary, so an exported COCO or YOLO file carries one coordinate convention throughout.
+- Background, clutter, and degradation knobs each draw from a side stream of their own, so switching one on at a fixed seed cannot move an object.
+- Direct generation and YOLO export keep sample storage bounded and need only Pillow and NumPy — no torch, no source images.
+- Output formats, shape families, and keypoint schemas are registered surfaces: `register_writer` adds a format, and new families can be registered.
+
+### Fused augmentation
+
 - Registered consecutive affine transforms from one backend can be represented by a composed matrix and applied in one resampling pass.
 - Exact discrete operations such as supported flips have lossless execution paths.
 - Projective-to-projective chains, supported linear color chains, and some affine-to-crop paths have dedicated fusion strategies.
@@ -46,6 +56,15 @@ The strongest use case is a BCHW tensor pipeline with several consecutive, regis
 - The pipeline exposes a structured fusion plan and per-call matrix access for inspection.
 
 ## What is conditional
+
+### Synthetic generation
+
+- **Realism:** objects are drawn shapes. A synthetic result measures your pipeline, not accuracy on photographs or production data.
+- **Difficulty:** there is no `difficulty=` argument and no curriculum scheduler. Difficulty is a combination of ordinary `SyntheticConfig` fields, and the published bands are ranked by training-free image statistics rather than by model performance.
+- **Keypoints:** only animals, symbols, and letters carry a landmark schema; geometric primitives have none, and one dataset uses one family.
+- **Reproducibility:** a seed reproduces generation within one environment. Record the configuration, package versions, and any source background files as well; changing `num_images` or the split ratios can move samples between splits.
+
+### Fused augmentation
 
 - **Speed:** long CPU geometric chains are the clearest win; single operations, mixed pipelines, and sampled TorchVision batch-8/32 workloads can be slower.
 - **Native parity:** fewer resampling passes deliberately change numerics, and TorchVision center/fill/interpolation behavior is not generally pixel-equivalent.

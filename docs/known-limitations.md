@@ -1,11 +1,13 @@
 ---
 title: Known limitations and safety boundaries
-description: Verified compatibility, target-safety, numerical-parity, randomness, GPU, and performance limits of vision-synth.
+description: Synthetic dataset scope limits plus the verified compatibility, target-safety, numerical-parity, randomness, GPU, and performance limits of vision-synth.
 ---
 
 # Known limitations and safety boundaries
 
-`vision-synth` is a tensor-first matrix-fusion engine. It has a real, tested advantage: compatible geometric transforms in one segment can share a single interpolation pass. It is not a behaviorally identical replacement for every Kornia, TorchVision, or Albumentations pipeline.
+`vision-synth` ships two capabilities with separate limits. `synth_datasets` draws labelled synthetic scenes; its boundaries are about what synthetic data can tell you and which controls exist. `fused_transforms` is a tensor-first matrix-fusion engine; it has a real, tested advantage — compatible geometric transforms in one segment can share a single interpolation pass — but it is not a behaviorally identical replacement for every Kornia, TorchVision, or Albumentations pipeline.
+
+Dataset limits come first below; everything from [Compatibility at a glance](#compatibility-at-a-glance) onward concerns the augmentation engine.
 
 !!! danger "Auxiliary targets require a supported contract"
 
@@ -14,6 +16,27 @@ description: Verified compatibility, target-safety, numerical-parity, randomness
     Common TorchVision transforms such as `RandomCrop`, `CenterCrop`, and `Resize` are not registered target-aware operations. A target-aware call refuses them before they can change only the image; the image-only path may still invoke a native passthrough.
 
     Use only explicitly supported geometric transforms in a multi-target pipeline. Otherwise, apply the operation through a native target-aware pipeline or transform every target yourself. See [Auxiliary targets](guides/auxiliary-targets.md).
+
+## Synthetic dataset limits
+
+These apply to `synth_datasets` and are independent of the augmentation engine.
+
+| Limit                                                                          | Consequence                                                                                                             |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| Objects are drawn primitives, animal silhouettes, symbols, and letters         | Photorealistic scene generation is out of scope; a synthetic result does not establish accuracy on photographs          |
+| There is no `difficulty=` argument and no curriculum scheduler                 | Difficulty is a combination of ordinary `SyntheticConfig` fields; advancement belongs to your trainer                   |
+| Geometric primitives carry no keypoint schema                                  | `task="keypoints"` needs shapes from one keypoint-bearing family — animals, symbols, or letters — and one family only   |
+| Split membership depends on `num_images` and the split ratios                  | Changing either in a seeded export can move samples between splits; freeze an exported evaluation set for comparisons   |
+| A seed reproduces generation only within the same environment                  | Record the full configuration, package and dependency versions, and any source background files alongside the seed      |
+| `generate_dataset` accepts `config=` or content keywords, not both             | Passing `config=` together with `task=` or `img_size=` is rejected rather than merged                                   |
+| Occluders cover pixels but do not clip geometry                                | Boxes and polygons keep full-object extent; a covered keypoint becomes visibility `1`. These are not visible-only masks |
+| Degradations are baked once at generation                                      | Effects do not resample per training step; for per-epoch variation use an augmentation pipeline                         |
+| Placement constraints can yield fewer objects than requested                   | `max_objects` and `overlap_iou` are limits, not guarantees                                                              |
+| COCO export accumulates per-split annotation metadata                          | Direct generation and YOLO export keep sample storage bounded; size large COCO runs accordingly                         |
+| `SyntheticIterableDataset` requires the `torch` extra and has no `set_epoch()` | Build a new dataset and loader with `epoch=...` for a fresh stream; see [annotation formats](datasets/outputs.md)       |
+| Difficulty-band statistics are training-free                                   | They rank knob combinations by image statistics; they do not establish convergence or an accuracy ordering              |
+
+Both writers convert point fields back to pixel-edge space at the file boundary, so an exported COCO or YOLO file carries one convention throughout. In memory the conventions differ: polygons and oriented-box corners are pixel-centre, axis-aligned boxes are pixel-edge, and the two are not interchangeable.
 
 ## Compatibility at a glance
 

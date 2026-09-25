@@ -1,11 +1,28 @@
 ---
-title: Image augmentation applications and use cases
-description: Decide whether fused augmentation fits your task, then follow the per-task recipe for classification, segmentation, detection, test-time augmentation, and performance planning.
+title: Applications and use cases
+description: Choose between synthetic dataset generation and fused augmentation, then follow the per-task recipe for synthetic experiments, classification, segmentation, detection, test-time augmentation, and performance planning.
 ---
 
 # Applications and use cases
 
-This package solves one problem: a chain of registered geometric transforms resamples the image once per transform, and each resampling costs time and image detail. Fusing the chain into a single warp removes the repeats.
+`vision-synth` ships two independent capabilities, and most questions belong clearly to one of them.
+
+| You want to                                                      | Start here                                                  |
+| ---------------------------------------------------------------- | ----------------------------------------------------------- |
+| Produce labelled images without collecting or annotating data    | [Synthetic data experiments](synthetic-data-experiments.md) |
+| Cut repeated resampling out of an existing augmentation pipeline | [Fused augmentation](#fused-augmentation)                   |
+| Feed generated samples into a fused pipeline                     | [Generate and augment](generate-and-augment.md)             |
+
+## Synthetic data generation
+
+`synth_datasets` draws labelled shapes and exports COCO or YOLO for detection, segmentation, oriented boxes, or keypoints. It needs no source images and no `torch` install. It generates data; your application owns training and evaluation, so a synthetic run answers questions about your pipeline rather than about real-image accuracy.
+
+- [Synthetic data experiments](synthetic-data-experiments.md) — pick the experiment that answers your question, and decode the exported labels correctly.
+- [Synthetic data generation](../datasets/index.md) — the full guide, with runnable recipes for every task and format.
+
+## Fused augmentation
+
+The augmentation engine solves one problem: a chain of registered geometric transforms resamples the image once per transform, and each resampling costs time and image detail. Fusing the chain into a single warp removes the repeats.
 
 That framing decides whether it fits your pipeline.
 
@@ -17,7 +34,7 @@ That framing decides whether it fits your pipeline.
 | Unregistered spatial transforms alongside masks, boxes, or keypoints            | Unsafe — see [Known limitations](../known-limitations.md)                                |
 | PIL input, Albumentations dictionaries, or exact native pixel parity required   | Wrong tool — use the native backend container                                            |
 
-## Per-task recipes
+### Per-task recipes
 
 - [Classification](classification.md) — the lowest-risk application, because the label carries no spatial coordinates.
 - [Segmentation and dense targets](segmentation.md) — routing masks and continuous image targets through the same geometry without desynchronizing them.
@@ -31,7 +48,7 @@ The [benchmarks](../research/benchmarks.md) retain a historical 1.7861x fixed-ba
 
 Image quality is argued from the resampling count and visual overlays. Whether fusion changes downstream task metrics is not measured in this repository; treat that as an open question in your own ablation rather than a property of the package. The [research methodology](../research/methodology.md) is the checklist for running that comparison honestly.
 
-## When not to use this package
+### When not to fuse
 
 Choose the native backend container when you require PIL/CHW input, complete Albumentations dictionary processors, exact native pixels, per-transform fill and interpolation semantics, segment hooks, unregistered spatial transforms with targets, or a backend-specific random-number stream.
 

@@ -12,6 +12,7 @@ exclude_docs: |
   adr/
 watch:
   - src/fused_transforms
+  - src/synth_datasets
 
 theme:
   name: material
@@ -137,6 +138,8 @@ nav:
       - Customization and extension: datasets/customization.md
   - Applications:
       - Overview: applications/index.md
+      - Synthetic data experiments: applications/synthetic-data-experiments.md
+      - Generate and augment: applications/generate-and-augment.md
       - Classification: applications/classification.md
       - Segmentation and dense targets: applications/segmentation.md
       - Detection and keypoints: applications/detection-and-keypoints.md
@@ -152,4 +155,6 @@ nav:
       - Configuration: reference/configuration.md
       - Types and targets: reference/types-and-targets.md
       - Advanced internals: reference/advanced.md
+      - Dataset generation: reference/datasets-generation.md
+      - Dataset scenes and outputs: reference/datasets-scenes.md
   - FAQ: faq.md
